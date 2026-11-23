@@ -20,7 +20,7 @@ use std::time::Instant;
 use serde_json::{Map, Value};
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::ids::WorkspaceId;
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::desktop::warmth::WindowWarmth;
 use ui::Theme;
 use ui::floating_surface::HostNetworkStatus;
@@ -194,7 +194,7 @@ pub(crate) fn network_status(readings: &crate::status::Shared) -> HostNetworkSta
         return HostNetworkStatus::default();
     };
     HostNetworkStatus {
-        available: Some(link.kind != tilo_desktop::chrome::LinkKind::Offline),
+        available: Some(link.kind != tilo_session_core::desktop::host::chrome::LinkKind::Offline),
         metered: None,
     }
 }
@@ -210,12 +210,7 @@ impl crate::Session {
         // told it below.
         if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {
             self.shared.desktop.set_theme(theme.clone());
-            self.shared.chrome.borrow_mut().set_theme(theme.clone());
             self.shared.people.borrow().set_theme(theme.clone());
-            self.readout.borrow_mut().set_theme(theme.clone());
-            if let Some(banners) = &self.banner_surface {
-                banners.borrow_mut().set_theme(theme.clone());
-            }
             crate::sheets::set_theme(&theme);
             if let Some(shell) = self.shell.as_mut() {
                 shell.set_theme(&theme);

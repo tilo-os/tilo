@@ -17,7 +17,6 @@ path = "tests/it.rs"
 [target.'cfg(target_os = "linux")'.dependencies]
 tilo-compositor = { path = "../../desktop/compositor" }
 tilo-desktop-policy = { path = "../../desktop/window-placement" }
-tilo-desktop-surface = { path = "../desktop-surface" }
 # The layout's readings, which every host's layout holds.
 tilo-session-core = { path = "../../desktop/session-core" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core" }

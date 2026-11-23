@@ -664,7 +664,7 @@ fn settings_sheet(
     session
         .session()
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "workspace-settings",
             &serde_json::Map::new(),
         )
@@ -860,7 +860,7 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
     // what this sheet has is out of date.
     press(&mut app, &format!("ws-permission-revoke-{}", granted.key));
     let mut tree = session.session().handle().read(Clone::clone);
-    tilo_desktop::workspace_settings::apply_revoke(
+    tilo_session_core::desktop::workspace_settings::apply_revoke(
         tree.active_workspace_mut().expect("a workspace in front"),
         &session.person.clone(),
         &granted.key,
@@ -1009,7 +1009,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
     // The sheet shows her in the People tab.
     session
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "workspace-settings",
             &serde_json::Map::new(),
         )

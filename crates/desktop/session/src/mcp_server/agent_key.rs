@@ -25,7 +25,7 @@ use std::path::Path;
 
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_user_identity::AgentScope;
 
 /// What a key the session makes begins with, so it is recognised wherever it leaks.

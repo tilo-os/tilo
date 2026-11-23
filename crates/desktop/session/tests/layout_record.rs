@@ -734,6 +734,27 @@ fn a_pinned_place_stays_where_the_person_put_it() {
     assert_eq!(strip_of(&session, window), Some(from));
 }
 
+// A pin the person puts on a place through its published action is a step of the layout's
+// history: undo takes it back.
+#[test]
+fn a_pin_through_the_published_action_is_undone() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    step(&mut session);
+    invoke_as(
+        &mut session,
+        &place_resource(window),
+        "pin",
+        &serde_json::json!({"pinned": true}),
+    );
+    assert!(place_of(&session, window).unwrap().pinned);
+    undone(&mut session, |session| {
+        place_of(session, window).is_some_and(|place| !place.pinned)
+    });
+}
+
 /// Invoke `action` of `resource` with `arguments` as the person.
 fn invoke_as(session: &mut Session, resource: &str, action: &str, arguments: &serde_json::Value) {
     let empty = serde_json::Map::new();

@@ -17,10 +17,7 @@
   ],
   "rust": {},
   "tl": {
-    "session_args": [
-      "--shell",
-      "screen"
-    ]
+    "session_args": []
   },
   "steps": [
     {

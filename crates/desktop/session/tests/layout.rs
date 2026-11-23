@@ -25,9 +25,10 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use tilo_desktop_policy::Window;
-use tilo_desktop_surface::surface::window_menu::move_to_workspace_id;
+use tilo_session_core::desktop::state::banners::Banners as _;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
+use tilo_session_core::desktop::state::window_menu::move_to_workspace_id;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The app a test installs: a Tilo package whose window is a tab of the layout.

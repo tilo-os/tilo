@@ -1587,24 +1587,6 @@ readers = ["crates/core/session-client/tests/voice_browsers.rs", "crates/core/se
 scope = { inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
 [[cargo]]
-package = "tilo-desktop-surface"
-# The pages the peer page test's engine shows: snapshots the paint stream's own tests keep.
-inputs = [
-  "crates/engines/paint-stream/tests/fixtures/layers.top.json",
-  "crates/engines/paint-stream/tests/fixtures/controls.json",
-]
-readers = ["crates/session/desktop-surface/tests/peer_page.rs"]
-
-[[cargo]]
-package = "ui-examples"
-# The pages the page view shots' publisher draws: the same snapshots of the paint stream's tests.
-inputs = [
-  "crates/engines/paint-stream/tests/fixtures/layers.top.json",
-  "crates/engines/paint-stream/tests/fixtures/controls.json",
-]
-readers = ["tools/ui-examples/examples/page_view_shots.rs"]
-
-[[cargo]]
 package = "tilo-test-env"
 # The ci profile's setup (its nextest setup scripts) and the audio endpoint
 # that ends with its owner.

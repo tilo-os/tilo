@@ -21,7 +21,7 @@ use std::time::Duration;
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
-use tilo_desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SEARCH_RESOURCE};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SEARCH_RESOURCE};
 use tilo_session::{Options, Session, SessionConfig};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{Guide, Pair};

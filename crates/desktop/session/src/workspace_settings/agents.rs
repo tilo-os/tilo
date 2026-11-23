@@ -20,8 +20,8 @@ use tilo_action_policy::{ActionKind, Answer, MemberId};
 use tilo_app::tilo_workspace_agent::{
     Agent, Bound, KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
-use tilo_desktop::people::PeopleNames;
-use tilo_desktop::workspace_settings::{self as domain, agent_access};
+use tilo_session_core::desktop::people::PeopleNames;
+use tilo_session_core::desktop::workspace_settings::{self as domain, agent_access};
 use tilo_desktop_model::{Layout, UserId, Workspace};
 use tilo_resource::Id;
 use tilo_session_client::daemon_documents::DaemonShell;
@@ -215,7 +215,7 @@ impl Agents {
         });
         let may = May {
             manage: {
-                use tilo_desktop::authority::WorkspaceAuthority as _;
+                use tilo_session_core::desktop::authority::WorkspaceAuthority as _;
                 workspace.may_administer(person)
             },
         };

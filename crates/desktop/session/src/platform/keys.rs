@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use tilo_actions::{ActionAddress, ApiError};
-use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
-use tilo_desktop::verbs::CHROME_RESOURCE;
+use tilo_session_core::desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session_core::super_tap::Ask;
 use tilo_session_core::surface::{KeyClaim, ShellSurface, SurfaceKey, SurfaceLayer};
 use ui::host_operation::ResourceOperationStart;
@@ -435,9 +435,13 @@ impl Shared {
         self.super_tap.borrow().deadline()
     }
 
-    /// What the touchpad gestures the desktop took asked, as the chrome's published actions.
-    pub(crate) fn follow_gestures(&self) {
+    /// What the touchpad gestures the desktop took asked, as the chrome's published actions. The
+    /// fingers carrying a strip under the tilolang shell are the shell's to scroll: they come back,
+    /// each the scroll it is.
+    pub(crate) fn follow_gestures(&self) -> Vec<tilo_session_core::surface::Scroll> {
+        use tilo_session_core::surface::Scroll;
         let gestures = self.desktop.take_gestures();
+        let mut carried = Vec::new();
         let mut invocations = self.invocations.borrow_mut();
         for gesture in gestures {
             invocations.push(match gesture {
@@ -451,18 +455,14 @@ impl Shared {
                 // fingers move it here, where the frame is, rather than through a published action
                 // that would arrive a pass later.
                 ShellGesture::StripDrag { travel, began } => {
-                    self.desktop.with_widgets(|host| {
-                        if began {
-                            host.begin_strip_carry(travel);
-                        } else {
-                            host.drag_strip_carry(travel);
-                        }
-                    });
+                    let before = if began { 0.0 } else { self.carried.get() };
+                    self.carried.set(travel);
+                    carried.push(Scroll::Pixels(before - travel, 0.0));
                     continue;
                 }
-                ShellGesture::StripDragEnd { cancelled } => {
-                    self.desktop
-                        .with_widgets(|host| host.end_strip_carry(cancelled));
+                ShellGesture::StripDragEnd { .. } => {
+                    self.carried.set(0.0);
+                    carried.push(Scroll::Lifted);
                     continue;
                 }
                 ShellGesture::SwitchWorkspace(delta) => {
@@ -473,6 +473,7 @@ impl Shared {
                 }
             });
         }
+        carried
     }
 
     /// What a secondary click on a window's bar asked, as the window menu's own published action:
@@ -486,6 +487,18 @@ impl Shared {
                     .with("tab", tab.to_string())
                     .with("anchor", format!("{x},{y}")),
             );
+        }
+    }
+
+    /// The action row the person chose in search, run through the API every caller uses, as the
+    /// app's own control would run it.
+    pub(crate) fn follow_search_actions(&self) {
+        if let Some(control) = self.desktop.take_unrouted_control() {
+            self.invocations.borrow_mut().push(Invocation {
+                address: control.address,
+                arguments: control.arguments,
+                readout: None,
+            });
         }
     }
 
@@ -728,24 +741,9 @@ impl Shared {
                     reading.focused
                 }
             });
-        let arguments = osd.arguments(display.as_deref());
-        // The tilolang shell draws the readout from its own resource, so it is published beside
-        // the native readout: a press shows on whichever shell this session runs.
+        // The shell draws the readout from its own resource.
         self.osd
             .borrow_mut()
             .show(crate::osd::Readout::of(osd, display.as_deref()));
-        // The native readout is not drawn beside the tilolang one: the shell in tilolang draws
-        // the readout it reads.
-        if self.tilolang_shell {
-            return;
-        }
-        let address = ActionAddress::new(OSD_RESOURCE, "show");
-        if let Err(error) = self.published.invoke(
-            &address,
-            &arguments,
-            &mut tilo_session_core::surfaces::Look::none(),
-        ) {
-            tracing::warn!(?error, "no readout shown");
-        }
     }
 }

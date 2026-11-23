@@ -1,7 +1,7 @@
 //! Workspace settings: what the sheet shows of the workspace in front, and what the person's
 //! choices there change.
 
-use tilo_desktop::workspace_settings as domain;
+use tilo_session_core::desktop::workspace_settings as domain;
 
 #[cfg(target_os = "linux")]
 mod agents;

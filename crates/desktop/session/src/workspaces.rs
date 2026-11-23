@@ -39,7 +39,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::SheetState as _;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tilo_user_identity::{WorkspaceDirectory, WorkspaceMeta};

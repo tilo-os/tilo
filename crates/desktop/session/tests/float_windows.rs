@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_compositor::InputEvent;
-use tilo_desktop::verbs::CHROME_RESOURCE;
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_session_core::layout::StripReading;
@@ -59,7 +59,6 @@ fn session() -> Session {
         person: crate::common::PERSON.to_owned(),
         // A device that holds its workspaces: the layout and its steps are theirs.
         state: Some(crate::common::device_state()),
-        shell: false,
         collab: false,
         // The apps installed on this device, as a real session reads them: the launcher opens
         // them, and the shell names their windows by their own names.

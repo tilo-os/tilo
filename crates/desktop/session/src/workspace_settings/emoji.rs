@@ -14,8 +14,8 @@ use std::sync::Arc;
 use tilo_app::tilo_workspace_emoji::{
     EmojiImage, OWNER, WorkspaceEmoji as Record, workspace_emoji as actions,
 };
-use tilo_desktop::people::PeopleNames;
-use tilo_desktop::workspace_settings::{self as domain, emoji_pane};
+use tilo_session_core::desktop::people::PeopleNames;
+use tilo_session_core::desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_desktop_model::{Layout, UserId, Workspace};
 use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::i18n::{t, t_args};

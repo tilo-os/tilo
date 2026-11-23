@@ -14,7 +14,7 @@
 //! it, which a hung app cannot end itself.
 
 use tilo_desktop_model::TabId;
-use tilo_desktop_surface::LivenessChoice;
+use tilo_session_core::desktop::state::LivenessChoice;
 
 impl crate::Session {
     /// Tell the shell which apps stopped answering, and carry out what the person chose on their

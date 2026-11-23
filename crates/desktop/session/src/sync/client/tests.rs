@@ -384,7 +384,7 @@ tilo_test_env::scenario! {
         let people = sync.show(&mut tree, &no_records(), &|_| None);
         assert_eq!(people[0].availability, ui::Availability::Away);
         assert!(people[0].availability.dims());
-        let rows = tilo_desktop::people::roster_rows(&tree);
+        let rows = tilo_session_core::desktop::people::roster_rows(&tree);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].availability, ui::Availability::Away);
 
@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
         heard(&sync, 1, WORKSPACE, away("focusing"));
         let mut tree = shell(WORKSPACE);
         sync.show(&mut tree, &no_records(), &|_| None);
-        let rows = tilo_desktop::people::roster_rows(&tree);
+        let rows = tilo_session_core::desktop::people::roster_rows(&tree);
         assert_eq!(rows[0].availability, ui::Availability::Focusing);
         assert!(!rows[0].availability.dims());
     }
@@ -459,7 +459,7 @@ tilo_test_env::scenario! {
             [(true, false)],
             "the camera this device turned on is what the peer reads"
         );
-        let rows = tilo_desktop::people::roster_rows(&tree);
+        let rows = tilo_session_core::desktop::people::roster_rows(&tree);
         assert_eq!(rows[0].call.as_deref(), Some("Voice"));
 
         // Out of the call, the peer's roster says nothing of a channel.
@@ -1174,7 +1174,7 @@ tilo_test_env::scenario! {
     // it, and both list the agent as the same one row, in its colour, with what it is doing, and
     // each other's lines as their devices said them.
     {
-        use tilo_desktop::people::LineSource::{Observed, Written};
+        use tilo_session_core::desktop::people::LineSource::{Observed, Written};
 
         let (page_device, native_device, agent_device) = (0xa0, 0xd0, 0xc0);
         let (page, _page_said) = Client::offline(device(page_device), saying("Ada", 2, None));
@@ -1344,7 +1344,7 @@ fn saying(label: &str, user: u8, status: Option<(&str, bool)>) -> OwnPresence {
 type RosterRow = (
     String,
     bool,
-    Option<(String, tilo_desktop::people::LineSource)>,
+    Option<(String, tilo_session_core::desktop::people::LineSource)>,
     (u8, u8, u8),
 );
 
@@ -1556,18 +1556,6 @@ fn a_host_is_dialled_where_this_device_reached_it_whatever_it_says_of_itself() {
     });
 }
 
-/// A window source for a desktop no test draws: every window says it is a notice.
-struct Plain;
-
-impl tilo_desktop_surface::TileSource for Plain {
-    fn tile(&mut self, _: &Workspace, tab: &Tab) -> ui::widget::TileHost {
-        ui::widget::TileHost::new(ui::widget::TileContent::Notice {
-            title: tab.title.clone(),
-            detail: String::new(),
-        })
-    }
-}
-
 /// A desktop showing one window running `app`, and the window's tab.
 fn desktop_running(app: &str) -> (DesktopHandle, tilo_desktop_model::TabId) {
     let mut minter = tilo_desktop_model::IdMinter::new(7);
@@ -1585,7 +1573,7 @@ fn desktop_running(app: &str) -> (DesktopHandle, tilo_desktop_model::TabId) {
     };
     let id = tab.id;
     let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Session", vec![tab]);
-    let (_surface, handle) = tilo_desktop_surface::DesktopSurface::new(tree, 7, Box::new(Plain));
+    let handle = tilo_session_core::desktop::state::DesktopHandle::new(tree, 7);
     (handle, id)
 }
 
@@ -1720,7 +1708,7 @@ tilo_test_env::scenario! {
         );
         let mut presence = ui::presence::PresenceCtx::default();
         assert!(
-            tilo_desktop::here::apply_narrated(&mut presence, &[admitted]),
+            tilo_session_core::desktop::here::apply_narrated(&mut presence, &[admitted]),
             "the cursor moved to the control it acted on"
         );
         assert_eq!(

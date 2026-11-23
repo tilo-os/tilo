@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
-use tilo_desktop::osd::Osd;
+use tilo_session_core::desktop::osd::Osd;
 use tilo_resource::NoEffect;
 use tilo_service::{Service, Started, offer, reading};
 

@@ -3,7 +3,7 @@
 //! workspace").
 //!
 //! The session names the branch and its id the moment it is asked (`branch-workspace`,
-//! [`tilo_desktop::desktop_host::DesktopAsk::BranchWorkspace`]); the session does the rest
+//! [`tilo_session_core::desktop::host::contract::DesktopAsk::BranchWorkspace`]); the session does the rest
 //! without holding its loop, so the session never waits for a copy:
 //!
 //! 1. The branch is founded in this device's engine as any workspace made here is
@@ -60,8 +60,8 @@ pub(crate) fn branches_elsewhere(
     workspace: &str,
 ) -> bool {
     let address = &request.target.address;
-    if address.resource != tilo_desktop::verbs::CHROME_RESOURCE
-        || address.action != tilo_desktop::desktop_host::BRANCH_WORKSPACE
+    if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE
+        || address.action != tilo_session_core::desktop::host::contract::BRANCH_WORKSPACE
     {
         return false;
     }
@@ -1851,8 +1851,8 @@ mod tests {
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
                 address: tilo_actions::ActionAddress::new(
-                    tilo_desktop::verbs::CHROME_RESOURCE,
-                    tilo_desktop::desktop_host::BRANCH_WORKSPACE,
+                    tilo_session_core::desktop::verbs::CHROME_RESOURCE,
+                    tilo_session_core::desktop::host::contract::BRANCH_WORKSPACE,
                 ),
             },
             argument: source.map_or(tilo_actions::remote::InvokeArgument::None, |source| {

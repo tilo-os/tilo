@@ -1,11 +1,9 @@
-//! The desktop's window policy: a compositor's windows as tabs of the portable
-//! desktop surface.
+//! The desktop's window policy: a compositor's windows as tabs of the desktop's strips.
 //! A compositor knows windows as toplevels; where they go, which has focus and which
 //! the person closed is the desktop's answer. [`DesktopPolicy`] gives each window a
-//! tab of the [`DesktopSurface`]'s strips ([`TileContent::Foreign`], keyed by the
-//! window's id), so windows open beside the focused one, group into tabs, pan with
-//! their strip and move between strips and workspaces through the same widgets and
-//! model the browser desktop runs. After each layout pass the compositor
+//! tab of the desktop's strips ([`TileContent::Foreign`], keyed by the window's id), so
+//! windows open beside the focused one, group into tabs, and move between strips and
+//! workspaces through the same model the browser desktop runs. After each layout pass the compositor
 //! reads [`DesktopPolicy::layout`]: the windows to show and where, and those to hide.
 //! Dialogs float over the window they belong to ([`floating`]), and across several
 //! displays each display holds its own windows. Nothing here knows Wayland.
@@ -24,10 +22,10 @@ use tilo_desktop_model::{
     Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, WindowWidth, Workspace,
     WorkspaceId,
 };
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect, RouteIds, active_route};
 use tilo_session_core::desktop::outcome::{Closed, Outcome};
 use tilo_session_core::desktop::seed_tree;
+use tilo_session_core::desktop::state::{DesktopHandle, DesktopPass, TileSource};
 use ui::kurbo::Rect;
 use ui::widget::TileHost;
 
@@ -246,7 +244,8 @@ struct Beside {
 /// The tile source behind the policy's surface: a window's tab is opened from the
 /// window waiting under its launch id, and its tile is the arriving placeholder the
 /// window's own buffer covers. Every other launch is the session's to start, so it
-/// opens no tab here.
+/// opens no tab here. A clone reads and writes the same windows.
+#[derive(Clone)]
 struct Windows {
     arriving: Arriving,
     launches: Launches,
@@ -463,6 +462,11 @@ impl Windows {
 /// The desktop's answer to where windows go and which has focus.
 pub struct DesktopPolicy {
     handle: DesktopHandle,
+    /// The windows' tiles, which the desktop's pass launches through.
+    tiles: Windows,
+    /// The desktop's own pass over its tree, while the session runs it rather than a widget
+    /// drawing the desktop ([`Self::step`]).
+    pass: DesktopPass,
     arriving: Arriving,
     /// Launches the session has to start, oldest first.
     launches: Launches,
@@ -523,11 +527,10 @@ pub struct DesktopPolicy {
 }
 
 impl DesktopPolicy {
-    /// A policy over a desktop of one workspace with one empty strip, and
-    /// the surface the compositor hosts under its windows. Nothing of it is named: the shell names
+    /// A policy over a desktop of one workspace with one empty strip. Nothing of it is named: the shell names
     /// what nobody named when it shows it, in the language of whoever reads it.
     #[must_use]
-    pub fn new(salt: u16) -> (Self, DesktopSurface) {
+    pub fn new(salt: u16) -> Self {
         let mut minter = IdMinter::new(salt);
         Self::with_tree(seed_tree(&mut minter, "", Vec::new()), salt)
     }
@@ -536,7 +539,7 @@ impl DesktopPolicy {
     /// a kept tree carries no range of its own (it is not written to the
     /// file), so the device whose session builds the shell says which it is.
     #[must_use]
-    pub fn with_tree(tree: Layout, salt: u16) -> (Self, DesktopSurface) {
+    pub fn with_tree(tree: Layout, salt: u16) -> Self {
         let mut tree = tree;
         tree.salt = salt;
         let arriving = Arriving::default();
@@ -549,23 +552,22 @@ impl DesktopPolicy {
         let carried = Carried::default();
         let notes = Notes::default();
         let items = Items::default();
-        let (surface, handle) = DesktopSurface::new(
-            tree,
-            salt,
-            Box::new(Windows {
-                arriving: Rc::clone(&arriving),
-                launches: Rc::clone(&launches),
-                crashed: Rc::clone(&crashed),
-                answers: Rc::clone(&answers),
-                titles: Rc::clone(&titles),
-                names: Rc::clone(&names),
-                held: Rc::clone(&held),
-                carried: Rc::clone(&carried),
-                notes: Rc::clone(&notes),
-                items: Rc::clone(&items),
-            }),
-        );
-        let policy = Self {
+        let tiles = Windows {
+            arriving: Rc::clone(&arriving),
+            launches: Rc::clone(&launches),
+            crashed: Rc::clone(&crashed),
+            answers: Rc::clone(&answers),
+            titles: Rc::clone(&titles),
+            names: Rc::clone(&names),
+            held: Rc::clone(&held),
+            carried: Rc::clone(&carried),
+            notes: Rc::clone(&notes),
+            items: Rc::clone(&items),
+        };
+        let handle = DesktopHandle::new(tree, salt);
+        Self {
+            pass: DesktopPass::new(handle.clone()),
+            tiles,
             handle,
             arriving,
             launches,
@@ -590,8 +592,20 @@ impl DesktopPolicy {
             to_carry: Vec::new(),
             kept: BTreeMap::new(),
             starts_windows: true,
-        };
-        (policy, surface)
+        }
+    }
+
+    /// One pass of the desktop over its tree ([`DesktopPass::step`]): the verbs queued since the
+    /// last, search, the activity the windows are served and the notifications, and the tree saved
+    /// and shared. Whether anything the shell shows changed.
+    pub fn step(&mut self) -> bool {
+        self.pass.step(&mut self.tiles)
+    }
+
+    /// The desktop's pass, to give it the history, the activity requests and the notifications it
+    /// serves.
+    pub fn pass_mut(&mut self) -> &mut DesktopPass {
+        &mut self.pass
     }
 
     /// Tell the policy whether this session starts the windows a launch asks for. A session with no
@@ -2201,7 +2215,7 @@ fn ask_again(
 /// names that app first, and every other launch names the app itself.
 fn launch_app(launch: &str) -> &str {
     if let Some((app, _)) = tilo_desktop_search::launched_record(launch)
-        .or_else(|| tilo_desktop_surface::session::launched_content(launch))
+        .or_else(|| tilo_session_core::desktop::session::launched_content(launch))
     {
         return app;
     }

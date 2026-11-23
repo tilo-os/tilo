@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_compositor::KeyRepeat;
-use tilo_desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
+use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
 use tilo_desktop_model::{
     Layout, Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
@@ -77,7 +77,6 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
     let socket = root.path().join("test-control.sock");
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         test_control: Some(socket.clone()),
         ..Options::default()
@@ -462,7 +461,6 @@ fn a_sentence_typed_through_the_socket_reaches_the_canvas_caret_in_order() {
     let socket = root.path().join("test-control.sock");
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         test_control: Some(socket.clone()),
         ..Options::default()
@@ -543,7 +541,6 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         .to_owned();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         services: apps,
         test_control: Some(socket.clone()),
@@ -1032,7 +1029,6 @@ fn a_pending_question_is_listed_and_answered_through_the_socket() {
     let questions = tilo_service::Questions::new();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         services: vec![Box::new(questions.clone())],
         questions: Some(questions.clone()),

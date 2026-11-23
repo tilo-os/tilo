@@ -25,7 +25,7 @@ use runtime_collab::CollabClient;
 use tilo_actions::ApiError;
 use tilo_actions::remote::RemoteActionTarget;
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_desktop_model::{
     GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
@@ -729,7 +729,7 @@ fn assert_ada_card(labels: &[String]) {
     assert!(
         labels
             .iter()
-            .any(|label| label == &tilo_desktop::profile_card::short_key(&person(0xaa))),
+            .any(|label| label == &tilo_session_core::desktop::profile::short_key(&person(0xaa))),
         "the ID is the person's root key: {labels:?}"
     );
     for (device, presence) in [("Framework 16", "Available"), ("ThinkPad", "Focusing")] {

@@ -15,7 +15,7 @@ fn holds_picture(viewer: &Member, tab: u64) -> bool {
         .session
         .handle()
         .peer_surface_read(tab)
-        .is_some_and(|read| read.state == tilo_desktop_surface::StreamState::Pictured)
+        .is_some_and(|read| read.state == crate::window_share::peer::StreamState::Pictured)
 }
 
 /// The device showing a shared window says it is pictured in the turn its tile takes the picture:

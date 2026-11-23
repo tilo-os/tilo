@@ -39,7 +39,7 @@ fn drive() {
     use std::time::Duration;
 
     use tilo_compositor::OutputConfig;
-    use tilo_desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
+    use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
     use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
     use tilo_session::{Lists, Options, Session};
 

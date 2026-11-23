@@ -21,11 +21,11 @@ use std::time::Instant;
 use settings_store::hardware::ShortcutAction;
 use tilo_compositor::{Compositor, TEXT_MIME, TextField, TextFieldRefusal, TextInsertion};
 
-use tilo_desktop_surface::{DesktopHandle, TypedField, TypedInsertion, TypedRefusal};
 use tilo_dictation::{
     DictationError, DictationLink, DictationService, DictationStatus, Field, FieldRefusal,
     Insertion, Request, SessionId, Target,
 };
+use tilo_session_core::desktop::state::{DesktopHandle, TypedField, TypedInsertion, TypedRefusal};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::dictation::{Answer, DictationState, Failure, Prompt, RecoveryReason, Stage};
 

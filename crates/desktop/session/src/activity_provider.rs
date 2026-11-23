@@ -1,6 +1,6 @@
 //! A workspace's activity, served to the apps this session runs.
 //! The shell serves the activity model to its own windows in process
-//! ([`tilo_desktop_surface::session::activity`]); an app runs in a process of its own and reaches
+//! ([`tilo_session_core::desktop::session::activity`]); an app runs in a process of its own and reaches
 //! the same model through the action broker, under [`wire::PROVIDER`]. Both ask the same API
 //! ([`ActivityRequests`]): this is the broker's end of it. Its reads are live views, re-read
 //! whenever the shell's model has served something new; its writes run on the shell's thread when the
@@ -27,9 +27,9 @@ use tilo_actions::{
     IRREVERSIBLE_TAG, InputSpec, InvocationId, OperationKind, RiskLevel,
 };
 use tilo_broker_core::BrokerActor;
-use tilo_desktop_surface::session::ActivityRequests;
 use tilo_session_core::desktop::activity::{is_read, refused_to_agent};
 use tilo_session_core::desktop::i18n::t;
+use tilo_session_core::desktop::session::ActivityRequests;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// The broker's API to the activity the shell's model serves.

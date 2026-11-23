@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::directory;
 

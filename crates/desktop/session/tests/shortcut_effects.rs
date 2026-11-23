@@ -23,7 +23,7 @@ use tilo_session_core::surface::Scroll;
 /// The platform search the shell opens on its chord.
 const HOST_SEARCH: &str = "tilo.host:search";
 use crate::common::tree::window;
-use tilo_desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
     AppKind, Layout, Strip, StripId, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };

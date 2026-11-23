@@ -74,12 +74,12 @@ enum = "ModelArtifactFormat"
 reason = "signed catalog data read as JSON (`rename_all = snake_case`), so a format is named; the catalog is versioned and re-signed rather than read positionally"
 
 [[break]]
-file = "crates/session/desktop-surface/src/navigation.rs"
+file = "crates/desktop/session-core/src/desktop/navigation.rs"
 enum = "ActivityView"
 reason = "an in-process destination for the activity pane, encoded as a JSON name (`rename_all = kebab-case`); no document or journal keeps it, so a stored value never has to read back"
 
 [[break]]
-file = "crates/session/desktop-surface/src/activity/pane.rs"
+file = "crates/desktop/session-core/src/desktop/activity/pane.rs"
 enum = "ActivityView"
 reason = "the pane's own view select, encoded as a JSON name (`rename_all = kebab-case`); nothing outside the binary keeps it, so a retired view cannot be read back from stored bytes"
 

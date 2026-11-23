@@ -26,7 +26,7 @@ use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use tilo_desktop_surface::surface::window_menu::move_to_workspace_id;
+use tilo_session_core::desktop::state::window_menu::move_to_workspace_id;
 
 use crate::common::window::{Client, KEY_A, WINDOW_BYTES};
 use crate::layout::{Device, tabs, tile_of, until, workspace_of};

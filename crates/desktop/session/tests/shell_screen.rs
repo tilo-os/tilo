@@ -28,6 +28,7 @@ use crate::common::{
     CANVAS, HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_display, on_screen,
     press, press_where, show_preset, until,
 };
+use crate::window_switcher as switcher;
 
 /// What the strips show of a shell holding no window: their own empty state, which no other surface
 /// of the shell shows.
@@ -55,7 +56,6 @@ fn session_at(width: i32, height: i32) -> (Session, Vec<String>) {
         &[OutputConfig::new("HEADLESS-1", width, height)],
         Options {
             person: PERSON.to_owned(),
-            shell: true,
             collab: false,
             services: vec![Box::new(notebook)],
             ..Options::default()
@@ -574,7 +574,6 @@ fn salted_session() -> (Session, Vec<String>) {
     let (notebook, notes) = notebook();
     let session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         salt: 0x8000,
         services: vec![Box::new(notebook)],
@@ -1515,4 +1514,85 @@ fn the_workspace_history_opens_the_systems_history_view() {
             .iter()
             .any(|place| place.shows == "so.tilo.activity")
     });
+}
+
+/// The card under the pointer is chosen on sight, and a press on it goes to that window.
+#[test]
+fn a_card_under_the_pointer_is_chosen_on_sight_and_a_press_goes_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = switcher::session();
+    session
+        .step(Duration::from_millis(300))
+        .expect("the shell settles");
+    switcher::hold_alt_tab(&mut session);
+    assert_eq!(
+        switcher::cards(&switcher::panel(&session).expect("the panel is up")),
+        ["Notes", "Mail", "Budget"]
+    );
+    switcher::move_to_card(&mut session, 2);
+    until(
+        &mut session,
+        "the card under the pointer is chosen on sight",
+        |session| switcher::front(session) == "Budget",
+    );
+    // The card the walk reached may stand elsewhere: the pointer goes to where it stands now before
+    // the press, as the person's would.
+    switcher::move_to_card(&mut session, 2);
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: crate::common::BTN_LEFT,
+            pressed: true,
+        })
+        .expect("the press reaches the session");
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: crate::common::BTN_LEFT,
+            pressed: false,
+        })
+        .expect("the pointer lets go");
+    until(
+        &mut session,
+        "a press on a card goes to that window",
+        |session| switcher::panel(session).is_none() && switcher::front(session) == "Budget",
+    );
+    switcher::key(&mut session, switcher::KEY_LEFTALT, false);
+}
+
+/// A press off the panel is no press on the window behind it: the walk ends where it stood.
+#[test]
+fn a_press_off_the_panel_ends_the_walk_where_it_stood() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = switcher::session();
+    session
+        .step(Duration::from_millis(300))
+        .expect("the shell settles");
+    switcher::hold_alt_tab(&mut session);
+    switcher::move_to_card(&mut session, 1);
+    until(&mut session, "the walk reached another window", |session| {
+        switcher::front(session) == "Mail"
+    });
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 5.0, y: 400.0 })
+        .expect("the pointer moves off the panel");
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: crate::common::BTN_LEFT,
+            pressed: true,
+        })
+        .expect("the press reaches the session");
+    until(
+        &mut session,
+        "a press off the panel takes it down",
+        |session| switcher::panel(session).is_none(),
+    );
+    switcher::key(&mut session, switcher::KEY_LEFTALT, false);
+    assert_eq!(
+        switcher::front(&session),
+        "Notes",
+        "a press outside the panel switches nothing"
+    );
 }

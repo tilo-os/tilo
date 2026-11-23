@@ -61,10 +61,8 @@ ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-cod
 # API answers. When the suite is scheduled they come with it and the check adds
 # nothing.
 SHELL_PACKAGES = (
-    "crates/session/desktop",
     "crates/desktop/desktop-model",
     "crates/desktop/window-placement",
-    "crates/session/desktop-surface",
     "crates/desktop/session-core",
 )
 DESKTOP_CHECK_PACKAGE = "tilo-session"

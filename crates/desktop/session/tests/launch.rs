@@ -26,7 +26,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_action_policy::{ActionKind, Answer, Context};
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
-use tilo_desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SHELL_RESOURCE, WINDOW_KIND};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SHELL_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::Window;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;

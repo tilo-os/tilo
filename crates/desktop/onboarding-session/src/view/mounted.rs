@@ -74,9 +74,7 @@ impl Mounted {
             cx.provide_private();
             cx.lend(state);
         })
-        .and_then(|component| {
-            tilo_desktop::resolver::app_tile(component, None, |_| crate::services::wake())
-        });
+        .and_then(app_tile);
         match mounted {
             Ok(app) => self.app = Some(app),
             Err(error) => {
@@ -469,4 +467,21 @@ fn mount_in_memory(
         ProcessContext::prepare_new_resource(definition, inputs, DocumentId::workspace_default())?;
     lend(&mut context);
     definition.instantiate(context, LaunchTarget::New, RestoreInput::None)
+}
+
+/// `component` as the app setup shows: an App of its own, with the input, focus, palette and
+/// history it has in a window, waking the session when its background work wants a frame. A
+/// private component's actions reach this device's own automation, and nothing beyond it.
+fn app_tile(
+    component: ui::application::AppComponent,
+) -> Result<Box<dyn AppWidget>, ui::launch::LaunchError> {
+    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    let device_local = component.is_private();
+    let app = ui::App::from_component(component, inputs)?;
+    let app = ui::app::EmbeddedApp::new(app, |_| crate::services::wake())?;
+    Ok(Box::new(if device_local {
+        app.with_device_local_actions()
+    } else {
+        app
+    }))
 }

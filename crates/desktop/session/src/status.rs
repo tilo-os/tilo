@@ -2,7 +2,11 @@
 //! the lock screen, the shell): its host reads it ([`crate::platform::readings`]) when it moved, and
 //! a frame only copies what was read.
 
-use tilo_desktop::chrome::{LinkKind, LinkStatus, SystemStatus};
+use tilo_session_core::desktop::host::chrome::LinkKind;
+
+use tilo_session_core::desktop::host::chrome::LinkStatus;
+
+use tilo_session_core::desktop::host::chrome::SystemStatus;
 use tilo_session_core::desktop::now_playing::NowPlaying;
 
 use crate::i18n::{t, t_args};
@@ -34,11 +38,6 @@ impl crate::Shared {
     pub(crate) fn follow_status(&self) {
         let services = self.services.borrow();
         self.readings.borrow_mut().follow(&*services);
-        drop(services);
-        // What plays reaches the shell from the same reading every other surface shows, so the
-        // widget and the panel never disagree and neither reads the players again.
-        let playing = self.readings.borrow().playing();
-        self.music.set(playing);
     }
 }
 
@@ -178,7 +177,7 @@ mod tests {
     use tilo_audio_service::media::Media;
     use tilo_audio_service::sound::{Sound, Use, UseKind};
     use tilo_connectivity_service::model::{Link, LinkKind, Network};
-    use tilo_desktop::chrome::{LinkKind as BarLinkKind, MediaKind};
+    use tilo_session_core::desktop::host::chrome::{LinkKind as BarLinkKind, MediaKind};
     use tilo_power_mgmt::BatteryState;
     use tilo_session_power::Battery;
 
@@ -422,12 +421,6 @@ mod tests {
             assert!(now.can_toggle, "the middle control pauses what plays");
             assert!(now.can_next);
             assert!(!now.can_previous);
-            // The shell's widget holds the same reading, so the song, who plays it and where it stands
-            // are the panel's, not a copy of them. A read advances the playhead, so the panel's one
-            // reading is the one the widget holds.
-            let widget = tilo_desktop::widgets::music::Music::default();
-            widget.set(Some(now.clone()));
-            assert_eq!(widget.get(), Some(now));
             let handover = playing.handover().expect("another device may continue it");
             assert_eq!(handover.title, "Tea");
             assert_eq!(handover.app_id, "so.tilo.music");

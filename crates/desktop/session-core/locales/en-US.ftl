@@ -1016,6 +1016,7 @@ shell-window-closed = { $window } closed
 shell-window-closed-undo = Undo
 desktop-no-strip = There is no strip called { $name } here
 desktop-workspace-gone = That workspace is not here any more
+desktop-verb-names-nothing = That is not on this desktop any more
 desktop-no-workspace-to-leave = There is no workspace to leave
 desktop-no-workspace-to-delete = There is no workspace to delete
 desktop-only-workspace = This is the only workspace here

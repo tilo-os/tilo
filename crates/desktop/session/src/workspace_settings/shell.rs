@@ -9,13 +9,13 @@ use std::cell::{Cell, RefCell};
 
 use collab_types::caps::Effect;
 use tilo_action_policy::{Refusal, Role};
-use tilo_desktop::authority::WorkspaceAuthority as _;
-use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::people::PeopleNames;
-use tilo_desktop::workspace_settings as domain;
+use tilo_session_core::desktop::authority::WorkspaceAuthority as _;
+use tilo_session_core::desktop::host::chrome::ChromeIntent;
+use tilo_session_core::desktop::people::PeopleNames;
+use tilo_session_core::desktop::workspace_settings as domain;
 use tilo_desktop_model::{Layout, UserId, Workspace};
-use tilo_desktop_surface::DesktopHandle;
 use tilo_session_core::desktop::i18n::{t, t_args};
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::FilePickerState;
 use tilo_sheets::workspace_settings as sheet;

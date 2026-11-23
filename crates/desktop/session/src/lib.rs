@@ -1,16 +1,14 @@
 //! The native Tilo session: a thin host, as the web page is one.
 //!
 //! The compositor ([`tilo_compositor`]) shows buffers and routes input. The
-//! session gives it the desktop every host shows
-//! ([`tilo_desktop::desktop_host`]): the shell (backdrop, launchpad, the
-//! strips and window bars of the desktop surface) under the windows, and
-//! the chrome (top bar, strip ribbon and rail, overview, menus) above them;
-//! the window policy of the shell's strips ([`platform::surfaces::desktop`]),
-//! so each window is a tab of a strip; and the desktop's surface apps, each
-//! an ordinary app hosted on a layer of its own: the notification banners,
-//! quick settings, and setup over everything while a person first uses the
-//! device. What the chrome asks of its host comes back as [`DesktopAsk`]s,
-//! carried out by the ask loop in `asks`.
+//! session runs the desktop it owns (`tilo_session_core::desktop`) and the
+//! tilolang shell that draws it (`apps/tl/shell`): the shell's views over the
+//! whole screen, and the window policy that places each window in the well
+//! the shell leaves it ([`platform::surfaces::desktop`]); and the session's
+//! own surfaces, each on a layer of its own: the People panel, the sheets,
+//! and setup over everything while a person first uses the device. What the
+//! desktop asks of its host comes back as [`DesktopAsk`]s, carried out by the
+//! ask loop in `asks`.
 //!
 //! Everything a person can do here is a published action: the shell's and
 //! the chrome's, and each surface app's through its API
@@ -116,8 +114,6 @@ mod audio_output;
 mod automation;
 #[cfg(target_os = "linux")]
 mod background;
-#[cfg(target_os = "linux")]
-mod bars;
 #[cfg(target_os = "linux")]
 mod bluetooth_handoff;
 #[cfg(target_os = "linux")]
@@ -409,7 +405,6 @@ pub mod style_packages;
 pub mod styles;
 #[cfg(target_os = "linux")]
 pub mod surfaces;
-pub mod switcher;
 pub mod sync;
 #[cfg(target_os = "linux")]
 mod system_sounds;

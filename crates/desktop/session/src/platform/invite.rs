@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_actions::remote::session_actions::{INVITE_RESOURCE, ISSUE_INVITATION};
-use tilo_desktop::workspace_settings as domain;
+use tilo_session_core::desktop::workspace_settings as domain;
 use tilo_peer_state::join::Role;
 use tilo_sheets::invite as sheet;
 
@@ -17,7 +17,7 @@ use crate::invite::{Answer, Issued, Refused, Workspace};
 pub(crate) struct InviteWorkspace {
     /// Where a link the device's signer signs is answered once it landed.
     pub(crate) landings: Rc<crate::landing::Landings>,
-    pub(crate) handle: tilo_desktop_surface::DesktopHandle,
+    pub(crate) handle: tilo_session_core::desktop::state::DesktopHandle,
     pub(crate) person: String,
     pub(crate) sync: bool,
     pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,

@@ -32,7 +32,6 @@ fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
-        shell: true,
         ..Options::default()
     }
 }

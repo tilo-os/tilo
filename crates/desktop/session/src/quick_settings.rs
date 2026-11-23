@@ -13,7 +13,11 @@
 
 use std::path::PathBuf;
 
-use tilo_desktop::overlays::{POPOVER_HEIGHT, POPOVER_WIDTH, Part};
+use tilo_session_core::desktop::overlays::POPOVER_HEIGHT;
+
+use tilo_session_core::desktop::overlays::POPOVER_WIDTH;
+
+use tilo_session_core::desktop::overlays::Part;
 use tilo_desktop_search::providers::settings::SETTINGS_APP;
 use tilo_session_core::desktop::navigation::ChromeEffect;
 use tilo_session_core::surface::LayerPose;
@@ -464,7 +468,7 @@ impl crate::Session {
     pub(crate) fn stand_layer(
         &mut self,
         namespace: &str,
-        placement: &tilo_desktop::overlays::Placement,
+        placement: &tilo_session_core::desktop::overlays::Placement,
     ) {
         let room = placement.room;
         self.compositor.place_layer_in(

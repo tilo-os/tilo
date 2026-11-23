@@ -17,7 +17,7 @@ use crate::app_wire::{LayoutAuthority, Sealed};
 use crate::{
     AppSocket, Options, Service, Services, activity, activity_provider, app_wire, surfaces,
 };
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 /// What a service answered, as a caller of the action protocol reads it. Work that answers later
 /// is taken: it goes on, and what it changes lands in the readings.

@@ -19,6 +19,12 @@ tilo-desktop-model = { path = "../desktop-model" }
 # The layout as the surfaces draw it and the person arranges it: the handle the layout changes
 # and the search text typed on the canvas places through.
 tilo-desktop-search = { path = "../desktop-search" }
+# Who is here: an app's name as people read it.
+tilo-app = { path = "../../sdk/tilo-app", default-features = false }
+# The apps a workspace opens a kind of file with, as its policy keeps them.
+desktop-policy = { path = "../default-apps", default-features = false }
+# The model providers an agent's access names.
+agent-provider-config = { path = "../../integrations/provider-config" }
 # The live session's members, as every surface reads them, and the tiles pointers land on.
 collab-types = { version = "0.1.0", path = "../../core/collab-types" }
 # The presence track's schedule and the tiles its pointers land on, as the page's own live session

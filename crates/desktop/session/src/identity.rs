@@ -21,8 +21,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_desktop_surface::{DesktopHandle, HostAction};
 use tilo_files::native::Watched;
+use tilo_session_core::desktop::state::{DesktopHandle, HostAction};
 use ui::local_identity::{LocalIdentity, LocalIdentitySource};
 
 use crate::platform::notice::Notices;

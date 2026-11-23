@@ -1,0 +1,528 @@
+//! Desktop keyboard shortcuts on a live key press: which configured [`ShortcutAction`] it is, on
+//! every host. The native shell and the browser desktop resolve presses through this one table and
+//! key translation, so a chord means the same everywhere and a rebind reaches both.
+
+use std::cell::RefCell;
+use std::collections::BTreeSet;
+use std::rc::Rc;
+
+use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};
+use ui::winit::event::Modifiers;
+use ui::winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
+
+/// The desktop's one shortcut table, shared: what the shell matches a press against, what it shows
+/// beside its rows, and what a person's rebinding changes for both at once.
+pub type Shared = Rc<RefCell<ShortcutConfig>>;
+
+/// Match a persisted shortcut against a live winit key event.
+/// The native compositor uses this for session-owned bindings too. Keeping that path on the same
+/// key-name translation as the shortcut editor avoids claiming a configured named key before a
+/// client sees it and then failing to perform its action.
+pub fn shortcut_chord_matches(logical_key: &Key, modifiers: Modifiers, chord: &KeyChord) -> bool {
+    let state = modifiers.state();
+    let key_matches = shortcut_key_name(logical_key).is_some_and(|key| {
+        chord.key.eq_ignore_ascii_case(&key)
+            || state.shift_key()
+                && unshifted_shortcut_key(&key)
+                    .is_some_and(|base| chord.key.eq_ignore_ascii_case(&base))
+    });
+    key_matches
+        && chord.modifiers.contains("Super") == state.super_key()
+        && chord.modifiers.contains("Ctrl") == state.control_key()
+        && chord.modifiers.contains("Alt") == state.alt_key()
+        && chord.modifiers.contains("Shift") == state.shift_key()
+}
+
+/// Winit reports the logical character produced by Shift, while shortcut configuration stores the
+/// punctuation printed on the key: the mark a US keyboard's key types alone.
+fn unshifted_shortcut_key(key: &str) -> Option<String> {
+    let mut chars = key.chars();
+    let (Some(shifted), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    ui::keycaps::us_unshifted(shifted).map(String::from)
+}
+
+/// The sole configurable shortcut resolver. The input pre-router owns a press exactly when this
+/// returns an action; the dispatcher performs that result.
+pub fn configured_shortcut_action(
+    shortcuts: &ShortcutConfig,
+    logical_key: &Key,
+    modifiers: Modifiers,
+) -> Option<ShortcutAction> {
+    readings(logical_key, modifiers)
+        .find_map(|modifiers| {
+            shortcuts.bindings.iter().find_map(|(action, chord)| {
+                shortcut_chord_matches(logical_key, modifiers, chord).then_some(*action)
+            })
+        })
+        .or_else(|| is_bare_f11(logical_key, modifiers).then_some(ShortcutAction::ToggleFullscreen))
+}
+
+/// The modifiers a press is read with, the likelier first. A mark the person's layout types with
+/// Shift (`/` and `=` are Shift+7 and Shift+0 on a German keyboard) is that mark, as the guide
+/// names it: Shift was the layout's, so Super with the keys that type `/` is Super+/. The press as
+/// it came is read after that, so Shift+/ on a US keyboard, which types `?`, is still Shift+/.
+fn readings(logical_key: &Key, modifiers: Modifiers) -> impl Iterator<Item = Modifiers> {
+    let state = modifiers.state();
+    let typed_mark = matches!(logical_key, Key::Character(text)
+        if text.chars().count() == 1
+            && text.chars().all(|ch| ch.is_ascii_punctuation()));
+    let layouts =
+        (typed_mark && state.shift_key()).then(|| state.difference(ModifiersState::SHIFT).into());
+    layouts.into_iter().chain(std::iter::once(modifiers))
+}
+
+/// The fixed action a live key press asks for, from the fixed table: a chord Settings cannot
+/// rebind, answered before any application and before the person's own bindings. `None` for a chord
+/// the keys answer where they are resolved (the window walk, the workspace steps, the display
+/// sheet) or that nothing dispatches.
+pub fn fixed_shortcut_action(logical_key: &Key, modifiers: Modifiers) -> Option<FixedAction> {
+    readings(logical_key, modifiers).find_map(|modifiers| {
+        let chord = chord_as_pressed(logical_key, modifiers)?;
+        ui::shortcut_table::fixed_action(&chord)
+    })
+}
+
+/// F11 is every desktop's full-screen key; it toggles the same real fullscreen as the configurable
+/// chord, unless the person bound it to something else.
+fn is_bare_f11(logical_key: &Key, modifiers: Modifiers) -> bool {
+    *logical_key == Key::Named(NamedKey::F11) && modifiers.state().is_empty()
+}
+
+fn shortcut_key_name(logical_key: &Key) -> Option<String> {
+    let name = match logical_key {
+        Key::Character(key) if key.as_str() == " " => "space".to_string(),
+        Key::Character(key) if key.chars().count() == 1 => key.to_ascii_lowercase(),
+        Key::Named(named) => match named {
+            NamedKey::ArrowLeft => "left",
+            NamedKey::ArrowRight => "right",
+            NamedKey::ArrowUp => "up",
+            NamedKey::ArrowDown => "down",
+            NamedKey::Tab => "tab",
+            // Bare Escape dismisses what the desktop has open; the fixed table's way out of a
+            // remote session names it with Super.
+            NamedKey::Escape => "escape",
+            NamedKey::Enter => "enter",
+            NamedKey::Space => "space",
+            NamedKey::Home => "home",
+            NamedKey::End => "end",
+            NamedKey::PageUp => "pageup",
+            NamedKey::PageDown => "pagedown",
+            NamedKey::Backspace => "backspace",
+            NamedKey::Delete => "delete",
+            NamedKey::Insert => "insert",
+            NamedKey::PrintScreen => "printscreen",
+            NamedKey::F1 => "f1",
+            NamedKey::F2 => "f2",
+            NamedKey::F3 => "f3",
+            NamedKey::F4 => "f4",
+            NamedKey::F5 => "f5",
+            NamedKey::F6 => "f6",
+            NamedKey::F7 => "f7",
+            NamedKey::F8 => "f8",
+            NamedKey::F9 => "f9",
+            NamedKey::F10 => "f10",
+            NamedKey::F11 => "f11",
+            NamedKey::F12 => "f12",
+            _ => return None,
+        }
+        .to_string(),
+        _ => return None,
+    };
+    Some(name)
+}
+
+/// The chord a press is, read as the desktop's tables read it: a mark the layout typed with Shift
+/// is named without it, so a chord caught on any layout is the one that layout's keys press again.
+pub fn shortcut_chord_from_event(logical_key: &Key, modifiers: Modifiers) -> Option<KeyChord> {
+    let modifiers = readings(logical_key, modifiers).next()?;
+    chord_as_pressed(logical_key, modifiers)
+}
+
+fn chord_as_pressed(logical_key: &Key, modifiers: Modifiers) -> Option<KeyChord> {
+    let key = shortcut_key_name(logical_key)?;
+    let state = modifiers.state();
+    let mut names = BTreeSet::new();
+    if state.super_key() {
+        names.insert("Super".to_string());
+    }
+    if state.control_key() {
+        names.insert("Ctrl".to_string());
+    }
+    if state.alt_key() {
+        names.insert("Alt".to_string());
+    }
+    if state.shift_key() {
+        names.insert("Shift".to_string());
+    }
+    Some(KeyChord {
+        modifiers: names,
+        key,
+    })
+}
+
+/// The shortcut a key press in a browser page asks for, from the same table the native shell reads.
+/// A browser passes Super through only sometimes, so the page also takes a stand-in for it that no
+/// browser or system binds: Alt+Shift, or Ctrl+Option on a Mac (Option+Shift selects by words
+/// there). The stand-in reads as Super; any other modifier held with it stays, so Ctrl with the
+/// stand-in is Ctrl+Super. Because the stand-in's own keys change what a letter or digit types
+/// (Shift+1 types `!` , Option+O `ø` ), those keys are read by their place on the keyboard.
+/// Super+Tab, the overview, is the system's in most browsers, so O stands in for its Tab.
+pub fn page_shortcut_action(
+    shortcuts: &ShortcutConfig,
+    logical_key: &Key,
+    physical_key: PhysicalKey,
+    modifiers: Modifiers,
+    mac: bool,
+) -> Option<ShortcutAction> {
+    let (key, modifiers) = page_chord(logical_key, physical_key, modifiers, mac)?;
+    configured_shortcut_action(shortcuts, &key, modifiers).or_else(|| {
+        (key == Key::Character("o".into()))
+            .then(|| configured_shortcut_action(shortcuts, &Key::Named(NamedKey::Tab), modifiers))
+            .flatten()
+    })
+}
+
+/// The fixed action a key press in a browser page asks for: the chords Settings cannot rebind, read
+/// from the same table the native shell reads. A chord with Super in it reads Super, or the page's
+/// stand-in for it; one with no Super at all — F1, Alt+F4 — is read as the browser reports it.
+/// `None` for a chord the keys answer where they are resolved (the window walk, the workspace
+/// steps) and for the ones no [`FixedAction`] carries.
+pub fn page_fixed_action(
+    logical_key: &Key,
+    physical_key: PhysicalKey,
+    modifiers: Modifiers,
+    mac: bool,
+) -> Option<FixedAction> {
+    match page_chord(logical_key, physical_key, modifiers, mac) {
+        Some((key, modifiers)) => fixed_shortcut_action(&key, modifiers),
+        None => fixed_shortcut_action(logical_key, modifiers),
+    }
+}
+
+/// The fixed action a key press asks for in a page installed as an app window, beyond
+/// [`page_fixed_action`]: the browser hands such a window the keys it keeps for itself in a tab,
+/// and Ctrl+W, Ctrl+T and Ctrl+N close, duplicate and open windows there as in any app. A Mac's Cmd
+/// is Super, which the table answers already.
+pub fn app_window_fixed_action(
+    physical_key: PhysicalKey,
+    modifiers: Modifiers,
+    mac: bool,
+) -> Option<FixedAction> {
+    if mac || modifiers.state() != ModifiersState::CONTROL {
+        return None;
+    }
+    match physical_key {
+        PhysicalKey::Code(ui::winit::keyboard::KeyCode::KeyW) => Some(FixedAction::CloseTab),
+        PhysicalKey::Code(ui::winit::keyboard::KeyCode::KeyT) => Some(FixedAction::DuplicateTab),
+        PhysicalKey::Code(ui::winit::keyboard::KeyCode::KeyN) => Some(FixedAction::NewWindow),
+        _ => None,
+    }
+}
+
+/// The key and modifiers [`page_shortcut_action`] looks up, or `None` when neither Super nor the
+/// stand-in is held.
+pub fn page_chord(
+    logical_key: &Key,
+    physical_key: PhysicalKey,
+    modifiers: Modifiers,
+    mac: bool,
+) -> Option<(Key, Modifiers)> {
+    let mut state = modifiers.state();
+    if state.super_key() {
+        return Some((logical_key.clone(), modifiers));
+    }
+    let stand_in = if mac {
+        ModifiersState::CONTROL | ModifiersState::ALT
+    } else {
+        ModifiersState::ALT | ModifiersState::SHIFT
+    };
+    if !state.contains(stand_in) {
+        return None;
+    }
+    state.remove(stand_in);
+    state.insert(ModifiersState::SUPER);
+    let place = match physical_key {
+        PhysicalKey::Code(code) => {
+            let name = format!("{code:?}");
+            name.strip_prefix("Key")
+                .or_else(|| name.strip_prefix("Digit"))
+                .filter(|place| place.len() == 1)
+                .map(str::to_lowercase)
+        }
+        PhysicalKey::Unidentified(_) => None,
+    };
+    let key = place.map_or_else(|| logical_key.clone(), |place| Key::Character(place.into()));
+    Some((key, state.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::winit::keyboard::{KeyCode, NativeKeyCode};
+
+    fn press(
+        logical: &Key,
+        code: Option<KeyCode>,
+        state: ModifiersState,
+        mac: bool,
+    ) -> Option<ShortcutAction> {
+        let physical = code.map_or(
+            PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+            PhysicalKey::Code,
+        );
+        page_shortcut_action(
+            &ShortcutConfig::default(),
+            logical,
+            physical,
+            state.into(),
+            mac,
+        )
+    }
+
+    fn native(logical: &Key, state: ModifiersState) -> Option<ShortcutAction> {
+        configured_shortcut_action(&ShortcutConfig::default(), logical, state.into())
+    }
+
+    tilo_test_env::scenario! {
+        fn the_page_resolves_and_runs_chords_as_the_native_shell_does;
+
+        phase the_page_resolves_chords_as_the_native_shell_does;
+        // The page and the native shell read one table: Super+Up maximizes and Ctrl+Super+Up goes to
+        // the strip above in both, Super+3 shows the third strip, whether Super itself or the page's
+        // stand-in is held.
+        {
+            let sup = ModifiersState::SUPER;
+            let alt_shift = ModifiersState::ALT | ModifiersState::SHIFT;
+            let ctrl_opt = ModifiersState::CONTROL | ModifiersState::ALT;
+            let up = Key::Named(NamedKey::ArrowUp);
+            let cases = [
+                (up.clone(), Some(KeyCode::ArrowUp), ModifiersState::empty()),
+                (up, Some(KeyCode::ArrowUp), ModifiersState::CONTROL),
+                (
+                    Key::Named(NamedKey::ArrowDown),
+                    Some(KeyCode::ArrowDown),
+                    ModifiersState::empty(),
+                ),
+                (
+                    Key::Named(NamedKey::ArrowLeft),
+                    Some(KeyCode::ArrowLeft),
+                    ModifiersState::empty(),
+                ),
+                (
+                    Key::Named(NamedKey::PageDown),
+                    Some(KeyCode::PageDown),
+                    ModifiersState::empty(),
+                ),
+                (
+                    Key::Character("3".into()),
+                    Some(KeyCode::Digit3),
+                    ModifiersState::empty(),
+                ),
+                (
+                    Key::Character("3".into()),
+                    Some(KeyCode::Digit3),
+                    ModifiersState::CONTROL,
+                ),
+            ];
+            for (key, code, extra) in cases {
+                let want = native(&key, sup | extra);
+                assert!(want.is_some(), "{key:?} with {extra:?} is a native chord");
+                assert_eq!(press(&key, code, sup | extra, false), want, "Super {key:?}");
+                // The stand-in's Shift turns 3 into #, which its place still reads.
+                let shifted = match &key {
+                    Key::Character(_) => Key::Character("#".into()),
+                    other => other.clone(),
+                };
+                assert_eq!(
+                    press(&shifted, code, alt_shift | extra, false),
+                    want,
+                    "Alt+Shift {key:?} with {extra:?}"
+                );
+                if extra.is_empty() {
+                    assert_eq!(
+                        press(&key, code, ctrl_opt, true),
+                        want,
+                        "Ctrl+Option {key:?}"
+                    );
+                }
+            }
+            assert_eq!(
+                native(&Key::Named(NamedKey::ArrowUp), sup),
+                Some(ShortcutAction::MaximizeWindow)
+            );
+            assert_eq!(
+                native(
+                    &Key::Named(NamedKey::ArrowUp),
+                    sup | ModifiersState::CONTROL
+                ),
+                Some(ShortcutAction::PreviousStrip)
+            );
+            assert_eq!(
+                native(&Key::Character("3".into()), sup).and_then(ShortcutAction::focus_strip_index),
+                Some(2)
+            );
+        }
+
+        phase a_mark_the_layout_types_with_shift_is_the_chord_the_guide_names;
+        // A mark the layout types with Shift is the mark the chord names, as the guide shows it: on a
+        // German keyboard Super with the keys that type `/` , `=` and `[` (Shift+7, Shift+0, AltGr+8)
+        // is Super+/ , Super+= and Super+[ . On a US keyboard Shift+/ types `?` and stays Shift+/ .
+        {
+            let sup = ModifiersState::SUPER;
+            let shift = ModifiersState::SHIFT;
+            let mark = |text: &str| Key::Character(text.into());
+            assert_eq!(
+                native(&mark("/"), sup | shift),
+                Some(ShortcutAction::SaySomething)
+            );
+            assert_eq!(
+                native(&mark("="), sup | shift),
+                Some(ShortcutAction::ResizeWider)
+            );
+            assert_eq!(
+                native(&mark("="), sup | shift | ModifiersState::ALT),
+                Some(ShortcutAction::MagnifierZoomIn)
+            );
+            assert_eq!(native(&mark("["), sup), Some(ShortcutAction::AttachTabLeft));
+            assert_eq!(
+                native(&mark("?"), sup | shift),
+                Some(ShortcutAction::ShortcutHelp)
+            );
+            assert_eq!(native(&mark("/"), sup), Some(ShortcutAction::SaySomething));
+            // A letter keeps its Shift: Super+Shift+S is the capture, not the strips.
+            assert_eq!(
+                fixed_shortcut_action(&mark("S"), (sup | shift).into()),
+                Some(FixedAction::CaptureScreenshot)
+            );
+            // A chord caught for a rebinding is the one the same keys press again.
+            assert_eq!(
+                shortcut_chord_from_event(&mark("/"), (sup | shift).into()),
+                KeyChord::parse("Super+/").ok()
+            );
+        }
+
+        phase o_opens_the_overview_and_plain_keys_are_no_chord;
+        // O stands in for Tab, so the overview opens where the browser keeps Super+Tab; without Super
+        // or the stand-in nothing is a chord.
+        {
+            assert_eq!(
+                press(
+                    &Key::Character("\u{f8}".into()),
+                    Some(KeyCode::KeyO),
+                    ModifiersState::CONTROL | ModifiersState::ALT,
+                    true,
+                ),
+                Some(ShortcutAction::WorkspaceOverview)
+            );
+            for state in [
+                ModifiersState::empty(),
+                ModifiersState::ALT,
+                ModifiersState::SHIFT,
+                ModifiersState::CONTROL | ModifiersState::ALT,
+            ] {
+                assert_eq!(
+                    press(
+                        &Key::Named(NamedKey::ArrowUp),
+                        Some(KeyCode::ArrowUp),
+                        state,
+                        false
+                    ),
+                    None,
+                    "{state:?}"
+                );
+            }
+        }
+
+        phase an_app_window_closes_opens_and_duplicates_windows_with_ctrl;
+        // Installed as an app, the page is handed Ctrl+W, Ctrl+T and Ctrl+N; in a tab the browser
+        // keeps them, and a Mac's Cmd is Super already.
+        {
+            let app = |code: KeyCode, state: ModifiersState, mac: bool| {
+                app_window_fixed_action(PhysicalKey::Code(code), state.into(), mac)
+            };
+            assert_eq!(
+                app(KeyCode::KeyW, ModifiersState::CONTROL, false),
+                Some(FixedAction::CloseTab)
+            );
+            assert_eq!(
+                app(KeyCode::KeyT, ModifiersState::CONTROL, false),
+                Some(FixedAction::DuplicateTab)
+            );
+            assert_eq!(
+                app(KeyCode::KeyN, ModifiersState::CONTROL, false),
+                Some(FixedAction::NewWindow)
+            );
+            assert_eq!(
+                app(KeyCode::KeyW, ModifiersState::CONTROL | ModifiersState::SHIFT, false),
+                None,
+                "Ctrl+Shift+W is another chord"
+            );
+            assert_eq!(app(KeyCode::KeyW, ModifiersState::CONTROL, true), None);
+            assert_eq!(app(KeyCode::KeyA, ModifiersState::CONTROL, false), None);
+        }
+
+        phase the_page_runs_the_fixed_chords_as_the_native_shell_does;
+        // The fixed chords Settings cannot rebind resolve on the page from the same table: Super
+        // itself or the page's stand-in for it, and a chord with no Super at all — F1 — as the browser
+        // reports it. A plain key is none of them.
+        {
+            let fixed = |logical: &Key, code: KeyCode, state: ModifiersState| {
+                page_fixed_action(logical, PhysicalKey::Code(code), state.into(), false)
+            };
+            let stand_in = ModifiersState::ALT | ModifiersState::SHIFT;
+            let chord = [
+                ("W", KeyCode::KeyW, FixedAction::CloseTab),
+                ("N", KeyCode::KeyN, FixedAction::NewWindow),
+                ("T", KeyCode::KeyT, FixedAction::DuplicateTab),
+                ("H", KeyCode::KeyH, FixedAction::WorkspaceHistory),
+            ];
+            for (letter, code, want) in chord {
+                // The stand-in's Shift types a capital; its place reads the letter.
+                assert_eq!(
+                    fixed(&Key::Character(letter.into()), code, stand_in),
+                    Some(want),
+                    "Alt+Shift+{letter}"
+                );
+                // Super itself.
+                assert_eq!(
+                    fixed(&Key::Character(letter.into()), code, ModifiersState::SUPER),
+                    Some(want),
+                    "Super+{letter}"
+                );
+                assert_eq!(
+                    fixed(
+                        &Key::Character(letter.to_lowercase().into()),
+                        code,
+                        ModifiersState::empty()
+                    ),
+                    None,
+                    "a bare {letter}"
+                );
+            }
+            // S alone with the stand-in is the strip switcher; with Super passed through, the chord
+            // that also holds Shift is the capture.
+            assert_eq!(
+                fixed(&Key::Character("S".into()), KeyCode::KeyS, stand_in),
+                Some(FixedAction::StripSwitcher)
+            );
+            assert_eq!(
+                fixed(
+                    &Key::Character("S".into()),
+                    KeyCode::KeyS,
+                    ModifiersState::SUPER | ModifiersState::SHIFT
+                ),
+                Some(FixedAction::CaptureScreenshot)
+            );
+            assert_eq!(
+                fixed(
+                    &Key::Named(NamedKey::F1),
+                    KeyCode::F1,
+                    ModifiersState::empty()
+                ),
+                Some(FixedAction::ShortcutGuide)
+            );
+        }
+    }
+}

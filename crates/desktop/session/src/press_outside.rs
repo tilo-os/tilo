@@ -2,7 +2,7 @@
 //! falls outside a surface where the session placed it closes that
 //! surface, and nothing else.
 //!
-//! The stack itself is the desktop's ([`tilo_desktop::overlays::Overlays`]),
+//! The stack itself is the desktop's ([`tilo_session_core::desktop::overlays::Overlays`]),
 //! published as `desktop:overlays` and drawn by the chrome and by the views
 //! that hang over it. What the session adds here is the one decision that
 //! needs the input path's own knowledge — where the press landed — because a
@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
-use tilo_desktop::overlays::Overlays;
+use tilo_session_core::desktop::overlays::Overlays;
 
 /// The session's reader of presses outside the overlays.
 /// It shows nothing and takes nothing: it exists so the compositor's press reaches the stack with

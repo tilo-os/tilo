@@ -11,7 +11,7 @@
   "tl": {
     "id": "so.tilo.shortcuts",
     "native": "shortcuts",
-    "session_args": ["--shell", "screen"]
+    "session_args": []
   },
   "steps": [
     {

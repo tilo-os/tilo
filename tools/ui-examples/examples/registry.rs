@@ -256,7 +256,6 @@ mod tests {
         "form_composition_shots.rs",
         "manual_composition_shots.rs",
         "native_file_picker.rs",
-        "page_view_shots.rs",
         "reading_face_shots.rs",
         "windows_host.rs",
     ];

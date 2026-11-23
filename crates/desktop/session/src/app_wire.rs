@@ -610,7 +610,7 @@ pub fn serve(
 /// The session the broker's thread decides against: the workspaces it shows and
 /// their shortcuts, as the session's loop last published them.
 ///
-/// The session itself belongs to the loop ([`tilo_desktop_surface::DesktopHandle`]
+/// The session itself belongs to the loop ([`tilo_session_core::desktop::state::DesktopHandle`]
 /// hands it out on this thread only), while the broker asks about a workspace
 /// from its own thread. The loop publishes a copy when the session it shows
 /// moved, and the broker reads the copy.
@@ -1774,8 +1774,8 @@ mod tests {
     }
 
     /// The activity's links, which these tests serve nothing on.
-    fn requests() -> tilo_desktop_surface::session::ActivityRequests {
-        tilo_desktop_surface::session::activity_requests(std::sync::Arc::new(
+    fn requests() -> tilo_session_core::desktop::session::ActivityRequests {
+        tilo_session_core::desktop::session::activity_requests(std::sync::Arc::new(
             std::sync::atomic::AtomicBool::new(false),
         ))
     }

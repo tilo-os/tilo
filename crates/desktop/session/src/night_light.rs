@@ -234,7 +234,7 @@ impl Session {
     pub(crate) fn set_night_light(&mut self, on: Option<bool>) -> Result<(), Error> {
         let on = self.night_light.toggle(on);
         self.night_light.follow(&mut self.compositor)?;
-        self.hint(tilo_desktop::osd::OsdKind::NightLight, on);
+        self.hint(tilo_session_core::desktop::osd::OsdKind::NightLight, on);
         Ok(())
     }
 }

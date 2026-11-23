@@ -63,7 +63,6 @@ fn a_change_of_a_workspace_this_device_does_not_hold_wakes_nothing() {
     let changes: Changes = found.changes();
     let mut session = crate::common::headless(Options {
         // No shell and no app: what is under test is the stream the roles follow, not a window.
-        shell: false,
         search: SearchOptions {
             records: Some(found),
             ..SearchOptions::default()

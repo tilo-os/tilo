@@ -350,7 +350,7 @@ fn a_shared_window_reaches_both_members_showing_it() {
         assert_eq!(read.peer, sharer, "the device sharing it");
         assert_eq!(
             read.state,
-            tilo_desktop_surface::StreamState::Pictured,
+            crate::window_share::peer::StreamState::Pictured,
             "the tile reads as a picture of the window"
         );
         let (width, height, bytes) = read.picture.expect("the picture the tile decoded");
@@ -390,7 +390,7 @@ fn a_shared_window_reaches_both_members_showing_it() {
     assert_eq!(
         exposures,
         both.iter()
-            .map(|(peer, can_control)| tilo_desktop::chrome::ActiveExposure {
+            .map(|(peer, can_control)| tilo_session_core::desktop::host::chrome::ActiveExposure {
                 peer: *peer,
                 surface: tab,
                 can_control: *can_control,
@@ -602,7 +602,7 @@ fn a_member_that_stops_showing_a_shared_window_ends_its_own_stream_only() {
     let exposures = three.host.session.shared.window_shares.borrow().exposures();
     assert_eq!(
         exposures,
-        vec![tilo_desktop::chrome::ActiveExposure {
+        vec![tilo_session_core::desktop::host::chrome::ActiveExposure {
             peer: staying,
             surface: tab,
             can_control: false,
@@ -759,7 +759,7 @@ fn the_persons_own_other_device_viewing_a_window_goes_by_its_device_name() {
     let exposures = host.session.shared.window_shares.borrow().exposures();
     assert_eq!(
         exposures,
-        vec![tilo_desktop::chrome::ActiveExposure {
+        vec![tilo_session_core::desktop::host::chrome::ActiveExposure {
             peer: viewer.sync.peer(),
             surface: tab,
             can_control: false,

@@ -4,7 +4,8 @@
 //! from them.
 
 use tilo_action_policy::Role;
-use tilo_desktop::workspace_settings::{self as domain, people::PeopleContent};
+use tilo_session_core::desktop::workspace_settings::self as domain;
+use tilo_session_core::desktop::workspace_settings::people::PeopleContent;
 use tilo_session_core::desktop::i18n::t;
 use tilo_sheets::workspace_settings as sheet;
 

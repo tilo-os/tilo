@@ -13,13 +13,15 @@
 //! pass of the shares, so the tiles are asked once more when the frame is drawn
 //! ([`WindowShares::follow_drawn`]): a turn never ends with the reading and the tile apart.
 
+use super::peer::PeerViews as _;
 use std::time::{Duration, Instant};
 
+use super::peer::StreamState;
 use iroh::EndpointId;
 use tilo_desktop_model::TabId;
-use tilo_desktop_surface::{DesktopHandle, StreamState};
 use tilo_live::live::Track;
 use tilo_live::page::PageObject;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 use super::WindowShares;
 

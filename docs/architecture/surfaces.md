@@ -7,9 +7,9 @@ everything else follows from that description. The host does not ask "which
 overlay is this?" to decide how input reaches it, what it makes inert or what
 assistive technology hears; it reads the surface.
 
-The vocabulary is `crates/session/desktop-surface/src/`
-(`Role`, `Anchor`, `Modality`, `Owner`, `Material`, `Lifecycle`, `Surface`), and
-`ShellLayer::surface` is how a component answers with it.
+The vocabulary is the toolkit's floating surface (`ui::floating_surface`:
+`FloatingRole`, `Material`, `Attachment`, `Handoff`, `FloatingPlacement`), the one
+every app and the shell describe a surface with.
 
 ## Why one model
 
@@ -204,22 +204,16 @@ ground of its own and the desktop shows around it. The power menu, the
 question about a tool's display change, the Super+P display sheet, the
 shortcut guide and "Join a workspace…" are apps.
 
-The workspace overview (Super+Tab) is not a sheet. When the tilolang shell is
-its own screen (`--shell screen`), it is the shell's view
+The workspace overview (Super+Tab) is not a sheet. It is the shell's view
 (`apps/tl/shell/overview.tl`): it reads the shell the session publishes and
 draws every workspace's windows as places on their strips, the shell's bar
-staying above it. The default chrome draws the same overview with
-`tilo_desktop::overview_panel::OverviewPanel` and a `WindowFlight`.
+staying above it.
 
-Either way it pictures other apps' windows, whose buffers belong to other
+It pictures other apps' windows, whose buffers belong to other
 clients, and never copies them: the shell's places hold a `ui.WindowPreview`
-reporting the rect each rests at, the panel names each window and its rect
-through the `WindowFlight`, and the compositor draws every named window from
-what it already holds (a client's latest buffer, a live paint of a window the
-shell draws), flying each from where it stands on its strip to that rect on
-the overview's zoom and back (`overlay_host/window_flight.rs`). The
-compositor keeps the clock and reports it, with where each window stands, so a
-drawing that moves (titles, selection, a panel) moves in step.
+reporting the rect each rests at, and the compositor draws every named window
+from what it already holds (a client's latest buffer, a live paint of a window
+the shell draws) at that rect.
 
 ## Migration
 

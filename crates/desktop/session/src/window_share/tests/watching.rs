@@ -9,7 +9,7 @@ use tilo_webview::{WebViewCommand, WebViewEngine};
 use ui::webview::paint::PaintEngine;
 use ui::webview::paint::stream::wire::Payload;
 
-use tilo_desktop_surface::WorkspaceShare;
+use tilo_session_core::desktop::state::WorkspaceShare;
 
 use super::menu::{STOP_ROW, label_of, menu_of};
 use super::*;

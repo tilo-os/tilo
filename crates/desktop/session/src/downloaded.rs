@@ -57,7 +57,7 @@ fn artwork(icon: Option<&Arc<WindowIcon>>) -> Option<WindowArtwork> {
 /// published as a service of `options` , so the frame after it is mounted finds it by its resource.
 /// A registry that cannot start is said so in the log and the session carries on without one: no
 /// program is offered, and the apps it already has are still the machine's own entries.
-pub fn install(options: &mut Options, policy: &mut crate::background::WindowPlacement) {
+pub fn install(options: &mut Options, policy: &mut crate::platform::surfaces::WellPolicy) {
     let registry = match downloaded::Downloaded::start(Some(options.wake.handle())) {
         Ok(registry) => registry,
         Err(error) => {

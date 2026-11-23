@@ -5,8 +5,7 @@ The KPI is "Frame time p99 at 4K/144 Hz": at most 6.9 ms for a damage-limited
 frame and 16.7 ms for a full repaint. `ui-perf dashboard_perf_bench`
 (`tools/ui-examples`) measures it: a ~250-widget toolkit window driven
 through hover, click and animation events, each redraw drawn into an offscreen
-target. The session's own desktop surface is measured by `session_perf`
-(`crates/session/desktop`), on the frame path both hosts draw with.
+target.
 
 Subcommands:
 

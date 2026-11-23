@@ -660,7 +660,7 @@ fn feed_arguments(query: &impl serde::Serialize) -> serde_json::Map<String, serd
 
 /// What `requests` last read for `invocation` , once it read it.
 fn served<T: serde::de::DeserializeOwned>(
-    requests: &tilo_desktop_surface::session::ActivityRequests,
+    requests: &tilo_session_core::desktop::session::ActivityRequests,
     invocation: &tilo_actions::InvocationId,
 ) -> Option<T> {
     let read = requests.served(invocation)?;

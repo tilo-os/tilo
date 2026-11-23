@@ -38,7 +38,6 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
     let _settled = ui::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         ..Options::default()
     });

@@ -19,8 +19,6 @@ use ui::time::Instant;
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use serde_json::Value;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_desktop_surface::HistorySource;
-use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::activity::describer::{Describer, Job};
 use tilo_session_core::desktop::activity::{
@@ -29,6 +27,8 @@ use tilo_session_core::desktop::activity::{
 };
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::history_log;
+use tilo_session_core::desktop::session::{ActivityRequests, activity_requests};
+use tilo_session_core::desktop::state::HistorySource;
 
 use crate::activity_provider::ActivityWire;
 
@@ -865,7 +865,7 @@ impl HistorySource for Activity {
         hasher.finish()
     }
 
-    fn activity_pane(&self) -> tilo_desktop_surface::ActivityPaneCode {
+    fn activity_pane(&self) -> tilo_session_core::desktop::state::ActivityPaneCode {
         self.0.pane.pane_code()
     }
 
@@ -1258,9 +1258,9 @@ mod tests {
     use tilo_actions::remote::{Caller, InvokeArgument, PendingPoll};
     use tilo_desktop_model::commands::DesktopCommand;
     use tilo_desktop_model::{IdMinter, Tab, TileContent};
-    use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
     use tilo_session_core::desktop::navigation::{ActivityView, ChromeEffect};
     use tilo_session_core::desktop::seed_tree;
+    use tilo_session_core::desktop::state::{DesktopHandle, DesktopPass, TileSource};
     use ui::widget::TileHost;
 
     /// What a test session's tabs say. Nothing the session would start.
@@ -1423,7 +1423,7 @@ mod tests {
 
     /// A session of one workspace with Notes open, its activity served as this session serves it.
     struct Session {
-        surface: DesktopSurface,
+        pass: DesktopPass,
         handle: DesktopHandle,
         activity: Activity,
         workspace: WorkspaceId,
@@ -1452,7 +1452,8 @@ mod tests {
             };
             let tree = seed(&mut minter, notes);
             let workspace = tree.active;
-            let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
+            let handle = DesktopHandle::new(tree, 7);
+            let mut pass = DesktopPass::new(handle.clone());
             let records = Records::default();
             let activity = Activity::new(
                 None,
@@ -1463,10 +1464,10 @@ mod tests {
                 None,
                 Box::new(records.clone()),
             );
-            surface.set_history_source(Box::new(activity.clone()));
-            surface.serve_activity(activity.requests());
+            pass.set_history_source(Box::new(activity.clone()));
+            pass.serve_activity(activity.requests());
             Self {
-                surface,
+                pass,
                 handle,
                 activity,
                 workspace,
@@ -1481,11 +1482,7 @@ mod tests {
             for workspace in &workspaces {
                 self.records.keep(workspace);
             }
-            ui::Widget::update(
-                &mut self.surface,
-                &ui::automerge::AutoCommit::new(),
-                &ui::automerge::ROOT,
-            );
+            self.pass.step(&mut Tiles);
         }
 
         /// The person asks for this workspace's history, and it opens.
@@ -1646,9 +1643,9 @@ mod tests {
             wake: None,
         });
         session
-            .surface
+            .pass
             .set_history_source(Box::new(session.activity.clone()));
-        session.surface.serve_activity(session.activity.requests());
+        session.pass.serve_activity(session.activity.requests());
         session.open_history();
         let invocation = InvocationId::new();
         let InvokeArgument::Json(query) = wire::argument(&wire::SessionsQuery::default()) else {

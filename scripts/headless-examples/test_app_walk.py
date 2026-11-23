@@ -524,10 +524,10 @@ class OpsOnAnotherDevice(unittest.TestCase):
     def test_a_device_starts_with_its_version_s_arguments_then_its_own(self):
         spec = {"devices": [{"name": "laptop", "session_args": ["--output", "B=1280x720"]},
                             "phone"],
-                "rust": {}, "tl": {"session_args": ["--shell", "screen"]}}
+                "rust": {}, "tl": {"session_args": ["--seed-apps"]}}
         self.assertEqual(walk.session_args_of(spec, "tl"),
-                         ["--shell", "screen", "--output", "B=1280x720"])
-        self.assertEqual(walk.session_args_of(spec, "tl", "phone"), ["--shell", "screen"])
+                         ["--seed-apps", "--output", "B=1280x720"])
+        self.assertEqual(walk.session_args_of(spec, "tl", "phone"), ["--seed-apps"])
         self.assertIsNone(walk.session_args_of(spec, "rust", "phone"))
         self.assertEqual(walk.devices_of({"rust": {}}), [{"name": ""}])
 

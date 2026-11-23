@@ -4,7 +4,7 @@
 
 use super::*;
 use serde_json::json;
-use tilo_desktop::verbs::SHELL_RESOURCE;
+use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 
 /// The app that stops answering, and one that keeps working.
 const STUCK: &str = "org.example.Stuck";

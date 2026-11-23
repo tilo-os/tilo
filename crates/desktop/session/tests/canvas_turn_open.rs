@@ -21,7 +21,8 @@ use std::rc::Rc;
 
 use tilo_app_launch::SessionEnvironment;
 use tilo_desktop_policy::Window;
-use tilo_desktop_surface::notifications::BannerAsk;
+use tilo_session_core::desktop::state::banners::BannerAsk;
+use tilo_session_core::desktop::state::banners::Banners as _;
 use tilo_session::Session;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options};
@@ -257,7 +258,6 @@ fn session_with_a_turn() -> (
     let apps = apps_at(&home, launcher.path());
     let mut session = headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         services: seeded_apps(),
         state: Some(state),
@@ -411,7 +411,7 @@ fn an_open_from_the_launcher_leaves_the_turn_and_the_next_ask_stands_its_own() {
 
     session
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "open-app",
             serde_json::json!({ "app": CHAT })
                 .as_object()
@@ -490,7 +490,7 @@ fn an_open_from_the_launcher_leaves_the_turn_and_the_next_ask_stands_its_own() {
     // window the open made: a turn's place is not a window of Chat to take the person to.
     session
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "open-app",
             serde_json::json!({ "app": "chat" })
                 .as_object()

@@ -97,7 +97,7 @@ impl crate::Shared {
             let edit = move |workspace: &mut tilo_desktop_model::Workspace, actor: &String| {
                 let now = tilo_clock::unix_now();
                 grants.iter().try_fold(
-                    tilo_desktop::workspace_settings::PolicyEdit::default(),
+                    tilo_session_core::desktop::workspace_settings::PolicyEdit::default(),
                     |edit, cap| {
                         Ok(edit.and(workspace.grant_sandbox_as_at(actor, cap.clone(), now)?))
                     },

@@ -1,7 +1,7 @@
 //! The emoji card's session half: the caret of the field the person types into, and the emoji they
 //! pick written into that field.
 //! The card itself is the toolkit's ([`ui::widget::EmojiPicker`]), the one every app opens; the
-//! chrome frames it and places it ([`tilo_desktop::emoji`]). It never writes into an application.
+//! chrome frames it and places it ([`tilo_session_core::desktop::emoji`]). It never writes into an application.
 //! The chrome hands what was picked to its [`EmojiLink`], and this module — beside dictation the
 //! one place the session writes text the person did not type — commits each pick through the
 //! compositor's text input, and says where the focused field's caret stands so the card opens
@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use tilo_compositor::Compositor;
-use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
+use tilo_session_core::desktop::emoji::{EmojiLink, EmojiPlace};
 use ui::kurbo::Rect;
 
 /// How long a pick waits for the field it belongs to to take text again: the card takes the

@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use tilo_session_core::desktop::state::banners::Banners as _;
 
 use settings_store::notification_policy::AppNotificationRule;
 use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs, should_play};
@@ -95,7 +96,6 @@ fn rig_at(history: Option<crate::kept::Kept>) -> Rig {
     let bridge = Rc::new(RefCell::new(SessionNotifications::new(
         daemon.clone(),
         desktop.clone(),
-        Link::new(),
         Arc::clone(&policy),
         Rc::clone(&signals),
         Some(power.clone()),
@@ -123,19 +123,13 @@ impl Rig {
         self.bridge.borrow_mut().step(&mut mint);
     }
 
-    /// What the person did on the banners app, as it asks it.
+    /// What the person did on a banner the shell shows, as the session hears it.
     fn ask(&self, ask: Ask) {
         self.bridge.borrow().ask(ask);
     }
 
-    /// What the banners were last handed: the desktop's live banners, once the bridge published
-    /// them.
-    fn feed(&self) -> tilo_desktop_surface::notifications::BannerFeed {
-        assert_eq!(
-            self.bridge.borrow().published,
-            Some(self.desktop.revision()),
-            "the banners have the latest"
-        );
+    /// The banners the shell reads now: the desktop's live banners.
+    fn feed(&self) -> tilo_session_core::desktop::state::banners::BannerFeed {
         self.desktop.feed()
     }
 
@@ -422,7 +416,7 @@ tilo_test_env::scenario! {
 
         // An ask offers its answer and "Not now", under the part of the desktop that asks, and the
         // answer comes back by the notice's tag: how a window's move is answered.
-        let action = tilo_desktop_surface::HostAction {
+        let action = tilo_session_core::desktop::state::HostAction {
             id: "keep-identity".into(),
             title: "Keep with passkey".into(),
             label: None,
@@ -430,7 +424,7 @@ tilo_test_env::scenario! {
             icon: None,
             destructive: false,
             unasked: false,
-            source: Some(tilo_desktop_surface::HostActionSource::Devices),
+            source: Some(tilo_session_core::desktop::state::HostActionSource::Devices),
         };
         let ask = action.ask("Pair “Phone”?", "").tagged("ask");
         role.show(&ask);
@@ -450,7 +444,7 @@ tilo_test_env::scenario! {
 
         role.show(&action.ask("Pair “Phone”?", "").tagged("pairing"));
         rig.step();
-        let key = tilo_desktop_surface::host_action_key("keep-identity");
+        let key = tilo_session_core::desktop::state::host_action_key("keep-identity");
         rig.desktop
             .invoke_action(rig.banner_titled("Pair “Phone”?").id, &key);
         rig.step();
@@ -757,8 +751,7 @@ tilo_test_env::scenario! {
         let next = SessionNotifications::new(
             Notifications::new(),
             reopened,
-            Link::new(),
-            Arc::clone(&rig.policy),
+                Arc::clone(&rig.policy),
             Rc::new(NoticeSignals::default()),
             None,
             kept,
@@ -1679,7 +1672,7 @@ fn a_banner_dismisses_and_opens_through_its_published_actions() {
 fn a_banner_chooses_by_label_and_replies() {
     let (rig, mut served, id) = banner_rig(&[
         ("snooze", "Snooze"),
-        (tilo_notification_banners::INLINE_REPLY, "Reply"),
+        (tilo_session_core::desktop::notifications::INLINE_REPLY, "Reply"),
     ]);
     invoke_banner(
         &mut served,
@@ -1693,7 +1686,7 @@ fn a_banner_chooses_by_label_and_replies() {
         "the label chose the key it names: {taken:?}"
     );
 
-    let (rig, mut served, id) = banner_rig(&[(tilo_notification_banners::INLINE_REPLY, "Reply")]);
+    let (rig, mut served, id) = banner_rig(&[(tilo_session_core::desktop::notifications::INLINE_REPLY, "Reply")]);
     invoke_banner(
         &mut served,
         "reply",

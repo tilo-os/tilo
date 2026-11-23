@@ -5,22 +5,18 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::platform::surfaces::{Placement as SurfacePlacement, WidgetSurface};
 use tilo_action_policy::Role;
-use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
-use tilo_desktop::chrome::{
-    AppTrayIcon, AppTrayItem, AppTrayStatus, ChromeIntent, DesktopChromeSnapshot, OwnChip,
-};
-use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
-use tilo_desktop::launchpad::LaunchpadAction;
-use tilo_desktop::overlays::{Overlays, Part, Target};
-use tilo_desktop::topbar::{Placement, TopBarChrome};
+use tilo_session_core::desktop::host::chrome::{AppTrayIcon, AppTrayItem, AppTrayStatus, ChromeIntent, DesktopChromeSnapshot, OwnChip};
+use tilo_session_core::desktop::host::contract::DesktopAsk;
+use tilo_session_core::desktop::launchpad::LaunchpadAction;
+use tilo_session_core::desktop::overlays::{Overlays, Part, Target};
+use tilo_session_core::desktop::host::chrome::Placement;
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::commands::Requester;
 use tilo_desktop_model::ownership::Authors;
-use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
+use tilo_session_core::desktop::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_session_core::desktop::navigation::ChromeEffect;
+use tilo_session_core::desktop::state::DesktopHandle;
 use ui::floating_layer::Card;
 use ui::live_activity::{Published, Summary};
 use ui::search::Scope;
@@ -366,39 +362,17 @@ pub(crate) struct BarFeeds {
     /// The windows this session shares with its workspaces, which the bar says are being shared
     /// while anyone views one.
     pub(crate) shares: Rc<RefCell<crate::window_share::WindowShares>>,
-    /// Whether each display's bar shows over the window covering it, which the bar reads for itself
-    /// and the chrome follows as the pointer, a key or a finger reaches for it.
-    pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
     /// Settings' Identify as the session read it: each display's number and the name Settings gives
     /// it, which the chrome says on that display for a moment.
-    pub(crate) identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
+    pub(crate) identify: Rc<RefCell<Option<tilo_session_core::desktop::host::chrome::Ask>>>,
     /// Whether the person may invite someone into the workspace in front, as the session's loop
     /// last answered it: the bar offers its invite button on it.
     pub(crate) invitable: Rc<Cell<bool>>,
 }
 
-/// What the chrome hands the session while it runs: the intents and asks its bar raises, over the
-/// feeds that keep the bar current.
-pub(crate) struct ChromeWiring {
-    pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
-    /// The desktop's one shortcut table, shared with the session: what the chrome matches a press
-    /// against and what it shows beside its rows.
-    pub(crate) shortcuts: crate::panels::mount::Shortcuts,
-    pub(crate) feeds: BarFeeds,
-    /// How the person's workspaces stand, as the device's daemon publishes them.
-    pub(crate) view: Option<Arc<crate::workspace_view::WorkspaceView>>,
-    /// What the desktop's control hints read and give back.
-    pub(crate) hints: tilo_desktop::control_hints::HintsFeed,
-    /// The keys a held Super reaches, as the session says them.
-    pub(crate) peek: tilo_desktop::super_peek::SuperPeek,
-    /// The shell's one wallpaper, which its backdrop shows and the overview stands on.
-    pub(crate) wallpaper: ui::backdrop::wallpaper::Source,
-}
-
 /// The bar's view of the session: the desktop's tree, the wall clock, who is here, the machine's
 /// readings and the apps' activities. What the bar shows of them is the shared chrome's
-/// ([`tilo_desktop_surface::host::chrome::HostChrome`]); this answers only where the facts come
+/// ([`tilo_session_core::desktop::host::chrome::HostChrome`]); this answers only where the facts come
 /// from.
 pub(crate) struct SessionChrome {
     pub(crate) handle: DesktopHandle,
@@ -431,7 +405,7 @@ pub(crate) struct SessionChrome {
     /// The windows this session shares, which the bar's sharing chip names.
     shares: Rc<RefCell<crate::window_share::WindowShares>>,
     /// Settings' Identify as the session read it.
-    identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
+    identify: Rc<RefCell<Option<tilo_session_core::desktop::host::chrome::Ask>>>,
     /// Whether the person may invite someone into the workspace in front.
     invitable: Rc<Cell<bool>>,
     /// How the person's workspaces stand, as the device's daemon publishes them: what says
@@ -556,7 +530,7 @@ impl ChromeSource for SessionChrome {
         self.invitable.get()
     }
 
-    fn waved(&self) -> Option<tilo_desktop::chrome::WaveNotice> {
+    fn waved(&self) -> Option<tilo_session_core::desktop::host::chrome::WaveNotice> {
         self.sync.as_ref().and_then(|sync| sync.wave_notice())
     }
 
@@ -790,120 +764,88 @@ pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Ta
     }
 }
 
-/// The chrome above the windows (the top bar, overview, menus) as the session hosts it: its own
-/// tree beside the shell's, covering the outputs.
-pub(crate) fn host(
-    handle: &DesktopHandle,
-    options: &crate::Options,
-    wiring: ChromeWiring,
-    sync: Option<Rc<crate::sync::Client>>,
-    overview: &crate::overview::Overview,
-    emoji: &tilo_desktop::emoji::EmojiLink,
-    overlays: &Overlays,
-    switcher: &tilo_desktop::window_switcher::Switcher,
-) -> WidgetSurface {
-    let ChromeWiring {
-        intents,
-        asks,
-        shortcuts,
-        feeds,
-        view,
-        hints,
-        peek,
-        wallpaper,
-    } = wiring;
-    let reveals = Rc::clone(&feeds.reveals);
-    let tree = handle.read(Clone::clone);
-    // The bar's source hands its intents to the chrome it sits in, and answers the shell's rules
-    // from the same facts.
-    let source = Rc::new(HostChrome::new(Rc::new(SessionChrome::new(
-        handle.clone(),
-        Rc::clone(&intents),
-        options.person.clone(),
-        feeds,
-        !crate::quick_settings::installed(&options.surfaces),
-        sync,
-        options.launches.notes(),
-        view,
-    ))));
-    let bar = TopBarChrome::from_tree(&tree)
-        .with_chrome(source.clone())
-        .with_tilo_mark();
-    let mut chrome = DesktopChrome::new(
-        handle.clone(),
-        crate::GENERATION.into(),
-        source,
-        bar,
-        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
-        false,
-    );
-    chrome.set_wallpaper(wallpaper);
-    chrome.set_intents(intents);
-    chrome.set_asks(asks);
-    // Where a shell covers the shell, the shell's view is the overview and the chrome's stays shut.
-    if !options.shell {
-        chrome.set_overview(overview.flight(), overview.open_flag());
-    }
-    chrome.set_emoji(emoji.clone());
-    chrome.set_overlays(overlays.clone());
-    chrome.set_switcher(switcher.clone());
-    chrome.set_reveals(reveals);
-    chrome.set_shortcuts(shortcuts);
-    chrome.set_hints_feed(hints);
-    chrome.set_super_peek(peek);
-    // Keys come to the chrome while one of the surfaces it draws holds the keyboard: the stack says
-    // which, and it says the window's again as soon as the top surface closes.
-    let shell = handle.clone();
-    let holds = overlays.clone();
-    let keyboard = Rc::new(move || {
-        keyboard_target(&shell, &holds)
-            .part()
-            .is_some_and(Part::is_chrome)
-    });
-    let placement = SurfacePlacement {
-        origin: (0, 0),
-        size: (1, 1),
-        scale: options.scale,
-    };
-    let mut host = WidgetSurface::new(Box::new(chrome), placement, false).named("Top bar");
-    host.set_theme((options.presentation)().theme);
-    // The chrome draws the overview, so the overview's flight asks frames of the chrome alone.
-    overview.drawn_on(host.host().motion_surface());
-    // What the compositor draws over the chrome: the overview's flying windows,
-    // and the ones the switcher's panel shows in its cards.
-    let pictures = overview.clone();
-    let walking = switcher.clone();
-    let host = host
-        .with_window_pictures(Rc::new(move || {
-            let mut shown = pictures.pictures();
-            shown.extend(walking.pictures().into_iter().map(|picture| {
-                let (x, y, width, height) = (
-                    picture.rect.x0,
-                    picture.rect.y0,
-                    picture.rect.width(),
-                    picture.rect.height(),
-                );
-                tilo_session_core::surface::WindowPicture {
-                    window: picture.window,
-                    rect: (x, y, width, height),
-                    opacity: 1.0,
-                    // A picture stays in its well: paging the cards never spills a window over the
-                    // panel's edge.
-                    clip: Some((x, y, width, height)),
-                }
-            }));
-            shown
-        }))
-        .covering_outputs()
-        .with_keyboard(keyboard);
-    // The stack takes a surface down — a press outside it, another one opening — and the widget
-    // drawing it has to take up a pass to close it: nothing else tells a host the chrome stands
-    // over.
-    overlays.wake_with(host.asking());
-    host
-}
-
 impl crate::Shared {
+    /// Carry out what the bar, the launchpad and the session's roles asked of the chrome since the
+    /// last pass: the desktop's own verbs on the desktop, the surfaces the shell draws on the
+    /// shell, and the rest where only the session can. The centre a banner asked for opens too.
+    pub(crate) fn follow_intents(&self) {
+        let intents = std::mem::take(&mut *self.intents.borrow_mut());
+        for intent in intents {
+            self.apply_intent(intent);
+        }
+        if let Some(open) = self.notices.take_centre_ask() {
+            let centre = tilo_session_core::desktop::overlays::Overlay::Centre.name();
+            if open {
+                self.surfaces.open(centre);
+            } else {
+                self.surfaces.close(centre);
+            }
+        }
+    }
+
+    /// Carry out `intent`, as the bar asked it.
+    fn apply_intent(&self, intent: ChromeIntent) {
+        use tilo_session_core::desktop::overlays::Overlay;
+        let refused = |done: Result<(), String>| {
+            if let Err(refusal) = done {
+                self.handle.acknowledge(refusal);
+            }
+        };
+        match intent {
+            ChromeIntent::SwitchWorkspace(delta) => self.handle.step_workspace(delta),
+            ChromeIntent::ShowActivity(_) => {
+                let workspace = self
+                    .handle
+                    .read(|tree| tree.active_workspace().map(|held| held.id().to_string()));
+                if let Some(workspace) = workspace
+                    && let Err(error) = self.handle.dispatch(ChromeEffect::Activity {
+                        workspace,
+                        view: tilo_session_core::desktop::navigation::ActivityView::CatchUp,
+                        author: None,
+                    })
+                {
+                    tracing::warn!(%error, "the workspace's history did not open");
+                }
+            }
+            // The window covering the display shows no bar of its own: a secondary press on the
+            // bar over it opens that window's menu where the person pressed.
+            ChromeIntent::CoveringWindowMenu { at: (x, y) } => {
+                self.handle
+                    .ask_covering_window_menu(ui::kurbo::Point::new(f64::from(x), f64::from(y)));
+            }
+            ChromeIntent::ToggleWorkspaceMenu { .. } => {
+                self.surfaces.toggle(Overlay::Workspaces.name());
+            }
+            ChromeIntent::ToggleOverview => self.surfaces.toggle(Overlay::Overview.name()),
+            ChromeIntent::ToggleNotifications => self.surfaces.toggle(Overlay::Centre.name()),
+            // The strips of the workspace shown, each where it stands: the overview.
+            ChromeIntent::ShowStrips | ChromeIntent::ToggleStrips => {
+                self.surfaces.toggle(Overlay::Overview.name());
+            }
+            ChromeIntent::RenameWorkspace { name } => {
+                let unchanged = self.handle.read(|tree| {
+                    tree.active_workspace()
+                        .is_some_and(|workspace| workspace.name == name.trim())
+                });
+                if !unchanged {
+                    self.handle.ruled_command(
+                        &tilo_desktop_model::commands::DesktopCommand::RenameWorkspace { name },
+                    );
+                }
+            }
+            ChromeIntent::LeaveWorkspace => refused(self.handle.leave_workspace(None)),
+            ChromeIntent::DeleteWorkspace => refused(self.handle.delete_workspace(None, None)),
+            ChromeIntent::DeleteWorkspaceConfirmed => {
+                refused(self.handle.delete_workspace(None, Some(true)));
+            }
+            ChromeIntent::OpenAvatarAsk => self.handle.set_personal_ask_open(true),
+            ChromeIntent::CollapseAvatarAsk => self.handle.set_personal_ask_open(false),
+            ChromeIntent::AnswerAvatarAsk => self.handle.answer_personal_ask(),
+            ChromeIntent::PutOffAvatarAsk => self.handle.put_off_personal_ask(),
+            other => self.bar_ask(other),
+        }
+    }
+
     /// A verb of the empty shell's launchpad, as its card, its host action and its resource action
     /// all ask for it: the app action the verb declares, what only the session can do, and else the
     /// app itself. A verb whose app this device does not have opens nothing: the person is shown

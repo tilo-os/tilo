@@ -33,12 +33,8 @@ rasterises on the CPU, so the nightly records carry `renderer=lavapipe` and are
 compared only with each other. They follow regressions and never support a
 4K/144 Hz claim.
 
-The same group measures the session's own desktop, which is what a person sees:
-`session_perf` (`crates/session/desktop`) times the shared desktop surface on
-the frame path both the native session and the browser host draw with, for the
-`arriving` and `apps` profiles, against `[devices.x86.session.*]` in
-`tools/perf/kpi-budgets.toml`. The group also runs the framework's scaling with
-item counts and a document's keystroke-to-frame latency.
+The group also runs the framework's scaling with item counts and a document's
+keystroke-to-frame latency.
 
 ## Acceptance commands
 

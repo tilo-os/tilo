@@ -65,7 +65,6 @@ fn session(
     .expect("the throwaway identity");
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: true,
         state: Some(home.state().to_path_buf()),
         services: crate::common::seeded_apps(),

@@ -84,7 +84,7 @@ fn assert_pair_stands_in_the_strip([first, last]: [Placed; 2]) {
     );
     // The bar's band, then the step of wallpaper between it and the strip,
     // then the group's own row of tabs: the window's card begins under them.
-    let top = f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX)
+    let top = f64::from(tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX)
         + ui::widget::STRIP_TOP_GAP_PX
         + ui::widget::tabs::TAB_BAR_HEIGHT;
     for (what, rect) in [("the first", first), ("the last", last)] {

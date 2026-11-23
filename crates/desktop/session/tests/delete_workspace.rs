@@ -53,7 +53,9 @@ fn delete_sheet_open(session: &Session) -> bool {
 fn asking_on_a_banner(session: &Session) -> bool {
     let centre = session.notifications();
     let log = centre.log();
-    log.active().iter().any(tilo_desktop_surface::is_host_offer)
+    log.active()
+        .iter()
+        .any(tilo_session_core::desktop::state::is_host_offer)
 }
 
 /// The session keeps the workspace until the person says yes.
@@ -73,7 +75,7 @@ fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
     // question stands instead, and nothing is deleted.
     session
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "delete-workspace",
             &serde_json::Map::new(),
         )
@@ -119,7 +121,7 @@ fn the_persons_yes_deletes_the_workspace() {
 
     session
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "delete-workspace",
             &serde_json::Map::new(),
         )
@@ -164,7 +166,7 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
 
     session
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "workspace-settings",
             &serde_json::Map::new(),
         )

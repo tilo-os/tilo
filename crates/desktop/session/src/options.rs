@@ -12,7 +12,7 @@ use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{AppActions, Launches, SearchOptions, Service, SessionAction, SessionConfig, Vpn};
 use crate::{capture, controllers, desktop_services, engine, portal_link, surfaces, sync, unlock};
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 /// What a session starts with.
 pub struct Options {
@@ -28,12 +28,6 @@ pub struct Options {
     pub person: String,
     /// The theme and fonts surface apps draw with.
     pub presentation: fn() -> ComponentRunnerInputs,
-    /// Whether the tilolang shell package (`apps/tl/shell`) runs: its whole screen under the
-    /// windows, one part per display, each on its own display's rectangle and stepping aside where
-    /// a fullscreen window owns one — its bar, dock and the person's layout as their preset
-    /// shows it, every window in the well its place leaves it. `false` , the default, until the
-    /// desktop's own chrome moves onto it.
-    pub shell: bool,
     /// The controllers in the room, which drive the desktop; without one, a controller does nothing
     /// here.
     pub controllers: Option<controllers::Source>,
@@ -401,7 +395,6 @@ impl Default for Options {
             device: "this-device".into(),
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
-            shell: false,
             sync: None,
             relays: None,
             controllers: None,

@@ -324,20 +324,6 @@ set -e
 [ "$status" = 3 ]
 cmp "$tmp/native-expected" "$native_log"
 
-# No argument names another session: the flag the old shell took is refused
-# before any target starts.
-set +e
-XDG_STATE_HOME="$tmp/refused-state" XDG_RUNTIME_DIR="$runtime_dir" \
-  TILO_SESSION_TEST_LOG="$tmp/refused-log" \
-  "$test_wrapper" --shell --backend drm >/dev/null 2>"$tmp/refused-err"
-status=$?
-set -e
-[ "$status" = 2 ]
-grep -Fqx 'tilo-session: unknown argument: --shell' "$tmp/refused-err"
-[ ! -e "$tmp/refused-log" ]
-[ ! -e "$tmp/refused-state" ]
-[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
-
 # Successful verification starts the desktop, preserves its exit status, and
 # tears down the Tilo target afterward.
 export XDG_STATE_HOME="$tmp/state"

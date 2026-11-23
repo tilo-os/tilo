@@ -2,7 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "tilo-session"
-description = "The native Tilo session: the compositor hosting the desktop every host shows (the shell under the windows, the top bar, overview and menus above them), the window policy of its strips, and the desktop's surface apps."
+description = "The native Tilo session: the compositor hosting the desktop it owns and the tilolang shell that draws it, the window policy that places each window in the shell's wells, and the session's own surfaces."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -75,7 +75,6 @@ tilo-resource = { path = "../../core/tilo-resource" }
 # page reads each record it holds for what its app tells search
 # (`record_index::hosted_entries`).
 tilo-app = { path = "../../sdk/tilo-app" }
-tilo-desktop = { path = "../../session/desktop" }
 # The member's own client of the peer network: the boards of who is here and this
 # device's own word, which this session hosts with its own endpoint.
 tilo-session-client = { path = "../../core/session-client" }
@@ -91,7 +90,6 @@ tilo-identity = { path = "../../core/tilo-identity" }
 tilo-identity-client = { path = "../../core/tilo-identity-client" }
 # The action broker's half every host runs: what a step is taken by, the step service, the route.
 tilo-broker-core = { path = "../../core/broker-core" }
-tilo-desktop-surface = { path = "../../session/desktop-surface" }
 # Settings' pages are every desktop's own, the page's included: its search offers them wherever
 # the session runs.
 tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
@@ -226,8 +224,6 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../desktop-entry" }
 # the magnifier the compositor applies.
 tilo-accessibility-settings = { path = "../tilo-accessibility-settings" }
 tilo-quick-settings = { path = "../../session/quick-settings" }
-tilo-activities = { path = "../../session/activities" }
-tilo-notification-banners = { path = "../../session/notification-banners" }
 tilo-onboarding-session = { path = "../onboarding-session" }
 # What an entry's invitation is verified as before a workspace is joined: only
 # a grant signed for this person's key joins it.
@@ -297,6 +293,8 @@ tilo-clipboard = { path = "../../platform/tilo-clipboard" }
 tilo-frame-metrics = { path = "../frame-metrics" }
 # Each display's colour, as the compositor reads it from the sink.
 tilo-color-pipeline = { path = "../color-pipeline" }
+# Another device's shared window: the decoder that turns the units of its stream into pictures.
+tilo-callstream = { path = "../../engines/tilo-callstream", features = ["surface-decoder"] }
 image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }

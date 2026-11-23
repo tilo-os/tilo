@@ -601,7 +601,7 @@ impl Session {
 
     /// The keys a held Super reaches, as the chrome draws them over the shell.
     #[must_use]
-    pub fn super_peek(&self) -> &tilo_desktop::super_peek::SuperPeek {
+    pub fn super_peek(&self) -> &tilo_session_core::desktop::super_peek::SuperPeek {
         &self.shared.super_peek
     }
 

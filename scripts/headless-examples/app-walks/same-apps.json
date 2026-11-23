@@ -10,7 +10,7 @@
    "tasks"
  ],
  "rust": {},
- "tl": {"session_args": ["--shell", "screen"]},
+ "tl": {"session_args": []},
  "steps": [
   {"id": "tasks-on-laptop", "said": "Open Tasks on the laptop",
    "ops": [{"open": "tasks"}, {"window_of": "tasks"}]},

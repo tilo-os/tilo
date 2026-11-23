@@ -5,7 +5,7 @@
 use super::*;
 
 use tilo_compositor::{InputEvent, OutputChange};
-use tilo_desktop::chrome::TopBarPresence;
+use tilo_session_core::desktop::host::chrome::TopBarPresence;
 use tilo_session::{BarShown, Session};
 
 /// Two displays side by side, the built-in one first: the layout a session with a monitor

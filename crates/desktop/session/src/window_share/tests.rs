@@ -42,7 +42,13 @@ use tilo_actions::ResourceSpec;
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig, Selection};
 
-use tilo_desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE, WINDOW_KIND, tab_resource_id};
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
+
+use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
+
+use tilo_session_core::desktop::verbs::WINDOW_KIND;
+
+use tilo_session_core::desktop::verbs::tab_resource_id;
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
     CanvasPlace, GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
@@ -71,6 +77,7 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
 };
 
 use super::SHARES_RESOURCE;
+use super::peer::{PeerRead, PeerSurfaces, PeerViews as _, StreamState};
 use crate::sync::Cmd;
 use crate::sync::{Client, OwnPresence};
 use crate::{Options, Session};
@@ -1231,7 +1238,7 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
     );
     assert_eq!(
         read.state,
-        tilo_desktop_surface::StreamState::Pictured,
+        StreamState::Pictured,
         "the tile reads as a picture of the window"
     );
     let (width, height, bytes) = read.picture.expect("the picture the tile decoded");
@@ -2865,7 +2872,7 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
         let done = Arc::clone(&done);
         std::thread::spawn(move || {
             let tree = showing(host, APP, TAB);
-            let mut tiles = tilo_desktop_surface::PeerSurfaces::default();
+            let mut tiles = PeerSurfaces::default();
             let peer = neighbour_wire::peer_handle(host.as_bytes());
             let mut captured: BTreeMap<u64, u64> = BTreeMap::new();
             let (mut heard, mut decoded) = (Vec::new(), Vec::new());
@@ -2889,15 +2896,9 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
                     tiles.push(peer, TAB, object.sequence, &object.payload);
                 }
                 tiles.collect_pictures();
-                if let Some(read) = tiles
-                    .read(TAB)
-                    .filter(tilo_desktop_surface::PeerRead::pictured)
+                if let Some(read) = tiles.read(TAB).filter(PeerRead::pictured)
                     && last_seq != Some(read.picture_seq)
                 {
-                    // The shell paints what the tile holds, which lets it take the next picture.
-                    if let Some(tile) = tiles.tile(TAB) {
-                        tile.borrow_mut().mark_drawn();
-                    }
                     last_seq = Some(read.picture_seq);
                     if let Some(at) = captured.get(&read.picture_seq) {
                         decoded.push(wall_us().saturating_sub(*at));

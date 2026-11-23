@@ -6,10 +6,11 @@
 //! the app say to each other, the app speaks on a connection of its own, made as the launcher
 //! makes an app's first window's ([`App`]).
 
+use crate::window_share::peer::PeerViews as _;
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 
-use tilo_desktop_surface::{PeerRead, StreamState};
+use crate::window_share::peer::{PeerRead, StreamState};
 use tilo_live::live::Track;
 use tilo_live::page::PageObject;
 use tilo_webview::test_engine::TestEngine;

@@ -25,7 +25,7 @@ use tilo_actions::ResourceSpec;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::TEXT_MIME;
 use tilo_compositor::{Compositor, InputEvent, KeyRepeat, OutputConfig, Selection};
-use tilo_desktop::verbs::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND, launchpad_card_id};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND, launchpad_card_id};
 use tilo_onboarding::OnboardingEffect;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session, quick_settings};
@@ -237,16 +237,6 @@ fn until<T>(
     answer
 }
 
-/// The control assistive technology names `name` under `node` , by target.
-fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
-    if node.name.as_deref() == Some(name)
-        && let Some(target) = &node.action_target
-    {
-        return Some(target.clone());
-    }
-    node.children.iter().find_map(|child| control(child, name))
-}
-
 fn session() -> Session {
     // Headless tests take no part in the peer network: no endpoint, no workspace.
     crate::common::headless(Options {
@@ -255,11 +245,10 @@ fn session() -> Session {
     })
 }
 
-/// A session whose shell is the tilolang package, drawing the whole screen (`--shell screen`).
+/// A session with no peer network, its shell the tilolang package drawing the whole screen.
 fn shell_session() -> Session {
     crate::common::headless(Options {
         collab: false,
-        shell: true,
         ..Options::default()
     })
 }
@@ -377,7 +366,7 @@ fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
         "the window sits where the strip laid its tab out"
     );
     assert!(
-        f64::from(rect.1) >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX).floor(),
+        f64::from(rect.1) >= f64::from(tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX).floor(),
         "under the top bar: {rect:?}"
     );
 }
@@ -611,7 +600,7 @@ fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
     let mut client = mapped(&mut session, APP);
     let (id, rect) = window(session.compositor(), APP).unwrap();
     assert!(
-        f64::from(rect.1) >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX).floor(),
+        f64::from(rect.1) >= f64::from(tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX).floor(),
         "the window stands under the bar: {rect:?}"
     );
     assert!(
@@ -1407,7 +1396,7 @@ fn the_session_publishes_the_actions_only_it_can_carry_out() {
     let offered: Vec<(
         String,
         String,
-        Option<tilo_desktop_surface::HostActionSource>,
+        Option<tilo_session_core::desktop::state::HostActionSource>,
     )> = own
         .handle()
         .host_actions()
@@ -1423,7 +1412,7 @@ fn the_session_publishes_the_actions_only_it_can_carry_out() {
         assert!(
             offered.iter().any(|(held, called, source)| held == id
                 && called == title
-                && *source == Some(tilo_desktop_surface::HostActionSource::Session)),
+                && *source == Some(tilo_session_core::desktop::state::HostActionSource::Session)),
             "the session offers {id} as {title}: {offered:?}"
         );
     }

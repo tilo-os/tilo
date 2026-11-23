@@ -109,19 +109,23 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     );
 
     // The person closes the banner on its own control: it is kept in the centre, named after the
-    // same app.
-    let dismiss = until(&mut session, &mut client, |session| {
-        session
-            .banners()
-            .shown()
-            .accessibility
-            .as_ref()
-            .and_then(|node| control(node, "Dismiss"))
+    // same app. The shell draws the banner and its way out, and the press runs the banner's own
+    // published `dismiss`.
+    until(&mut session, &mut client, |session| {
+        let shown = session.shell_says("New mail") && session.shell_control("Dismiss").is_some();
+        shown.then_some(())
     })
     .expect("the banner offers a way out");
     session
-        .banners()
-        .command(tilo_notification_banners::Command::Activate(dismiss));
+        .invoke(
+            "session:banners",
+            "dismiss",
+            &serde_json::Map::from_iter([(
+                "banner".to_owned(),
+                serde_json::Value::from(banner.id.to_string()),
+            )]),
+        )
+        .expect("the banner's dismiss");
     pump(&mut session, &mut [&mut client], |session, _| {
         session.notifications().log().active().is_empty()
     });

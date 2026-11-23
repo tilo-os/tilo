@@ -32,9 +32,7 @@ The records, each with its verdict, are appended to the public generic package
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. The groups are `fs`,
 `footprint` (app and OS image sizes), `agent`, `render`, `search` and `server`;
-`tools/ci/perf-scheduled.sh <group>` measures one from your tree. `render` also holds the session's
-own desktop surface to its budgets (`session_perf`, `[devices.<class>.session.*]`), and
-`search` runs the palette search's own measurement test, which fails over its budget and
+`tools/ci/perf-scheduled.sh <group>` measures one from your tree. `search` runs the palette search's own measurement test, which fails over its budget and
 writes no record. `agent` times what an agent's calls cost through the session's agent
 action API; a whole app task is not this job's, because a builder starts no app. A group's numbers are compared with the store without
 writing to it by `python3 tools/perf/compare.py --results <records.jsonl> --store

@@ -32,7 +32,6 @@ ALLOWED = (
     "crates/ui/ui-core/src/widget/toast.rs",
     "crates/ui/ui-core/src/widget/toast_tests.rs",
     "crates/ui/ui-core/tests/toast_test.rs",
-    "crates/session/desktop-surface/",
 )
 
 # What painting the card reads like.

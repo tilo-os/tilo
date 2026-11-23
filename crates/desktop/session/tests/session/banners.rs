@@ -4,7 +4,7 @@
 use super::*;
 
 use super::shell::held_clock;
-use tilo_desktop::notifications::CORNER_INSET;
+use tilo_session_core::desktop::state::banners::CORNER_INSET;
 
 /// The frame the shell shows now, as RGBA pixels.
 fn screen(session: &mut Session) -> image::RgbaImage {
@@ -98,14 +98,20 @@ fn a_raised_notification_shows_a_banner_that_expires() {
         4_000,
     ));
     pump(&mut session, &mut [], |session, _| {
-        !session.banners().shown().stack.is_zero_area()
+        session.shell_text_bounds("Build finished").is_some()
     });
 
     // It is on the screen, in the corner, as wide as a banner and off the
     // display's edge by the margin every transient keeps.
-    let shown = session.banners().shown();
-    let stack = shown.stack;
-    assert_eq!(shown.banners.len(), 1, "the notification is one banner");
+    let (x, y, width, height) = session
+        .shell_text_bounds("Build finished")
+        .expect("the banner stands on the shell");
+    let stack = ui::kurbo::Rect::new(x, y, x + width, y + height);
+    assert_eq!(
+        session.notifications().log().active().len(),
+        1,
+        "the notification is one banner"
+    );
     assert!(
         stack.x1 <= f64::from(WIDTH) - CORNER_INSET + 0.5,
         "the banner keeps the corner margin: {stack:?}"
@@ -115,7 +121,7 @@ fn a_raised_notification_shows_a_banner_that_expires() {
         "the banner is in the top-right corner: {stack:?}"
     );
     assert!(
-        stack.y0 >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX),
+        stack.y0 >= f64::from(tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX),
         "the banner starts under the bar: {stack:?}"
     );
     let raised = screen(&mut session);
@@ -146,12 +152,16 @@ fn a_raised_notification_shows_a_banner_that_expires() {
         ui::time::testing::with_monotonic_time(at, || {
             session.step(Duration::from_millis(1)).expect("step");
         });
-        if session.banners().shown().stack.is_zero_area() {
+        if session.shell_text_bounds("Build finished").is_none() {
             left = true;
             break;
         }
     }
     assert!(left, "the banner leaves when its time is up");
+    // One frame on, so what the screen shows is the shell the banner left.
+    ui::time::testing::with_monotonic_time(at, || {
+        session.step(Duration::from_millis(1)).expect("step");
+    });
     let gone = changed_pixels(&screen(&mut session), &shell, rect);
     assert!(
         gone == 0,

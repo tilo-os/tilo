@@ -124,7 +124,6 @@ fn session() -> Session {
     services.push(Box::new(tilo_settings_service::SettingsService::new()));
     crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         services,
         ..Options::default()
@@ -540,7 +539,7 @@ fn the_shells_window_in_front_is_the_sessions() {
     let other = tab_outside(&session, &first);
     session
         .invoke(
-            &tilo_desktop::verbs::tab_resource_id(other),
+            &tilo_session_core::desktop::verbs::tab_resource_id(other),
             "focus",
             &Map::new(),
         )
@@ -618,4 +617,191 @@ fn tab_outside(session: &Session, front: &str) -> u64 {
         .find(|place| place.strip != front)
         .and_then(|place| place.key.parse().ok())
         .expect("a window outside the one in front")
+}
+
+/// The card the window switcher's walk reached wears the person's own accent at its edge, and the
+/// cards the walk passed do not, in a light theme and a dark one: which window letting go goes to
+/// reads at a glance whatever the person chose. The accent is the person's, set the way Settings
+/// sets it (the appearance section's `field-edit`), and the walk is the shell's published
+/// `walk-switcher`, as Alt+Tab asks it.
+#[test]
+fn the_walked_switcher_card_wears_the_persons_accent_at_its_edge() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session, 200);
+    for app in [NOTES, MAIL, NOTES] {
+        open_window(&mut session, app);
+    }
+    assert!(
+        reached(&mut session, |session| crate::common::windows(session)
+            .len()
+            == 3),
+        "the shell holds three windows: {:?}",
+        crate::common::windows(&session)
+    );
+    set_field(&mut session, "accent", &json!("magenta"));
+    for theme in [Theme::ALL[1], Theme::ALL[0]] {
+        choose_theme(&mut session, theme);
+        let accent = persons_accent(&session);
+        session
+            .invoke(
+                "desktop:overlays",
+                "walk-switcher",
+                json!({ "steps": 1, "scope": "workspace" })
+                    .as_object()
+                    .expect("an object"),
+            )
+            .unwrap_or_else(|error| panic!("the walk starts: {error:?}"));
+        assert!(
+            reached(&mut session, crate::common::switcher_revealed),
+            "the switcher's panel comes up once the walk is held"
+        );
+        step(&mut session, 60);
+        let shot = frame(&mut session);
+        let walked = crate::common::windows(&session);
+        let mut seen = 0;
+        for window in &walked {
+            let card = switcher_card(&session, window)
+                .unwrap_or_else(|| panic!("{} stands in the switcher as a card", window.key));
+            let distance = nearest_on_edge(&shot, card, accent);
+            if window.focused {
+                assert!(
+                    distance <= 24,
+                    "in {} the card the walk reached is edged in the person's accent {accent:?}: \
+                     its nearest edge pixel is {distance} away",
+                    theme.name
+                );
+            } else {
+                assert!(
+                    distance > 60,
+                    "in {} the card {} the walk passed wears no accent: {distance} from \
+                     {accent:?}",
+                    theme.name,
+                    window.key
+                );
+            }
+            seen += usize::from(window.focused);
+        }
+        assert_eq!(seen, 1, "the walk reached one window: {walked:?}");
+        session
+            .invoke("desktop:overlays", "commit-switcher", &Map::new())
+            .unwrap_or_else(|error| panic!("the walk ends: {error:?}"));
+        assert!(
+            reached(&mut session, |session| crate::common::shell_here(session)
+                == "none"),
+            "the panel goes down when the walk is let go"
+        );
+    }
+}
+
+/// The person's accent as the shell draws it: the theme the appearance section the session
+/// publishes resolves to, with the accent the person chose over it.
+fn persons_accent(session: &Session) -> [u8; 3] {
+    let settings =
+        json!({ "appearance": session.read(APPEARANCE).expect("the appearance section") });
+    let accent = ui::theme::Theme::resolved_from_settings(&settings.to_string())
+        .tokens
+        .colors
+        .intent
+        .accent
+        .to_rgba8();
+    [accent.r, accent.g, accent.b]
+}
+
+/// Where the switcher's card for `window` stands, logical `(x0, y0, x1, y1)`: the smallest control
+/// the shell lays out around the window's name in the panel.
+fn switcher_card(session: &Session, window: &tilo_session::windows::Window) -> Option<[f64; 4]> {
+    let name = tilo_desktop_search::names::window_name_of(
+        &window.app_key,
+        &window.origin_app,
+        &window.title,
+    );
+    let named: Vec<_> = session.shell_controls(&name);
+    laid_out(session)
+        .into_iter()
+        .filter(|node| node.role == "Button")
+        .filter_map(|node| node.bounds)
+        .filter(|[x0, y0, x1, y1]| {
+            named.iter().any(|(x, y, w, h)| {
+                *x0 <= *x && *y0 <= *y && x + w <= *x1 && y + h <= *y1 && (x1 - x0) > w + 1.0
+            })
+        })
+        .min_by(|a, b| ((a[2] - a[0]) * (a[3] - a[1])).total_cmp(&((b[2] - b[0]) * (b[3] - b[1]))))
+}
+
+/// How near any pixel on the outline of `card` comes to `to`, summed over the three channels: a
+/// few pixels either side of each of its four edges, at a quarter, a half and three quarters along.
+fn nearest_on_edge(shot: &Screenshot, card: [f64; 4], to: [u8; 3]) -> u32 {
+    let scale = f64::from(shot.width) / f64::from(crate::common::WIDTH);
+    let [x0, y0, x1, y1] = card.map(|value| value * scale);
+    let along = [0.25, 0.5, 0.75];
+    let mut points = Vec::new();
+    for offset in -3..=3 {
+        let offset = f64::from(offset);
+        for share in along {
+            let x = x0 + (x1 - x0) * share;
+            let y = y0 + (y1 - y0) * share;
+            points.extend([
+                (x, y0 + offset),
+                (x, y1 + offset),
+                (x0 + offset, y),
+                (x1 + offset, y),
+            ]);
+        }
+    }
+    points
+        .into_iter()
+        .filter_map(|(x, y)| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a place on the display, rounded to its pixel; a negative one is off it"
+            )]
+            let at = (x.round().max(0.0) as u32, y.round().max(0.0) as u32);
+            shot.pixel(at.0, at.1)
+        })
+        .map(|pixel| {
+            (0..3)
+                .map(|channel| u32::from(pixel[channel].abs_diff(to[channel])))
+                .sum()
+        })
+        .min()
+        .unwrap_or(u32::MAX)
+}
+
+/// A window of `app` in the strip in front, as its tab's id.
+fn open_window(session: &mut Session, app: &str) -> u64 {
+    let handle = session.handle().clone();
+    let mut tree = handle.read(Clone::clone);
+    let tab = handle.mint_id();
+    let group = handle.mint_id();
+    let active = tree.active;
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id() == active)
+        .expect("a workspace is in front");
+    let strip = workspace.strips.first_mut().expect("a strip is in front");
+    strip.window_groups.push(tilo_desktop_model::WindowGroup {
+        id: group,
+        tabs: vec![tilo_desktop_model::Tab {
+            id: tab,
+            title: app.to_owned(),
+            tile: tilo_desktop_model::TileContent::LocalApp {
+                app_id: app.to_owned(),
+                label: app.to_owned(),
+                note: String::new(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        }],
+        active_tab: tab,
+        width: tilo_desktop_model::WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    handle.replace_tree(tree);
+    step(session, 1);
+    tab
 }

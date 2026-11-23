@@ -35,7 +35,6 @@ use crate::common::{
 fn session(root: &std::path::Path) -> Session {
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),

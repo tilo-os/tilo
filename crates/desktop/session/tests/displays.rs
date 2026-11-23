@@ -20,7 +20,7 @@ use std::time::Duration;
 use crate::common::window::{Client, window_of};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
-use tilo_desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SHELL_RESOURCE, WINDOW_KIND};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SHELL_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::WindowWidth;
 use tilo_session::{Options, Session};
 use tilo_sheets::SheetState as _;

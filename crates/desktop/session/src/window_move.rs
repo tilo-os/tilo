@@ -1148,7 +1148,8 @@ mod tests {
     use tilo_compositor::OutputConfig;
     use tilo_desktop_model::{Strip, StripId};
     use tilo_desktop_policy::Window;
-    use tilo_desktop_surface::surface::window_menu::move_to_workspace_id;
+    use tilo_session_core::desktop::state::banners::Banners as _;
+    use tilo_session_core::desktop::state::window_menu::move_to_workspace_id;
     use ui::resource::transfer::retirement;
     use ui::resource::{DocumentCheckout, ResourceOwners, ResourceType};
 

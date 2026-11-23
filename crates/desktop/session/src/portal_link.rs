@@ -21,7 +21,6 @@ use tilo_compositor::{Compositor, InputEvent, ObservedInput, Selection};
 use tilo_session_core::surface::Scroll;
 
 use tilo_desktop_model::layout::TileContent;
-use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_portal::clipboard::Clipboard;
 use tilo_portal::input_capture::{CaptureZone, CapturedInput, InputCaptures};
@@ -31,6 +30,7 @@ use tilo_portal::streams::{
     CaptureSource, CaptureStreams, SourceKind, Stream, StreamRequest, cursor_mode,
 };
 use tilo_service::Wake;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::Launches;
 

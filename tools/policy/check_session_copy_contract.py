@@ -22,12 +22,12 @@ from rust_source import line_number, production_source  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 
 PUBLIC_COPY_FILES = (
-    "crates/session/desktop/src/people.rs",
-    "crates/session/desktop/src/workspace_settings.rs",
-    "crates/session/desktop/src/workspace_settings/people.rs",
-    "crates/session/desktop/src/topbar/sharing.rs",
+    "crates/desktop/session-core/src/desktop/people.rs",
+    "crates/desktop/session-core/src/desktop/workspace_settings.rs",
+    "crates/desktop/session-core/src/desktop/workspace_settings/people.rs",
     "crates/desktop/session/src/device_lists.rs",
     "crates/desktop/session/src/people.rs",
+    "crates/desktop/session/src/people/roster.rs",
     "crates/desktop/session/src/workspace_settings.rs",
     "crates/desktop/sheets/src/workspace_settings/people.rs",
 )

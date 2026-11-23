@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
-use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
+use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_session::platform::indexes::SessionIndexes;

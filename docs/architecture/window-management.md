@@ -429,8 +429,7 @@ building per frame above the static frame, so a 144 Hz panel (6.9 ms per
 frame) keeps its cadence on an integrated GPU. Each transition is measured
 headless with `TILO_FRAME_TRACE`, and its first animated frame must equal the
 last static one: no jump at the start, none at the end. The keyboard rule is
-held by `the_first_frame_after_a_chord_shows_the_final_layout` in
-`crates/session/desktop/tests/navigation.rs`.
+held by the session's shell tests, which read the first frame after a chord.
 
 ## Delivery
 

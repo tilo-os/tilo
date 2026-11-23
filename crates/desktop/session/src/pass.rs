@@ -7,6 +7,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::window_share::peer::PeerViews as _;
 use crate::{Session, quick_settings};
 use tilo_compositor::Compositor;
 
@@ -286,21 +287,12 @@ impl Session {
         // away, before the pass that runs the chord ending them.
         self.shared.follow_super_tap(self.compositor.locked());
         self.settle()?;
-        self.follow_bars();
         self.follow_switcher();
         self.follow_shell()?;
         self.follow_part_views()?;
         // The toolkit's clock, which a capture pins the frame's instant on.
         let now = ui::time::now();
         self.windows.step(&mut self.compositor, now);
-        // The overview's windows fly between the session and the overview: its panel names them, the
-        // session says where each stands, and the compositor draws their own pixels.
-        self.shared.overview.step(
-            &self.shared.handle,
-            &self.shared.desktop,
-            now,
-            self.compositor.frames_presented(),
-        );
         // The session this pass laid out is published before it is drawn: whoever reads the session's
         // state reads the session the frame about to be presented shows, not the one before it.
         self.control
@@ -360,6 +352,9 @@ impl Session {
     /// The windows shared with the workspaces: what the person asked, what the live session brought, and
     /// the frames of the ones on screen.
     fn follow_window_shares(&mut self) {
+        // Pictures the decoder finished since the last pass reach their tabs first, so the shares
+        // read this pass's picture.
+        self.shared.handle.follow_peer_streams();
         let sync = self.shared.sync.clone();
         let displays = &self.displays_service;
         self.shared.window_shares.borrow_mut().step(
@@ -388,34 +383,16 @@ impl Session {
         launch.note_windows_identities(&windows);
     }
 
-    /// What the session's walk reached this pass, handed to the panel that shows it: whether the
-    /// session is locked, and where each of the session's windows stands.
+    /// End a walk the session cannot keep: the session locked, or the walk has no window left to
+    /// reach. The shell shows the walk it reads; a walk shorter than its reveal delay shows nothing.
     fn follow_switcher(&self) {
-        // Each window's size in logical pixels, as the session lays it out: the shape a card of the
-        // panel takes, so the window's picture fills it.
-        let sizes = self
-            .compositor
-            .windows()
-            .into_iter()
-            .filter_map(|(window, (_, _, width, height))| {
-                Some((
-                    window.id,
-                    (u32::try_from(width).ok()?, u32::try_from(height).ok()?),
-                ))
-            })
-            .filter(|(_, (width, height))| *width > 0 && *height > 0)
-            .collect();
         let shared = &self.shared;
-        if crate::switcher::show(
-            &shared.handle,
-            &shared.overlays,
-            &shared.switcher,
-            self.compositor.locked(),
-            &sizes,
-        ) {
-            // The panel stands over the shell's windows: the chrome lays itself out again for what
-            // it now shows, as it does for any surface of the session's going up or down.
-            crate::platform::surfaces::Shell::relayout(&shared.desktop);
+        let walk = &shared.overlays;
+        if self.compositor.locked()
+            || (walk.switcher_up() && crate::windows::switcher_walk_empty(&shared.handle, walk))
+        {
+            walk.forget_walk();
+            walk.hide(tilo_session_core::desktop::overlays::Overlay::Switcher);
         }
     }
 
@@ -546,6 +523,7 @@ impl Session {
             self.automation.next_deadline(),
             self.rotation.next_deadline(),
             self.shared.window_shares.borrow().next_deadline(),
+            self.shared.handle.next_peer_wake(),
             self.portal
                 .as_ref()
                 .and_then(|portal| portal.next_deadline(locked)),
@@ -789,14 +767,10 @@ impl Session {
         // follows every change this pass made, so a workspace the person just came into is theirs
         // there too when their first action in it arrives.
         self.publish_layout();
-        // What the asks opened or closed of the chrome's own surfaces stands in the stack now, and
-        // the clipboard panel a key asked for goes up beside the caret: the session this pass lays out
-        // and publishes names them, not the one after. Under the shell the chrome draws nothing:
-        // the session's search it runs for the launcher is no surface the person sees, and in
-        // the stack it would take the launcher down.
-        if !self.shared.surfaces.shell {
-            self.with_chrome_mut(tilo_desktop::desktop_host::DesktopChrome::publish_overlays);
-        }
+        // What the bar and the session's roles asked of the chrome is carried out, and the
+        // clipboard panel a key asked for goes up beside the caret: the session this pass lays out
+        // and publishes names them, not the one after.
+        self.shared.follow_intents();
         self.follow_pending_paste();
         // Quick settings runs while the stack has its part up, where the stack placed it.
         self.follow_quick_settings();

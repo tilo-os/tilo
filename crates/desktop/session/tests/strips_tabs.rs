@@ -39,7 +39,6 @@ fn session() -> (Session, Vec<String>) {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
             person: PERSON.to_owned(),
-            shell: true,
             collab: false,
             services: vec![Box::new(notebook)],
             ..Options::default()

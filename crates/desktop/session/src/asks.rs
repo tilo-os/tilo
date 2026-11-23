@@ -4,15 +4,11 @@
 //! the chrome leaves to its host, and the tray clicks an application answers.
 
 use tilo_actions::ActionAddress;
-use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::desktop_host::{
-    BRANCH_WORKSPACE, DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE,
-    REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN,
-    WORKSPACE_SETTINGS,
-};
-use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
-use tilo_desktop::overlays::{Anchor, Part};
-use tilo_desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE};
+use tilo_session_core::desktop::host::chrome::ChromeIntent;
+use tilo_session_core::desktop::host::contract::{BRANCH_WORKSPACE, DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS};
+use tilo_session_core::desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
+use tilo_session_core::desktop::overlays::{Anchor, Part};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE};
 use tilo_desktop_model::WorkspaceId;
 use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
@@ -115,12 +111,16 @@ impl Shared {
                 // the same two choices the shell's own cards make, carried out where the compositor
                 // is.
                 DesktopAsk::WaitWindow(tab) => {
-                    self.handle
-                        .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::Wait);
+                    self.handle.liveness_choice(
+                        tab,
+                        tilo_session_core::desktop::state::LivenessChoice::Wait,
+                    );
                 }
                 DesktopAsk::ForceQuitApp(tab) => {
-                    self.handle
-                        .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::ForceQuit);
+                    self.handle.liveness_choice(
+                        tab,
+                        tilo_session_core::desktop::state::LivenessChoice::ForceQuit,
+                    );
                 }
                 DesktopAsk::ReportProblem => self.report_problem(),
                 // Settings at the page a panel or a card names: the shell's own
@@ -137,7 +137,7 @@ impl Shared {
                 DesktopAsk::OpenAgent(client) => {
                     self.invoke_app_action(LaunchpadAppAction::ask_agent(
                         &client,
-                        tilo_desktop::profile_card::AgentAsk::Card,
+                        tilo_session_core::desktop::launchpad::AgentAsk::Card,
                     ));
                 }
             }
@@ -185,7 +185,7 @@ impl Shared {
     /// settings, who is here, the person's own card, an activity's card, an invitation, an
     /// application's tray, and the menu a secondary press on the shell asks the chrome to put at
     /// that place.
-    fn bar_ask(&self, intent: ChromeIntent) {
+    pub(crate) fn bar_ask(&self, intent: ChromeIntent) {
         match intent {
             ChromeIntent::ToggleQuickSettings => {
                 // The press that closed it is still being delivered: the same press does not open
@@ -230,11 +230,11 @@ impl Shared {
             // Another of the person's devices: the ticket it joins with, from Settings' devices
             // page, wherever it was asked for — their own card or Settings' Devices and access.
             ChromeIntent::PairDevice => self.open_add_device(),
-            // A secondary press on the shell asks the chrome for the menu of the
-            // place it pressed: the same menu the bar's workspace name opens,
-            // and the chrome is where it is drawn.
-            intent @ ChromeIntent::ToggleWorkspaceMenu { .. } => {
-                self.intents.borrow_mut().push(intent);
+            // A secondary press on the shell asks for the menu of the workspaces, as the bar's
+            // workspace name opens it.
+            ChromeIntent::ToggleWorkspaceMenu { .. } => {
+                self.surfaces
+                    .toggle(tilo_session_core::desktop::overlays::Overlay::Workspaces.name());
             }
             // A click on an application's tray icon is the application's own to answer.
             ChromeIntent::AppTray { key, request } => self.tray_request(&key, request),
@@ -353,7 +353,7 @@ impl Shared {
     /// Carry out what a person's card asked of the agent session it shows: a session this device
     /// serves is acted on here, where the connection, its workspace and its run are known; any
     /// other through its agent's card in Console.
-    fn agent_ask(&self, who: &str, client: &str, ask: tilo_desktop::profile_card::AgentAsk) {
+    fn agent_ask(&self, who: &str, client: &str, ask: tilo_session_core::desktop::launchpad::AgentAsk) {
         #[cfg(target_os = "linux")]
         if let Some(session) = self.agent_session_of(who) {
             self.agent_session_ask(&session, ask);
@@ -369,9 +369,9 @@ impl Shared {
     fn agent_session_ask(
         &self,
         session: &tilo_action_policy::AgentSessionId,
-        ask: tilo_desktop::profile_card::AgentAsk,
+        ask: tilo_session_core::desktop::launchpad::AgentAsk,
     ) {
-        use tilo_desktop::profile_card::AgentAsk;
+        use tilo_session_core::desktop::launchpad::AgentAsk;
         let Some(working) = self.agent_sessions.working(session) else {
             return;
         };
@@ -473,7 +473,7 @@ impl Shared {
     /// What the pointer asked of Alt+Tab's panel: hovering a card reaches it,
     /// a press on one goes there and closes the walk, and a press away from
     /// the panel leaves the person where they were.
-    fn switcher_ask(&self, ask: tilo_desktop::window_switcher::SwitcherAsk) {
+    fn switcher_ask(&self, ask: tilo_session_core::desktop::host::contract::SwitcherAsk) {
         // The walk is the session shell's, as the keys reach it: the panel's presses ask for the
         // same verbs.
         let walking = self.overlays.switcher_up().then(|| self.overlays.scope());
@@ -488,8 +488,8 @@ impl Shared {
     /// the bar. An item that went away between the click and this ask, or a request the application
     /// refuses, is said so in the log rather than passed over in silence: the person saw their
     /// click do nothing and this is why.
-    fn tray_request(&self, key: &str, request: tilo_desktop::chrome::AppTrayRequest) {
-        use tilo_desktop::chrome::AppTrayRequest;
+    fn tray_request(&self, key: &str, request: tilo_session_core::desktop::host::chrome::AppTrayRequest) {
+        use tilo_session_core::desktop::host::chrome::AppTrayRequest;
         let Some(tray) = &self.tray else {
             tracing::warn!(key, "no tray is served: the click reaches no application");
             return;

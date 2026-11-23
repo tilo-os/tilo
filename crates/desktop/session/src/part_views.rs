@@ -15,8 +15,8 @@ use std::rc::Rc;
 use crate::platform::surfaces::part_view::{Asked, PartView, Spec};
 use serde_json::Value;
 use tilo_compositor::Compositor;
-use tilo_desktop::overlays::{Overlays, Part, Target};
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::overlays::{Overlays, Part, Target};
+use tilo_session_core::desktop::state::DesktopHandle;
 
 /// The tilolang views the session runs for the shell's parts.
 pub(crate) struct PartViews {

@@ -173,7 +173,6 @@ fn session(
     let seeded = crate::common::seeded_apps_in(&store);
     crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         services: seeded,
         questions: Some(Questions::new()),

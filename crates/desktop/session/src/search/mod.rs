@@ -48,7 +48,7 @@ use tilo_desktop_search::providers::waiting::Waiting;
 use tilo_desktop_search::{
     DESKTOP_APP, Held, InvokeTarget, LaunchPlace, SearchPreferences, Source, Target, Usage,
 };
-use tilo_desktop_surface::{SearchHost, SearchHostFeed};
+use tilo_session_core::desktop::state::{SearchHost, SearchHostFeed};
 use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 use ui::search::Scope;
 
@@ -269,7 +269,7 @@ pub fn why_in_words(error: &ApiError) -> String {
 }
 
 /// The session's part in the shell's search, mounted by every host that runs a shell: the sources
-/// only a session has, and the rows a host carries out ([`tilo_desktop_surface::SearchHost`]).
+/// only a session has, and the rows a host carries out ([`tilo_session_core::desktop::state::SearchHost`]).
 pub struct SessionSearch {
     /// The apps this host lists, where it lists any.
     apps_lists: Option<Arc<dyn Apps>>,
@@ -516,8 +516,8 @@ impl SessionSearch {
             let address = &action.address;
             let searching = address
                 .resource
-                .starts_with(tilo_desktop::verbs::SEARCH_RESOURCE);
-            let opening = address.resource == tilo_desktop::verbs::SHELL_RESOURCE
+                .starts_with(tilo_session_core::desktop::verbs::SEARCH_RESOURCE);
+            let opening = address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE
                 && address.action == "search";
             !searching && !opening
         });
@@ -1331,7 +1331,7 @@ impl SessionSearch {
     /// workspace they were asked in, and return each row that could not be carried out with why.
     pub fn perform_choices(
         &self,
-        handle: &tilo_desktop_surface::DesktopHandle,
+        handle: &tilo_session_core::desktop::state::DesktopHandle,
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), ApiError>,
     ) -> Vec<(Target, ApiError)> {
         let workspace = handle.read(|tree| {
@@ -2224,24 +2224,16 @@ mod tests {
                 None,
             ));
             let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
-            let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
-                tree,
-                7,
-                Box::new(RecordWindows(Rc::clone(&opened))),
-            );
+            let handle = tilo_session_core::desktop::state::DesktopHandle::new(tree, 7);
+            let mut pass = tilo_session_core::desktop::state::DesktopPass::new(handle.clone());
+            let mut windows = RecordWindows(Rc::clone(&opened));
             handle.set_viewport_width(1200.0);
             handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
-            let mut frame = ui::headless::FrameHarness::for_root(
-                ui::State::new(),
-                surface,
-                (1200, 800),
-                ui::Theme::dark(),
-            );
 
             handle.open_search(Scope::Workspace, Some("application".into()));
             let started = Instant::now();
             let at = loop {
-                frame.relayout();
+                pass.step(&mut windows);
                 let (_, rows) = handle.search_rows();
                 if let Some(at) = rows.iter().position(|row| row.title == "application.pdf") {
                     break at;
@@ -2254,7 +2246,7 @@ mod tests {
             };
             handle.choose_search_row(at, None);
             for _ in 0..3 {
-                frame.relayout();
+                pass.step(&mut windows);
             }
             assert!(
                 search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
@@ -2349,7 +2341,7 @@ mod tests {
     /// record, as the page does.
     struct RecordWindows(Rc<std::cell::RefCell<Vec<(String, String)>>>);
 
-    impl tilo_desktop_surface::TileSource for RecordWindows {
+    impl tilo_session_core::desktop::state::TileSource for RecordWindows {
         fn tile(
             &mut self,
             _: &tilo_desktop_model::Workspace,

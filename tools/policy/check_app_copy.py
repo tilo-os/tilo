@@ -332,8 +332,7 @@ def copy_readers(root: Path, modules: dict[str, Path], crates: list[Path]) -> li
     """Each crate that resolves copy, with the crate whose catalogue it resolves in.
 
     That is the crates shipping a catalogue, plus a crate that re-exports
-    another's `i18n` and ships none: `crates/session/desktop` reads the
-    desktop surface's.
+    another's `i18n` and ships none.
     """
     directories = {}
     for pattern in ("apps/*", "crates/*/*"):
@@ -352,12 +351,11 @@ def copy_readers(root: Path, modules: dict[str, Path], crates: list[Path]) -> li
 TOOLKIT = "crates/ui/ui-core"
 # Crates whose copy keys also travel through conditionals and tables, by the
 # namespaces their code picks keys in (`None`: every namespace of their own
-# catalogue). Settings picks across its whole catalogue; the desktop surface
+# catalogue). Settings picks across its whole catalogue; the session's desktop
 # picks `activity-` keys in a `match` and in its word builders.
 INDIRECT = {
     "apps/settings": None,
-    "crates/session/desktop": {"activity"},
-    "crates/session/desktop-surface": {"activity"},
+    "crates/desktop/session-core": {"activity"},
 }
 # Catalogues a crate's resolver falls back to after its own: Settings' `t`
 # resolves the shared provider administration copy it embeds

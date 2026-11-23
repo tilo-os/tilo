@@ -4,7 +4,7 @@
 The measurements come from the harnesses that run on a device; the budgets
 here are what a person is owed on that class of device:
 
-- `session_perf` (`crates/session/desktop/examples/session_perf.rs`) — build,
+- `session_perf`, a desktop frame-path measurement — build,
   first frame, a steady frame, a typing frame, idle frames that did work; it
   names its profile (`arriving` for the native session, `apps` for the page,
   `activities` for the floating layer's cards), and a device class keeps one

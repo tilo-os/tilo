@@ -2973,10 +2973,17 @@ impl State {
 }
 
 /// The axis frame a client reads for `scroll`: a wheel's notches go as `axis_value120` (a client
-/// scrolls a line per notch) beside the pixels they stand for, and fingers' pixels as they are.
+/// scrolls a line per notch) beside the pixels they stand for, fingers' pixels as they are, and
+/// the fingers lifting as the stop a client starts its own glide from.
 pub(crate) fn axis_frame(scroll: Scroll, time: u32) -> AxisFrame {
     let (x, y) = scroll.pixels();
     let mut frame = AxisFrame::new(time);
+    if scroll == Scroll::Lifted {
+        return frame
+            .source(AxisSource::Finger)
+            .stop(Axis::Horizontal)
+            .stop(Axis::Vertical);
+    }
     for (axis, pixels) in [(Axis::Horizontal, x), (Axis::Vertical, y)] {
         if pixels != 0.0 {
             frame = frame.value(axis, pixels);
@@ -3026,5 +3033,10 @@ mod tests {
         assert_eq!(fingers.source, None);
         assert_eq!(fingers.v120, None);
         assert_eq!(fingers.axis, (0.0, 4.5));
+
+        let lifted = axis_frame(Scroll::Lifted, 7);
+        assert_eq!(lifted.source, Some(AxisSource::Finger));
+        assert_eq!(lifted.stop, (true, true));
+        assert_eq!(lifted.axis, (0.0, 0.0));
     }
 }

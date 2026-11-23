@@ -528,7 +528,7 @@ else
 fi
 agent_key_args=()
 [[ -n $agent_key ]] && agent_key_args=(--agent-key "$agent_key")
-start_session --shell screen "${agent_key_args[@]}" "${apps[@]}"
+start_session "${agent_key_args[@]}" "${apps[@]}"
 # The MCP server is announced once the session's own sockets are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
 tries=600

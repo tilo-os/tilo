@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tilo_app_launch::Launch;
 use tilo_app_launch::routing;
 use tilo_desktop_search::providers::host_apps::HostAppKind;
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::lists::AppLists;
 use runtime_portal::tools::{AppKind, DocumentApp};

@@ -595,7 +595,7 @@ pub trait Source {
     }
     /// Whether an answer it asked for elsewhere (a host across the wire) is still coming for the
     /// query it was last asked: the search holds "Searching…" for it while nothing else matched,
-    /// and the host looks again ([`crate::palette::ANSWER_POLL`]) until it comes. A source stops
+    /// and the host looks again (about every 50 ms) until it comes. A source stops
     /// saying so once it has waited long enough, so one that never answers holds nothing back.
     fn waiting(&self) -> bool {
         false

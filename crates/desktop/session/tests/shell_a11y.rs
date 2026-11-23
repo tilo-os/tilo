@@ -33,7 +33,6 @@ fn options() -> Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
         collab: false,
-        shell: true,
         ..Options::default()
     }
 }
@@ -331,12 +330,12 @@ fn the_roster_reads_each_person_and_what_they_are_doing() {
         session.shell_control("People").is_some()
     });
     let activity = "Editing the release plan";
-    let here: Vec<tilo_desktop::here::LiveMember> = vec![tilo_desktop::here::LiveMember {
+    let here: Vec<tilo_session_core::desktop::here::LiveMember> = vec![tilo_session_core::desktop::here::LiveMember {
         publisher: "01".repeat(32),
         kind: "person".to_owned(),
         label: "Mia Clayton".to_owned(),
         activity: Some(activity.to_owned()),
-        ..tilo_desktop::here::LiveMember::default()
+        ..tilo_session_core::desktop::here::LiveMember::default()
     }];
     session
         .sync()

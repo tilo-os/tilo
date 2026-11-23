@@ -1,11 +1,9 @@
-//! The desktop under the windows, and the window policy it answers.
+//! The desktop under the windows.
 //!
-//! [`desktop`] makes the pair the compositor runs a session with: a
-//! [`ShellDesktop`] drawing the portable desktop surface (its strips, window
-//! bars and edges) under every window, and a [`StripPolicy`] placing each
-//! window where that surface lays its tab out ([`tilo_desktop_policy`]).
-//! Both share one desktop, so a window opened, focused, closed or panned in
-//! one is where the other shows it.
+//! [`desktop`] makes the [`ShellDesktop`] a session runs the desktop on: the policy that keeps its
+//! windows as tabs of the desktop's strips ([`tilo_desktop_policy`]), the desktop's pass each
+//! frame, and the shell's published side. The tilolang shell's wells place the windows
+//! ([`crate::WellPolicy`]), reading the same desktop.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -22,15 +20,10 @@ use tilo_session_core::surface::{
 };
 
 use tilo_desktop_policy::displays::Output;
-use tilo_desktop_policy::floating::centred;
-use tilo_desktop_policy::{DesktopPolicy, Window};
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
+use tilo_desktop_policy::DesktopPolicy;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::{Placement, WidgetSurface};
-
-/// Where a window not shown waits: left of every output, out of sight and
-/// out of the pointer's reach.
-const OFFSTAGE: i32 = -(1 << 20);
 
 /// What a touchpad gesture the desktop took asks of it, once the gesture
 /// has said what it means: the same steps the desktop's chords take.
@@ -174,6 +167,9 @@ struct Desktop {
     monitors: Vec<(LayoutRect, String)>,
     /// The monitor the person made primary, while it is lit.
     primary: Option<String>,
+    /// The shell's published side, while the session runs the desktop itself rather than a widget
+    /// drawing it ([`ShellDesktop::run_desktop`]): each frame then takes the desktop's own pass.
+    verbs: Option<tilo_session_core::desktop::shell_verbs::ShellVerbs>,
 }
 
 impl Desktop {
@@ -228,44 +224,6 @@ impl Desktop {
             self.surface.relayout();
         }
     }
-
-    /// Where a dialog of `size` floats: centred over its parent, or the
-    /// display the person works on, in the logical layout. `None` while it
-    /// is hidden with its parent.
-    fn floating(&self, window: u64, size: (i32, i32)) -> Option<LayoutPoint> {
-        let (ox, oy) = self.surface.placement().origin;
-        // A card stands exactly where the floating layer put it, and nowhere
-        // while it is suspended.
-        if self.policy.draws_card(window) {
-            let at = self.policy.card_place(window)?;
-            return Some(LayoutPoint::from((
-                ox.saturating_add(round(at.x0)),
-                oy.saturating_add(round(at.y0)),
-            )));
-        }
-        let (_, area) = self
-            .policy
-            .placement()
-            .floating
-            .into_iter()
-            .find(|(id, _)| *id == window)?;
-        let at = centred(area, (f64::from(size.0), f64::from(size.1)));
-        Some(LayoutPoint::from((
-            ox.saturating_add(round(at.x)),
-            oy.saturating_add(round(at.y)),
-        )))
-    }
-
-    /// Where `window`'s content is in the logical layout, as last laid out.
-    fn shown(&self, window: u64) -> Option<LayoutRect> {
-        let origin = self.surface.placement().origin;
-        self.policy
-            .placement()
-            .shown
-            .into_iter()
-            .find(|(id, _)| *id == window)
-            .map(|(_, rect)| layout_rect(rect, origin))
-    }
 }
 
 /// `value` rounded to a whole logical pixel.
@@ -275,12 +233,6 @@ impl Desktop {
 )]
 fn round(value: f64) -> i32 {
     value.round() as i32
-}
-
-/// `rect` of the surface in the logical layout where the desktop's origin is `origin` .
-fn layout_rect(rect: ui::kurbo::Rect, origin: (i32, i32)) -> LayoutRect {
-    let (x, y, width, height) = placed(rect, origin);
-    LayoutRect::new(LayoutPoint::from((x, y)), (width, height).into())
 }
 
 /// `rect` of the surface, as it stands in the logical layout where the desktop's origin is
@@ -326,102 +278,41 @@ pub trait WindowObserver: Send + Sync {
     fn closed(&self, id: u64);
 }
 
-/// The window policy answered by the desktop's strips.
-pub struct StripPolicy {
-    desktop: Rc<RefCell<Desktop>>,
-    /// The windows given a place, so one gone from the compositor closes
-    /// its tab.
-    mapped: Vec<u64>,
-    /// The touchpad gestures the desktop took.
-    gestures: GestureReader,
-    /// Those of them that have not shown a buffer yet: they wait in their
-    /// place, which the compositor does not list among its windows.
-    pending: Vec<u64>,
-    /// Who is told of the windows the desktop gives a place and of the
-    /// ones gone.
-    followers: WindowFollowers,
-    /// Where the pointer and fingers go as well as to the windows: the
-    /// chrome that follows them beyond where it draws.
-    samples: Option<Rc<RefCell<dyn PointerSamples>>>,
-}
-
-/// What the desktop's chrome follows beyond the pixels it draws: the pointer
-/// wherever it goes and fingers on the screen, which reach a hosted surface
-/// only while it is what the pointer is over. The chrome hides parts of
-/// itself and brings them back when the person reaches for them, so it
-/// reads every sample, not only the ones it is the target of.
-pub trait PointerSamples {
-    /// The pointer moved to this point in the logical layout.
-    fn moved(&mut self, x: f64, y: f64);
-    /// A pointer button went down at this point in the logical layout.
-    fn pressed(&mut self, x: f64, y: f64);
-    /// A finger touched down at this point, over anything: whether the
-    /// desktop takes the contact, so nothing under it sees it. A taken
-    /// contact's motion and lift come here too.
-    fn touch(&mut self, touch: TouchSample) -> bool;
-}
-
-/// A desktop of one workspace with one empty strip (`salt` seeds its ids),
-/// drawn at `scale`: the surface under the windows and the policy placing
-/// them. The compositor draws the one and runs with the other.
+/// A desktop of one workspace with one empty strip (`salt` seeds its ids), drawn at `scale`: the
+/// surface under the windows, which the session runs the desktop on and the shell's wells place the
+/// windows from ([`ShellDesktop::well_policy`]).
 #[must_use]
-pub fn desktop(salt: u16, scale: f64) -> (ShellDesktop, StripPolicy) {
-    desktop_with(salt, scale, |surface, _| Box::new(surface))
-}
-
-/// As [`desktop`], with the surface drawn inside the tree `root` makes of
-/// it (the desktop's backdrop and launchpad around the strips), given the
-/// policy's side of the surface.
-#[must_use]
-pub fn desktop_with(
-    salt: u16,
-    scale: f64,
-    root: impl FnOnce(DesktopSurface, &DesktopHandle) -> Box<dyn ui::Widget>,
-) -> (ShellDesktop, StripPolicy) {
-    let (policy, surface) = DesktopPolicy::new(salt);
+pub fn desktop(salt: u16, scale: f64) -> ShellDesktop {
+    let policy = DesktopPolicy::new(salt);
     let handle = policy.handle().clone();
-    let root = root(surface, policy.handle());
     let placement = Placement {
         origin: (0, 0),
         size: (1, 1),
         scale,
     };
-    // What the desktop itself types into (its search, its notification centre)
-    // takes the keys; everything else on it passes them on to the window the
-    // person is in.
+    // What the desktop itself types into takes the keys; everything else on it passes them on to
+    // the window the person is in.
     let waking_handle = handle.clone();
     let keyboard = Rc::new(move || handle.wants_keyboard());
     let desktop = Rc::new(RefCell::new(Desktop {
         policy,
-        surface: WidgetSurface::new(root, placement, true)
+        surface: WidgetSurface::new(Box::new(ui::widget::Stack::new()), placement, true)
             .named(crate::i18n::t("desktop"))
             .with_keyboard(keyboard),
         gestures: Vec::new(),
         gesture_config: Some(GestureConfig::default()),
         monitors: Vec::new(),
         primary: None,
+        verbs: None,
     }));
-    // What another surface commands of the desktop — the chrome's own actions, an
-    // agent's — is queued on its handle and taken up by the desktop's next pass:
-    // the handle asks for it, so a desktop that draws nothing of its own still
-    // keeps its windows where the person put them.
+    // What another surface commands of the desktop — the chrome's own actions, an agent's — is
+    // queued on its handle and taken up by the desktop's next pass: the handle asks for it, so the
+    // desktop keeps its windows where the person put them.
     let asked = desktop.borrow().surface.asking();
     waking_handle.set_wake(std::sync::Arc::new(move || {
         asked.store(true, std::sync::atomic::Ordering::Release);
     }));
-    (
-        ShellDesktop {
-            desktop: Rc::clone(&desktop),
-        },
-        StripPolicy {
-            desktop,
-            mapped: Vec::new(),
-            gestures: GestureReader::default(),
-            pending: Vec::new(),
-            followers: WindowFollowers::default(),
-            samples: None,
-        },
-    )
+    ShellDesktop { desktop }
 }
 
 impl ShellDesktop {
@@ -516,6 +407,23 @@ impl ShellDesktop {
     /// reaches.
     ///
     /// `None` when `address` is not the platform search API.
+    /// Carry out the shell's own verb at `address`, when the session runs the desktop
+    /// ([`Self::run_desktop`]).
+    fn invoke_verb(
+        &self,
+        address: &ui::tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::ApiError>
+    {
+        let desktop = self.desktop.borrow();
+        let Some(verbs) = desktop.verbs.as_ref() else {
+            return Ok(None);
+        };
+        Ok(verbs
+            .invoke(address, arguments)?
+            .map(ui::host_operation::ResourceOperationStart::Completed))
+    }
+
     fn open_platform_search(
         &self,
         address: &ui::tilo_actions::ActionAddress,
@@ -530,6 +438,23 @@ impl ShellDesktop {
         Some(ui::host_operation::ResourceOperationStart::Completed(
             ui::tilo_actions::ActionOutput::default(),
         ))
+    }
+
+    /// Run the desktop here, each frame: its pass over the tree
+    /// ([`DesktopPolicy::step`]) and the shell's published side `verbs`, for a shell that draws
+    /// the screen itself and builds no widget of the desktop.
+    pub fn run_desktop(&self, verbs: tilo_session_core::desktop::shell_verbs::ShellVerbs) {
+        self.desktop.borrow_mut().verbs = Some(verbs);
+    }
+
+    /// The action a row chosen in search runs, for the session's action API to run as the app's
+    /// own control would.
+    pub fn take_unrouted_control(&self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.desktop
+            .borrow_mut()
+            .policy
+            .pass_mut()
+            .take_unrouted_control()
     }
 
     /// Read touchpad gestures by `config` from the next one on; `None`
@@ -634,7 +559,14 @@ impl crate::well_policy::WindowModel for ShellDesktop {
 
 impl crate::Published for ShellDesktop {
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
-        crate::Published::resources(&mut self.desktop.borrow_mut().surface)
+        let mut desktop = self.desktop.borrow_mut();
+        let mut resources = desktop
+            .verbs
+            .as_ref()
+            .map(tilo_session_core::desktop::shell_verbs::ShellVerbs::resources)
+            .unwrap_or_default();
+        resources.extend(crate::Published::resources(&mut desktop.surface));
+        resources
     }
 
     fn revision(&self) -> Option<u64> {
@@ -644,10 +576,13 @@ impl crate::Published for ShellDesktop {
         // tells a frame that moved nothing it publishes from one that did.
         let desktop = self.desktop.borrow();
         let handle = desktop.policy.handle();
+        // The shell's own rows also name the windows that stopped answering.
+        let unresponsive = handle.shared.borrow().unresponsive_revision;
         crate::Published::revision(&desktop.surface).map(|drawn| {
             drawn
                 .wrapping_add(handle.navigation_revision())
                 .wrapping_add(handle.search_revision())
+                .wrapping_add(unresponsive)
         })
     }
 
@@ -661,6 +596,9 @@ impl crate::Published for ShellDesktop {
             return Ok(answered);
         }
         if let Some(answered) = self.open_platform_search(address, arguments) {
+            return Ok(answered);
+        }
+        if let Some(answered) = self.invoke_verb(address, arguments)? {
             return Ok(answered);
         }
         crate::Published::invoke(
@@ -682,6 +620,9 @@ impl crate::Published for ShellDesktop {
             return Ok(answered);
         }
         if let Some(answered) = self.open_platform_search(address, arguments) {
+            return Ok(answered);
+        }
+        if let Some(answered) = self.invoke_verb(address, arguments)? {
             return Ok(answered);
         }
         crate::Published::invoke_as(
@@ -927,6 +868,10 @@ impl ShellSurface for ShellDesktop {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        let stepped = {
+            let mut desktop = self.desktop.borrow_mut();
+            desktop.verbs.is_some() && desktop.policy.step()
+        };
         {
             let mut desktop = self.desktop.borrow_mut();
             // Something outside the desktop's tree asked for a pass — an app
@@ -943,7 +888,7 @@ impl ShellSurface for ShellDesktop {
                 desktop.surface.relayout();
             }
         }
-        self.desktop.borrow_mut().surface.prepare_frame()
+        self.desktop.borrow_mut().surface.prepare_frame() || stepped
     }
 
     fn advance(&mut self) -> bool {
@@ -1042,329 +987,6 @@ impl WindowFollowers {
     }
 }
 
-impl StripPolicy {
-    /// Tell `observer` the process of each window the compositor maps, as the
-    /// desktop gives it a place: the app's API opens to it from then on.
-    pub fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
-        self.followers.set_window_mapped(observer);
-    }
-
-    /// Follow the windows the compositor opens and closes with `observer`:
-    /// how a session learns which programs the person runs.
-    pub fn observe_windows(&mut self, observer: std::sync::Arc<dyn WindowObserver>) {
-        self.followers.observe_windows(observer);
-    }
-
-    /// Send every pointer sample and touch to `samples` too, wherever they
-    /// go: the chrome that keeps out of the way until reached for.
-    pub fn with_samples(&mut self, samples: Rc<RefCell<dyn PointerSamples>>) {
-        self.samples = Some(samples);
-    }
-
-    /// Name apps with `names`, the session's: the installed package's
-    /// localised name, else the machine's desktop entry, else the registry's.
-    /// A tab opens with the name of its app, never with the app's id.
-    pub fn reads_app_names(&mut self, names: Rc<dyn Fn(&str) -> String>) {
-        self.desktop.borrow_mut().policy.reads_app_names(names);
-    }
-
-    /// Give `window` its tab, once, and lay the desktop out so its place
-    /// is known.
-    fn map(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) {
-        {
-            let mut desktop = self.desktop.borrow_mut();
-            desktop.cover(outputs);
-            if self.mapped.contains(&window.id) {
-                return;
-            }
-            let mapped = desktop.policy.map(Window {
-                id: window.id,
-                app_id: window.app_id.clone(),
-                title: window.title.clone(),
-                parent: window.parent,
-                min_size: window.min_size,
-                max_size: window.max_size,
-                pid: window.pid,
-                tag: window.tag.clone(),
-            });
-            if let Err(error) = mapped {
-                tracing::warn!(%error, window = window.id, "the desktop has no strip to open a window in");
-                return;
-            }
-            self.mapped.push(window.id);
-            for missed in desktop.policy.take_missed_holds() {
-                tracing::warn!(
-                    window = missed.window,
-                    held = missed.held,
-                    "the tab held for a window's launch left the layout before the window mapped: it took another"
-                );
-            }
-            desktop.surface.relayout();
-            // A window launched into a workspace not in front goes there once its tab is made.
-            desktop.policy.carry_launched();
-        }
-        self.followers.mapped(window);
-    }
-}
-
-impl WindowPolicy for StripPolicy {
-    /// Focus follows the pointer onto another display: to the window last
-    /// focused there, else to none, so the next window opens there.
-    fn pointer_moved(&mut self, x: f64, y: f64) {
-        if let Some(samples) = &self.samples {
-            samples.borrow_mut().moved(x, y);
-        }
-        let mut desktop = self.desktop.borrow_mut();
-        let (ox, oy) = desktop.surface.placement().origin;
-        let (x, y) = (x - f64::from(ox), y - f64::from(oy));
-        let handle = desktop.policy.handle().clone();
-        let under = handle.read(|tree| {
-            if !tree.is_partitioned() {
-                return None;
-            }
-            tree.outputs
-                .displays
-                .iter()
-                .find(|d| x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height)
-                .map(|d| d.id)
-        });
-        if let Some(display) = under
-            && handle.focused_display() != Some(display)
-            && handle.focus_display(display)
-        {
-            desktop.surface.relayout();
-        }
-    }
-
-    fn pointer_pressed(&mut self, x: f64, y: f64) {
-        if let Some(samples) = &self.samples {
-            samples.borrow_mut().pressed(x, y);
-        }
-    }
-
-    fn touch(&mut self, touch: TouchSample) -> bool {
-        self.samples
-            .as_ref()
-            .is_some_and(|samples| samples.borrow_mut().touch(touch))
-    }
-
-    fn monitors(&mut self, monitors: &[(LayoutRect, String)], primary: Option<&str>) {
-        let mut desktop = self.desktop.borrow_mut();
-        monitors.clone_into(&mut desktop.monitors);
-        desktop.primary = primary.map(str::to_owned);
-    }
-
-    fn overlay(&self, window: &WindowInfo) -> bool {
-        self.desktop.borrow().policy.draws_card(window.id)
-    }
-
-    /// A card's window takes no focus: the person works in the workspace it
-    /// floats over, and the card is a view of the activity, not a place to
-    /// type.
-    fn focus_on_map(&mut self, window: &WindowInfo) -> bool {
-        !self.desktop.borrow().policy.draws_card(window.id)
-    }
-
-    fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)> {
-        self.map(window, outputs);
-        if !self.pending.contains(&window.id) {
-            self.pending.push(window.id);
-        }
-        // A dialog picks its own size, and a card the size its app asked for.
-        if let Some(size) = self.desktop.borrow().policy.card_size(window.id) {
-            return Some(size);
-        }
-        let rect = self.desktop.borrow().shown(window.id)?;
-        Some((rect.size.w, rect.size.h))
-    }
-
-    fn place(
-        &mut self,
-        window: &WindowInfo,
-        size: (i32, i32),
-        outputs: &[LayoutRect],
-    ) -> LayoutPoint {
-        self.map(window, outputs);
-        self.pending.retain(|id| *id != window.id);
-        let desktop = self.desktop.borrow();
-        desktop
-            .shown(window.id)
-            .map(|rect| rect.loc)
-            .or_else(|| desktop.floating(window.id, size))
-            .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0)))
-    }
-
-    fn arrange(
-        &mut self,
-        windows: &[(WindowInfo, LayoutRect)],
-        outputs: &[LayoutRect],
-    ) -> Option<Vec<WindowPlacement>> {
-        // A launched window whose tab came with the last layout goes to its own workspace.
-        self.desktop.borrow_mut().policy.carry_launched();
-        // A window the compositor lists has shown its buffer.
-        self.pending
-            .retain(|id| !windows.iter().any(|(window, _)| window.id == *id));
-        let gone: Vec<u64> = self
-            .mapped
-            .iter()
-            .copied()
-            .filter(|id| {
-                !self.pending.contains(id) && !windows.iter().any(|(window, _)| window.id == *id)
-            })
-            .collect();
-        {
-            let mut desktop = self.desktop.borrow_mut();
-            desktop.cover(outputs);
-            for id in &gone {
-                desktop.policy.unmap(*id);
-            }
-            for (window, _) in windows {
-                if let Some(title) = &window.title {
-                    desktop.policy.retitle(window.id, title);
-                }
-                if let Some(app_id) = &window.app_id {
-                    desktop.policy.set_app_id(window.id, app_id);
-                }
-            }
-            if !gone.is_empty() {
-                desktop.surface.relayout();
-            }
-        }
-        self.mapped.retain(|id| !gone.contains(id));
-        for id in &gone {
-            self.followers.gone(*id);
-        }
-        for (window, _) in windows {
-            self.map(window, outputs);
-        }
-        // A tab is never narrower than the smallest width of a window in it: a fixed-size
-        // window shows whole, and the strip scrolls to it.
-        if self.desktop.borrow_mut().policy.honour_minimum_widths(
-            windows
-                .iter()
-                .map(|(window, _)| (window.id, window.min_size)),
-        ) {
-            self.desktop.borrow_mut().surface.relayout();
-        }
-        let desktop = self.desktop.borrow();
-        let placement = desktop.policy.placement();
-        let origin = desktop.surface.placement().origin;
-        let of = |rects: &[(u64, ui::kurbo::Rect)], window: u64| {
-            rects
-                .iter()
-                .find(|(id, _)| *id == window)
-                .map(|(_, rect)| layout_rect(*rect, origin))
-        };
-        // The desktop decides which window covers its display: one that asked for it and was
-        // given it back (the window's own control, its menu, a key) is told so.
-        let covering = desktop.policy.covering_window();
-        Some(
-            windows
-                .iter()
-                .map(|(window, current)| {
-                    if let Some(rect) = of(&placement.shown, window.id) {
-                        return WindowPlacement {
-                            id: window.id,
-                            location: rect.loc,
-                            size: Some((rect.size.w, rect.size.h)),
-                            clip: of(&placement.clips, window.id),
-                            fullscreen: Some(covering == Some(window.id)),
-                        };
-                    }
-                    let size = (current.size.w, current.size.h);
-                    WindowPlacement {
-                        id: window.id,
-                        location: desktop
-                            .floating(window.id, size)
-                            .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0))),
-                        size: None,
-                        clip: None,
-                        fullscreen: None,
-                    }
-                })
-                .collect(),
-        )
-    }
-
-    fn withdrawn(&mut self, window: &WindowInfo) {
-        self.pending.retain(|id| *id != window.id);
-        self.mapped.retain(|id| *id != window.id);
-        self.followers.gone(window.id);
-        let mut desktop = self.desktop.borrow_mut();
-        desktop.policy.unmap(window.id);
-        desktop.surface.relayout();
-    }
-
-    fn focus_on_click(&mut self, window: &WindowInfo) -> bool {
-        let mut desktop = self.desktop.borrow_mut();
-        // Focus moves on the surface's next pass: run it, so the window's
-        // place and focus are known when the compositor asks.
-        if desktop.policy.focus(window.id) {
-            desktop.surface.relayout();
-        }
-        true
-    }
-
-    fn focused(&mut self) -> Option<u64> {
-        self.desktop.borrow().policy.focused()
-    }
-
-    /// The keyboard waits for the window in front of the person while it has not shown: one the
-    /// shell placed that has drawn nothing yet, or the one a launch is bringing to the place.
-    fn keyboard_awaits_window(&mut self) -> bool {
-        let desktop = self.desktop.borrow();
-        match desktop.policy.focused() {
-            Some(window) => self.pending.contains(&window),
-            None => desktop.policy.awaits_launched_window(),
-        }
-    }
-
-    fn activate(&mut self, window: &WindowInfo, fresh: bool) -> bool {
-        let mut desktop = self.desktop.borrow_mut();
-        if fresh {
-            // What the person just did opened it: bring it forward.
-            if desktop.policy.focus(window.id) {
-                desktop.surface.relayout();
-            }
-        } else if desktop.policy.ask_attention(window.id) {
-            desktop.surface.relayout();
-        }
-        fresh
-    }
-
-    fn gesture(&mut self, gesture: &GestureEvent) -> bool {
-        let config = self.desktop.borrow().gesture_config;
-        let desktop = &self.desktop;
-        self.gestures.take(gesture, config, |asked| {
-            desktop.borrow_mut().gestures.push(asked);
-        })
-    }
-
-    fn take_close_requests(&mut self) -> Vec<u64> {
-        self.desktop.borrow_mut().policy.take_closed()
-    }
-
-    /// A window's own asking. A tab has no free geometry: the strip lays it
-    /// out, so a move or a resize asks for nothing. Covering the display is
-    /// the desktop's either way, the strip filling or the whole display, and
-    /// the compositor is told the desktop took it rather than covering the
-    /// window itself.
-    fn request(&mut self, window: &WindowInfo, request: &WindowRequest) -> bool {
-        let mut desktop = self.desktop.borrow_mut();
-        let answered = match request {
-            WindowRequest::Maximize(on) => desktop.policy.set_maximized(window.id, *on),
-            WindowRequest::Fullscreen { on, .. } => desktop.policy.set_fullscreen(window.id, *on),
-            WindowRequest::Move | WindowRequest::Resize(_) | WindowRequest::Minimize => {
-                return false;
-            }
-        };
-        if answered {
-            desktop.surface.relayout();
-        }
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1423,97 +1045,6 @@ mod tests {
             Reading::Asked(ShellGesture::StripDragEnd { cancelled: false })
         );
     }
-
-    /// The policy is told the process of each window the compositor maps, as
-    /// the desktop gives it a place, so the app behind it opens its later
-    /// windows there. A window without a process, or one already placed, has
-    /// nothing to tell.
-    #[test]
-    fn a_mapped_window_tells_the_policy_its_process() {
-        let (_shell, mut policy) = desktop(1, 1.0);
-        let told = Rc::new(RefCell::new(Vec::new()));
-        let heard = Rc::clone(&told);
-        policy.set_window_mapped(Rc::new(move |pid| heard.borrow_mut().push(pid)));
-
-        policy.map(&window(1, "so.tilo.notes", Some(4242)), &[output()]);
-        assert_eq!(*told.borrow(), vec![4242], "the mapped window's process");
-
-        policy.map(&window(1, "so.tilo.notes", Some(4242)), &[output()]);
-        assert_eq!(*told.borrow(), vec![4242], "a window is placed once");
-
-        policy.map(&window(2, "so.tilo.notes", None), &[output()]);
-        assert_eq!(
-            *told.borrow(),
-            vec![4242],
-            "a window without a process has none to tell"
-        );
-    }
-
-    /// A window's app describes the controls of its own content, and nothing
-    /// else on the desktop changes. The desktop takes them up in the frame that
-    /// follows: what a person can reach does not wait for the next thing that
-    /// happens to draw.
-    #[test]
-    fn a_windows_declared_controls_are_taken_up_in_the_next_frame() {
-        use ui::window_targets::{TargetAction, WindowTarget};
-
-        // The window's arrival settles at once rather than over frames that now take no time:
-        // the frames below draw on other threads and the loop's turns no longer wait for them.
-        let _settled = ui::motion::testing::settled();
-        let (mut desktop, mut policy) = desktop(7, 1.0);
-        ShellSurface::outputs_changed(
-            &mut desktop,
-            &[tilo_session_core::surface::SurfaceOutput {
-                rect: (0, 0, 1280, 800),
-                scale: 1.0,
-            }],
-        );
-        policy.map(&window(1, "so.tilo.file-explorer", Some(4242)), &[output()]);
-        for _ in 0..8 {
-            ShellSurface::prepare_frame(&mut desktop);
-        }
-        assert!(
-            !ShellSurface::prepare_frame(&mut desktop),
-            "the desktop is at rest before the app describes its content"
-        );
-        let handle = desktop.with_policy(|policy| policy.handle().clone());
-        let tab = handle
-            .shown_tabs()
-            .first()
-            .map(|(tab, _)| *tab)
-            .expect("the window is drawn");
-        assert!(handle.window_controls().is_empty());
-
-        handle.declare_targets(
-            tab,
-            41,
-            vec![WindowTarget {
-                role: "Row".to_owned(),
-                name: "Documents".to_owned(),
-                identity: None,
-                rect: [10.0, 20.0, 110.0, 40.0],
-                actions: vec![TargetAction::Activate],
-                level: None,
-                selected: false,
-            }],
-        );
-        assert!(
-            handle.window_controls().is_empty(),
-            "nothing of it is read before the frame that reads it"
-        );
-
-        ShellSurface::prepare_frame(&mut desktop);
-
-        let listed = handle.window_controls();
-        assert_eq!(
-            listed
-                .iter()
-                .map(|control| control.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Documents"],
-            "the frame after the declaration carries the window's controls"
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1525,7 +1056,7 @@ mod hidpi {
     /// one scale's worth stretched over twice the area.
     #[test]
     fn the_shell_draws_at_its_displays_scale() {
-        let (mut desktop, _policy) = desktop(7, 1.0);
+        let mut desktop = desktop(7, 1.0);
         ShellSurface::outputs_changed(
             &mut desktop,
             &[tilo_session_core::surface::SurfaceOutput {

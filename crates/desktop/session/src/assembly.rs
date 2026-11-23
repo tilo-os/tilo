@@ -11,10 +11,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
 
-use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::desktop_host::DesktopAsk;
-use tilo_desktop::overlays::Overlays;
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::host::chrome::ChromeIntent;
+use tilo_session_core::desktop::host::contract::DesktopAsk;
+use tilo_session_core::desktop::overlays::Overlays;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 /// What the shell's send keys asked of the window in front: the box it opens,
 /// and whom the box starts addressed to.
@@ -113,9 +113,6 @@ pub(crate) struct Shared {
     /// others.
     #[cfg(target_os = "linux")]
     pub(crate) surfaces: crate::device_lists::Surfaces,
-    /// Alt+Tab's panel, shared by the session's walk (which sets it), the chrome
-    /// (which draws it) and the compositor (which pictures its windows).
-    pub(crate) switcher: tilo_desktop::window_switcher::Switcher,
     /// Every hosted surface's and service's published side: the session's
     /// action host.
     pub(crate) published: tilo_session_core::surfaces::Surfaces,
@@ -128,7 +125,7 @@ pub(crate) struct Shared {
     /// the keys a hold shows, which the pass answers.
     pub(crate) super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>>,
     /// The keys a hold shows, which the chrome draws over the shell.
-    pub(crate) super_peek: tilo_desktop::super_peek::SuperPeek,
+    pub(crate) super_peek: tilo_session_core::desktop::super_peek::SuperPeek,
     /// What the session's own resources asked of the compositor.
     #[cfg(target_os = "linux")]
     pub(crate) commands: Rc<RefCell<Vec<crate::controls::SessionCommand>>>,
@@ -147,10 +144,10 @@ pub(crate) struct Shared {
     /// published as `device.osd` for the shell that draws it.
     #[cfg(target_os = "linux")]
     pub(crate) osd: crate::osd::Shared,
-    /// Whether this session shows the tilolang shell, which draws the readout and the banners
-    /// itself: the native ones are not drawn beside them.
+    /// How far the fingers carrying the strip shown have travelled since they landed: what the
+    /// shell's row was scrolled by already.
     #[cfg(target_os = "linux")]
-    pub(crate) tilolang_shell: bool,
+    pub(crate) carried: std::cell::Cell<f64>,
     /// The system services, reached for their readings.
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
     /// The sends the session's send action took, which the pass carries out.
@@ -214,8 +211,6 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) keyboard_and_pointer: Option<std::sync::Arc<crate::shared_input::SharedInput>>,
     pub(crate) wake_handle: tilo_service::Wake,
-    /// What plays, as the session's music widget shows it.
-    pub(crate) music: tilo_desktop::widgets::Music,
     /// The power menu, workspace settings, the questions the session asks
     /// for apps and services, and the one deleting a workspace asks, by
     /// their mounts.
@@ -282,7 +277,7 @@ pub(crate) struct Shared {
     pub(crate) owner_session: crate::owner_session::SessionFollow,
     /// The desktop's own notices: what the session tells the person, such as
     /// leaving a workspace.
-    pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
+    pub(crate) notices: tilo_session_core::desktop::state::DesktopNotifications,
     /// The windows carried to another workspace, asked about first.
     #[cfg(target_os = "linux")]
     pub(crate) moves: crate::window_move::Moves,
@@ -409,19 +404,10 @@ pub(crate) struct Shared {
     /// into, and where that field's caret stands for the card to open at.
     #[cfg(target_os = "linux")]
     pub(crate) emoji: crate::emoji::Emoji,
-    /// What the desktop's control hints read from this host and give back: the person's record,
-    /// the reasons this session knows, and what they learned.
-    pub(crate) hints: tilo_desktop::control_hints::HintsFeed,
-    /// The person's settings as the hints' record was last taken from them.
-    pub(crate) hints_stamp: Cell<Option<settings_store::SettingsStamp>>,
     /// The shortcut guide: the sheet naming every key the desktop answers,
     /// and the table it explains.
     #[cfg(target_os = "linux")]
     pub(crate) shortcut_guide: crate::shortcut_guide::ShortcutGuide,
-    /// The chrome above the windows as the session hosts it: where its
-    /// bars stand on the displays, read back for the tests that drive them.
-    #[cfg(target_os = "linux")]
-    pub(crate) chrome: Rc<RefCell<crate::platform::surfaces::WidgetSurface>>,
     /// Who is here, as the bar's faces open it: the roster it shows and
     /// where everyone else's pointer is.
     #[cfg(target_os = "linux")]
@@ -472,7 +458,6 @@ pub struct Session {
     pub(crate) compositor: tilo_compositor::Compositor,
     pub(crate) shared: Shared,
     #[cfg(target_os = "linux")]
-    pub(crate) banners: tilo_notification_banners::Link,
     /// The input preferences the compositor runs with now.
     #[cfg(target_os = "linux")]
     pub(crate) input: tilo_compositor::InputConfig,
@@ -574,16 +559,10 @@ pub struct Session {
     pub(crate) night_light: crate::night_light::NightLight,
     #[cfg(target_os = "linux")]
     pub(crate) auto_brightness: crate::ambient_brightness::AutoBrightness,
-    /// Where each display stands and where the person types, as the readout
-    /// answers with them.
+    /// Where the person types, as the compositor last said: the caret the surfaces a key opens
+    /// stand beside.
     #[cfg(target_os = "linux")]
-    pub(crate) readout_place: crate::panels::ReadoutPlaces,
-    /// The readout itself, so a theme the person changed reaches it.
-    #[cfg(target_os = "linux")]
-    pub(crate) readout: Rc<RefCell<crate::panels::Readout>>,
-    /// Banners hosted separately from the shell's own views, drawn in the same live theme.
-    #[cfg(target_os = "linux")]
-    pub(crate) banner_surface: Option<Rc<RefCell<crate::panels::Banners>>>,
+    pub(crate) caret: Cell<Option<ui::kurbo::Rect>>,
     /// When the on-screen keyboard runs, as the person chose: never, over a
     /// field they touch, or always.
     #[cfg(target_os = "linux")]

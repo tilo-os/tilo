@@ -2,7 +2,7 @@
 //! the shortcut guide. A host offers this every press before the focused window or panel gets it,
 //! as a [`Press`] in the toolkit's names; the device's own keys (levels, media, power, Print) and
 //! the apps' shortcuts arrive already read by that host ([`Press::device`], [`Press::app_shortcut`]).
-//! A press that is a chord of the desktop's one shortcut table ([`tilo_desktop::shortcuts`]) or a
+//! A press that is a chord of the desktop's one shortcut table ([`tilo_session_core::desktop::shortcuts`]) or a
 //! device key becomes an invocation of a published action, run through the same API every other
 //! caller uses; nothing here performs anything itself.
 
@@ -21,10 +21,9 @@ use std::rc::Rc;
 use tilo_actions::ActionAddress;
 use tilo_session_core::surface::{KeyClaim, KeyModifiers};
 
-use tilo_desktop::osd::OsdKind;
-use tilo_desktop::overlays::{Overlay, Overlays, Part, SwitcherScope};
-use tilo_desktop::verbs::CHROME_RESOURCE;
-use tilo_desktop::widgets::Fold;
+use tilo_session_core::desktop::osd::OsdKind;
+use tilo_session_core::desktop::overlays::{Overlay, Overlays, Part, SwitcherScope};
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session_core::shell::OVERLAYS;
 use tilo_sheets::shortcut_guide::{Caught, State as GuideState};
 use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};
@@ -143,35 +142,19 @@ pub(crate) struct ControllerKeys {
     pub(crate) own: Rc<Cell<bool>>,
 }
 
-/// What stands over the shell and what the keys owe it: Escape folds the card a Desktop widget has
-/// open, and closes the topmost surface of the stack that answers Escape. Neither hears keys
-/// itself, so both say here what theirs are worth.
+/// What stands over the shell and what the keys owe it: Escape closes the topmost surface of the
+/// stack that answers Escape. The stack hears no keys itself, so it says here what its keys are
+/// worth.
 #[derive(Clone, Default)]
 pub(crate) struct ShellKeys {
-    fold: Fold,
     overlays: Overlays,
-    /// What the keys ask the panel's own app, when this device has one and draws it: Escape asks it
-    /// to go back a page, and the panel answers whether it had one.
-    panel: Option<Rc<RefCell<Vec<&'static str>>>>,
 }
 
 impl ShellKeys {
-    /// The session's fold and the surfaces over it, as the session holds them.
+    /// The surfaces over the shell, as the session holds them.
     #[must_use]
-    pub(crate) fn new(fold: Fold, overlays: Overlays) -> Self {
-        Self {
-            fold,
-            overlays,
-            panel: None,
-        }
-    }
-
-    /// The same, with the queue the panel's own app is asked through, when this device has one and
-    /// draws it.
-    #[must_use]
-    pub(crate) fn with_panel(mut self, asks: Option<Rc<RefCell<Vec<&'static str>>>>) -> Self {
-        self.panel = asks;
-        self
+    pub(crate) fn new(overlays: Overlays) -> Self {
+        Self { overlays }
     }
 }
 
@@ -222,7 +205,7 @@ impl SwitcherKey {
     /// Carry it out on `walk` over `handle`'s windows, as the session's verb [`Self::asks`] names does.
     pub(crate) fn walk(
         self,
-        handle: &tilo_desktop_surface::DesktopHandle,
+        handle: &tilo_session_core::desktop::state::DesktopHandle,
         walk: &Overlays,
         walking: Option<SwitcherScope>,
     ) {
@@ -243,8 +226,8 @@ impl SwitcherKey {
 
     /// What a press on the walk's panel asks: the card under the pointer chosen, or gone to, or the
     /// panel dismissed.
-    pub(crate) fn of_panel(ask: tilo_desktop::window_switcher::SwitcherAsk) -> Vec<Self> {
-        use tilo_desktop::window_switcher::SwitcherAsk;
+    pub(crate) fn of_panel(ask: tilo_session_core::desktop::host::contract::SwitcherAsk) -> Vec<Self> {
+        use tilo_session_core::desktop::host::contract::SwitcherAsk;
         let place = |at: usize| Self::Place(i64::try_from(at).unwrap_or(i64::MAX));
         match ask {
             SwitcherAsk::Hover(at) => vec![place(at)],
@@ -356,7 +339,11 @@ impl WalkKeys {
 
     /// Move the walk as `press` asks, on `handle`'s session itself: what a host without the session's
     /// API does with the walk's keys. Whether the press was the walk's.
-    pub(crate) fn walk(&self, press: &Press, handle: &tilo_desktop_surface::DesktopHandle) -> bool {
+    pub(crate) fn walk(
+        &self,
+        press: &Press,
+        handle: &tilo_session_core::desktop::state::DesktopHandle,
+    ) -> bool {
         let Some(key) = self.key(press) else {
             return false;
         };
@@ -389,16 +376,11 @@ pub(crate) struct SessionKeys {
     /// The shortcut guide's keys while it is up: what it holds back from the desktop behind it, and
     /// the chord it waits for.
     guide: Rc<GuideState>,
-    /// Whether a Desktop widget has its card open, which Escape folds. The session is under the windows
-    /// and hears no keys itself, so it says here what its keys are worth.
-    fold: Fold,
     /// What stands over the shell: Escape closes the topmost surface that answers it, and while one
     /// holds the keyboard a press is that surface's and not the window's.
     overlays: Overlays,
     /// Alt+Tab's keys: the chord that opens the session's walk, and the keys it answers while it is up.
     switcher: WalkKeys,
-    /// What the keys ask the panel's own app, when this device draws it.
-    panel: Option<Rc<RefCell<Vec<&'static str>>>>,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press of their own replaces:
@@ -407,9 +389,6 @@ pub(crate) struct SessionKeys {
     /// Whether the keys being routed are a controller's own, for its presses rather than
     /// the person's fingers on a keyboard.
     controller_keys: Rc<Cell<bool>>,
-    /// When each display's bar shows over the window covering it: Super asks for it, and the app
-    /// under it has nothing of that press.
-    reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
 }
 
 impl SessionKeys {
@@ -420,7 +399,6 @@ impl SessionKeys {
         session: ShellKeys,
         sheets: SheetKeys,
         controller: ControllerKeys,
-        reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
     ) -> Self {
         let Presses {
             invocations,
@@ -436,21 +414,12 @@ impl SessionKeys {
             invocations,
             triggered,
             guide,
-            fold: session.fold,
             switcher: WalkKeys::new(session.overlays.clone()),
             overlays: session.overlays,
-            panel: session.panel,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
-            reveals,
         }
-    }
-
-    /// Whether `press` is the session's own: Escape folds the card a Desktop widget has open, and what
-    /// sits behind the session does not hear it.
-    fn folds_the_shell(&self, press: &Press) -> bool {
-        press.bare == Key::Named(NamedKey::Escape) && self.fold.is_open()
     }
 
     /// Ask the session for what a key of the walk's is worth: whether it was the walk's.
@@ -491,7 +460,7 @@ impl SessionKeys {
     fn configured_action(&self, press: &Press) -> Option<ShortcutAction> {
         let (logical, modifiers) = press.chord();
         let shortcuts = self.shortcuts.borrow();
-        tilo_desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)
+        tilo_session_core::desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)
     }
 
     /// The fixed action `press` is: a chord Settings cannot rebind, answered before any app's.
@@ -500,7 +469,7 @@ impl SessionKeys {
     /// dispatcher yet.
     fn fixed_action(press: &Press) -> Option<FixedAction> {
         let (logical, modifiers) = press.chord();
-        tilo_desktop::shortcuts::fixed_shortcut_action(&logical, modifiers)
+        tilo_session_core::desktop::shortcuts::fixed_shortcut_action(&logical, modifiers)
     }
 
     /// The chord of this press that runs a saved shortcut's keyboard trigger, which the session
@@ -508,7 +477,7 @@ impl SessionKeys {
     /// there when it armed the shortcut, and it stays the session's until the next arming drops it.
     fn trigger_chord(&self, press: &Press) -> Option<KeyChord> {
         let (logical, modifiers) = press.chord();
-        let chord = tilo_desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)?;
+        let chord = tilo_session_core::desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)?;
         let shortcuts = self.shortcuts.borrow();
         shortcuts
             .action_for(&chord)
@@ -622,7 +591,7 @@ impl SessionKeys {
         }
         let (logical, modifiers) = press.chord();
         // A modifier held on its own is no chord, and no modifier is either.
-        if let Some(chord) = tilo_desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)
+        if let Some(chord) = tilo_session_core::desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)
         {
             self.guide.catch(Caught::Chord(chord));
         }
@@ -653,15 +622,6 @@ impl SessionKeys {
                 KeyClaim::Pass
             };
         }
-        // Super going down asks for the bar over the window that covers the display, as reaching
-        // for the top edge does. The app under it has nothing of a modifier that asked for the
-        // desktop's own bar.
-        if !locked && !inhibited && is_super(press) && self.reveals.borrow().covers_display(None) {
-            self.invocations
-                .borrow_mut()
-                .push(Invocation::new(CHROME_RESOURCE, "reveal-top-bar"));
-            return KeyClaim::Take;
-        }
         if self.guide.up() {
             if self.guide.listening().is_some() {
                 // The guide waits for a shortcut's new keys: every press is that chord, and none of
@@ -683,7 +643,7 @@ impl SessionKeys {
         if let Some(claim) = self.switcher.claim(press, locked, inhibited) {
             return claim;
         }
-        if self.closes_the_top_surface(press).is_some() || self.folds_the_shell(press) {
+        if self.closes_the_top_surface(press).is_some() {
             return KeyClaim::Take;
         }
         // A chord that runs a saved shortcut is the session's, as a chord of the desktop's own
@@ -729,22 +689,9 @@ impl SessionKeys {
             return;
         }
         if let Some(part) = self.closes_the_top_surface(press) {
-            if part == Part::QuickSettings
-                && let Some(asks) = &self.panel
-            {
-                // The panel's own pages are its own: Escape goes back one of them, and the panel
-                // answers whether it had one to go back to (`Shared::panel_back`). Its main page
-                // has none, and the session closes the panel there.
-                asks.borrow_mut().push("back");
-                return;
-            }
             self.invocations
                 .borrow_mut()
                 .push(Invocation::new(OVERLAYS, "close-surface").with("part", part.as_str()));
-            return;
-        }
-        if self.folds_the_shell(press) {
-            self.fold.ask();
             return;
         }
         // A chord of a saved shortcut's keyboard trigger starts the shortcut: the automation host
@@ -766,14 +713,6 @@ impl SessionKeys {
             self.invocations.borrow_mut().push(invocation);
         }
     }
-}
-
-/// Whether `press` is a Super key going down for the first time: the key that asks for a bar
-/// hidden by a fullscreen window.
-fn is_super(press: &Press) -> bool {
-    press.pressed
-        && !press.repeat
-        && matches!(press.key, Key::Named(NamedKey::Super | NamedKey::Meta))
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -802,7 +741,6 @@ mod tests {
             session,
             SheetKeys::default(),
             ControllerKeys::default(),
-            Rc::default(),
         );
         NativeKeys::new(keys, None, commands)
     }
@@ -864,7 +802,7 @@ mod tests {
     /// The key surface with the session's walk to answer to, and that walk.
     fn with_walk() -> (NativeKeys, Overlays) {
         let walk = Overlays::new();
-        let keys = over(ShellKeys::new(Fold::default(), walk.clone()));
+        let keys = over(ShellKeys::new(walk.clone()));
         (keys, walk)
     }
 
@@ -1177,13 +1115,12 @@ mod tests {
                     Rc::default(),
                     Presses::default(),
                     Rc::default(),
-                    ShellKeys::new(Fold::default(), Overlays::new()),
+                    ShellKeys::new(Overlays::new()),
                     SheetKeys {
                         displays: None,
                         modal: vec![question.clone()],
                     },
                     ControllerKeys::default(),
-                    Rc::default(),
                 ),
                 None,
                 Rc::default(),
@@ -1208,27 +1145,13 @@ mod tests {
             assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::TakeRepeating);
         }
 
-        phase escape_asks_the_panel_to_go_back_before_it_closes_it;
+        phase escape_closes_the_quick_settings;
         {
-            // The panel's app draws the quick settings on this device: Escape is its own pages' first,
-            // and the session waits for its answer.
-            let asks = Rc::new(RefCell::new(Vec::new()));
+            // The shell draws the quick settings: Escape closes the surface.
             let overlays = Overlays::new();
             overlays.open(Part::QuickSettings, None);
-            let mut keys = over(
-                ShellKeys::new(Fold::default(), overlays.clone()).with_panel(Some(Rc::clone(&asks))),
-            );
             let escape = key(keysyms::Escape, None, KeyModifiers::default());
-            keys.key(&escape);
-            assert_eq!(*asks.borrow(), ["back"], "the panel goes back a page");
-            assert!(
-                asked(&keys).is_empty(),
-                "nothing closes until the panel says it has nowhere left to go"
-            );
-
-            // A device whose shell draws the quick settings has no panel app to ask: Escape closes the
-            // surface itself.
-            let mut shell = over(ShellKeys::new(Fold::default(), overlays));
+            let mut shell = over(ShellKeys::new(overlays));
             shell.key(&escape);
             assert_eq!(
                 asked(&shell),
@@ -1340,25 +1263,6 @@ mod tests {
                 keys.claim_key(&volume, false, true),
                 KeyClaim::TakeRepeating
             );
-        }
-
-        phase escape_folds_the_card_a_widget_has_open_and_nothing_behind_it_hears_it;
-        {
-            let fold = Fold::default();
-            let mut keys = over(ShellKeys::new(fold.clone(), Overlays::new()));
-            let escape = key(keysyms::Escape, None, KeyModifiers::default());
-            // Folded cards want no key: Escape goes on to whatever is up.
-            assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Pass);
-
-            fold.set_open(true);
-            assert_eq!(
-                keys.claim_key(&escape, false, false),
-                KeyClaim::Take,
-                "an open card folds on Escape before anything else hears it"
-            );
-            keys.key(&escape);
-            assert!(fold.take_asked(), "the key asks the session to fold");
-            assert!(!fold.take_asked(), "and asks once");
         }
     }
 

@@ -4,9 +4,7 @@
 
 use super::*;
 use crate::platform::surfaces::{Heard, Layer, Placement, Surfaces};
-use tilo_desktop_model::{Layout, Member, Tab, Workspace, WorkspaceId};
-use tilo_desktop_surface::{DesktopSurface, TileSource};
-use ui::widget::{TileContent, TileHost};
+use tilo_desktop_model::{Layout, Member, Workspace, WorkspaceId};
 
 /// The host's side of the one layer the roster places: the tree it hands over, held for the
 /// frame below.
@@ -53,17 +51,6 @@ impl Surfaces for Placed {
     fn publish(&mut self, _published: Rc<RefCell<dyn Published>>) {}
 }
 
-struct Blank;
-
-impl TileSource for Blank {
-    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        TileHost::new(TileContent::Notice {
-            title: tab.title.clone(),
-            detail: String::new(),
-        })
-    }
-}
-
 /// Where the control `label` stands, in the logical pixels a click is given in.
 fn holding(frame: &ui::headless::FrameHarness, label: &str) -> Option<Point> {
     let tree = frame.a11y_tree_update();
@@ -105,15 +92,12 @@ tilo_test_env::scenario! {
         let here = WorkspaceId::new();
         let mut session = Workspace::new(here, "Session");
         session.member_here(Member::named(collab_types::MemberId::person("ada"), "Ada"));
-        let (_shell, handle) = DesktopSurface::new(
-            Layout {
+        let handle = tilo_session_core::desktop::state::DesktopHandle::new(Layout {
                 active: session.id(),
                 workspaces: vec![session],
                 ..Layout::default()
             },
-            7,
-            Box::new(Blank),
-        );
+            7);
         let mut placed = Placed::default();
         let people = mount(
             &mut placed,
@@ -325,14 +309,13 @@ fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
 fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
     let here = WorkspaceId::new();
     let session = Workspace::new(here, "Session");
-    let (_shell, handle) = DesktopSurface::new(
+    let handle = tilo_session_core::desktop::state::DesktopHandle::new(
         Layout {
             active: session.id(),
             workspaces: vec![session],
             ..Layout::default()
         },
         7,
-        Box::new(Blank),
     );
     let mut placed = Placed::default();
     let people = mount(

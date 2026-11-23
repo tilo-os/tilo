@@ -29,7 +29,6 @@ fn options() -> Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
         collab: false,
-        shell: true,
         ..Options::default()
     }
 }
@@ -333,7 +332,6 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
             &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
             Options {
                 person: "Pat".to_owned(),
-                shell: true,
                 ..Options::default()
             },
         );
@@ -387,7 +385,6 @@ fn a_bar_flush_with_the_display_paints_its_edges_its_own_colour() {
         &[OutputConfig::new("HEADLESS-1", width, height).with_scale(2.0)],
         Options {
             person: "Pat".to_owned(),
-            shell: true,
             collab: false,
             ..Options::default()
         },

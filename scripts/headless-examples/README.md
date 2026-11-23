@@ -71,7 +71,7 @@ Controls drawn on main and gone here are listed for the person reading the shots
 
 **Names do not matter.** A walk is of the switcher, not of a binary: its step file
 names versions (`rust`, `tl`) and, per version, what differs — how the session
-starts (`"session_args": ["--shell", "screen"]` for the tilolang shell), the app
+starts (`"session_args"`), the app
 it opens (`id`, a native app of the session build or a tilolang `package`) and,
 where they differ, the controls. A version whose `source` (by default its
 package's directory) is gone from the tree is not walked, and a version the

@@ -1,36 +1,15 @@
-//! The shell's own layer: the workspace's shell, the widgets on it, and the choices those widgets
-//! draw from.
-//! The widgets sit on the wallpaper under the windows: the windows keep the pointer, and whatever
-//! they do not take the shell still sees. What the widgets show is the session's own: who is here,
-//! read from the layout, and today's date, read from the clock.
-//! Their preferences are the person's setting. The session reads them once and keeps them current
-//! from the settings watch, so a frame draws from memory and never reads the settings file.
+//! The desktop under the tilolang shell: the session's own desktop, which it runs each frame, and
+//! the policy that places the windows in the wells the shell draws; the music the shell's controls
+//! steer, and the apps that run, as the portal asks of them.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
-use crate::platform::surfaces::{ShellDesktop, StripPolicy, desktop_with};
-use serde_json::{Map, Value};
-use tilo_desktop::desktop_host::{BackgroundLayer, DesktopAsk};
-use tilo_desktop::launchpad::CollaborationLaunchpad;
-use tilo_desktop::widgets::music::MusicAction as Action;
-use tilo_desktop::widgets::{Fold, Music};
-use tilo_lock::MutexRecover as _;
-use ui::widgets::WidgetsPrefs;
+use tilo_session_core::desktop::host::contract::DesktopAsk;
+use tilo_session_core::desktop::host::contract::MusicAction as Action;
 
 use crate::Options;
-use crate::wallpapers::Wallpapers;
-
-/// The Desktop widgets' choices as the session keeps them.
-pub(crate) type Prefs = Arc<Mutex<WidgetsPrefs>>;
-
-/// The person's widget choices as the settings document has them now.
-pub(crate) fn prefs() -> Prefs {
-    Arc::new(Mutex::new(WidgetsPrefs::from_document(
-        &settings_store::load(),
-    )))
-}
+use crate::platform::surfaces::{ShellDesktop, WellPolicy, desktop};
 
 impl crate::Shared {
     /// Steer the player in front, as the panel's own controls do: the music widget's play or pause,
@@ -78,169 +57,34 @@ pub(crate) fn running_apps(compositor: &tilo_compositor::Compositor) -> Vec<(Str
     apps.into_iter().collect()
 }
 
-/// Take the choices `document` carries into `prefs` , for the layer drawing from them.
-pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {
-    *prefs.lock_recover() = WidgetsPrefs::from_document(document);
-}
-
-/// What the shell's layer reads of the session: the person's Desktop widgets,
-/// the fold the session's keys share, the overview's open flag, what plays,
-/// and the bars' reveal the shell's band and policy follow.
-pub(crate) struct Background {
-    pub(crate) widgets: Prefs,
-    /// Shared with the session's keys, which fold an open card on Escape.
-    pub(crate) fold: Fold,
-    /// Whether the overview is over the shell, which folds it.
-    pub(crate) overview: Rc<Cell<bool>>,
-    /// What plays, as the session reads it from the player Quick Settings shows.
-    pub(crate) music: Music,
-    /// When each display's bar shows over the window covering it.
-    pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
-}
-
-/// The shell of this session's workspace and the policy placing its windows,
-/// with what its tree asks of the session. The chrome above it asks through
-/// the same list.
+/// The shell of this session's workspace and the policy placing its windows in the wells the
+/// tilolang shell draws, with what the desktop asks of the session. The session runs the desktop
+/// each frame; no widget of it is built.
 pub(crate) fn background(
     options: &Options,
     activity: &crate::activity::Activity,
-    notices: tilo_desktop_surface::DesktopNotifications,
-    pictures: Arc<Wallpapers>,
-    wallpaper: ui::backdrop::wallpaper::Source,
-    looked: Background,
-) -> (ShellDesktop, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
-    let Background {
-        widgets,
-        fold,
-        overview,
-        music,
-        reveals,
-    } = looked;
+    notices: tilo_session_core::desktop::state::DesktopNotifications,
+) -> (ShellDesktop, WellPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
     let asks = Rc::new(RefCell::new(Vec::new()));
-    let band_reveals = Rc::clone(&reveals);
-    let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
+    let desktop = desktop(options.salt, options.scale);
+    desktop.with_policy(|desktop| {
+        // Other devices' shared windows are read through the desktop: their pictures land on it.
+        crate::window_share::peer::install(desktop.handle());
         // The shell's windows ask it for the workspace's activity, and the apps running beside it
         // ask the same model through the broker.
-        surface.set_history_source(Box::new(activity.clone()));
-        surface.serve_activity(activity.requests());
-        surface.set_notifications(notices);
-        let layer = tilo_desktop::widgets::WidgetLayer::new(
-            handle.clone(),
-            options.person.clone(),
-            Rc::clone(&asks),
-            widgets,
-        )
-        .with_fold(fold)
-        .with_overview(overview)
-        .with_music(music);
-        let beneath = vec![Box::new(layer) as Box<dyn ui::widget::Widget>];
-        Box::new(
-            BackgroundLayer::new(
-                Box::new(surface),
-                handle.clone(),
-                CollaborationLaunchpad::new(),
-                {
-                    let lists = options.lists.clone();
-                    Rc::new(move || crate::host_actions::cards(&lists))
-                },
-                Rc::clone(&asks),
-                beneath,
-            )
-            .with_wallpaper(wallpaper, move |workspace| pictures.picture(workspace))
-            .with_reveals(Rc::clone(&band_reveals)),
-        )
+        let pass = desktop.pass_mut();
+        pass.set_history_source(Box::new(activity.clone()));
+        pass.serve_activity(activity.requests());
+        pass.set_notifications(notices);
+        // A tab opens with the name of its app in the person's language, never with the app's id.
+        desktop.reads_app_names(Rc::new(crate::app_names::app_name));
     });
-    let mut policy = policy;
-    policy.with_samples(Rc::new(RefCell::new(BarSamples { reveals })));
-    // A tab opens with the name of its app in the person's language, never with the app's id.
-    policy.reads_app_names(Rc::new(crate::app_names::app_name));
+    let lists = options.lists.clone();
+    desktop.run_desktop(tilo_session_core::desktop::shell_verbs::ShellVerbs::new(
+        desktop.with_policy(|desktop| desktop.handle().clone()),
+        Rc::clone(&asks),
+        Rc::new(move || crate::host_actions::cards(&lists)),
+    ));
+    let policy = desktop.well_policy();
     (desktop, policy, asks)
-}
-
-/// The policy placing the shell's windows: the desktop's strips, or the wells of the shell drawing
-/// the whole screen.
-pub(crate) enum WindowPlacement {
-    Strips(StripPolicy),
-    Wells(crate::platform::surfaces::WellPolicy),
-}
-
-impl WindowPlacement {
-    /// The shell drawing the whole screen places the windows in its wells; otherwise the desktop's
-    /// strips do.
-    pub(crate) fn for_shell(shell: bool, desktop: &ShellDesktop, strips: StripPolicy) -> Self {
-        if shell {
-            Self::Wells(desktop.well_policy())
-        } else {
-            Self::Strips(strips)
-        }
-    }
-
-    /// Tell `observer` the process of each window the desktop gives a place.
-    pub(crate) fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
-        match self {
-            Self::Strips(policy) => policy.set_window_mapped(observer),
-            Self::Wells(policy) => policy.set_window_mapped(observer),
-        }
-    }
-
-    /// Follow the windows the compositor opens and closes with `observer` .
-    pub(crate) fn observe_windows(
-        &mut self,
-        observer: std::sync::Arc<dyn crate::platform::surfaces::WindowObserver>,
-    ) {
-        match self {
-            Self::Strips(policy) => policy.observe_windows(observer),
-            Self::Wells(policy) => policy.observe_windows(observer),
-        }
-    }
-
-    /// The wells the shell's views report to, when they place the windows.
-    pub(crate) fn wells(&self) -> Option<ui::widget::Wells> {
-        match self {
-            Self::Strips(_) => None,
-            Self::Wells(policy) => Some(policy.wells()),
-        }
-    }
-
-    /// The policy, as the compositor runs with it.
-    pub(crate) fn boxed(self) -> Box<dyn tilo_compositor::WindowPolicy> {
-        match self {
-            Self::Strips(policy) => Box::new(policy),
-            Self::Wells(policy) => Box::new(policy),
-        }
-    }
-}
-
-/// What the shell's policy sends the bars' reveal: the pointer wherever it goes, presses, and
-/// fingers on the screen, which the chrome follows beyond where it draws.
-struct BarSamples {
-    reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
-}
-
-impl crate::platform::surfaces::PointerSamples for BarSamples {
-    fn moved(&mut self, x: f64, y: f64) {
-        let now = ui::time::now();
-        self.reveals
-            .borrow_mut()
-            .motion(ui::vello::kurbo::Point::new(x, y), now);
-    }
-
-    fn pressed(&mut self, x: f64, y: f64) {
-        self.reveals
-            .borrow_mut()
-            .press(ui::vello::kurbo::Point::new(x, y));
-    }
-
-    fn touch(&mut self, touch: tilo_compositor::TouchSample) -> bool {
-        use tilo_desktop::topbar::Finger;
-        let now = ui::time::now();
-        let mut reveals = self.reveals.borrow_mut();
-        let (finger, x, y) = match touch {
-            tilo_compositor::TouchSample::Down { x, y } => (Finger::Down, x, y),
-            tilo_compositor::TouchSample::Move { x, y } => (Finger::Move, x, y),
-            tilo_compositor::TouchSample::Lift { x, y } => (Finger::Lift, x, y),
-            tilo_compositor::TouchSample::Cancel => (Finger::Cancel, 0.0, 0.0),
-        };
-        reveals.touch(finger, ui::vello::kurbo::Point::new(x, y), now)
-    }
 }

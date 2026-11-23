@@ -1116,7 +1116,6 @@ doc = false
 "tilo-account-probe" = { path = "../../crates/integrations/account-probe", default-features = false, features = ["test-support"] }
 "tilo-action-policy" = { path = "../../crates/core/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["off-worker", "test-support"] }
-"tilo-activities" = { path = "../../crates/session/activities", default-features = false, features = [] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
 "tilo-agent-session" = { path = "../../crates/core/agent-session", default-features = false, features = ["test-support"] }
 "tilo-agent-turn" = { path = "../../crates/integrations/agent-turn", default-features = false, features = [] }
@@ -1179,12 +1178,10 @@ doc = false
 "tilo-dav" = { path = "../../crates/integrations/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-delivery-protocol" = { path = "../../crates/core/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-deployment-status" = { path = "../../crates/os/deployment-status", default-features = false, features = [] }
-"tilo-desktop" = { path = "../../crates/session/desktop", default-features = false, features = ["default", "peer-view"] }
 "tilo-desktop-entry" = { path = "../../crates/desktop/desktop-entry", default-features = false, features = ["appimage"] }
 "tilo-desktop-model" = { path = "../../crates/desktop/desktop-model", default-features = false, features = [] }
 "tilo-desktop-policy" = { path = "../../crates/desktop/window-placement", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../crates/desktop/desktop-search", default-features = false, features = ["catalogue", "indexes", "settings"] }
-"tilo-desktop-surface" = { path = "../../crates/session/desktop-surface", default-features = false, features = ["default", "peer-view"] }
 "tilo-device-identity" = { path = "../../crates/core/tilo-device-identity", default-features = false, features = [] }
 "tilo-device-protocol" = { path = "../../crates/os/tilo-device-protocol", default-features = false, features = [] }
 "tilo-device-steps" = { path = "../../crates/os/tilo-device-steps", default-features = false, features = [] }
@@ -1255,7 +1252,6 @@ doc = false
 "tilo-network-actor" = { path = "../../crates/desktop/network-actor", default-features = false, features = ["test-support"] }
 "tilo-network-secret-agent" = { path = "../../crates/os/network-secret-agent", default-features = false, features = [] }
 "tilo-nm" = { path = "../../crates/os/tilo-nm", default-features = false, features = [] }
-"tilo-notification-banners" = { path = "../../crates/session/notification-banners", default-features = false, features = [] }
 "tilo-notifications-service" = { path = "../../crates/desktop/notifications-service", default-features = false, features = [] }
 "tilo-notify" = { path = "../../crates/platform/tilo-notify", default-features = false, features = [] }
 "tilo-ntfs-helper" = { path = "../../crates/os/tilo-ntfs-helper", default-features = false, features = [] }
@@ -3740,7 +3736,6 @@ doc = false
 "tilo-account-probe" = { path = "../../crates/integrations/account-probe", default-features = false, features = ["test-support"] }
 "tilo-action-policy" = { path = "../../crates/core/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["off-worker", "test-support"] }
-"tilo-activities" = { path = "../../crates/session/activities", default-features = false, features = [] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
 "tilo-agent-session" = { path = "../../crates/core/agent-session", default-features = false, features = ["test-support"] }
 "tilo-agent-turn" = { path = "../../crates/integrations/agent-turn", default-features = false, features = [] }
@@ -3803,12 +3798,10 @@ doc = false
 "tilo-dav" = { path = "../../crates/integrations/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-delivery-protocol" = { path = "../../crates/core/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-deployment-status" = { path = "../../crates/os/deployment-status", default-features = false, features = [] }
-"tilo-desktop" = { path = "../../crates/session/desktop", default-features = false, features = ["default", "peer-view"] }
 "tilo-desktop-entry" = { path = "../../crates/desktop/desktop-entry", default-features = false, features = ["appimage"] }
 "tilo-desktop-model" = { path = "../../crates/desktop/desktop-model", default-features = false, features = [] }
 "tilo-desktop-policy" = { path = "../../crates/desktop/window-placement", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../crates/desktop/desktop-search", default-features = false, features = ["catalogue", "indexes", "settings"] }
-"tilo-desktop-surface" = { path = "../../crates/session/desktop-surface", default-features = false, features = ["default", "peer-view"] }
 "tilo-device-identity" = { path = "../../crates/core/tilo-device-identity", default-features = false, features = [] }
 "tilo-device-protocol" = { path = "../../crates/os/tilo-device-protocol", default-features = false, features = [] }
 "tilo-device-steps" = { path = "../../crates/os/tilo-device-steps", default-features = false, features = [] }
@@ -3879,7 +3872,6 @@ doc = false
 "tilo-network-actor" = { path = "../../crates/desktop/network-actor", default-features = false, features = ["test-support"] }
 "tilo-network-secret-agent" = { path = "../../crates/os/network-secret-agent", default-features = false, features = [] }
 "tilo-nm" = { path = "../../crates/os/tilo-nm", default-features = false, features = [] }
-"tilo-notification-banners" = { path = "../../crates/session/notification-banners", default-features = false, features = [] }
 "tilo-notifications-service" = { path = "../../crates/desktop/notifications-service", default-features = false, features = [] }
 "tilo-notify" = { path = "../../crates/platform/tilo-notify", default-features = false, features = [] }
 "tilo-ntfs-helper" = { path = "../../crates/os/tilo-ntfs-helper", default-features = false, features = [] }

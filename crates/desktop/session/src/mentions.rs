@@ -561,7 +561,7 @@ impl Mentions {
 /// by here.
 #[cfg(target_os = "linux")]
 pub(crate) fn member_names(
-    shell: tilo_desktop_surface::DesktopHandle,
+    shell: tilo_session_core::desktop::state::DesktopHandle,
     place_here: Rc<dyn Fn(&mut tilo_desktop_model::Layout)>,
     search: Rc<crate::search::SessionSearch>,
 ) -> Names {

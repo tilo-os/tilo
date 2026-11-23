@@ -1,6 +1,6 @@
 //! The native session: `tilo-session [--backend drm|headless|nested] [--size WxH]
 //! [--connector NAME] [--output [NAME=]WxH[@X,Y]]... [--scale S|--panel-mm WxH]
-//! [--shell screen] [--host-desktop] [--agent-key FILE]
+//! [--host-desktop] [--agent-key FILE]
 //! [--test-control PATH] [--admin-control PATH] [--seed-apps] [-- command args...]`.
 //! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
 //! workspace (unless `--no-x11`), prints the socket and the MCP server it serves,
@@ -204,8 +204,6 @@ struct CommandLine {
     /// The displays a headless session opens after the first (`--output`).
     outputs: Vec<NamedOutput>,
     reach: Reach,
-    /// Whether the tilolang shell runs, when the command line asked for it.
-    shell: bool,
     /// The agent key the person starts the session with (`--agent-key FILE`).
     agent_key: Option<std::path::PathBuf>,
     /// Where the development test-control socket opens, when the command line named one and this
@@ -356,8 +354,7 @@ mod tests {
     }
 }
 
-/// The output `ours` asks for: its backend, the panel it draws, and whether the tilolang shell
-/// runs.
+/// The output `ours` asks for: its backend and the panel it draws.
 #[cfg(target_os = "linux")]
 struct Output {
     backend: Backend,
@@ -371,7 +368,6 @@ struct Output {
     connector: String,
     /// The displays a headless session opens after the first, each its own output where it is put.
     outputs: Vec<NamedOutput>,
-    shell: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -380,14 +376,6 @@ fn parse_output(ours: &[String]) -> Option<Output> {
     let Some(backend) = Backend::named(name) else {
         eprintln!("tilo-session: unknown backend {name} (drm, headless, nested)");
         return None;
-    };
-    let shell = match value(ours, "--shell") {
-        None => false,
-        Some("screen") => true,
-        Some(other) => {
-            eprintln!("tilo-session: unknown shell {other} (screen)");
-            return None;
-        }
     };
     let size: (u16, u16) = value(ours, "--size")
         .and_then(|size| size.split_once('x'))
@@ -446,7 +434,6 @@ fn parse_output(ours: &[String]) -> Option<Output> {
         headless,
         connector,
         outputs,
-        shell,
     })
 }
 
@@ -566,7 +553,6 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         headless: output.headless,
         connector: output.connector,
         outputs: output.outputs,
-        shell: output.shell,
         reach: reach(ours, output.backend),
         agent_key: value(ours, "--agent-key").map(std::path::PathBuf::from),
         test_control: test_control(ours),
@@ -599,7 +585,6 @@ fn start(
         connector,
         outputs,
         reach,
-        shell,
         agent_key,
         test_control,
         admin_control,
@@ -712,7 +697,6 @@ fn start(
         portal,
         power,
         machine,
-        shell,
         agent_key,
         test_control,
         admin_control,

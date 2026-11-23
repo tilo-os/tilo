@@ -47,7 +47,7 @@ impl DisplayControl {
                 use tilo_broker_core::services::WorkspaceAuthority as _;
                 let mut may = false;
                 governing.with_workspace(workspace, &mut |held| {
-                    use tilo_desktop::authority::WorkspaceAuthority as _;
+                    use tilo_session_core::desktop::authority::WorkspaceAuthority as _;
                     may = held.is_some_and(|held| held.may_administer(&person.to_owned()));
                 })?;
                 Ok(may)

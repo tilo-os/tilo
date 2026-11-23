@@ -175,7 +175,7 @@ fn a_window_this_device_asks_for_is_awaited_until_something_of_it_arrives() {
     );
     assert_eq!(
         viewer.session.handle().elsewhere(tab),
-        tilo_desktop_surface::Elsewhere::Awaited {
+        crate::window_share::elsewhere::Elsewhere::Awaited {
             waiting_for: stands(&viewer, tab)
                 .map(|(_, waits)| waits)
                 .unwrap_or_default()

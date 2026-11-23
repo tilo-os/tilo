@@ -765,7 +765,7 @@ The copies:
 | Rust model logic | each app's own code, and again as `apps/*-model` (34 crates) plus `apps/*-model-wasm` (31 crates) with `tilo-model-guest` |
 | Launch paths | a Rust app binary through `app-launch` and the `launcher` sandbox; `apps/tilolang`; `tilolang-process`; in-process written views and `shell-surface`; `app-keeper` for non-Tilo programs; Rust models as WebAssembly |
 | Permission checks | `action-policy` (12,437); tilolang's own `tl:host` commit and `SimpleAuthority`; the SDK's `PermissionContext`; Chat's `ChatPermissions` |
-| Shell | `session/desktop` and `desktop-surface` in Rust (about 147k); `apps/tl/shell` (6,990) |
+| Shell | `apps/tl/shell` (6,990), over the desktop session-core holds |
 | App models compiled into hosts | `tilo-server` links Chat and Tasks; `tilo-agent-session` links most models natively; the WebAssembly `tilo-model-engine` is the third |
 | Apps in both languages | Chat (68k Rust, 963 tilolang), Tasks, Notes and Word Processor, Mail and Messages |
 

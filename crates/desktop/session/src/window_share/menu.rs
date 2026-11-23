@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use serde_json::Value;
 use tilo_desktop_model::TabId;
-use tilo_desktop_surface::{DesktopHandle, WorkspaceShare, WorkspaceShares};
+use tilo_session_core::desktop::state::{DesktopHandle, WorkspaceShare, WorkspaceShares};
 
 use super::{SHARES_RESOURCE, WindowShares};
 use crate::keys::Invocation;

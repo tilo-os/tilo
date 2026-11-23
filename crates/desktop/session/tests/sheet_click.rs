@@ -45,7 +45,6 @@ fn session_scaled(width: i32, height: i32, scale: f64) -> (Session, Questions) {
         Options {
             questions: Some(questions.clone()),
             // The shell as the whole screen, as the development session runs it.
-            shell: true,
             collab: false,
             ..Options::default()
         },

@@ -9,13 +9,28 @@
 //! Each row is named once: its name, the sentence describing it, its own
 //! picture, and whether search may offer it before anything is typed.
 
-use tilo_desktop::desktop_host::{
-    BRANCH_WORKSPACE, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM, SESSION_LOCK,
-    SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
-};
+use tilo_session_core::desktop::host::contract::BRANCH_WORKSPACE;
+
+use tilo_session_core::desktop::host::contract::JOIN_WORKSPACE;
+
+use tilo_session_core::desktop::host::contract::LEAVE_WORKSPACE;
+
+use tilo_session_core::desktop::host::contract::NEW_WORKSPACE;
+
+use tilo_session_core::desktop::host::contract::REPORT_PROBLEM;
+
+use tilo_session_core::desktop::host::contract::SESSION_LOCK;
+
+use tilo_session_core::desktop::host::contract::SESSION_LOG_OUT;
+
+use tilo_session_core::desktop::host::contract::SESSION_RESTART;
+
+use tilo_session_core::desktop::host::contract::SESSION_SHUT_DOWN;
+
+use tilo_session_core::desktop::host::contract::WORKSPACE_SETTINGS;
 #[cfg(target_os = "linux")]
-use tilo_desktop::launchpad::{LaunchpadAction, WorkspaceScope};
-use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource};
+use tilo_session_core::desktop::launchpad::{LaunchpadAction, WorkspaceScope};
+use tilo_session_core::desktop::state::{DesktopHandle, HostAction, HostActionSource};
 use tilo_sheets::power::{Offers, PowerEffect};
 use ui::icons::Icon;
 

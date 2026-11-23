@@ -44,11 +44,11 @@ use tilo_actions::remote::{
     ConfirmedInvocation, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_compositor::ReadableWatch;
-use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::session_api::{Consent, Hello};
 use tilo_seal::secret_service::CallerKey;
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::{word, words};
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed};
 use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;

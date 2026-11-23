@@ -1,6 +1,6 @@
 //! The person's notices as a test host shows them, for a test to read back.
 
-use tilo_desktop_surface::DesktopNotifications;
+use tilo_session_core::desktop::state::DesktopNotifications;
 
 use crate::platform::notice::{Notice, Notices};
 

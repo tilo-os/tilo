@@ -113,7 +113,7 @@ core = [
     "tilo-mcp -> tilo-test-env",
     "tilo-peer-state -> durable-store",
     "tilo-peer-state -> tilo-desktop-model",
-    "tilo-peer-state -> tilo-desktop-surface",
+    "tilo-peer-state -> tilo-session-core",
     "tilo-peer-state -> tilo-ui",
     "tilo-runtime -> app-cli",
     "tilo-runtime -> app-fleet",

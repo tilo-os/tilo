@@ -19,12 +19,9 @@ use iroh::{EndpointAddr, EndpointId};
 #[cfg(target_os = "linux")]
 use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
-use tilo_desktop::here::Person;
-use tilo_desktop::here::{Here, LiveMember};
+use tilo_session_core::desktop::here::{Person, Here, LiveMember};
 #[cfg(target_os = "linux")]
 use tilo_desktop_model::Layout;
-#[cfg(target_os = "linux")]
-use tilo_desktop_surface::DesktopHandle;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::Nearby;
 #[cfg(target_os = "linux")]
@@ -41,6 +38,8 @@ use tilo_session_client::message_policy::WorkspaceAction;
 use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
 #[cfg(target_os = "linux")]
 use tilo_session_client::{Cmd, Enrolled, Event, Outbox, SayPresence, Topic};
+#[cfg(target_os = "linux")]
+use tilo_session_core::desktop::state::DesktopHandle;
 
 #[cfg(target_os = "linux")]
 use super::Entering;
@@ -1017,12 +1016,12 @@ pub(crate) struct Roster {
     /// The roster the bar lists, and the pointer over the tile it is on.
     here: Here,
     /// The last wave at this person, for the bar to say.
-    wave_notice: RefCell<Option<tilo_desktop::chrome::WaveNotice>>,
+    wave_notice: RefCell<Option<tilo_session_core::desktop::host::chrome::WaveNotice>>,
     /// The workspace whose arrival the bar is saying, so a person who comes to a workspace where
     /// people are is shown arriving once, not on every roster change.
     arrived_in: RefCell<Option<String>>,
     /// The arrival the bar shows.
-    arrival: RefCell<Option<tilo_desktop::chrome::ArrivalNotice>>,
+    arrival: RefCell<Option<tilo_session_core::desktop::host::chrome::ArrivalNotice>>,
     /// The semantic work the workspace's agents narrated since its surface last took it, by
     /// workspace, admitted and bound to the member that published it
     /// ([`tilo_session_client::narration::Held`]).
@@ -1087,30 +1086,30 @@ impl Roster {
         let people = self.people(tree, notes, app_name);
         // Whose view this person follows, so the bar keeps that face when it has room for only one.
         let following = self.here.borrow().following().map(str::to_owned);
-        tilo_desktop::here::place_here(tree, &people, following.as_deref());
+        tilo_session_core::desktop::here::place_here(tree, &people, following.as_deref());
         // Who follows this person: their faces in the bar say so.
         let followers = self.here.borrow().followers(&people);
-        tilo_desktop::here::mark_followers(tree, &followers);
+        tilo_session_core::desktop::here::mark_followers(tree, &followers);
         people
     }
 
     #[cfg(target_os = "linux")]
     /// Bring where this person's own agent works into view, when it moved or acted since the last
-    /// look, among the people this surface lists ([`tilo_desktop::here::reveal_own_agent_work`]).
+    /// look, among the people this surface lists ([`tilo_session_core::desktop::here::reveal_own_agent_work`]).
     /// Whether it asked the strip to move.
     pub(crate) fn reveal_own_agent_work(&self, people: &[Person], handle: &DesktopHandle) -> bool {
-        tilo_desktop::here::reveal_own_agent_work(&mut self.here.borrow_mut(), people, handle)
+        tilo_session_core::desktop::here::reveal_own_agent_work(&mut self.here.borrow_mut(), people, handle)
     }
 
     /// The last wave at this person, for the bar to say.
     #[must_use]
-    pub(crate) fn wave_notice(&self) -> Option<tilo_desktop::chrome::WaveNotice> {
+    pub(crate) fn wave_notice(&self) -> Option<tilo_session_core::desktop::host::chrome::WaveNotice> {
         self.wave_notice.borrow().clone()
     }
 
     /// The arrival the bar shows, while its moment lasts.
     #[must_use]
-    pub(crate) fn arrival_notice(&self) -> Option<tilo_desktop::chrome::ArrivalNotice> {
+    pub(crate) fn arrival_notice(&self) -> Option<tilo_session_core::desktop::host::chrome::ArrivalNotice> {
         self.arrival.borrow().clone()
     }
 
@@ -1147,7 +1146,7 @@ impl Roster {
             return;
         }
         *self.arrived_in.borrow_mut() = Some(workspace.to_owned());
-        *self.arrival.borrow_mut() = Some(tilo_desktop::chrome::ArrivalNotice {
+        *self.arrival.borrow_mut() = Some(tilo_session_core::desktop::host::chrome::ArrivalNotice {
             people: people
                 .iter()
                 .map(|member| member.publisher.clone())
@@ -1190,7 +1189,7 @@ impl Roster {
         let work = narrated.take(&workspace);
         drop(narrated);
         if admitted {
-            tilo_desktop::here::note_narrated(&mut self.here.borrow_mut(), &work);
+            tilo_session_core::desktop::here::note_narrated(&mut self.here.borrow_mut(), &work);
             self.for_apps
                 .borrow_mut()
                 .extend(work.into_iter().map(|work| (workspace.clone(), work)));
@@ -1203,7 +1202,7 @@ impl Roster {
     fn show_waves(&self) {
         let heard = self.here.borrow_mut().take_waves();
         if let Some(last) = heard.last() {
-            *self.wave_notice.borrow_mut() = Some(tilo_desktop::chrome::WaveNotice {
+            *self.wave_notice.borrow_mut() = Some(tilo_session_core::desktop::host::chrome::WaveNotice {
                 from: last.name.clone(),
                 at: ui::time::now(),
             });
@@ -2045,7 +2044,7 @@ impl Client {
     #[cfg(target_os = "linux")]
     /// Bring where this person's own agent works into view, when one of them moved or acted since
     /// the surface last looked, among the `people` it lists
-    /// ([`tilo_desktop::here::reveal_own_agent_work`]): the strip scrolls to the window without
+    /// ([`tilo_session_core::desktop::here::reveal_own_agent_work`]): the strip scrolls to the window without
     /// taking the keyboard. Whether it asked the strip to move.
     pub fn reveal_own_agent_work(&self, people: &[Person], handle: &DesktopHandle) -> bool {
         self.hosting.roster.reveal_own_agent_work(people, handle)
@@ -2053,13 +2052,13 @@ impl Client {
 
     /// The waves at this person since the last call, as the bar says them.
     #[must_use]
-    pub fn wave_notice(&self) -> Option<tilo_desktop::chrome::WaveNotice> {
+    pub fn wave_notice(&self) -> Option<tilo_session_core::desktop::host::chrome::WaveNotice> {
         self.hosting.roster.wave_notice()
     }
 
     /// The arrival the bar shows, while its moment lasts.
     #[must_use]
-    pub fn arrival_notice(&self) -> Option<tilo_desktop::chrome::ArrivalNotice> {
+    pub fn arrival_notice(&self) -> Option<tilo_session_core::desktop::host::chrome::ArrivalNotice> {
         self.hosting.roster.arrival_notice()
     }
 }

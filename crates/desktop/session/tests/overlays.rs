@@ -24,7 +24,7 @@ use std::time::Duration;
 use crate::common::tree::{layout_tree, window};
 use serde_json::{Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
+use tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX;
 use tilo_desktop_model::{Layout, WindowGroup, WindowWidth};
 use tilo_session::shell::state::{FOCUS, WINDOW_MENU};
 use tilo_session::surfaces::Surface;
@@ -586,7 +586,7 @@ fn the_panel_stands_hidden_between_openings_and_the_next_opening_starts_nothing(
     // starting it.
     session
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "quick-settings",
             &args(&json!({})),
         )
@@ -695,7 +695,7 @@ fn a_dismissing_press_does_not_reopen_what_it_closed() {
     );
     session
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "quick-settings",
             &args(&json!({})),
         )
@@ -717,7 +717,7 @@ fn a_dismissing_press_does_not_reopen_what_it_closed() {
     session.step(REFRESH).expect("a turn of the session");
     session
         .invoke(
-            tilo_desktop::verbs::CHROME_RESOURCE,
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
             "quick-settings",
             &args(&json!({})),
         )

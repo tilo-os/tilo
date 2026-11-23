@@ -3,9 +3,8 @@
 //!
 //! A tilolang shell's views never draw a place's content: each frame puts a
 //! [`ui::widget::WindowWell`] where the content goes, and the well reports its rectangle, keyed
-//! by the place, to the [`Wells`] handle the surface host shares with this policy — as
-//! [`ShellDesktop`](crate::ShellDesktop) and
-//! [`StripPolicy`](crate::StripPolicy) share their desktop. The policy answers a window's initial
+//! by the place, to the [`Wells`] handle the surface host shares with this policy, over the
+//! desktop [`ShellDesktop`](crate::ShellDesktop) runs. The policy answers a window's initial
 //! size, its place and the placement of every window from that: a window maps into the
 //! desktop's tab model (giving it a tab id), and its well is the one keyed by that tab id.
 //!

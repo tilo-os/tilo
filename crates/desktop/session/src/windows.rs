@@ -3,11 +3,11 @@
 //! resource publishes these readings, and the switcher's panel shows the walk over them.
 
 use serde::{Deserialize, Serialize};
-use tilo_desktop::overlays::{Overlay, Overlays, SwitcherScope};
+use tilo_session_core::desktop::overlays::{Overlay, Overlays, SwitcherScope};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 /// The layout's windows as `session:windows` publishes them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
@@ -340,54 +340,6 @@ pub(crate) fn window_surfaces(tree: &Layout) -> std::collections::HashMap<u64, u
         .collect()
 }
 
-/// What the switcher's panel shows while the walk is up: the windows it crosses, in its order,
-/// and the one it has reached. `None` when no walk is up.
-pub(crate) fn switcher_view(
-    handle: &DesktopHandle,
-    overlays: &Overlays,
-    sizes: &std::collections::HashMap<u64, (u32, u32)>,
-) -> Option<tilo_desktop::window_switcher::SwitcherView> {
-    let (windows, workspace, reached, surfaces) = handle.read(|tree| {
-        let windows = windows(tree, handle);
-        let reached = reaching(overlays, &windows, tree.active);
-        (windows, tree.active, reached, window_surfaces(tree))
-    });
-    let reached = reached?;
-    let (walked, _) = walked(&windows, workspace, overlays.scope());
-    let selected = walked.iter().position(|at| *at == reached)?;
-    let cards = walked
-        .iter()
-        .filter_map(|at| windows.get(*at))
-        .map(|window| {
-            // A window whose app holds secrets from the layout, or one this device does not run,
-            // has no picture: its card shows the app's own face. A key that is no tab is such
-            // a window, and so is one whose host pictures nothing.
-            let client = tilo_failure::ignored!(
-                "a window that is no tab has no client to picture",
-                window
-                    .key
-                    .parse::<u64>()
-                    .ok()
-                    .and_then(|tab| surfaces.get(&tab).copied())
-            );
-            let window_id = (window.preview == "live").then_some(client).flatten();
-            tilo_desktop::window_switcher::SwitcherCard {
-                window: window_id,
-                // The shape of the window's own pixels, as the compositor lays it out: the card
-                // takes it, so the picture fills the card.
-                size: client.and_then(|client| sizes.get(&client).copied()),
-                title: window.title.clone(),
-                app_key: window.app_key.clone(),
-            }
-        })
-        .collect();
-    Some(tilo_desktop::window_switcher::SwitcherView {
-        cards,
-        selected,
-        app_scope: overlays.scope() == SwitcherScope::App,
-    })
-}
-
 /// Bring the window the switcher's walk reached to the front, and close the switcher. The walk
 /// counts from the window in front, over the windows its scope crosses, wrapping.
 pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &Overlays) {
@@ -412,7 +364,7 @@ fn has_walk_target(walked: &[usize], front: Option<usize>) -> bool {
 
 /// Whether a walk in `scope` on `handle`'s active workspace has no walkable windows: shares
 /// [`tab_is_window`] and [`front_window`] with [`windows`] and reads the tree with no allocations,
-/// so both `show-surface`/`open-surface` and `switcher::show` check the same empty-walk rule.
+/// so both `show-surface`/`open-surface` and the session's pass check the same empty-walk rule.
 pub(crate) fn switcher_walk_empty_in(handle: &DesktopHandle, scope: SwitcherScope) -> bool {
     handle.read(|tree| match scope {
         SwitcherScope::Workspace => tree.active_workspace().is_none_or(|front| {
@@ -427,7 +379,7 @@ pub(crate) fn switcher_walk_empty_in(handle: &DesktopHandle, scope: SwitcherScop
     })
 }
 
-/// Whether an open walk on `handle` has no walkable windows left in its scope, so `switcher::show`
+/// Whether an open walk on `handle` has no walkable windows left in its scope, so the session's pass
 /// dismisses an emptied walk on the same pass even before the reveal delay elapses.
 pub(crate) fn switcher_walk_empty(handle: &DesktopHandle, walk: &Overlays) -> bool {
     switcher_walk_empty_in(handle, walk.scope())

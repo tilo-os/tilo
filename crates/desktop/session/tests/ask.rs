@@ -16,10 +16,10 @@
 use std::time::Duration;
 
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_desktop_surface::{DesktopNotifications, HostAction, HostActionSource};
 use tilo_session::Options;
 use tilo_session::Session;
 use tilo_session::platform::notice::{Notice, Notices};
+use tilo_session_core::desktop::state::{DesktopNotifications, HostAction, HostActionSource};
 use ui::accesskit::{Node, NodeId, Role, TreeUpdate};
 
 const SETTLE: Duration = Duration::from_millis(1);

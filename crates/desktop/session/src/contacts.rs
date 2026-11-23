@@ -19,10 +19,10 @@ use serde_json::{Map, Value};
 use tilo_action_policy::WorkspacePolicy;
 use tilo_actions::{ActionAddress, ActionInvoker, ApiError, ResourceSpec};
 use tilo_contact_directory::ContactDirectory;
-use tilo_desktop_surface::DesktopHandle;
 use tilo_resource::Resource as _;
 use tilo_service::{Service, Started};
 use tilo_session_client::daemon_documents::DaemonShell;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::followed_resource::FollowedResource;
 

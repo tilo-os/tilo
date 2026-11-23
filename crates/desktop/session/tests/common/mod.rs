@@ -937,7 +937,6 @@ pub fn api_options(root: &Path) -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         state: Some(device_state()),
         questions: Some(Questions::new()),

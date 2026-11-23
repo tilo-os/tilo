@@ -28,12 +28,12 @@ pub use linux::Hosted;
 pub use tilo_shell_surface::shell_part::{ShellIdentity, compile_shell, installed_shell};
 /// The desktop's own surfaces, as a Linux session drives them: the toolkit's widget trees on their
 /// layers ([`WidgetSurface`]), the shell under the windows and its window policy ([`ShellDesktop`],
-/// [`StripPolicy`]), a surface app on a layer of its own ([`AppProcess`]) and the tilolang shell's
+/// [`WellPolicy`]), a surface app on a layer of its own ([`AppProcess`]) and the tilolang shell's
 /// parts and slot views.
 #[cfg(target_os = "linux")]
 pub use tilo_shell_surface::{
-    AppProcess, PointerSamples, SessionLink, ShellDesktop, ShellGesture, ShellPart, ShellWork,
-    StripPolicy, WellPolicy, WidgetSurface, WindowObserver, desktop, desktop_with, part_view,
+    AppProcess, SessionLink, ShellDesktop, ShellGesture, ShellPart, ShellWork, WellPolicy,
+    WidgetSurface, WindowObserver, desktop, part_view,
 };
 
 /// What a role places over the windows: the shell's layers.

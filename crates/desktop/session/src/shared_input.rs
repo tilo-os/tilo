@@ -29,8 +29,8 @@ use serde_json::{Value as Json, json};
 use settings_store::person_displays::{Layout, PersonDisplays, Placements, ResolvedDisplay};
 use tilo_compositor::clipboard_history::{Pull, Pulled};
 use tilo_compositor::{Compositor, InputEvent, ObservedInput};
-use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surface::Scroll;
 
 use crate::platform::fabric::{

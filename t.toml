@@ -3213,19 +3213,6 @@ outputs = ["/target/imager-journey-screenshots/**"]
 timeout_secs = 3600
 default = false
 
-# Pictures of sharing a window with its workspace, from both ends: what the window's menu and the
-# bar say on the device that has it, and what its tab says on every other device, in both themes
-# and both languages (crates/session/desktop/examples/window_share_shots.rs).
-[[check]]
-name = "window-share-shots"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "rm -rf /target/window-share-shots\nbash tools/test-env.sh cargo run --locked -p tilo-desktop --example window_share_shots -- /target/window-share-shots\n"
-env = { TILO_TEST_NTFS_FIXTURES = "0" }
-requires = ["arch=x86_64"]
-outputs = ["/target/window-share-shots/**"]
-timeout_secs = 3600
-default = false
-
 # Pictures of the shell the session's own tests take (SHELL_UI_SHOTS_OUT): the protected sheet a
 # person types a password into for an agent's account sign-in
 # (crates/desktop/session/tests/network_agent_questions.rs). Only when named.
@@ -6994,7 +6981,7 @@ proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "sessio
 
 # A person's first hour, one walk per thing they meet — the shell's launcher, switcher, search,
 # quick settings and the rest, and each app they open — walked in every version its step file names
-# that is still in the tree: the Rust shell and the tilolang one (`--shell screen`), a Rust app and
+# that is still in the tree: the tilolang shell, a Rust app and
 # its tilolang port. One headless session per version on the session the nested-session check built,
 # every step snapshotted in the light theme and the marked ones in the dark, each step asserting what
 # a person must see and how long it may take (scripts/headless-examples/app-walk.py, the steps in

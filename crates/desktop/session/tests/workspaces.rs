@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_app::framework::testing::HeadlessApp;
-use tilo_desktop::verbs::CHROME_RESOURCE;
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 

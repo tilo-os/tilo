@@ -16664,15 +16664,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-activities"
-version = "0.1.0"
-dependencies = [
- "tilo-app",
- "tilo-desktop-surface",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-adblock-engine"
 version = "0.1.0"
 dependencies = [
@@ -18084,49 +18075,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-desktop"
-version = "0.1.0"
-dependencies = [
- "agent-provider-config",
- "blake3",
- "collab-types",
- "desktop-policy",
- "ed25519-dalek 3.0.0",
- "hex",
- "jiff",
- "serde",
- "serde_json",
- "slides",
- "taffy",
- "test-document-app",
- "tilo-action-policy",
- "tilo-actions",
- "tilo-activities",
- "tilo-app",
- "tilo-app-id",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-compositor",
- "tilo-copy-lint",
- "tilo-desktop-model",
- "tilo-desktop-search",
- "tilo-desktop-surface",
- "tilo-failure",
- "tilo-resource",
- "tilo-session-core",
- "tilo-shell-surface",
- "tilo-sort",
- "tilo-system-stats",
- "tilo-test-env",
- "tilo-tts",
- "tilo-ui",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
@@ -18179,7 +18127,6 @@ dependencies = [
  "tilo-clock",
  "tilo-desktop-model",
  "tilo-desktop-search",
- "tilo-desktop-surface",
  "tilo-failure",
  "tilo-session-core",
  "tilo-ui",
@@ -18212,49 +18159,6 @@ dependencies = [
  "tilo-ui",
  "tracing",
  "walkdir",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-desktop-surface"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "collab-types",
- "fs-protocol",
- "hex",
- "neighbour-wire",
- "postcard",
- "serde",
- "serde_json",
- "taffy",
- "tilo-action-policy",
- "tilo-actions",
- "tilo-app-id",
- "tilo-audio-service",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-callstream",
- "tilo-clock",
- "tilo-color-pipeline",
- "tilo-copy-lint",
- "tilo-desktop",
- "tilo-desktop-model",
- "tilo-desktop-search",
- "tilo-lock",
- "tilo-media",
- "tilo-resource",
- "tilo-server-protocol",
- "tilo-service",
- "tilo-session-core",
- "tilo-sort",
- "tilo-test-env",
- "tilo-ui",
- "tilo-vello",
- "tilo-webview",
- "tilo-window-share",
- "tilo-winit",
- "uuid",
  "workspace-hack",
 ]
 
@@ -19768,19 +19672,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-notification-banners"
-version = "0.1.0"
-dependencies = [
- "image",
- "tilo-app",
- "tilo-compositor",
- "tilo-desktop",
- "tilo-session",
- "tilo-session-core",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-notifications-service"
 version = "0.1.0"
 dependencies = [
@@ -19973,7 +19864,6 @@ dependencies = [
  "tilo-api",
  "tilo-automerge-fork",
  "tilo-clock",
- "tilo-desktop",
  "tilo-device-identity",
  "tilo-files",
  "tilo-identity",
@@ -20197,7 +20087,6 @@ dependencies = [
  "tilo-content",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
- "tilo-desktop-surface",
  "tilo-device-identity",
  "tilo-failure",
  "tilo-files",
@@ -20207,6 +20096,7 @@ dependencies = [
  "tilo-server",
  "tilo-server-client",
  "tilo-server-protocol",
+ "tilo-session-core",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -21239,7 +21129,6 @@ dependencies = [
  "tilo-account-probe",
  "tilo-action-policy",
  "tilo-actions",
- "tilo-activities",
  "tilo-api",
  "tilo-app",
  "tilo-app-id",
@@ -21256,6 +21145,7 @@ dependencies = [
  "tilo-bluetooth-agent",
  "tilo-bluez",
  "tilo-broker-core",
+ "tilo-callstream",
  "tilo-capture-studio",
  "tilo-cli-kit",
  "tilo-clipboard",
@@ -21269,12 +21159,10 @@ dependencies = [
  "tilo-copy-lint",
  "tilo-crash-reports",
  "tilo-delivery-protocol",
- "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-desktop-policy",
  "tilo-desktop-search",
- "tilo-desktop-surface",
  "tilo-device-identity",
  "tilo-device-vpn",
  "tilo-dialogs",
@@ -21300,7 +21188,6 @@ dependencies = [
  "tilo-network-actor",
  "tilo-network-secret-agent",
  "tilo-nm",
- "tilo-notification-banners",
  "tilo-notifications-service",
  "tilo-onboarding",
  "tilo-onboarding-session",
@@ -21473,15 +21360,18 @@ dependencies = [
 name = "tilo-session-core"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "blake3",
  "collab-types",
  "cursor-icon",
+ "desktop-policy",
  "fs-protocol",
  "hex",
  "serde",
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-app",
  "tilo-app-id",
  "tilo-audio-service",
  "tilo-automerge",
@@ -21628,7 +21518,6 @@ dependencies = [
  "tilo-compositor",
  "tilo-desktop-model",
  "tilo-desktop-policy",
- "tilo-desktop-surface",
  "tilo-presentation",
  "tilo-render-protocol",
  "tilo-render-service",
@@ -24332,12 +24221,8 @@ dependencies = [
  "taffy",
  "tilo-automerge-fork",
  "tilo-clock",
- "tilo-desktop-model",
- "tilo-desktop-surface",
- "tilo-session-core",
  "tilo-ui",
  "tilo-vello",
- "tilo-webview",
  "tilo-winit",
  "workspace-hack",
 ]
@@ -28343,7 +28228,6 @@ dependencies = [
  "tilo-account-probe",
  "tilo-action-policy",
  "tilo-actions",
- "tilo-activities",
  "tilo-advisory-lock",
  "tilo-agent-session",
  "tilo-agent-turn",
@@ -28406,12 +28290,10 @@ dependencies = [
  "tilo-dav",
  "tilo-delivery-protocol",
  "tilo-deployment-status",
- "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-desktop-policy",
  "tilo-desktop-search",
- "tilo-desktop-surface",
  "tilo-device-identity",
  "tilo-device-protocol",
  "tilo-device-steps",
@@ -28483,7 +28365,6 @@ dependencies = [
  "tilo-network-actor",
  "tilo-network-secret-agent",
  "tilo-nm",
- "tilo-notification-banners",
  "tilo-notifications-service",
  "tilo-notify",
  "tilo-ntfs-helper",

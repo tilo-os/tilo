@@ -1,6 +1,5 @@
-//! The policy over the desktop surface in the toolkit's real frame
-//! pipeline: windows mapped, focused, closed and moved between strips as the
-//! desktop's widgets lay them out.
+//! The policy over the desktop's model, as the session runs it: windows mapped, focused,
+//! closed and moved between strips as the desktop's own pass applies the verbs queued for it.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -9,64 +8,25 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-use std::cell::Cell;
-use std::time::Duration;
-
-use tilo_desktop_model::commands::DesktopCommand;
-use tilo_desktop_model::{GroupId, TileContent};
+use tilo_desktop_model::{GroupId, TileContent, WindowWidth};
 use tilo_desktop_policy::displays::Output;
-use tilo_desktop_policy::{DesktopPolicy, Placement, Window};
+use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect};
 use ui::kurbo::Rect;
 
 const WIDTH: f64 = 1200.0;
-const FRAME: Duration = Duration::from_millis(16);
 
-thread_local! {
-    static CLOCK: Cell<Option<ui::time::Instant>> = const { Cell::new(None) };
+fn mount() -> DesktopPolicy {
+    DesktopPolicy::new(7)
 }
 
-fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
-    let at = CLOCK
-        .get()
-        .unwrap_or_else(ui::time::now)
-        .checked_add(after)
-        .unwrap();
-    CLOCK.set(Some(at));
-    tilo_clock::testing::with_monotonic_time(at, step)
-}
-
-fn mount() -> (ui::headless::FrameHarness, DesktopPolicy) {
-    let (policy, surface) = DesktopPolicy::new(7);
-    policy.set_viewport_width(WIDTH);
-    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
-        ui::state::State::new(),
-        Box::new(surface),
-        (1200, 800),
-        ui::Theme::dark(),
-        ui::TextRenderer::new(),
-        ui::permissions::MemberId::person("tester"),
+/// Passes of the desktop until nothing it shows changes.
+fn settle(policy: &mut DesktopPolicy) {
+    let settled = (0..1_000).any(|_| !policy.step());
+    assert!(
+        settled,
+        "the desktop still changes after a thousand passes"
     );
-    driver.set_caller_palette_enabled(false);
-    driver.relayout();
-    (driver, policy)
-}
-
-/// Frames until nothing on the desktop moves.
-fn settle(driver: &mut ui::headless::FrameHarness) {
-    let settled = (0..1_000).any(|_| {
-        on_clock(FRAME, || driver.relayout());
-        !driver.frame_schedule().needs_animation_frame
-    });
-    assert!(settled, "the desktop still moves after a thousand frames");
-}
-
-/// Step `count` frames: the placement is applied as the change lands, and
-/// the fade it starts over the other windows plays out.
-fn frames(driver: &mut ui::headless::FrameHarness, count: usize) {
-    for _ in 0..count {
-        on_clock(FRAME, || driver.relayout());
-    }
 }
 
 fn window(id: u64, app: &str) -> Window {
@@ -78,13 +38,25 @@ fn window(id: u64, app: &str) -> Window {
     }
 }
 
-fn map(driver: &mut ui::headless::FrameHarness, policy: &mut DesktopPolicy, id: u64, app: &str) {
+fn map(policy: &mut DesktopPolicy, id: u64, app: &str) {
     policy.map(window(id, app)).unwrap();
-    settle(driver);
+    settle(policy);
 }
 
-fn shown(layout: &Placement) -> Vec<u64> {
-    layout.shown.iter().map(|(id, _)| *id).collect()
+/// The windows the shell holds tabs of, in tree order.
+fn windows(policy: &DesktopPolicy) -> Vec<u64> {
+    policy.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| match tab.tile {
+                TileContent::Foreign { surface_id, .. } => Some(surface_id),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 /// The tabs the shell holds, in order: each tab's id and what it shows.
@@ -98,232 +70,6 @@ fn tabs(policy: &DesktopPolicy) -> Vec<(u64, TileContent)> {
             .map(|tab| (tab.id, tab.tile.clone()))
             .collect()
     })
-}
-
-#[test]
-fn a_mapped_window_opens_focused_and_in_view_beside_the_last() {
-    let (mut driver, mut policy) = mount();
-    assert_eq!(policy.placement(), Placement::default());
-    map(&mut driver, &mut policy, 10, "org.gnome.Terminal");
-    map(&mut driver, &mut policy, 11, "org.mozilla.firefox");
-
-    assert_eq!(policy.focused(), Some(11));
-    let layout = policy.placement();
-    let (_, rect) = layout.shown.iter().find(|(id, _)| *id == 11).unwrap();
-    assert!(
-        rect.x0 >= 0.0 && rect.x1 <= WIDTH + 0.5 && rect.width() > 0.0 && rect.height() > 0.0,
-        "the newest window is in view: {layout:?}"
-    );
-    let mut all = shown(&layout);
-    all.extend(&layout.hidden);
-    all.sort_unstable();
-    assert_eq!(all, [10, 11], "every window has a place: {layout:?}");
-    if let Some((_, first)) = layout.shown.iter().find(|(id, _)| *id == 10) {
-        assert!(
-            first.x1 <= rect.x0 + 0.5,
-            "the later one opens to the right"
-        );
-    }
-}
-
-#[test]
-fn focus_brings_a_window_forward_and_unmap_gives_focus_back() {
-    let (mut driver, mut policy) = mount();
-    for (id, app) in [(1, "a"), (2, "b"), (3, "c")] {
-        map(&mut driver, &mut policy, id, app);
-    }
-    assert!(policy.focus(1));
-    settle(&mut driver);
-    assert_eq!(policy.focused(), Some(1));
-    assert!(shown(&policy.placement()).contains(&1));
-
-    policy.unmap(1);
-    settle(&mut driver);
-    let layout = policy.placement();
-    assert!(!shown(&layout).contains(&1) && !layout.hidden.contains(&1));
-    assert!(policy.focused().is_some_and(|id| id != 1));
-    assert!(!policy.focus(1), "a window gone has nothing to focus");
-    assert!(policy.take_closed().is_empty(), "the window closed itself");
-}
-
-#[test]
-fn a_window_the_person_closes_is_reported_once_for_the_client_to_close() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 1, "a");
-    map(&mut driver, &mut policy, 2, "b");
-    assert!(policy.take_closed().is_empty());
-
-    let route = policy.handle().snapshot("g", vec![]).active.unwrap();
-    let close = LayoutEffect::CloseTab { tab: route.tab };
-    policy.handle().dispatch(close).unwrap();
-    settle(&mut driver);
-
-    assert_eq!(policy.take_closed(), [2]);
-    assert!(policy.take_closed().is_empty());
-    policy.unmap(2);
-    assert!(policy.take_closed().is_empty());
-}
-
-#[test]
-fn windows_on_a_strip_not_shown_are_hidden() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 1, "a");
-    policy
-        .handle()
-        .apply_command(&DesktopCommand::CreateStrip {
-            name: "Second".into(),
-        })
-        .unwrap();
-    settle(&mut driver);
-    map(&mut driver, &mut policy, 2, "b");
-
-    let layout = policy.placement();
-    assert_eq!(shown(&layout), [2]);
-    assert_eq!(layout.hidden, [1]);
-    assert_eq!(policy.focused(), Some(2));
-}
-
-#[test]
-fn a_window_keeps_its_title_in_its_tab() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 1, "a");
-    policy.retitle(1, "Report.odt");
-    settle(&mut driver);
-    let titles = policy.handle().read(|tree| {
-        tree.workspaces[0]
-            .strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.title.clone())
-            .collect::<Vec<_>>()
-    });
-    assert_eq!(titles, ["Report.odt"]);
-}
-
-#[test]
-fn a_window_is_named_by_what_it_shows_and_by_the_person_above_that() {
-    use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 1, "so.tilo.notes");
-    let tab = window_tab(&policy, 1);
-    // The note the window shows, as its app puts it in the bar's location.
-    let bar = Some(WindowToolbar {
-        location: Some(ToolbarLocation {
-            label: "Garden plan".into(),
-            ..ToolbarLocation::default()
-        }),
-        ..WindowToolbar::default()
-    });
-    policy.handle().declare_bar(tab, 7, bar);
-    settle(&mut driver);
-    policy.retitle(1, "Notes");
-    settle(&mut driver);
-    assert_eq!(
-        title_of(&policy, tab),
-        "Garden plan",
-        "the window's own title only stands where its app names nothing"
-    );
-    // The person's own name stands in front of it, and clearing it goes
-    // back to what the window shows.
-    let group = groups(&policy)
-        .into_iter()
-        .find(|(_, tabs, _)| tabs.contains(&tab))
-        .map(|(group, _, _)| group.to_string())
-        .unwrap();
-    let rename = |name: &str| ChromeEffect::Rename {
-        tab: None,
-        group: Some(group.clone()),
-        strip: None,
-        workspace: None,
-        name: name.into(),
-    };
-    policy.handle().dispatch(rename("Read later")).unwrap();
-    settle(&mut driver);
-    assert_eq!(title_of(&policy, tab), "Read later");
-    policy.handle().dispatch(rename("")).unwrap();
-    settle(&mut driver);
-    assert_eq!(title_of(&policy, tab), "Garden plan");
-    // Nothing shown to name: the window goes back to its own title.
-    policy.handle().declare_bar(tab, 7, None);
-    settle(&mut driver);
-    policy.retitle(1, "Notes");
-    settle(&mut driver);
-    assert_eq!(title_of(&policy, tab), "Notes");
-    // A window that names nothing keeps the name it has: the bar is never
-    // left with no title in it.
-    policy.retitle(1, "");
-    settle(&mut driver);
-    assert_eq!(title_of(&policy, tab), "Notes");
-}
-
-/// What the tab `tab` is called.
-fn title_of(policy: &DesktopPolicy, tab: u64) -> String {
-    policy.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|held| held.id == tab)
-            .unwrap()
-            .title
-            .clone()
-    })
-}
-
-#[test]
-fn the_shell_names_the_tabs_it_has_for_apps_with_their_apps() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 4, "so.tilo.notes");
-    map(&mut driver, &mut policy, 5, "org.gnome.Terminal");
-    let notes = policy.tab_of(4).expect("the window has its tab");
-    let terminal = policy.tab_of(5).expect("the window has its tab");
-    assert_eq!(
-        policy.app_tabs_in_front(),
-        [
-            (notes, "so.tilo.notes".to_owned()),
-            (terminal, "org.gnome.Terminal".to_owned())
-        ],
-        "each window with the id its app announces itself by"
-    );
-    // A launch the shell holds a place for has a tab from the frame it is
-    // asked for, and that tab is the app's window on its way: the next
-    // launch of the app goes there instead of starting a second process.
-    assert!(
-        policy.hold("so.tilo.notes", None, (false, false), None),
-        "a place beside the window the app has"
-    );
-    // The place shows a window that has not come, which never stops moving.
-    frames(&mut driver, 2);
-    let place = policy
-        .app_tabs_in_front()
-        .into_iter()
-        .find_map(|(tab, app)| (tab != notes && app == "so.tilo.notes").then_some(tab))
-        .expect("the place the launch holds is one of the app's tabs");
-    assert!(policy.holds_a_place(place), "the tab shows the place");
-    assert!(
-        policy.focus_tab(place),
-        "the place comes forward with the window that fills it"
-    );
-    // The launch started nothing: its place goes, and the app's own window is
-    // the one the shell has.
-    policy.release_held("so.tilo.notes");
-    frames(&mut driver, 2);
-    assert_eq!(
-        policy.app_tabs_in_front(),
-        [
-            (notes, "so.tilo.notes".to_owned()),
-            (terminal, "org.gnome.Terminal".to_owned())
-        ]
-    );
-    policy.unmap(4);
-    settle(&mut driver);
-    assert_eq!(
-        policy.app_tabs_in_front(),
-        [(terminal, "org.gnome.Terminal".to_owned())],
-        "a window gone is not one a launch could raise"
-    );
 }
 
 /// The shell's window groups in order: each with its id, its tabs and the tab
@@ -352,6 +98,36 @@ fn groups(policy: &DesktopPolicy) -> Vec<(GroupId, Vec<u64>, u64)> {
     })
 }
 
+/// The window group the tab `tab` sits in.
+fn group_of(policy: &DesktopPolicy, tab: u64) -> GroupId {
+    policy
+        .handle()
+        .read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
+                .map(|group| group.id)
+        })
+        .expect("the tab sits in a window group")
+}
+
+/// The share of its strip the window group `group` keeps.
+fn group_width(policy: &DesktopPolicy, group: GroupId) -> WindowWidth {
+    policy
+        .handle()
+        .read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .find(|held| held.id == group)
+                .map(|held| held.width)
+        })
+        .expect("the window group stands on a strip")
+}
+
 /// The tab the window `window` of the shell sits in.
 fn window_tab(policy: &DesktopPolicy, window: u64) -> u64 {
     policy.handle().read(|tree| {
@@ -368,17 +144,195 @@ fn window_tab(policy: &DesktopPolicy, window: u64) -> u64 {
     })
 }
 
+/// What the tab `tab` is called.
+fn title_of(policy: &DesktopPolicy, tab: u64) -> String {
+    policy.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|held| held.id == tab)
+            .unwrap()
+            .title
+            .clone()
+    })
+}
+
+#[test]
+fn a_mapped_window_opens_focused_beside_the_last() {
+    let mut policy = mount();
+    assert!(windows(&policy).is_empty(), "nothing is on the shell yet");
+    map(&mut policy, 10, "org.gnome.Terminal");
+    map(&mut policy, 11, "org.mozilla.firefox");
+
+    assert_eq!(policy.focused(), Some(11));
+    let first = policy.tab_of(10).expect("the first window has a tab");
+    let second = policy.tab_of(11).expect("the second window has a tab");
+    let order: Vec<(Vec<u64>, u64)> = groups(&policy)
+        .into_iter()
+        .map(|(_, tabs, active)| (tabs, active))
+        .collect();
+    assert_eq!(
+        order,
+        [(vec![first], first), (vec![second], second)],
+        "each window stands in a window of its own, the later one to the right"
+    );
+}
+
+#[test]
+fn focus_brings_a_window_forward_and_unmap_gives_focus_back() {
+    let mut policy = mount();
+    for (id, app) in [(1, "a"), (2, "b"), (3, "c")] {
+        map(&mut policy, id, app);
+    }
+    assert!(policy.focus(1));
+    settle(&mut policy);
+    assert_eq!(policy.focused(), Some(1));
+
+    policy.unmap(1);
+    settle(&mut policy);
+    assert_eq!(policy.tab_of(1), None, "the window's tab is gone");
+    assert!(policy.focused().is_some_and(|id| id != 1));
+    assert!(!policy.focus(1), "a window gone has nothing to focus");
+    assert!(policy.take_closed().is_empty(), "the window closed itself");
+}
+
+#[test]
+fn a_window_the_person_closes_is_reported_once_for_the_client_to_close() {
+    let mut policy = mount();
+    map(&mut policy, 1, "a");
+    map(&mut policy, 2, "b");
+    assert!(policy.take_closed().is_empty());
+
+    let route = policy.handle().snapshot("g", vec![]).active.unwrap();
+    let close = LayoutEffect::CloseTab { tab: route.tab };
+    policy.handle().dispatch(close).unwrap();
+    settle(&mut policy);
+
+    assert_eq!(policy.take_closed(), [2]);
+    assert!(policy.take_closed().is_empty());
+    policy.unmap(2);
+    assert!(policy.take_closed().is_empty());
+}
+
+#[test]
+fn a_window_keeps_its_title_in_its_tab() {
+    let mut policy = mount();
+    map(&mut policy, 1, "a");
+    policy.retitle(1, "Report.odt");
+    settle(&mut policy);
+    let titles = policy.handle().read(|tree| {
+        tree.workspaces[0]
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.title.clone())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(titles, ["Report.odt"]);
+}
+
+#[test]
+fn a_windows_name_stands_below_the_persons_own() {
+    let mut policy = mount();
+    map(&mut policy, 1, "so.tilo.notes");
+    let tab = window_tab(&policy, 1);
+    policy.retitle(1, "Notes");
+    settle(&mut policy);
+    assert_eq!(
+        title_of(&policy, tab),
+        "Notes",
+        "the window's own title names it where its app names nothing"
+    );
+    // The person's own name stands in front of it, and clearing it goes back to what the
+    // window shows.
+    let group = group_of(&policy, tab).to_string();
+    let rename = |name: &str| ChromeEffect::Rename {
+        tab: None,
+        group: Some(group.clone()),
+        strip: None,
+        workspace: None,
+        name: name.into(),
+    };
+    policy.handle().dispatch(rename("Read later")).unwrap();
+    settle(&mut policy);
+    assert_eq!(title_of(&policy, tab), "Read later");
+    policy.handle().dispatch(rename("")).unwrap();
+    settle(&mut policy);
+    assert_eq!(title_of(&policy, tab), "Notes");
+    // A window that names nothing keeps the name it has: the tab is never
+    // left with no title in it.
+    policy.retitle(1, "");
+    settle(&mut policy);
+    assert_eq!(title_of(&policy, tab), "Notes");
+}
+
+#[test]
+fn the_shell_names_the_tabs_it_has_for_apps_with_their_apps() {
+    let mut policy = mount();
+    map(&mut policy, 4, "so.tilo.notes");
+    map(&mut policy, 5, "org.gnome.Terminal");
+    let notes = policy.tab_of(4).expect("the window has its tab");
+    let terminal = policy.tab_of(5).expect("the window has its tab");
+    assert_eq!(
+        policy.app_tabs_in_front(),
+        [
+            (notes, "so.tilo.notes".to_owned()),
+            (terminal, "org.gnome.Terminal".to_owned())
+        ],
+        "each window with the id its app announces itself by"
+    );
+    // A launch the shell holds a place for has a tab from the pass it is
+    // asked for, and that tab is the app's window on its way: the next
+    // launch of the app goes there instead of starting a second process.
+    assert!(
+        policy.hold("so.tilo.notes", None, (false, false), None),
+        "a place beside the window the app has"
+    );
+    settle(&mut policy);
+    let place = policy
+        .app_tabs_in_front()
+        .into_iter()
+        .find_map(|(tab, app)| (tab != notes && app == "so.tilo.notes").then_some(tab))
+        .expect("the place the launch holds is one of the app's tabs");
+    assert!(policy.holds_a_place(place), "the tab shows the place");
+    assert!(
+        policy.focus_tab(place),
+        "the place comes forward with the window that fills it"
+    );
+    // The launch started nothing: its place goes, and the app's own window is
+    // the one the shell has.
+    policy.release_held("so.tilo.notes");
+    settle(&mut policy);
+    assert_eq!(
+        policy.app_tabs_in_front(),
+        [
+            (notes, "so.tilo.notes".to_owned()),
+            (terminal, "org.gnome.Terminal".to_owned())
+        ]
+    );
+    policy.unmap(4);
+    settle(&mut policy);
+    assert_eq!(
+        policy.app_tabs_in_front(),
+        [(terminal, "org.gnome.Terminal".to_owned())],
+        "a window gone is not one a launch could raise"
+    );
+}
+
 #[test]
 fn an_apps_next_window_lands_right_after_its_own() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 10, "so.tilo.notes");
+    let mut policy = mount();
+    map(&mut policy, 10, "so.tilo.notes");
     let (anchor, group, index) = policy.anchor_for("so.tilo.notes").unwrap();
     assert_eq!(anchor, window_tab(&policy, 10));
     assert_eq!(index, 0);
     assert!(policy.place_next_beside("so.tilo.notes", Some(anchor), false));
 
     // The window announces the short name its package id ends with.
-    map(&mut driver, &mut policy, 11, "notes");
+    map(&mut policy, 11, "notes");
 
     let (first, second) = (window_tab(&policy, 10), window_tab(&policy, 11));
     assert_eq!(
@@ -387,19 +341,16 @@ fn an_apps_next_window_lands_right_after_its_own() {
         "the second window is the app's next tab, in front"
     );
     assert_eq!(policy.focused(), Some(11));
-    let layout = policy.placement();
-    assert_eq!(shown(&layout), [11], "the window in front is drawn");
-    assert_eq!(layout.hidden, [10], "the tab behind it is not");
 }
 
 #[test]
 fn a_window_placed_behind_takes_no_focus() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 10, "so.tilo.notes");
-    map(&mut driver, &mut policy, 12, "org.gnome.Terminal");
+    let mut policy = mount();
+    map(&mut policy, 10, "so.tilo.notes");
+    map(&mut policy, 12, "org.gnome.Terminal");
     let anchor = policy.anchor_for("so.tilo.notes").unwrap();
     assert!(policy.place_next_beside("so.tilo.notes", Some(anchor.0), true));
-    map(&mut driver, &mut policy, 11, "notes");
+    map(&mut policy, 11, "notes");
 
     let (first, second) = (window_tab(&policy, 10), window_tab(&policy, 11));
     let notes = groups(&policy)
@@ -413,19 +364,15 @@ fn a_window_placed_behind_takes_no_focus() {
         Some(12),
         "the window the person worked in keeps the keyboard"
     );
-    assert!(
-        policy.placement().hidden.contains(&11),
-        "a tab opened behind is not drawn"
-    );
 }
 
 #[test]
 fn a_placed_window_is_the_one_that_takes_the_place() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 10, "so.tilo.notes");
+    let mut policy = mount();
+    map(&mut policy, 10, "so.tilo.notes");
     assert!(policy.place_next_beside("so.tilo.notes", None, false));
-    map(&mut driver, &mut policy, 11, "notes");
-    map(&mut driver, &mut policy, 12, "notes");
+    map(&mut policy, 11, "notes");
+    map(&mut policy, 12, "notes");
     assert_eq!(
         groups(&policy).len(),
         2,
@@ -435,8 +382,8 @@ fn a_placed_window_is_the_one_that_takes_the_place() {
 
 #[test]
 fn an_app_never_opens_beside_another_apps_tab() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 10, "so.tilo.notes");
+    let mut policy = mount();
+    map(&mut policy, 10, "so.tilo.notes");
     assert_eq!(
         policy.anchor_for("so.tilo.chat"),
         None,
@@ -446,22 +393,22 @@ fn an_app_never_opens_beside_another_apps_tab() {
         !policy.place_next_beside("so.tilo.chat", None, false),
         "no tab of its own to open beside"
     );
-    map(&mut driver, &mut policy, 11, "so.tilo.chat");
+    map(&mut policy, 11, "so.tilo.chat");
     assert_eq!(groups(&policy).len(), 2, "it opens a window of its own");
 }
 
 #[test]
 fn the_app_tab_in_front_answers_a_request_from_that_app() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 10, "so.tilo.notes");
-    map(&mut driver, &mut policy, 11, "org.gnome.Terminal");
+    let mut policy = mount();
+    map(&mut policy, 10, "so.tilo.notes");
+    map(&mut policy, 11, "org.gnome.Terminal");
     assert_eq!(
         policy.anchor_for("so.tilo.notes").map(|(tab, ..)| tab),
         Some(window_tab(&policy, 10)),
         "another app's window in front: the app's own first tab answers"
     );
     assert!(policy.focus(10));
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(
         policy.anchor_for("so.tilo.notes").map(|(tab, ..)| tab),
         Some(window_tab(&policy, 10))
@@ -479,76 +426,50 @@ fn displays(policy: &mut DesktopPolicy) {
 
 #[test]
 fn each_display_holds_the_windows_opened_while_it_had_focus() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     displays(&mut policy);
-    map(&mut driver, &mut policy, 1, "a");
+    map(&mut policy, 1, "a");
+    // The host says which displays are connected when it lays the shell out: a window opened
+    // since takes its place on the display the person works on.
+    displays(&mut policy);
+    settle(&mut policy);
     let order = policy.displays();
     assert_eq!(order.len(), 2);
     assert_eq!(policy.display_of(1), Some(order[0]));
     assert!(policy.handle().focus_display(order[1]));
-    settle(&mut driver);
-    map(&mut driver, &mut policy, 2, "b");
+    settle(&mut policy);
+    map(&mut policy, 2, "b");
+    displays(&mut policy);
+    settle(&mut policy);
     assert_eq!(policy.display_of(2), Some(order[1]));
-    let layout = policy.placement();
-    let place = |id| layout.shown.iter().find(|(w, _)| *w == id).unwrap().1;
-    assert!(place(1).x1 <= WIDTH / 2.0 + 0.5, "{layout:?}");
-    assert!(place(2).x0 >= WIDTH / 2.0, "{layout:?}");
 
     assert!(policy.handle().step_focus(-1));
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(policy.focused(), Some(1), "past the display's first window");
     assert!(policy.handle().move_focused_to_display(1));
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(policy.display_of(1), Some(order[1]));
     assert_eq!(policy.focused(), Some(1));
 }
 
 #[test]
 fn a_window_taken_full_screen_covers_its_display() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 1, "a");
-    map(&mut driver, &mut policy, 2, "b");
-    let place = |layout: &Placement, id: u64| {
-        layout
-            .shown
-            .iter()
-            .find(|(window, _)| *window == id)
-            .unwrap()
-            .1
-    };
-    let before = place(&policy.placement(), 1);
-    assert!(
-        before.width() < WIDTH - 0.5,
-        "two windows share the strip: {before:?}"
-    );
-    assert_eq!(policy.placement().fullscreen, None);
+    let mut policy = mount();
+    map(&mut policy, 1, "a");
+    map(&mut policy, 2, "b");
+    assert_eq!(policy.covering_window(), None);
 
     assert!(policy.set_fullscreen(1, true), "the desktop holds it");
-    frames(&mut driver, 30);
-    let layout = policy.placement();
+    settle(&mut policy);
     assert_eq!(
-        layout.fullscreen,
+        policy.covering_window(),
         Some(1),
         "the shell says which one covers"
     );
-    let cover = place(&layout, 1);
-    assert!(
-        cover.x0.abs() < 0.5
-            && cover.y0.abs() < 0.5
-            && (cover.x1 - WIDTH).abs() < 0.5
-            && cover.height() > before.height() + 0.5,
-        "the display from its top edge to its bottom: {cover:?} against {before:?}"
-    );
 
     assert!(policy.set_fullscreen(1, false));
-    frames(&mut driver, 30);
-    let layout = policy.placement();
-    assert_eq!(layout.fullscreen, None, "the display is given back");
-    let back = place(&layout, 1);
-    assert!(
-        (back.x0 - before.x0).abs() < 0.5 && (back.width() - before.width()).abs() < 0.5,
-        "the window stands where it stood: {back:?} against {before:?}"
-    );
+    settle(&mut policy);
+    assert_eq!(policy.covering_window(), None, "the display is given back");
 }
 
 /// A program's own top-level window takes a tab whatever size it keeps: an X11 settings window
@@ -556,21 +477,21 @@ fn a_window_taken_full_screen_covers_its_display() {
 /// to floats over it, its size aside.
 #[test]
 fn a_fixed_size_window_without_a_parent_takes_a_tab() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     displays(&mut policy);
-    map(&mut driver, &mut policy, 1, "a");
+    map(&mut policy, 1, "a");
     let fixed = Window {
         min_size: Some((400, 240)),
         max_size: Some((400, 240)),
         ..window(2, "b")
     };
     policy.map(fixed).unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     assert!(!policy.is_floating(2), "a fixed size alone is no dialog");
     assert!(policy.tab_of(2).is_some(), "it gets a tab of its own");
     assert_eq!(
-        shown(&policy.placement()),
-        [1, 2],
+        groups(&policy).len(),
+        2,
         "the tab stands beside the one before it"
     );
 
@@ -582,46 +503,43 @@ fn a_fixed_size_window_without_a_parent_takes_a_tab() {
             ..window(3, "c")
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     assert!(policy.is_floating(3), "its parent decides, not its size");
-    assert_eq!(shown(&policy.placement()), [1, 2], "a dialog takes no tab");
+    assert!(policy.tab_of(3).is_none(), "a dialog takes no tab");
+    assert_eq!(groups(&policy).len(), 2, "and opens no window of its own");
 }
 
 #[test]
 fn a_dialog_floats_over_its_parent_and_answers_for_it() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     displays(&mut policy);
-    map(&mut driver, &mut policy, 1, "a");
+    map(&mut policy, 1, "a");
     policy
         .map(Window {
             parent: Some(1),
             ..window(2, "a")
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     assert!(policy.is_floating(2));
-    let layout = policy.placement();
-    assert_eq!(shown(&layout), [1], "a dialog takes no tab");
-    let parent = layout.shown[0].1;
-    assert_eq!(layout.floating, [(2, parent)], "over its parent");
+    assert!(policy.tab_of(2).is_none(), "a dialog takes no tab");
     assert_eq!(policy.focused(), Some(2), "the dialog has the keyboard");
     assert!(policy.focus(2), "focusing it brings its parent");
 
     policy.unmap(1);
-    settle(&mut driver);
-    let layout = policy.placement();
-    assert_eq!(
-        layout.floating,
-        [(2, Rect::new(0.0, 0.0, WIDTH / 2.0, 800.0))],
+    settle(&mut policy);
+    assert!(
+        policy.is_floating(2),
         "its parent gone, it floats on the display in use"
     );
     policy.unmap(2);
-    assert!(policy.placement().floating.is_empty());
+    assert!(!policy.is_floating(2));
+    assert!(policy.tab_of(2).is_none());
 }
 
 #[test]
 fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     assert!(policy.take_launches().is_empty());
 
     let launch = ChromeEffect::OpenApp {
@@ -631,7 +549,7 @@ fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
         float: None,
     };
     policy.handle().dispatch(launch).unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
 
     let asked = policy.take_launches();
     assert_eq!(asked.len(), 1, "one launch for one open");
@@ -644,16 +562,15 @@ fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
         policy.take_launches().is_empty(),
         "a launch is handed over once"
     );
-    assert_eq!(
-        policy.placement(),
-        Placement::default(),
+    assert!(
+        windows(&policy).is_empty(),
         "nothing appeared before the app did"
     );
 }
 
 #[test]
 fn a_shell_launch_holds_the_tab_the_apps_window_takes() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     let launch = ChromeEffect::OpenApp {
         app: "so.tilo.notes".into(),
         beside: None,
@@ -661,7 +578,7 @@ fn a_shell_launch_holds_the_tab_the_apps_window_takes() {
         float: None,
     };
     policy.handle().dispatch(launch).unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
 
     let asked = policy.take_launches();
     assert_eq!(asked.len(), 1, "one launch for one open");
@@ -677,16 +594,15 @@ fn a_shell_launch_holds_the_tab_the_apps_window_takes() {
                 label: "so.tilo.notes".into(),
             },
         )],
-        "the app's place is there from this frame, in the tab the launch names"
+        "the app's place is there from this pass, in the tab the launch names"
     );
     assert_eq!(
         title_of(&policy, tab),
         "Notes",
         "the tab opens with the app's name, never with its id"
     );
-    assert_eq!(
-        policy.placement(),
-        Placement::default(),
+    assert!(
+        windows(&policy).is_empty(),
         "and no window is here before the app's is"
     );
 }
@@ -696,7 +612,7 @@ fn a_shell_launch_holds_the_tab_the_apps_window_takes() {
 /// window's process; a window of no launch the session knows lands in a tab of its own.
 #[test]
 fn a_window_takes_the_tab_of_its_own_launch_whatever_it_calls_its_app() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     policy
         .handle()
         .dispatch(ChromeEffect::OpenApp {
@@ -706,7 +622,7 @@ fn a_window_takes_the_tab_of_its_own_launch_whatever_it_calls_its_app() {
             float: None,
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     let asked = policy.take_launches();
     let tab = asked[0]
         .tab
@@ -720,14 +636,14 @@ fn a_window_takes_the_tab_of_its_own_launch_whatever_it_calls_its_app() {
             ..window(9, "stranger")
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     policy
         .map(Window {
             pid: Some(501),
             ..window(10, "glxgears")
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(policy.tab_of(10), Some(tab), "the launch's own tab");
     assert_ne!(policy.tab_of(9), Some(tab));
     assert_eq!(tabs(&policy).len(), 2, "no tab is left waiting");
@@ -739,7 +655,7 @@ fn a_window_takes_the_tab_of_its_own_launch_whatever_it_calls_its_app() {
 /// it.
 #[test]
 fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     policy
         .handle()
         .dispatch(ChromeEffect::OpenApp {
@@ -749,7 +665,7 @@ fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
             float: None,
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     let held = policy.take_launches()[0]
         .tab
         .expect("the shell holds the tab the window takes");
@@ -760,7 +676,7 @@ fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
         "the held tab was on the shell"
     );
     policy.handle().replace_tree(tree);
-    settle(&mut driver);
+    settle(&mut policy);
 
     policy
         .map(Window {
@@ -768,7 +684,7 @@ fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
             ..window(10, "so.tilo.settings")
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     let tab = policy.tab_of(10).expect("the window has a tab");
     assert_ne!(
         tab, held,
@@ -786,7 +702,7 @@ fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
     );
 
     policy.unmap(10);
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(
         policy.tab_of_instance("so.tilo.settings", held),
         None,
@@ -796,17 +712,14 @@ fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
 
 #[test]
 fn a_conversation_opens_beside_its_sender() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 1, "so.tilo.chat");
+    let mut policy = mount();
+    map(&mut policy, 1, "so.tilo.chat");
     let sender = window_tab(&policy, 1);
     assert!(
         policy.hold("so.tilo.chat", None, (false, true), Some("dm")),
         "the shell takes the place beside the sender"
     );
-    settle(&mut driver);
-    // The shell asks for the float; the session's layout makes the ask.
-    policy.handle().arrange_asked_floats();
-    settle(&mut driver);
+    settle(&mut policy);
 
     let tab = tabs(&policy)
         .into_iter()
@@ -842,63 +755,11 @@ fn a_conversation_opens_beside_its_sender() {
         "the conversation opens beside the sender, not in its window"
     );
     assert_eq!(*active, tab, "the conversation is the tab in front");
-    let widths: Vec<tilo_desktop_model::WindowWidth> = policy.handle().read(|tree| {
-        tree.workspaces
-            .first()
-            .and_then(|workspace| workspace.strips.first())
-            .map(|strip| {
-                strip
-                    .window_groups
-                    .iter()
-                    .map(|group| group.width)
-                    .collect()
-            })
-            .unwrap_or_default()
-    });
-    assert_eq!(
-        widths.len(),
-        2,
-        "the sender and the conversation stand side by side: {widths:?}"
-    );
-    assert!(
-        widths.iter().all(|width| matches!(
-            width,
-            tilo_desktop_model::WindowWidth::Share(_)
-                | tilo_desktop_model::WindowWidth::Fraction(_)
-        )),
-        "the two share the strip, so the sender keeps what the person was reading in view: {widths:?}"
-    );
-
-    // It stands over the shell, where its strip gave it room: beside the
-    // sender, never over the message list the person was reading.
-    let place = policy
-        .handle()
-        .read(|tree| tree.workspaces.first()?.layout.float_of(*group));
-    assert!(
-        place.is_some(),
-        "the conversation stands over the shell, in the workspace's record"
-    );
-    let sender_content = policy
-        .content_rect(sender)
-        .expect("the sender's content stands on the shell");
-    let content = policy
-        .content_rect(tab)
-        .expect("the conversation's content stands on the shell");
-    assert!(
-        content.x0 >= sender_content.x1,
-        "the conversation stands beside its sender, never over what the person was reading: \
-         sender {sender_content:?}, conversation {content:?}"
-    );
-    assert_eq!(
-        policy.float_covers().len(),
-        0,
-        "a place no window fills yet draws nothing over the shell"
-    );
 
     // The session gives the place up when nothing came to fill it: the tab
     // goes, and the window it was held for has nowhere to land.
     policy.release_held("so.tilo.chat");
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(
         tabs(&policy).len(),
         1,
@@ -907,43 +768,8 @@ fn a_conversation_opens_beside_its_sender() {
 }
 
 #[test]
-fn a_floated_windows_cover_is_where_the_shell_draws_it() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 1, "so.tilo.chat");
-    policy
-        .handle()
-        .dispatch(ChromeEffect::OpenApp {
-            app: "so.tilo.notes".into(),
-            beside: None,
-            background: None,
-            float: Some(true),
-        })
-        .unwrap();
-    settle(&mut driver);
-    assert!(
-        policy.float_covers().is_empty(),
-        "a place no window fills draws nothing over the shell"
-    );
-    // The window the shell held the place for takes it.
-    map(&mut driver, &mut policy, 2, "so.tilo.notes");
-    settle(&mut driver);
-    let covers = policy.float_covers();
-    assert_eq!(covers.len(), 1, "one window floats: {covers:?}");
-    let (window, cover) = covers[0];
-    assert_eq!(window, 2, "the cover is of the window that floats");
-    // A window an app opens floating stands as a card beside the window it
-    // opened next to: the cover is that card alone, so the windows behind show
-    // under the shadow it casts.
-    assert_eq!(
-        (cover.width(), cover.height()),
-        ui::widget::FLOAT_CARD_SIZE,
-        "the card's bar and body, as the shell draws it: {cover:?}"
-    );
-}
-
-#[test]
 fn a_window_that_names_no_title_is_tabbed_under_its_apps_name() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     policy
         .handle()
         .dispatch(ChromeEffect::OpenApp {
@@ -953,7 +779,7 @@ fn a_window_that_names_no_title_is_tabbed_under_its_apps_name() {
             float: None,
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     let tab = policy.take_launches()[0].tab.expect("a held tab");
     // A window that has not said what it shows takes the held tab under the
     // name of its app.
@@ -963,18 +789,18 @@ fn a_window_that_names_no_title_is_tabbed_under_its_apps_name() {
             ..window(1, "so.tilo.notes")
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(title_of(&policy, tab), "Notes");
     // The toolkit then labels the window with the app's unlocalised name:
     // the tab keeps the name this shell gives the app.
     policy.retitle(1, "Notes");
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(title_of(&policy, tab), "Notes");
 }
 
 #[test]
 fn a_launch_that_opens_no_window_takes_its_held_tab_back() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     let launch = ChromeEffect::OpenApp {
         app: "so.tilo.notes".into(),
         beside: None,
@@ -982,14 +808,14 @@ fn a_launch_that_opens_no_window_takes_its_held_tab_back() {
         float: None,
     };
     policy.handle().dispatch(launch).unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     let tab = policy.take_launches()[0].tab.expect("a held tab");
 
     // The session started nothing for it: the place it held goes.
     policy.release_tab(tab);
-    settle(&mut driver);
+    settle(&mut policy);
     assert!(tabs(&policy).is_empty(), "the held tab is not left behind");
-    assert_eq!(policy.placement(), Placement::default());
+    assert!(windows(&policy).is_empty(), "no window is here");
     assert!(
         policy.take_launches().is_empty(),
         "and nothing is started for it again"
@@ -997,8 +823,8 @@ fn a_launch_that_opens_no_window_takes_its_held_tab_back() {
 }
 
 #[test]
-fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
-    let (mut driver, mut policy) = mount();
+fn an_app_that_did_not_start_keeps_the_place_for_its_window() {
+    let mut policy = mount();
     let launch = ChromeEffect::OpenApp {
         app: "so.tilo.notes".into(),
         beside: None,
@@ -1006,7 +832,7 @@ fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
         float: None,
     };
     policy.handle().dispatch(launch).unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     let tab = policy.take_launches()[0].tab.expect("a held tab");
     assert!(
         policy.holds_a_place(tab),
@@ -1019,40 +845,12 @@ fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
         .saying("it is not installed here")
         .retryable("Try again");
     policy.failed_at(tab, "so.tilo.notes", answer);
-    settle(&mut driver);
-    let texts = ui::a11y::texts(driver.root_widget());
-    assert!(
-        texts.iter().any(|text| text == "Notes could not open"),
-        "{texts:?}"
-    );
-    assert!(
-        texts.iter().any(|text| text == "it is not installed here"),
-        "{texts:?}"
-    );
+    settle(&mut policy);
     assert_eq!(tabs(&policy).len(), 1, "the tab the person opened stays");
-    assert_eq!(
-        policy.placement(),
-        Placement::default(),
-        "no window is here"
-    );
-
-    // Trying again asks for the app with the answer's own tab as its place,
-    // so a window that comes fills it rather than opening a second one.
-    driver
-        .perform_named(
-            tilo_session_core::desktop::outcome::RETRY_ID,
-            &ui::a11y::Action::Activate,
-        )
-        .unwrap();
-    settle(&mut driver);
-    let asked = policy.take_launches();
-    assert_eq!(asked.len(), 1, "Try again asks for the app once");
-    assert_eq!(asked[0].tab, Some(tab), "in the tab the answer stands in");
-    assert_eq!(tabs(&policy).len(), 1, "and opens no other tab");
+    assert!(windows(&policy).is_empty(), "no window is here");
 
     // The window comes: the answer gives its tab up to it.
-    map(&mut driver, &mut policy, 41, "so.tilo.notes");
-    settle(&mut driver);
+    map(&mut policy, 41, "so.tilo.notes");
     assert!(
         !policy.holds_a_place(tab),
         "the window filled the place the tab held"
@@ -1071,8 +869,8 @@ fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
 }
 
 #[test]
-fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
-    let (mut driver, mut policy) = mount();
+fn a_stopped_app_leaves_a_notice_in_a_tab_of_its_own() {
+    let mut policy = mount();
     let asked = "host:org.example.Probe.desktop";
     policy
         .stopped(
@@ -1082,59 +880,34 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
             None,
         )
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     assert!(
         policy.take_launches().is_empty(),
         "the notice itself asks for nothing"
     );
-
-    let texts = ui::a11y::texts(driver.root_widget());
+    assert_eq!(policy.name_of(asked), "Probe", "the app's name it had");
+    let tabs = tabs(&policy);
+    assert_eq!(tabs.len(), 1, "the notice stands in a tab of its own");
     assert!(
-        texts
-            .iter()
-            .any(|text| text.starts_with("Probe stopped working")),
-        "{texts:?}"
+        policy.holds_a_place(tabs[0].0),
+        "the tab says what became of the app"
     );
-    assert!(
-        texts.iter().any(|text| text == "Reopen"),
-        "the answer offers a way back: {texts:?}"
-    );
-
-    driver
-        .perform_named(
-            tilo_session_core::desktop::outcome::RETRY_ID,
-            &ui::a11y::Action::Activate,
-        )
-        .unwrap();
-    settle(&mut driver);
-    let reopened = policy.take_launches();
-    assert_eq!(
-        reopened
-            .iter()
-            .map(|ask| ask.app.as_str())
-            .collect::<Vec<_>>(),
-        [asked],
-        "Reopen asks for the same thing that was launched"
-    );
-    assert!(
-        reopened[0].tab.is_some(),
-        "the window that comes takes the tab the answer stands in"
-    );
+    assert!(windows(&policy).is_empty(), "no window stands behind it");
 }
 
 /// An app that stopped working says so in the tab its window was in, between the same
 /// neighbours, whether its window went away before the end was known or not.
 #[test]
 fn a_stopped_app_says_so_where_its_window_was() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 31, "org.example.Left");
-    map(&mut driver, &mut policy, 32, "org.example.Probe");
-    map(&mut driver, &mut policy, 33, "org.example.Right");
+    let mut policy = mount();
+    map(&mut policy, 31, "org.example.Left");
+    map(&mut policy, 32, "org.example.Probe");
+    map(&mut policy, 33, "org.example.Right");
     let before: Vec<u64> = tabs(&policy).iter().map(|(tab, _)| *tab).collect();
     let tab = policy.tab_of(32).expect("the window's tab");
 
     policy.unmap(32);
-    settle(&mut driver);
+    settle(&mut policy);
     policy
         .stopped(
             "org.example.Probe",
@@ -1143,16 +916,9 @@ fn a_stopped_app_says_so_where_its_window_was() {
             Some(tab),
         )
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     let after: Vec<u64> = tabs(&policy).iter().map(|(tab, _)| *tab).collect();
     assert_eq!(after, before, "the tab is back where it was");
-    let texts = ui::a11y::texts(driver.root_widget());
-    assert!(
-        texts
-            .iter()
-            .any(|text| text.starts_with("Probe stopped working")),
-        "{texts:?}"
-    );
 
     // An end known while the window is still there takes its tab at once; the window leaving
     // after does not close it.
@@ -1166,7 +932,7 @@ fn a_stopped_app_says_so_where_its_window_was() {
         )
         .unwrap();
     policy.unmap(33);
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(
         tabs(&policy)
             .iter()
@@ -1182,23 +948,13 @@ fn a_stopped_app_says_so_where_its_window_was() {
 #[test]
 fn a_window_launched_into_another_workspace_opens_there() {
     use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-    let (seeded, _) = DesktopPolicy::new(7);
+    let seeded = DesktopPolicy::new(7);
     let mut tree = seeded.handle().read(Clone::clone);
     tree.workspaces
         .push(Workspace::new(WorkspaceId::from_u128(2), "Garden"));
     let garden = tree.workspaces[1].id().to_string();
     let front = tree.active;
-    let (mut policy, surface) = DesktopPolicy::with_tree(tree, 7);
-    policy.set_viewport_width(WIDTH);
-    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
-        ui::state::State::new(),
-        Box::new(surface),
-        (1200, 800),
-        ui::Theme::dark(),
-        ui::TextRenderer::new(),
-        ui::permissions::MemberId::person("tester"),
-    );
-    driver.relayout();
+    let mut policy = DesktopPolicy::with_tree(tree, 7);
     policy.reads_launch_workspaces(std::rc::Rc::new(move |pid, app| {
         (pid == 50 && app == "so.tilo.calculator").then(|| garden.clone())
     }));
@@ -1208,16 +964,16 @@ fn a_window_launched_into_another_workspace_opens_there() {
             ..window(5, "so.tilo.calculator")
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     policy.carry_launched();
-    settle(&mut driver);
+    settle(&mut policy);
     policy
         .map(Window {
             pid: Some(60),
             ..window(6, "so.tilo.notes")
         })
         .unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     let placed = |id: u64| {
         policy.handle().read(|tree| {
             tree.workspaces
@@ -1257,38 +1013,6 @@ fn a_window_launched_into_another_workspace_opens_there() {
     );
 }
 
-/// A window of a strip spread over two displays is cut to its own tab, and so to its own display:
-/// the part of a window wider than its tab, or panned past its display's edge, is never drawn on
-/// the neighbouring one.
-#[test]
-fn a_window_is_cut_to_the_display_it_shows_on() {
-    let (mut driver, mut policy) = mount();
-    displays(&mut policy);
-    map(&mut driver, &mut policy, 1, "a");
-    let order = policy.displays();
-    assert!(policy.handle().focus_display(order[1]));
-    settle(&mut driver);
-    map(&mut driver, &mut policy, 2, "b");
-    let layout = policy.placement();
-    let clip = |id| layout.clips.iter().find(|(w, _)| *w == id).map(|c| c.1);
-    let shown = |id| layout.shown.iter().find(|(w, _)| *w == id).map(|c| c.1);
-    for id in [1, 2] {
-        assert_eq!(
-            clip(id),
-            shown(id),
-            "a window is cut to exactly the tab it shows in: {layout:?}"
-        );
-    }
-    assert!(
-        clip(1).is_some_and(|clip| clip.x1 <= WIDTH / 2.0),
-        "the first display's tab ends at its own display: {layout:?}"
-    );
-    assert!(
-        clip(2).is_some_and(|clip| clip.x0 >= WIDTH / 2.0),
-        "the second display's tab starts at its own display: {layout:?}"
-    );
-}
-
 /// A window of `app` an app keeper (`keeper`) shows, named `tag`.
 fn kept(id: u64, app: &str, keeper: u32, tag: &str) -> Window {
     Window {
@@ -1304,9 +1028,9 @@ fn kept(id: u64, app: &str, keeper: u32, tag: &str) -> Window {
 /// follows it.
 #[test]
 fn each_kept_window_takes_back_exactly_its_own_tab() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     for id in 1..=3 {
-        map(&mut driver, &mut policy, id, "org.example.Kept");
+        map(&mut policy, id, "org.example.Kept");
     }
     let saved: Vec<u64> = (1..=3)
         .map(|window| policy.tab_of(window).expect("a tab"))
@@ -1327,7 +1051,7 @@ fn each_kept_window_takes_back_exactly_its_own_tab() {
         };
     }
     policy.handle().replace_tree(tree);
-    settle(&mut driver);
+    settle(&mut policy);
     for (tab, tag) in saved.iter().zip(["w1", "w2", "w3"]) {
         let window = tilo_desktop_policy::KeptWindow {
             keeper: 50,
@@ -1339,10 +1063,10 @@ fn each_kept_window_takes_back_exactly_its_own_tab() {
     // a tab held for a named window.
     policy.map(window(20, "org.example.Kept")).unwrap();
     policy.map(kept(21, "org.example.Kept", 50, "w9")).unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     for (id, tag) in [(13, "w3"), (11, "w1"), (12, "w2")] {
         policy.map(kept(id, "org.example.Kept", 50, tag)).unwrap();
-        settle(&mut driver);
+        settle(&mut policy);
     }
     let placed: Vec<Option<u64>> = [11, 12, 13].map(|window| policy.tab_of(window)).into();
     assert_eq!(placed, saved.iter().copied().map(Some).collect::<Vec<_>>());
@@ -1378,8 +1102,8 @@ fn each_kept_window_takes_back_exactly_its_own_tab() {
 /// comes back into its tab rather than floating over the strip.
 #[test]
 fn a_kept_window_takes_back_its_tab_and_closes_with_it() {
-    let (mut driver, mut policy) = mount();
-    map(&mut driver, &mut policy, 1, "org.example.Setup");
+    let mut policy = mount();
+    map(&mut policy, 1, "org.example.Setup");
     let saved = policy.tab_of(1).expect("a tab");
     let mut tree = policy.handle().read(Clone::clone);
     for tab in tree
@@ -1396,7 +1120,7 @@ fn a_kept_window_takes_back_its_tab_and_closes_with_it() {
         };
     }
     policy.handle().replace_tree(tree);
-    settle(&mut driver);
+    settle(&mut policy);
     let held = tilo_desktop_policy::KeptWindow {
         keeper: 50,
         tag: "wizard".into(),
@@ -1412,14 +1136,14 @@ fn a_kept_window_takes_back_its_tab_and_closes_with_it() {
         "a fixed size is no dialog's mark"
     );
     policy.map(wizard).unwrap();
-    settle(&mut driver);
+    settle(&mut policy);
     assert_eq!(
         policy.tab_of(11),
         Some(saved),
         "the kept wizard is back in its tab"
     );
     policy.unmap(11);
-    settle(&mut driver);
+    settle(&mut policy);
     assert!(
         !policy.handle().read(|tree| {
             tree.workspaces
@@ -1434,30 +1158,21 @@ fn a_kept_window_takes_back_its_tab_and_closes_with_it() {
 }
 
 /// A window that keeps a smallest size is never cut off by a tab narrower than it: a
-/// fixed-size window — `PuTTY`'s Configuration is 456 px wide — takes a tab at least that wide,
-/// and the strip scrolls to it. This is the same after an in-place restart, when the window
-/// comes back into the tab it stood in before whatever share that tab had.
+/// fixed-size window — `PuTTY`'s Configuration is 456 px wide — takes a tab at least that wide.
+/// This is the same after an in-place restart, when the window comes back into the tab it stood
+/// in before whatever share that tab had.
 #[test]
 fn a_fixed_size_window_widens_a_tab_narrower_than_it() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     assert!(policy.set_displays(&[Output {
         monitor: "only".into(),
         rect: Rect::new(0.0, 0.0, WIDTH, 800.0),
         primary: true,
     }]));
-    map(&mut driver, &mut policy, 1, "org.example.PuTTY");
+    let usable = WIDTH - 2.0 * ui::widget::STRIP_EDGE_GUTTER_PX;
+    map(&mut policy, 1, "org.example.PuTTY");
     let tab = policy.tab_of(1).expect("a tab");
-    let group = policy
-        .handle()
-        .read(|tree| {
-            tree.workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .find(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
-                .map(|group| group.id)
-        })
-        .expect("the tab's window");
+    let group = group_of(&policy, tab);
     policy
         .handle()
         .dispatch(ChromeEffect::SetWidth {
@@ -1466,10 +1181,11 @@ fn a_fixed_size_window_widens_a_tab_narrower_than_it() {
             preset: None,
         })
         .expect("the tab takes a narrow share");
-    settle(&mut driver);
-    let narrow = shown_rect(&policy, 1);
+    settle(&mut policy);
+    let narrow = group_width(&policy, group);
+    assert_eq!(narrow, WindowWidth::Fraction(300));
     assert!(
-        narrow.width() < 456.0,
+        narrow.resolve(usable) < 456.0,
         "the tab starts narrower than the dialog: {narrow:?}"
     );
 
@@ -1477,12 +1193,15 @@ fn a_fixed_size_window_widens_a_tab_narrower_than_it() {
         policy.honour_minimum_widths([(1, Some((456, 442)))].into_iter()),
         "the tab is widened to what the dialog keeps"
     );
-    settle(&mut driver);
-    let wide = shown_rect(&policy, 1);
-    assert!(wide.width() >= 456.0, "the dialog shows whole: {wide:?}");
+    settle(&mut policy);
+    let wide = group_width(&policy, group);
     assert!(
-        wide.width() < WIDTH,
-        "the tab takes what the dialog needs, not the strip: {wide:?}"
+        wide.resolve(usable) >= 456.0,
+        "the dialog shows whole: {wide:?}"
+    );
+    assert!(
+        wide.resolve(usable) < usable,
+        "the tab takes what the dialog needs, not the whole strip: {wide:?}"
     );
     assert!(
         !policy.honour_minimum_widths([(1, Some((456, 442)))].into_iter()),
@@ -1498,31 +1217,22 @@ fn a_fixed_size_window_widens_a_tab_narrower_than_it() {
 /// program keeps cannot be met by any share, so the tab is as wide as the strip allows.
 #[test]
 fn a_window_wider_than_the_strip_takes_the_whole_strip() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     assert!(policy.set_displays(&[Output {
         monitor: "only".into(),
         rect: Rect::new(0.0, 0.0, WIDTH, 800.0),
         primary: true,
     }]));
-    map(&mut driver, &mut policy, 2, "org.example.Wide");
+    let usable = WIDTH - 2.0 * ui::widget::STRIP_EDGE_GUTTER_PX;
+    map(&mut policy, 2, "org.example.Wide");
+    let group = group_of(&policy, policy.tab_of(2).expect("a tab"));
     assert!(policy.honour_minimum_widths([(2, Some((4000, 600)))].into_iter()));
-    settle(&mut driver);
-    let rect = shown_rect(&policy, 2);
+    settle(&mut policy);
+    let wide = group_width(&policy, group);
     assert!(
-        rect.width() > WIDTH,
-        "the tab is as wide as the window keeps, and the strip scrolls: {rect:?}"
+        wide.resolve(usable) >= 4000.0,
+        "the tab is as wide as the window keeps, and the strip scrolls: {wide:?}"
     );
-}
-
-/// Where window `id` stands as of the last layout pass.
-fn shown_rect(policy: &DesktopPolicy, id: u64) -> Rect {
-    let placement = policy.placement();
-    let (_, rect) = placement
-        .shown
-        .iter()
-        .find(|(window, _)| *window == id)
-        .unwrap();
-    *rect
 }
 
 /// A strip narrower than the window's smallest size already gives every window the whole
@@ -1530,64 +1240,31 @@ fn shown_rect(policy: &DesktopPolicy, id: u64) -> Rect {
 /// rather than asked for again on every pass.
 #[test]
 fn a_strip_narrower_than_the_window_is_left_alone() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     assert!(policy.set_displays(&[Output {
         monitor: "phone".into(),
         rect: Rect::new(0.0, 0.0, 360.0, 800.0),
         primary: true,
     }]));
-    map(&mut driver, &mut policy, 3, "org.example.Wide");
-    let before = shown_rect(&policy, 3);
+    let usable = 360.0 - 2.0 * ui::widget::STRIP_EDGE_GUTTER_PX;
+    map(&mut policy, 3, "org.example.Wide");
+    let group = group_of(&policy, policy.tab_of(3).expect("a tab"));
+    let before = group_width(&policy, group);
+    assert!(
+        before.resolve(usable) >= usable - 0.5,
+        "the tab already takes the whole strip: {before:?}"
+    );
     assert!(
         !policy.honour_minimum_widths([(3, Some((600, 400)))].into_iter()),
         "the tab already takes the whole strip"
     );
-    settle(&mut driver);
-    assert_eq!(shown_rect(&policy, 3), before);
-}
-
-/// Only the windows that stand on a display are in view: a strip lays out every window on it, and
-/// the ones scrolled past stand off the display. What sets an app's tier (and its memory floor) is
-/// this, so an app whose windows are all scrolled away yields to the ones the person sees.
-#[test]
-fn the_windows_scrolled_off_the_display_are_not_in_view() {
-    let (mut driver, mut policy) = mount();
-    assert!(policy.set_displays(&[Output {
-        monitor: "only".into(),
-        rect: Rect::new(0.0, 0.0, WIDTH, 800.0),
-        primary: true,
-    }]));
-    for id in 1..=6 {
-        map(&mut driver, &mut policy, id, &format!("app-{id}"));
-    }
-    let layout = policy.placement();
-    let in_view = policy.in_view();
-    assert!(
-        in_view.contains(&6),
-        "the newest window is in view: {layout:?}"
-    );
-    let off: Vec<u64> = layout
-        .shown
-        .iter()
-        .filter(|(_, rect)| rect.x1 <= 0.0 || rect.x0 >= WIDTH)
-        .map(|(id, _)| *id)
-        .collect();
-    assert!(
-        !off.is_empty(),
-        "six windows do not fit one display: {layout:?}"
-    );
-    for id in &off {
-        assert!(
-            !in_view.contains(id),
-            "{id} stands off the display: {layout:?}"
-        );
-    }
-    assert_eq!(in_view.len() + off.len(), layout.shown.len(), "{layout:?}");
+    settle(&mut policy);
+    assert_eq!(group_width(&policy, group), before);
 }
 
 #[test]
 fn the_keyboard_waits_for_the_window_a_launch_in_front_of_the_person_brings() {
-    let (mut driver, mut policy) = mount();
+    let mut policy = mount();
     // An empty desktop: the launch the person starts is where their keys go, before the shell
     // has even made its tab.
     assert!(!policy.awaits_launched_window(), "nothing is on its way");
@@ -1596,12 +1273,12 @@ fn the_keyboard_waits_for_the_window_a_launch_in_front_of_the_person_brings() {
         policy.awaits_launched_window(),
         "the keys wait for the window of the launch"
     );
-    frames(&mut driver, 2);
+    settle(&mut policy);
     assert!(
         policy.awaits_launched_window(),
         "the place the launch holds is in front of the person"
     );
-    map(&mut driver, &mut policy, 4, "so.tilo.notes");
+    map(&mut policy, 4, "so.tilo.notes");
     assert!(
         !policy.awaits_launched_window(),
         "the window came: keys go to it"
@@ -1609,17 +1286,17 @@ fn the_keyboard_waits_for_the_window_a_launch_in_front_of_the_person_brings() {
 
     // A launch in the background brings nothing to where the person is.
     assert!(policy.hold_open("org.gnome.Terminal", true));
-    frames(&mut driver, 2);
+    settle(&mut policy);
     assert!(!policy.awaits_launched_window());
-    map(&mut driver, &mut policy, 5, "org.gnome.Terminal");
+    map(&mut policy, 5, "org.gnome.Terminal");
 
     // One started in front of a window: the place it holds comes forward, and the keys wait
     // for its window there.
     assert!(policy.hold_open("so.tilo.files", false));
-    frames(&mut driver, 2);
+    settle(&mut policy);
     assert!(policy.awaits_launched_window());
     // It started nothing: its place goes, and the keys with it.
     policy.release_held("so.tilo.files");
-    frames(&mut driver, 2);
+    settle(&mut policy);
     assert!(!policy.awaits_launched_window());
 }

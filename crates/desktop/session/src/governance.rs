@@ -6,7 +6,7 @@ use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_session_client::membership::{self, Workspaces};
 
 /// The shell's own workspaces, as a workspace's governance writes into them.
-pub(crate) struct Session<'a>(pub(crate) &'a tilo_desktop_surface::DesktopHandle);
+pub(crate) struct Session<'a>(pub(crate) &'a tilo_session_core::desktop::state::DesktopHandle);
 
 impl Workspaces for Session<'_> {
     fn edit(
@@ -26,7 +26,7 @@ impl Workspaces for Session<'_> {
 /// workspaces as the device's daemon keeps them, and where the loop takes in what the workspace
 /// answered.
 pub(crate) struct Governing<'a> {
-    pub(crate) handle: &'a tilo_desktop_surface::DesktopHandle,
+    pub(crate) handle: &'a tilo_session_core::desktop::state::DesktopHandle,
     pub(crate) person: &'a tilo_desktop_model::UserId,
     pub(crate) view: Option<&'a std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     pub(crate) landings: &'a crate::landing::Landings,
@@ -44,7 +44,7 @@ pub(crate) fn govern(
         &mut Workspace,
         &tilo_desktop_model::UserId,
     )
-        -> Result<tilo_desktop::workspace_settings::PolicyEdit, tilo_action_policy::Refusal>
+        -> Result<tilo_session_core::desktop::workspace_settings::PolicyEdit, tilo_action_policy::Refusal>
     + 'static,
     landed: impl FnOnce(Result<(), String>) + 'static,
 ) -> Result<bool, tilo_action_policy::Refusal> {

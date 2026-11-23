@@ -750,9 +750,8 @@ def devices_of(spec: dict) -> list[dict]:
 
 
 def session_args_of(spec: dict, variant: str, device: str | None = None) -> list[str] | None:
-    """How a device's session starts in `variant`: the version's own arguments (the tilolang
-    shell's `--shell screen`), then the device's (`--output` for a second display). `device`
-    is the first device when None."""
+    """How a device's session starts in `variant`: the version's own arguments, then the device's
+    (`--output` for a second display). `device` is the first device when None."""
     entries = devices_of(spec)
     entry = next((e for e in entries if e["name"] == device), None) if device else entries[0]
     args = list(spec[variant].get("session_args") or []) + list((entry or {}).get("session_args")

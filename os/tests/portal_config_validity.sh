@@ -2,7 +2,7 @@
 # Validate the xdg-desktop-portal config files. The checks cover:
 #
 #   1. The .portal file declares the right backend bus name and lists
-#      every interface our `tilo_desktop::portal::serve()` registers.
+#      every interface the session's portal (`crates/session/portal`) registers.
 #   2. The tilo desktop preference selects that backend.
 #   3. No obsolete D-Bus activation or standalone portal unit remains;
 #      the live compositor is the sole backend owner.
@@ -37,7 +37,7 @@ SYSTEMD_UNIT_FILE="$OS_ROOT/usr/lib/systemd/user/shell-portal.service"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 
 EXPECTED_BUS_NAME="org.freedesktop.impl.portal.desktop.tilo"
-# Interfaces the Rust backend registers in `tilo_desktop::portal::serve`.
+# Interfaces the Rust backend registers in `crates/session/portal`.
 # Keeping the list here mirrors `portal/mod.rs::serve` so a drift
 # (e.g. we add an interface to the Rust side without updating the
 # .portal config) shows up as a CI failure.

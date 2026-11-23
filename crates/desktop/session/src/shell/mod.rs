@@ -111,7 +111,7 @@ fn band() -> u32 {
         clippy::cast_sign_loss,
         reason = "a bar's height, a few dozen pixels"
     )]
-    let band = f64::from(tilo_desktop::topbar::topbar_height(&ui::Theme::dark())).ceil() as u32;
+    let band = f64::from(tilo_session_core::desktop::overlays::topbar_height(&ui::Theme::dark())).ceil() as u32;
     band
 }
 
@@ -709,6 +709,48 @@ impl Shell {
         self.link.surface()
     }
 
+    /// Three fingers carrying the strip shown, as `scroll` of them: the row the shell draws the
+    /// strip in scrolls under the front window, as two fingers over it would scroll it, and glides
+    /// on when they lift. The pointer stays at `pointer` for everything else the part shows.
+    pub(crate) fn carry_strip(
+        &self,
+        handle: &tilo_session_core::desktop::state::DesktopHandle,
+        scroll: tilo_session_core::surface::Scroll,
+        pointer: (f64, f64),
+    ) {
+        let front = handle.read(|tree| {
+            let strip = tree.active_strip_id()?;
+            let group = tree.active_group_for(strip)?;
+            tree.active_workspace()?
+                .strips
+                .iter()
+                .find(|held| held.id == strip)?
+                .window_groups
+                .iter()
+                .find(|held| held.id == group)
+                .map(|held| held.active_tab)
+        });
+        let Some(well) = front.and_then(|tab| self.wells.as_ref()?.well(&tab.to_string())) else {
+            return;
+        };
+        let (x, y) = (well.center().x, well.center().y);
+        let Some((_, part)) = self
+            .parts
+            .iter()
+            .find(|(_, part)| part.borrow().accepts_pointer(x, y))
+        else {
+            return;
+        };
+        let mut part = part.borrow_mut();
+        part.pointer_motion(x, y);
+        part.pointer_axis(scroll);
+        if part.accepts_pointer(pointer.0, pointer.1) {
+            part.pointer_motion(pointer.0, pointer.1);
+        } else {
+            part.pointer_leave();
+        }
+    }
+
     /// The windows the shell's views picture, each with the rect its picture rests at, logical
     /// `(x, y, width, height)` : what the compositor draws of them, its own buffers scaled into the
     /// place a view gives them. Empty while no view pictures a window.
@@ -1128,7 +1170,7 @@ fn lend_content(shell: &mut Shell, shared: &crate::Shared, workspaces: Vec<Strin
 /// this device draws the window and its app shows no secrets. A window this device does not draw,
 /// or one whose app holds secrets, is pictured by nothing, and its view shows the app's mark
 /// instead.
-fn pictured(handle: &tilo_desktop_surface::DesktopHandle, key: &str) -> Option<u64> {
+fn pictured(handle: &tilo_session_core::desktop::state::DesktopHandle, key: &str) -> Option<u64> {
     use tilo_desktop_model::TileContent;
     let (app, surface) = handle.read(|tree| {
         tree.workspaces
@@ -1162,37 +1204,30 @@ fn typed(value: Value, ty: Option<tilo_actions::params::ParamType>) -> Value {
     }
 }
 
-/// `host` , the desktop's bar or shell, as the shell stands under the shell: the shell draws the bar
-/// and the shell itself (its strips, their frames and the places in them, around the wells the
-/// windows stand in), so the desktop's own step aside ([`Aside`]) rather than drawing a second set
-/// of either. It still keeps the windows' model the wells place them by. Without a shell, the
-/// desktop is the shell and stands as itself.
-pub(crate) fn under(
-    shell: bool,
-    host: impl ShellSurface + 'static,
-) -> Rc<RefCell<dyn ShellSurface>> {
-    if shell {
-        Rc::new(RefCell::new(Aside(host)))
-    } else {
-        Rc::new(RefCell::new(host))
-    }
+/// `host` , the desktop the session runs, as it stands under the shell: the shell draws the
+/// strips, their frames and the places in them, around the wells the windows stand in, so the
+/// desktop steps aside ([`Aside`]) rather than drawing a second set. It still keeps the windows'
+/// model the wells place them by.
+pub(crate) fn under(host: impl ShellSurface + 'static) -> Rc<RefCell<dyn ShellSurface>> {
+    Rc::new(RefCell::new(Aside(host)))
 }
 
-/// The chrome's published side as the shell stands under the shell: the shell draws the surfaces, so
-/// each action of the chrome's that opens one opens the shell's view of it on `surfaces` — the
-/// overview, the notifications, the quick settings and the workspaces — while the chrome's own
-/// draws nothing. Every other action is the chrome's.
-pub(crate) fn chrome_surface<T: tilo_session_core::surfaces::Published + 'static>(
-    shell: bool,
-    chrome: &Rc<RefCell<T>>,
+/// `desktop:chrome` as the session publishes it: each verb is carried out on `desktop`, the desktop
+/// the session owns, and one that opens a surface opens the shell's view of it on `surfaces` — the
+/// overview, the notifications, the quick settings, About and the workspaces. What only the session
+/// answers (a person's card, the roster) is asked of it through `asks`.
+pub(crate) fn chrome_surface(
+    desktop: tilo_session_core::desktop::state::DesktopHandle,
     surfaces: crate::device_lists::Surfaces,
+    shortcuts: crate::panels::mount::Shortcuts,
+    asks: Rc<RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
 ) -> tilo_session_core::surfaces::Shared {
-    let chrome = Rc::clone(chrome) as tilo_session_core::surfaces::Shared;
-    if shell {
-        Rc::new(RefCell::new(ShellChrome { chrome, surfaces }))
-    } else {
-        chrome
-    }
+    Rc::new(RefCell::new(ShellChrome {
+        desktop,
+        surfaces,
+        shortcuts,
+        asks,
+    }))
 }
 
 /// The shell's published side as the shell stands under the shell: its `search` opens the shell's
@@ -1200,27 +1235,26 @@ pub(crate) fn chrome_surface<T: tilo_session_core::surfaces::Published + 'static
 /// draws nothing under the shell; a search with a query still runs, its rows published for the
 /// palette and the agents.
 pub(crate) fn lists_surface(
-    shell: bool,
     lists: crate::platform::surfaces::ShellDesktop,
     surfaces: crate::device_lists::Surfaces,
 ) -> tilo_session_core::surfaces::Shared {
     let desktop = lists.clone();
     let lists: tilo_session_core::surfaces::Shared = Rc::new(RefCell::new(lists));
-    if shell {
-        Rc::new(RefCell::new(ShellLists {
-            lists,
-            desktop,
-            surfaces,
-        }))
-    } else {
-        lists
-    }
+    Rc::new(RefCell::new(ShellLists {
+        lists,
+        desktop,
+        surfaces,
+    }))
 }
 
 /// The chrome's surface on the shell ([`chrome_surface`]).
 struct ShellChrome {
-    chrome: tilo_session_core::surfaces::Shared,
+    desktop: tilo_session_core::desktop::state::DesktopHandle,
     surfaces: crate::device_lists::Surfaces,
+    /// The desktop's one shortcut table, which the chrome's resource names beside its verbs.
+    shortcuts: crate::panels::mount::Shortcuts,
+    /// What only the session answers: a person's card and the roster.
+    asks: Rc<RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
 }
 
 impl ShellChrome {
@@ -1231,24 +1265,24 @@ impl ShellChrome {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
-        if address.resource != tilo_desktop::verbs::CHROME_RESOURCE {
+        if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
             return Ok(None);
         }
         let here = |name: &str| self.surfaces.overlays.here().name() == name;
         let started = match address.action.as_str() {
             "overview" => {
-                let open = here(tilo_desktop::overlays::Overlay::Overview.name());
+                let open = here(tilo_session_core::desktop::overlays::Overlay::Overview.name());
                 if opens(address, arguments, open)? {
                     self.surfaces
-                        .open(tilo_desktop::overlays::Overlay::Overview.name());
+                        .open(tilo_session_core::desktop::overlays::Overlay::Overview.name());
                 } else {
                     self.surfaces
-                        .close(tilo_desktop::overlays::Overlay::Overview.name());
+                        .close(tilo_session_core::desktop::overlays::Overlay::Overview.name());
                 }
                 true
             }
             "notifications" => {
-                let name = tilo_desktop::overlays::Overlay::Centre.name();
+                let name = tilo_session_core::desktop::overlays::Overlay::Centre.name();
                 if opens(address, arguments, here(name))? {
                     self.surfaces.open(name);
                 } else {
@@ -1258,7 +1292,7 @@ impl ShellChrome {
             }
             "quick-settings" => {
                 self.surfaces
-                    .toggle(tilo_desktop::overlays::Overlay::QuickSettings.name());
+                    .toggle(tilo_session_core::desktop::overlays::Overlay::QuickSettings.name());
                 true
             }
             // The About sheet is the shell's own view where the shell draws the screen: this
@@ -1276,19 +1310,7 @@ impl ShellChrome {
             // a person switches between and the actions on them.
             "workspace-menu" => {
                 self.surfaces
-                    .toggle(tilo_desktop::overlays::Overlay::Workspaces.name());
-                true
-            }
-            "shortcut"
-                if arguments.get("action").cloned().and_then(|action| {
-                    tilo_failure::ignored!(
-                        "an action that does not read back is not this one",
-                        serde_json::from_value::<ui::shortcut_table::ShortcutAction>(action).ok()
-                    )
-                }) == Some(ui::shortcut_table::ShortcutAction::WorkspaceOverview) =>
-            {
-                let name = tilo_desktop::overlays::Overlay::Overview.name();
-                self.surfaces.toggle(name);
+                    .toggle(tilo_session_core::desktop::overlays::Overlay::Workspaces.name());
                 true
             }
             _ => false,
@@ -1298,6 +1320,100 @@ impl ShellChrome {
                 tilo_actions::ActionOutput::default(),
             )),
         )
+    }
+}
+
+impl ShellChrome {
+    /// The chrome's verb at `address`, carried out on the desktop the session owns: `Ok(None)` for
+    /// one that is a surface only the chrome draws.
+    fn carry(
+        &self,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
+        use tilo_session_core::desktop::host::chrome::ChromeIntent;
+        use tilo_session_core::desktop::host::contract::DesktopAsk;
+        use tilo_session_core::desktop::navigation::{ChromeEffect, Verb};
+        use tilo_session_core::desktop::state::chrome_verbs::Carried;
+        if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
+            return Ok(None);
+        }
+        let published = [tilo_session_core::desktop::verbs::chrome_resource(
+            &self.shortcuts.borrow(),
+        )];
+        let encoded = tilo_actions::api::encode_json(&published, address, arguments)?;
+        let verb = match Verb::from_payload(&encoded.payload) {
+            Ok(Verb::Chrome(verb)) => verb,
+            Ok(Verb::Layout(_)) => return Ok(None),
+            Err(error) => return Err(tilo_actions::ApiError::InvalidArguments(error)),
+        };
+        let value = match self
+            .desktop
+            .perform_verb(&verb)
+            .map_err(tilo_actions::ApiError::Failed)?
+        {
+            Carried::Done => None,
+            Carried::Answer(value) => Some(value),
+            Carried::Shortcut(performed) => {
+                self.performed(performed);
+                None
+            }
+            Carried::Shell => {
+                let intent = match verb {
+                    ChromeEffect::ShowPerson { person } => ChromeIntent::ShowPerson(person),
+                    ChromeEffect::TogglePeople => ChromeIntent::TogglePeople,
+                    // The strips of the workspace shown, each where it stands: the overview.
+                    ChromeEffect::ShowStrips => {
+                        self.surfaces
+                            .open(tilo_session_core::desktop::overlays::Overlay::Overview.name());
+                        return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )));
+                    }
+                    _ => return Ok(None),
+                };
+                tilo_session_core::desktop::shell_verbs::ask(
+                    &self.desktop,
+                    &self.asks,
+                    DesktopAsk::Intent(intent),
+                );
+                None
+            }
+        };
+        Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput {
+                value,
+                ..tilo_actions::ActionOutput::default()
+            },
+        )))
+    }
+
+    /// Answer what the desktop left of a shortcut to the shell: whether that was all of it. The
+    /// overview, the emoji picker and the launcher (the app picker a new window opens) are the
+    /// shell's surfaces; the strip switcher shows the strips in the overview, and a report is the
+    /// session's to ask for. The session under the shell was asked for its own already, and
+    /// performing a shortcut changes nothing until it is done, so asking twice does it once.
+    fn performed(&self, performed: tilo_session_core::desktop::state::shortcuts::Performed) {
+        use tilo_session_core::desktop::overlays::Overlay;
+        use tilo_session_core::desktop::state::shortcuts::{Performed, ShellPart};
+        match performed {
+            // The session under the shell was asked already.
+            Performed::Done | Performed::Session => {}
+            Performed::Shell(ShellPart::Overview | ShellPart::StripSwitcher) => {
+                self.surfaces.toggle(Overlay::Overview.name());
+            }
+            Performed::Shell(ShellPart::EmojiPicker) => {
+                self.surfaces.toggle(crate::device_lists::EMOJI);
+            }
+            Performed::AppPicker => self.surfaces.open(Overlay::Launcher.name()),
+            Performed::Shell(ShellPart::ReportProblem) => {
+                tilo_session_core::desktop::shell_verbs::ask(
+                    &self.desktop,
+                    &self.asks,
+                    tilo_session_core::desktop::host::contract::DesktopAsk::ReportProblem,
+                );
+            }
+        }
     }
 }
 
@@ -1320,64 +1436,26 @@ fn opens(
 
 impl tilo_session_core::surfaces::Published for ShellChrome {
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
-        self.chrome.borrow_mut().resources()
+        vec![tilo_session_core::desktop::verbs::chrome_resource(
+            &self.shortcuts.borrow(),
+        )]
     }
 
     fn invoke(
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        look: &mut tilo_session_core::surfaces::Look<'_>,
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
         }
-        self.chrome.borrow_mut().invoke(address, arguments, look)
-    }
-
-    fn invoke_as(
-        &mut self,
-        actor: &tilo_actions::Actor,
-        address: &ActionAddress,
-        arguments: &Map<String, Value>,
-        look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
-        if let Some(started) = self.show_surface(address, arguments)? {
-            return Ok(started);
-        }
-        self.chrome
-            .borrow_mut()
-            .invoke_as(actor, address, arguments, look)
+        self.carry(address, arguments)?
+            .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
-        self.chrome.borrow_mut().accessible_labels()
-    }
-
-    /// What the chrome's surfaces say of their rows now: the shell replaced what the chrome
-    /// draws, never what it offers, so a row it publishes is listed and acts as it does there.
-    fn row_status(&self, row: &str) -> Vec<tilo_actions::RowStatus> {
-        self.chrome.borrow().row_status(row)
-    }
-
-    fn revision(&self) -> Option<u64> {
-        self.chrome.borrow().revision()
-    }
-
-    fn offered(&self) -> bool {
-        self.chrome.borrow().offered()
-    }
-
-    fn exclusive(&self) -> bool {
-        self.chrome.borrow().exclusive()
-    }
-
-    fn serves_while_locked(&self) -> bool {
-        self.chrome.borrow().serves_while_locked()
-    }
-
-    fn locked_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
-        self.chrome.borrow_mut().locked_resources()
+        Vec::new()
     }
 }
 
@@ -1401,7 +1479,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
-        if address.resource == tilo_desktop::verbs::SHELL_RESOURCE && address.action == "search" {
+        if address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE && address.action == "search" {
             if let Some(Value::String(query)) = arguments.get("query")
                 && !query.is_empty()
             {
@@ -1413,7 +1491,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                 return Ok(started);
             }
             self.surfaces
-                .toggle(tilo_desktop::overlays::Overlay::Launcher.name());
+                .toggle(tilo_session_core::desktop::overlays::Overlay::Launcher.name());
             return Ok(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ));
@@ -1431,7 +1509,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                     let asked =
                         Map::from_iter([("query".to_owned(), Value::String(query.clone()))]);
                     self.lists.borrow_mut().invoke(
-                        &ActionAddress::new(tilo_desktop::verbs::SHELL_RESOURCE, "search"),
+                        &ActionAddress::new(tilo_session_core::desktop::verbs::SHELL_RESOURCE, "search"),
                         &asked,
                         look,
                     )?
@@ -1444,7 +1522,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                 Some(query) => self.surfaces.overlays.search(query),
                 None => self
                     .surfaces
-                    .toggle(tilo_desktop::overlays::Overlay::Launcher.name()),
+                    .toggle(tilo_session_core::desktop::overlays::Overlay::Launcher.name()),
             }
             return Ok(started);
         }
@@ -1459,7 +1537,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if ui::search::is_search_address(address)
-            || (address.resource == tilo_desktop::verbs::SHELL_RESOURCE
+            || (address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE
                 && address.action == "search")
         {
             return self.invoke(address, arguments, look);
@@ -1655,7 +1733,7 @@ impl crate::Session {
         // disagree. It is the same surface the views read (`d.here`), and the one place that knows
         // when it closes: however the person left it, the next arrival is a banner on the shell
         // again rather than a row behind a page that is gone.
-        let centre = shell.surface() == tilo_desktop::overlays::Overlay::Centre.name();
+        let centre = shell.surface() == tilo_session_core::desktop::overlays::Overlay::Centre.name();
         self.shared.notices.set_shell_centre(centre);
         if centre {
             self.shared.notices.mark_read();
@@ -1809,7 +1887,7 @@ impl crate::Session {
     /// The notifications the shell keeps: what apps sent, and what the centre shows. A test posts
     /// into it as an app's arrival would land.
     #[must_use]
-    pub fn notices(&self) -> &tilo_desktop_surface::DesktopNotifications {
+    pub fn notices(&self) -> &tilo_session_core::desktop::state::DesktopNotifications {
         &self.shared.notices
     }
 
@@ -2054,31 +2132,13 @@ mod tests {
 
     /// The device's surfaces a shell shows over, as the session starts them.
     fn shell_surfaces() -> crate::device_lists::Surfaces {
-        struct Blank;
-
-        impl tilo_desktop_surface::TileSource for Blank {
-            fn tile(
-                &mut self,
-                _: &tilo_desktop_model::Workspace,
-                tab: &tilo_desktop_model::Tab,
-            ) -> ui::widget::TileHost {
-                ui::widget::TileHost::new(ui::widget::TileContent::Notice {
-                    title: tab.title.clone(),
-                    detail: String::new(),
-                })
-            }
-        }
-
-        let (_surface, handle) = tilo_desktop_surface::DesktopSurface::new(
+        let handle = tilo_session_core::desktop::state::DesktopHandle::new(
             tilo_desktop_model::Layout::default(),
             1,
-            Box::new(Blank),
         );
         crate::device_lists::Surfaces {
-            status_panel: false,
-            shell: true,
-            overlays: tilo_desktop::overlays::Overlays::new(),
-            notices: tilo_desktop_surface::DesktopNotifications::default(),
+            overlays: tilo_session_core::desktop::overlays::Overlays::new(),
+            notices: tilo_session_core::desktop::state::DesktopNotifications::default(),
             overview: std::rc::Rc::new(std::cell::Cell::new(false)),
             handle,
             emoji: std::rc::Rc::new(std::cell::Cell::new(false)),

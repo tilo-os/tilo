@@ -12,7 +12,7 @@ fn own_workspace(session: &Session, members: &[&str]) {
     let mut tree = session.handle().read(Clone::clone);
     let workspace = tree.active_workspace_mut().expect("a workspace in front");
     for member in members {
-        tilo_desktop::workspace_settings::set_member_role(
+        tilo_session_core::desktop::workspace_settings::set_member_role(
             workspace,
             &PERSON.to_owned(),
             &(*member).to_owned(),
@@ -133,7 +133,7 @@ fn search_open(session: &Session) -> Option<ResourceSpec> {
             }
         })
     }
-    find(&session.resources(), tilo_desktop::verbs::SEARCH_RESOURCE)
+    find(&session.resources(), tilo_session_core::desktop::verbs::SEARCH_RESOURCE)
 }
 
 /// The People tab gives each member another role, and the workspace holds both afterwards, with the

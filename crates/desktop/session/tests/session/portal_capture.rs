@@ -115,7 +115,7 @@ fn channels(pixel: [u8; 4]) -> (f64, f64, f64) {
 fn focus_display(session: &mut Session, index: usize) {
     fn collect(resources: &[tilo_actions::ResourceSpec], displays: &mut Vec<String>) {
         for resource in resources {
-            if resource.kind == tilo_desktop::verbs::DISPLAY_KIND {
+            if resource.kind == tilo_session_core::desktop::verbs::DISPLAY_KIND {
                 displays.push(resource.id.as_str().to_owned());
             }
             collect(&resource.children, displays);

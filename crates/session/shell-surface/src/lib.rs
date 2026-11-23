@@ -19,9 +19,7 @@ pub mod shell_part;
 mod well_policy;
 mod widget;
 
-pub use desktop::{
-    PointerSamples, ShellDesktop, ShellGesture, StripPolicy, WindowObserver, desktop, desktop_with,
-};
+pub use desktop::{ShellDesktop, ShellGesture, WindowObserver, desktop};
 pub use shell_part::{SessionLink, ShellPart, ShellWork};
 pub use well_policy::{WellDesktop, WellPolicy, WindowModel, well_policy};
 pub use widget::WidgetSurface;
@@ -624,28 +622,37 @@ impl ShellSurface for AppProcess {
     }
 }
 
-/// The toolkit's event for a pointer button (evdev code) changing state.
 /// A scroll as winit reports it at `scale`: a wheel's notches are lines, as winit reports a
-/// Wayland client's `axis_value120`, and fingers' pixels are physical. The axis counts down as
-/// positive and the toolkit moves content against winit's delta, so the signs turn.
+/// Wayland client's `axis_value120`, fingers' pixels are physical, and their lifting ends the
+/// scroll, which a scroller glides on from. The axis counts down as positive and the toolkit
+/// moves content against winit's delta, so the signs turn.
 pub(crate) fn mouse_wheel(scroll: Scroll, scale: f64) -> WindowEvent {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "winit's lines are f32; a scroll's notches are few"
     )]
-    let delta = match scroll {
-        Scroll::Notches(x, y) => MouseScrollDelta::LineDelta(-x as f32, -y as f32),
-        Scroll::Pixels(x, y) => {
-            MouseScrollDelta::PixelDelta(PhysicalPosition::new(-x * scale, -y * scale))
-        }
+    let (delta, phase) = match scroll {
+        Scroll::Notches(x, y) => (
+            MouseScrollDelta::LineDelta(-x as f32, -y as f32),
+            TouchPhase::Moved,
+        ),
+        Scroll::Pixels(x, y) => (
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(-x * scale, -y * scale)),
+            TouchPhase::Moved,
+        ),
+        Scroll::Lifted => (
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 0.0)),
+            TouchPhase::Ended,
+        ),
     };
     WindowEvent::MouseWheel {
         device_id: DeviceId::dummy(),
         delta,
-        phase: TouchPhase::Moved,
+        phase,
     }
 }
 
+/// The toolkit's event for a pointer button (evdev code) changing state.
 pub(crate) fn mouse_input(button: u32, pressed: bool) -> WindowEvent {
     let button = match button {
         BTN_LEFT => MouseButton::Left,

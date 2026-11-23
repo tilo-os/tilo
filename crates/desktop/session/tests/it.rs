@@ -133,10 +133,16 @@ mod kept_apps;
 mod launch;
 #[path = "layout.rs"]
 mod layout;
+#[path = "layout_gestures.rs"]
+mod layout_gestures;
 #[path = "layout_placing.rs"]
 mod layout_placing;
 #[path = "layout_record.rs"]
 mod layout_record;
+#[path = "layout_shortcuts.rs"]
+mod layout_shortcuts;
+#[path = "layout_verbs.rs"]
+mod layout_verbs;
 #[path = "layout_view.rs"]
 mod layout_view;
 #[path = "live_relay_bound.rs"]

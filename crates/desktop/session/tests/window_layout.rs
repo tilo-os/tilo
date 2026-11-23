@@ -22,7 +22,7 @@
               outlives every call made into it"
 )]
 
-use tilo_desktop::verbs::CHROME_RESOURCE;
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 
 /// The person at this device, as `dist/dev/nested-session.sh` mints them: a throwaway test identity
@@ -52,7 +52,6 @@ fn notices(session: &Session) -> Vec<String> {
 fn session(state: &std::path::Path) -> Session {
     crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: true,
         state: Some(state.to_path_buf()),
         ..Options::default()

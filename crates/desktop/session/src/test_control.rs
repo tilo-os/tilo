@@ -30,10 +30,12 @@ use tilo_actions::remote::{
 };
 use tilo_compositor::{Compositor, InputEvent};
 
-use tilo_desktop::overlays::{Overlays, Part};
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::overlays::Overlays;
+
+use tilo_session_core::desktop::overlays::Part;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::Surfaces;
 
 use crate::mcp_server::{self, PeerRefusal};
@@ -224,7 +226,7 @@ pub(crate) struct Session<'a> {
     pub(crate) layout: &'a std::cell::RefCell<tilo_session_core::layout::Layout>,
     /// What the person was told, as the session's own notifications service keeps it: the banners
     /// up and the centre behind them, whichever shell draws them.
-    pub(crate) notifications: tilo_desktop_surface::DesktopNotifications,
+    pub(crate) notifications: tilo_session_core::desktop::state::DesktopNotifications,
     /// The questions waiting for the person, as the session's services ask them.
     pub(crate) questions: Option<&'a tilo_service::Questions>,
 }

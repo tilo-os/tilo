@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
+use crate::window_share::peer::PeerViews as _;
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
@@ -14,11 +15,15 @@ use tilo_compositor::{
 };
 use tilo_session_core::layout;
 
-use tilo_desktop::osd::{Hint, Osd, OsdKind};
-use tilo_desktop::overlays::{Overlays, Part};
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::osd::Hint;
+
+use tilo_session_core::desktop::osd::Osd;
+
+use tilo_session_core::desktop::osd::OsdKind;
+use tilo_session_core::desktop::overlays::{Overlays, Part};
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::Surfaces;
 use tilo_shell_surface::{ShellDesktop, WidgetSurface};
 use ui::host_operation::ResourceOperationStart;
@@ -53,8 +58,6 @@ pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
 use crate::app_wire::AppWire;
-use crate::notifications::mount_banners;
-use crate::panels::mount::mount_activities;
 use crate::panels::mount::{KeyContext, mount_controls, mount_setup};
 use crate::search::SessionSearch;
 use crate::services::app_wire::{mount_services, start_app_wire};
@@ -67,10 +70,6 @@ use turns::Turns;
 pub use os_actions::SessionAction;
 
 pub use tilo_onboarding_session::view::OnboardingView;
-
-/// The generation the session's own desktop snapshots carry: a snapshot of
-/// an older one is stale.
-pub(crate) const GENERATION: &str = "session";
 
 /// How many times the session starts the lock screen's app for one lock
 /// before it draws the lock itself: a screen whose app goes is started
@@ -151,7 +150,7 @@ impl Session {
         let vpn = options.vpn.take().map(crate::vpn::Vpn::start);
         // What the shell and the chrome ask of the session, from their own
         // widget trees.
-        let notices = tilo_desktop_surface::DesktopNotifications::default();
+        let notices = tilo_session_core::desktop::state::DesktopNotifications::default();
         // The centre opens with what it kept when this session last ended.
         let notice_history = crate::notifications::restore_history(&notices, &options);
         // What the bar reads of the notifications, and the policy arrivals
@@ -160,8 +159,6 @@ impl Session {
         let notification_policy = std::sync::Arc::new(std::sync::Mutex::new(
             settings_store::notification_policy::NotificationPolicy::load(),
         ));
-        // The notifications the banners app shows and the shell keeps, and the link it asks back on.
-        let banners = tilo_notification_banners::Link::new();
         // The person's notifications: what their apps sent the notifications service, and what the
         // session's roles tell them through it.
         let notifications = Rc::new(RefCell::new(
@@ -173,7 +170,6 @@ impl Session {
                         desktop.notifications().clone()
                     }),
                 notices.clone(),
-                banners.clone(),
                 std::sync::Arc::clone(&notification_policy),
                 Rc::clone(&notice_signals),
                 options.power.clone(),
@@ -188,9 +184,6 @@ impl Session {
             std::sync::Arc::clone(&woken),
         ));
         let watched_wallpapers = std::sync::Arc::clone(&wallpapers);
-        // The Desktop widgets' choices, kept current by the same watch.
-        let widget_prefs = crate::background::prefs();
-        let watched_widgets = std::sync::Arc::clone(&widget_prefs);
         // What may continue on the person's other devices — what they play
         // here, the Wi-Fi passphrases they share — read from the same settings
         // document on the same watch.
@@ -233,7 +226,6 @@ impl Session {
             *watched.lock_recover() =
                 settings_store::notification_policy::NotificationPolicy::from_document(&document);
             watched_wallpapers.follow(&document);
-            crate::background::follow_prefs(&watched_widgets, &document);
             watched_continuity.read(&document);
             watched_placed.read(&document);
             watched_night_light.read(&document);
@@ -249,18 +241,7 @@ impl Session {
         .ok();
         let mut presentation = (options.presentation)();
         tilo_startup_metrics::mark("session-presentation-done");
-        let overview = crate::overview::Overview::new(
-            presentation.theme.motion(),
-            presentation.theme.reduce_motion,
-        );
-        // The shell's open card, which the keys fold on Escape and the
-        // overview folds as it comes over the shell: the shell is under the
-        // windows and hears neither itself.
-        let fold = tilo_desktop::widgets::Fold::default();
-        // What plays, which the shell's music widget shows: the session keeps
-        // it current from the player Quick Settings already reads, so the
-        // widget is a view of that one reading.
-        let music = tilo_desktop::widgets::Music::default();
+        let overview = crate::overview::Overview::default();
         // The session's own store, where the activity and the mentions keep what this device saw,
         // and the one stream of record changes the roles that follow records read.
         let records_store: Option<crate::platform::Store> = options
@@ -298,34 +279,15 @@ impl Session {
             )),
         );
         tilo_startup_metrics::mark("session-activity-done");
-        // When each display's bar shows over the window covering it: the shell's
-        // band, the chrome and the input that reaches for the bar read the one
-        // model.
-        let reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>> = Rc::default();
         // Super alone, as the compositor reads it: a tap opens the search and a hold shows the
         // keys, until a key or a click makes it a chord's modifier.
         let super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>> = Rc::default();
         // The shell a login shows is built before its first frame: this pair
         // is the phase between the compositor coming up and the frame that
         // draws it (tools/perf/startup_marks.py).
-        // The shell's wallpaper: one source, which the shell's backdrop publishes and the chrome's
-        // overview draws over — the two hosts draw one ground, never a copy each.
-        let wallpaper = ui::backdrop::wallpaper::Source::new();
         tilo_startup_metrics::mark("shell-build-start");
-        let (desktop, strips, asks) = crate::background::background(
-            &options,
-            &activity,
-            notices.clone(),
-            std::sync::Arc::clone(&wallpapers),
-            wallpaper.clone(),
-            crate::background::Background {
-                widgets: widget_prefs,
-                fold: fold.clone(),
-                overview: overview.open_flag(),
-                music: music.clone(),
-                reveals: Rc::clone(&reveals),
-            },
-        );
+        let (desktop, mut policy, asks) =
+            crate::background::background(&options, &activity, notices.clone());
         // Only a session with a launcher behind it brings the window a launch holds a place for;
         // one without starts nothing, so no window is on its way and the keys are never held for
         // one.
@@ -361,7 +323,7 @@ impl Session {
         // The person's layout: the shell this session holds, whose layout the workspaces keep.
         let layout = Rc::new(RefCell::new(layout::Layout::new(
             &options.person,
-            handle.tree(),
+            handle.clone(),
             Rc::new(crate::layout::Steps::new(
                 Rc::clone(&desktops),
                 handle.clone(),
@@ -582,8 +544,6 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
         ));
         let settling = Rc::clone(&window_links);
-        let mut policy =
-            crate::background::WindowPlacement::for_shell(options.shell, &desktop, strips);
         // A window opens in the workspace its process was launched into: an agent's or a service's
         // open of an app in a workspace that is not in front lands there, never in front.
         // A window takes the tab held for the launch its process descends from, whatever it calls
@@ -616,7 +576,7 @@ impl Session {
         // application directory is offered the first time it shows itself.
         crate::downloaded::install(&mut options, &mut policy);
         tilo_startup_metrics::mark("compositor-start");
-        let mut compositor = start(policy.boxed())?;
+        let mut compositor = start(Box::new(policy))?;
         // The render context is up: every mark from here is the frame the
         // person waits for (tools/perf/startup_marks.py).
         tilo_startup_metrics::mark("window-render-context-done");
@@ -635,7 +595,7 @@ impl Session {
         crate::a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(crate::display_settings::PanelBacklight::find()));
         let machine = crate::power::install(&mut compositor, &options);
-        compositor.add_surface(crate::shell::under(options.shell, desktop.clone()));
+        compositor.add_surface(crate::shell::under(desktop.clone()));
         // The shell draws every window whole — its card, the lift under it
         // and its edge, in the theme's colours, brighter on the window in
         // use. The compositor shapes a window's corners to that card and
@@ -647,17 +607,13 @@ impl Session {
         // What stands over the windows, opened by the chrome's own widgets, by the session's
         // verbs and by the views bound to them, and read by whoever asks through the API.
         let overlays = Overlays::new();
-        // Alt+Tab's panel: the shell's walk says what it shows, the chrome draws it, and the
-        // compositor pictures the windows its cards name.
-        let switcher = tilo_desktop::window_switcher::Switcher::default();
         // The keys a held Super reaches: the session says them, the chrome draws them.
-        let super_peek = tilo_desktop::super_peek::SuperPeek::default();
+        let super_peek = tilo_session_core::desktop::super_peek::SuperPeek::default();
         // The surfaces the shell shows over its windows, and where each stands: the shell's own
         // views, or the quick settings' app where the device has one and the shell draws it. The
         // shell's API and the chrome's API open them through it.
         let surfaces = crate::device_lists::Surfaces {
             status_panel: crate::quick_settings::installed(&options.surfaces),
-            shell: options.shell,
             overlays: overlays.clone(),
             notices: notices.clone(),
             overview: overview.open_flag(),
@@ -672,10 +628,8 @@ impl Session {
         // the running app each pass. A device whose shell draws the panel has
         // one; the shell's own view of the quick settings answers its own keys.
         let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
-        let panel_keys =
-            (surfaces.panel_shows(crate::quick_settings::SURFACE)).then(|| Rc::clone(&panel_asks));
         let lists_surface: tilo_session_core::surfaces::Shared =
-            crate::shell::lists_surface(options.shell, desktop.clone(), surfaces.clone());
+            crate::shell::lists_surface(desktop.clone(), surfaces.clone());
         published.add(Rc::clone(&lists_surface));
         // The chrome above the windows: its own tree, beside the shell's.
         let intents = Rc::new(RefCell::new(Vec::new()));
@@ -911,41 +865,39 @@ impl Session {
         // explains them: a chord that works is a chord the guide and the
         // menus show, and a person's rebinding reaches every one of them.
         let shortcuts = Rc::new(RefCell::new(std::mem::take(&mut options.config.shortcuts)));
-        // The desktop's control hints, shared by every scheme: the record as the person's
-        // settings hold it and what this session alone knows, for the chrome that draws them.
-        let hints = tilo_desktop::control_hints::HintsFeed::default();
-        let chrome = Rc::new(RefCell::new(crate::chrome::host(
-            &handle,
-            &options,
-            crate::chrome::ChromeWiring {
-                intents: Rc::clone(&intents),
-                asks: Rc::clone(&asks),
-                shortcuts: Rc::clone(&shortcuts),
-                feeds: crate::chrome::BarFeeds {
+        // What the desktop may do and the facts it reads are the session's: who may change the
+        // workspaces, who is here, and the machine's own readings, answered by the session's own
+        // source. What the desktop asks of the session lands with the shell's asks.
+        let rules = Rc::new(tilo_session_core::desktop::host::chrome::HostChrome::new(Rc::new(
+            crate::chrome::SessionChrome::new(
+                handle.clone(),
+                Rc::clone(&intents),
+                options.person.clone(),
+                crate::chrome::BarFeeds {
                     signals: Rc::clone(&notice_signals),
                     readings: Rc::clone(&readings),
                     activities: Rc::clone(&activities),
                     tray: tray.clone(),
                     fullscreen: Rc::clone(&fullscreen),
                     shares: Rc::clone(&window_shares),
-                    reveals: Rc::clone(&reveals),
                     identify: numbers.ask(),
                     invitable: Rc::clone(&invitable),
                 },
-                view: view.clone(),
-                hints: hints.clone(),
-                peek: super_peek.clone(),
-                wallpaper,
-            },
-            sync.clone(),
-            &overview,
-            &emoji.link(),
-            &overlays,
-            &switcher,
+                !crate::quick_settings::installed(&options.surfaces),
+                sync.clone(),
+                options.launches.notes(),
+                view.clone(),
+            ),
         )));
-        compositor.add_surface(crate::shell::under(options.shell, Rc::clone(&chrome)));
-        // The shell as the session publishes it, which the shell reads through the API.
-        let chrome_surface = crate::shell::chrome_surface(options.shell, &chrome, surfaces.clone());
+        handle.set_rules(rules);
+        handle.set_asks(Rc::clone(&asks));
+        // The chrome's verbs as the session publishes them, which the shell reads through the API.
+        let chrome_surface = crate::shell::chrome_surface(
+            handle.clone(),
+            surfaces.clone(),
+            Rc::clone(&shortcuts),
+            Rc::clone(&asks),
+        );
         published.add(Rc::clone(&chrome_surface));
         // The service the MCP server's connections ask this session's own services on: made before
         // the app wire starts, which serves the programs.
@@ -1023,33 +975,24 @@ impl Session {
             folders: folders.clone(),
         });
         let shell_service = shell();
-        let shell = if options.shell {
-            Some(
-                crate::shell::Shell::mount(
-                    &mut compositor,
-                    &mut published,
-                    shell(),
-                    wells,
-                    presentation.theme.clone(),
-                    options.state.as_deref(),
-                )
-                .map_err(|why| {
-                    Error::Backend(tilo_compositor::BackendError(format!(
-                        "the shell did not start: {why}"
-                    )))
-                })?,
-            )
-        } else {
-            None
-        };
+        let shell = crate::shell::Shell::mount(
+            &mut compositor,
+            &mut published,
+            shell(),
+            Some(wells),
+            presentation.theme.clone(),
+            options.state.as_deref(),
+        )
+        .map_err(|why| {
+            Error::Backend(tilo_compositor::BackendError(format!(
+                "the shell did not start: {why}"
+            )))
+        })?;
         // The surfaces the shell stands in for read as nothing, as they draw
         // nothing: the shell's parts are what a client finds there, while the
         // desktop's own shell and chrome keep their actions.
-        let aside: Vec<tilo_session_core::surfaces::Shared> = if shell.is_some() {
-            vec![Rc::clone(&lists_surface), Rc::clone(&chrome_surface)]
-        } else {
-            Vec::new()
-        };
+        let aside: Vec<tilo_session_core::surfaces::Shared> =
+            vec![Rc::clone(&lists_surface), Rc::clone(&chrome_surface)];
         // Who is here, placed into a copy of the layout as the members of the workspace in front:
         // the tree the loop holds lists nobody. The bar's faces and a notice's names read them so.
         let place_here: Rc<dyn Fn(&mut tilo_desktop_model::Layout)> = {
@@ -1063,31 +1006,8 @@ impl Session {
                 }
             })
         };
-        // What the floating layer keeps clear of: the banners' stack while a
-        // banner shows, and the readout's band while it stands.
-        let banner_stack = crate::panels::Reserved::new();
-        let readout_band = crate::panels::Reserved::new();
-        // Where each display stands and where the person types, filled in every pass: what the
-        // readout and the floating layer keep clear of.
-        let readout_place = crate::panels::ReadoutPlaces::default();
-        let _activity_layer = mount_activities(
-            &mut compositor,
-            &mut published,
-            &activities,
-            &cards,
-            (banner_stack.clone(), readout_band.clone()),
-            (&readout_place, &handle, &overlays),
-            &options,
-        );
-        let banner_surface = mount_banners(
-            &mut compositor,
-            &mut published,
-            &notices,
-            (&handle, &overlays),
-            &options,
-            banner_stack,
-            banners.clone(),
-        );
+        // The shell draws the banners itself from what it reads (`Shell.banner`).
+        notices.show_banners_elsewhere();
 
         // The roster and profile card are opened by the person. Put them above
         // transient banners so a notice cannot cover or take a press on a field.
@@ -1188,9 +1108,8 @@ impl Session {
         let shortcut_guide =
             crate::shortcut_guide::ShortcutGuide::new(guide_sheet, Rc::clone(&guide_state));
         let guide_keys = Rc::clone(&guide_state);
-        let (commands, controls_reading, invocations, triggered, readout) = mount_controls(
+        let (commands, controls_reading, invocations, triggered) = mount_controls(
             &mut compositor,
-            &mut published,
             Rc::clone(&shortcuts),
             portal_shortcuts,
             guide_keys,
@@ -1203,17 +1122,9 @@ impl Session {
                         .map(|state| tilo_sheets::SheetState::presentation(state).clone()),
                     modal: modal_sheets,
                 },
-                fold,
                 overlays: overlays.clone(),
-                reveals: Rc::clone(&reveals),
-                panel: panel_keys.clone(),
             },
-            options.scale,
-            (readout_band, &readout_place),
         );
-        // The readout draws in the person's theme like the shell and the shell
-        // do: its ground is the theme's floating surface, never a fixed fill.
-        readout.borrow_mut().set_theme(presentation.theme);
 
         // Setup last.
         let setup = mount_setup(
@@ -1503,10 +1414,9 @@ impl Session {
         // REPL's or an agent's program names, and its record is read by its app as Notes' is.
         // A development session's seeded document is already one; the session runs that one
         // rather than keeping the shell in a second.
-        if options.shell
-            && !started
-                .iter()
-                .any(|service| service.keeps_session_document())
+        if !started
+            .iter()
+            .any(|service| service.keeps_session_document())
         {
             match crate::seeded_apps::session_document(&options.person) {
                 Ok(document) => started.push(Box::new(document) as Box<dyn Service>),
@@ -1593,9 +1503,7 @@ impl Session {
                 )));
         }
         // The shell's own records reach the API as any app's do the moment its package runs.
-        if let Some(shell) = &shell {
-            shell.share_records(&services, &session_services);
-        }
+        shell.share_records(&services, &session_services);
         // So do the records the services keep of every app the session runs itself (a seeded
         // session's Tasks, Notes, Mail): a REPL's or an agent's `find(tasks.Task)` reads them on the
         // session's pass, as it reads the shell's, and starts no app to read one.
@@ -1772,7 +1680,6 @@ impl Session {
             panel_back: Cell::new(None),
             overlays,
             surfaces: one_surface,
-            switcher,
             published,
             invocations,
             triggered,
@@ -1783,7 +1690,7 @@ impl Session {
             waiting: RefCell::default(),
             readings,
             osd: Rc::default(),
-            tilolang_shell: options.shell,
+            carried: std::cell::Cell::new(0.0),
             services,
             sends,
             nearby_shares,
@@ -1800,7 +1707,6 @@ impl Session {
             waking: crate::wake::Wake::new(&options.wake_io),
             keyboard_and_pointer: shared_input,
             wake_handle: options.wake.handle(),
-            music,
             power,
             workspace_settings,
             ws_settings_fed: Cell::new(None),
@@ -1865,10 +1771,7 @@ impl Session {
             overview,
             dictation,
             emoji,
-            hints,
-            hints_stamp: Cell::default(),
             shortcut_guide,
-            chrome,
             people,
             follow: RefCell::default(),
             fullscreen,
@@ -1910,9 +1813,7 @@ impl Session {
             .add(Box::new(crate::osd::Served::new(Rc::clone(&shared.osd))));
         // The tilolang shell draws the banners itself, so the session ages them here: one goes a
         // few seconds after it arrived, as a banner stack takes it away.
-        if options.shell {
-            shared.notifications.borrow().set_shell_banners();
-        }
+        shared.notifications.borrow().set_shell_banners();
         // The session's own diagnostics: the profiler and the heap trim, which
         // the device admin and a person's own scripts read and drive through
         // the same API as the desktop's other actions.
@@ -2003,7 +1904,6 @@ impl Session {
         let mut session = Self {
             compositor,
             shared,
-            banners,
             input: options.config.input,
             setup,
             comforts,
@@ -2064,9 +1964,7 @@ impl Session {
             part_views,
             displays: crate::display_settings::Displays::default(),
             displays_service,
-            readout_place,
-            readout,
-            banner_surface,
+            caret: Cell::new(None),
             numbers,
             published_displays,
             confirmation: crate::display_confirm::Confirmation::default(),
@@ -2079,7 +1977,7 @@ impl Session {
             rotation: crate::rotation::Rotation::mount(options.accelerometer),
             sources,
             input_method: crate::input_method::InputMethod::default(),
-            shell,
+            shell: Some(shell),
             a11y,
             ended: false,
             first_frame: false,
@@ -2234,8 +2132,8 @@ impl Session {
             .follow(&mut self.compositor, night_light, turned)
     }
 
-    /// Keep the readout's facts current: where the displays stand, where the
-    /// person types, and a mode change waiting for the readout to confirm it.
+    /// Keep the readout's facts current: where the person types, and a mode change waiting for the
+    /// readout to confirm it.
     pub(crate) fn follow_readout(&self) {
         let caret = self.compositor.text_caret().map(|caret| {
             ui::kurbo::Rect::new(
@@ -2245,9 +2143,7 @@ impl Session {
                 caret.y + caret.height,
             )
         });
-        self.readout_place
-            .borrow_mut()
-            .observe(&self.compositor.outputs(), caret);
+        self.caret.set(caret);
         if let Some(on) = self.shared.notifications.borrow().take_quiet_change() {
             self.show_hint(Hint {
                 kind: OsdKind::DoNotDisturb,
@@ -2270,7 +2166,7 @@ impl Session {
         // placed beside where it stands now, not a pass behind.
         self.shared
             .overlays
-            .set_caret(self.readout_place.borrow().caret());
+            .set_caret(self.caret.get());
         self.shared.open_clipboard_beside_caret();
     }
 
@@ -2320,7 +2216,7 @@ impl Session {
         // Where the person types, for the surfaces a key opens at the caret.
         self.shared
             .overlays
-            .set_caret(self.readout_place.borrow().caret());
+            .set_caret(self.caret.get());
     }
 
     /// Take the displays a fullscreen window owns from the compositor, so
@@ -2437,17 +2333,11 @@ impl Session {
         &self.shared.handle
     }
 
-    /// The notification banners' link: the notifications service publishes
-    /// on it and carries out what the banners ask.
-    #[must_use]
-    pub const fn banners(&self) -> &tilo_notification_banners::Link {
-        &self.banners
-    }
 
     /// The shell's notifications: the banners it is showing now and the
     /// centre it keeps behind them.
     #[must_use]
-    pub fn notifications(&self) -> tilo_desktop_surface::DesktopNotifications {
+    pub fn notifications(&self) -> tilo_session_core::desktop::state::DesktopNotifications {
         self.shared.notifications.borrow().desktop()
     }
 
@@ -2485,10 +2375,10 @@ impl Session {
     /// the overview is away, and before a window on the shell has a picture.
     #[must_use]
     pub fn overview_pictures(&self) -> Vec<(u64, (f64, f64, f64, f64))> {
-        match self.shell.as_ref() {
-            Some(shell) => shell.pictures(),
-            None => self.shared.overview_pictures(),
-        }
+        self.shell
+            .as_ref()
+            .map(crate::shell::Shell::pictures)
+            .unwrap_or_default()
     }
 
     /// What the service publishing `resource` reads of it now, as JSON;
@@ -2549,7 +2439,7 @@ impl Session {
     /// What the windows ask of the workspace's activity and follow, as this session serves it: the
     /// same API the shell's own pane reads through.
     #[must_use]
-    pub fn activity(&self) -> tilo_desktop_surface::session::ActivityRequests {
+    pub fn activity(&self) -> tilo_session_core::desktop::session::ActivityRequests {
         self.shared.activity.requests()
     }
 
@@ -2758,20 +2648,6 @@ impl Session {
         // answer, and moves while the session runs: the bar's invite button
         // and the roster's footer follow it.
         self.shared.follow_invitable();
-        // What the desktop's control hints teach, learn and stay quiet for: setup owns the screen
-        // until the person reaches the desktop.
-        let setup_up = self.setup.as_ref().is_some_and(|setup| setup.borrow().up());
-        self.shared.follow_hints(setup_up);
-        // The person's account with this session's host, in the overview of their Tilo, as it
-        // changes.
-        if let Some(account) = crate::server_account::changed() {
-            self.with_chrome_mut(|chrome| {
-                chrome.set_tilo(tilo_desktop::overview_tilo::TiloOverview {
-                    hosts: vec![account],
-                    ..tilo_desktop::overview_tilo::TiloOverview::default()
-                });
-            });
-        }
         for _ in 0..4 {
             self.shared.follow_asks(&mut crate::look::look(
                 &mut self.compositor,
@@ -2812,7 +2688,13 @@ impl Session {
             // What the apps asked of their own tabs, and of what a capture
             // may show of them, as the shell commands they are.
             self.follow_app_asks();
-            self.shared.follow_gestures();
+            let carried = self.shared.follow_gestures();
+            if let Some(shell) = &self.shell {
+                let pointer = self.compositor.pointer_location();
+                for scroll in carried {
+                    shell.carry_strip(&self.shared.handle, scroll, pointer);
+                }
+            }
             self.shared.follow_tab_menus();
             self.shared.follow_window_share_asks();
             self.follow_window_moves();
@@ -2880,7 +2762,7 @@ impl Session {
                 .map(|tab| {
                     (
                         tab.id,
-                        tilo_desktop_surface::host::records::app_of(tree, tab.id)
+                        tilo_session_core::desktop::host::records::app_of(tree, tab.id)
                             .map(str::to_owned),
                     )
                 })

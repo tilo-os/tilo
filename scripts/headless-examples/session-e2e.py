@@ -112,7 +112,7 @@ TL_APPS = ["notes", "tasks", "mail", "chat"]
 NATIVE = "agent tasks"
 # The provider the session publishes its own actions under, the shell's among them
 # (tilo_actions::remote::SESSION_ACTIONS_PROVIDER), and the resource the shell publishes, whose
-# `search` verb opens search on what was typed (tilo_desktop::verbs::SHELL_RESOURCE) and
+# `search` verb opens search on what was typed (tilo_session_core::desktop::verbs::SHELL_RESOURCE) and
 # whose rows are children of its open search (SEARCH_RESOURCE).
 SESSION_PROVIDER = "so.tilo.session"
 SHELL_RESOURCE = "desktop:shell"

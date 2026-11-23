@@ -105,7 +105,7 @@ fn the_readout_names_its_device_and_the_level_is_the_bar() {
 
     invoke_with(
         &mut played,
-        tilo_desktop::osd::OSD_RESOURCE,
+        tilo_session_core::desktop::osd::OSD_RESOURCE,
         "show",
         &serde_json::json!({
             "kind": "volume",
@@ -164,7 +164,7 @@ fn the_readout_names_its_device_and_the_level_is_the_bar() {
         .expect("screenshot");
     invoke_with(
         &mut changed,
-        tilo_desktop::osd::OSD_RESOURCE,
+        tilo_session_core::desktop::osd::OSD_RESOURCE,
         "show",
         &serde_json::json!({"kind": "night-light", "on": true}),
     );

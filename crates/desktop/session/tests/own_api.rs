@@ -48,7 +48,6 @@ fn session_with_api(root: &std::path::Path, api: &std::path::Path) -> Desktop {
     let session = headless(Options {
         person: PERSON.to_owned(),
         state: Some(state),
-        shell: true,
         collab: false,
         // The seeded apps, `tasks` among them: what a program reads.
         services: seeded_apps(),

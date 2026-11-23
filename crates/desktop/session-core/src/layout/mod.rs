@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
-use crate::desktop::tree::TreeHandle;
+use crate::desktop::state::DesktopHandle;
 use tilo_actions::remote::session_actions;
 use tilo_actions::{Actor, MemberId, ResourceSpec};
 use tilo_desktop_model::{
@@ -746,7 +746,7 @@ pub struct Layout {
     /// The person whose record it is.
     person: String,
     /// The shell itself: what the layout reads, and whose change every layout action is.
-    handle: TreeHandle,
+    handle: DesktopHandle,
     /// Where the layout is kept: the record the workspace shares, whose own changes are its history.
     layouts: Rc<dyn Layouts>,
     /// What the host calls a window, by [`Names`].
@@ -788,7 +788,7 @@ impl Layout {
     #[must_use]
     pub fn new(
         person: &str,
-        handle: TreeHandle,
+        handle: DesktopHandle,
         layouts: Rc<dyn Layouts>,
         names: Names,
         words: Words,

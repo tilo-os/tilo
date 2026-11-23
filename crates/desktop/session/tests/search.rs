@@ -24,9 +24,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ApiError, ResourceSpec};
 use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::{InputEvent, KeyRepeat};
-use tilo_desktop::verbs::{
-    LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE, launchpad_card_id,
-};
+use tilo_session_core::desktop::verbs::{LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE, launchpad_card_id};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
@@ -1105,7 +1103,7 @@ fn open_search(session: &Session) -> Option<ResourceSpec> {
 
 /// Whether the shell publishes the open search as over: the rows it shows are the search's answer
 /// for the query, cut to the card. A source that answers after the frame that typed still owes
-/// rows then ([`tilo_desktop_surface::DesktopHandle::search_expecting`]), so this says the search
+/// rows then ([`tilo_session_core::desktop::state::DesktopHandle::search_expecting`]), so this says the search
 /// has stopped filling in, not that every source has answered.
 fn search_settled(search: &ResourceSpec) -> bool {
     search
@@ -1810,7 +1808,6 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
 fn session_with_agents() -> Session {
     let mut session = crate::common::headless(Options {
         person: crate::common::PERSON.to_owned(),
-        shell: true,
         collab: false,
         services: crate::common::seeded_apps(),
         ..Options::default()

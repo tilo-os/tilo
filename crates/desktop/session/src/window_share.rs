@@ -10,7 +10,7 @@
 //! or the window closes, and the workspace's governance stops naming it.
 //! A member views a window another device shares by asking the live session for its
 //! track; the keyframe's header says the codec, size and colour, and what comes
-//! is decoded into that tab's tile here ([`PeerRead`]). Its viewer also says it
+//! is decoded into that tab's tile here ([`self::peer::PeerRead`]). Its viewer also says it
 //! views the window ([`SurfaceViewRequest`]) and sends its input back, as
 //! control messages to the hosting device alone: directly, or through the
 //! workspace's host where that device takes no connection. Another member's
@@ -20,6 +20,7 @@
 //! that exists to be seen (a hosted environment nobody sits at) lets every member
 //! the workspace lets edit control what it shares.
 
+use self::peer::PeerViews as _;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
@@ -42,19 +43,20 @@ use tilo_compositor::{Compositor, InputEvent, Selection};
 use tilo_resource::Effect as _;
 use tilo_session_core::surface::Scroll;
 
+use self::peer::{PeerStreamStart, WhyEnded};
 use tilo_desktop_model::window_share::{
     mapped_window, window_node, window_of_node, window_share_id, window_shares,
 };
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
 };
-use tilo_desktop_surface::{DesktopHandle, PeerStreamStart, WhyEnded};
 use tilo_live::live::Track;
 use tilo_live::live_session::LiveSession;
 use tilo_live::video::{Layer, VideoObject};
 use tilo_network_actor::WorkspaceId;
 use tilo_service::{Service, Started, Wake};
 use tilo_session_core::desktop::i18n::t;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_window_share::config::FlatpakShareConfig;
 use tilo_window_share::flatpak_share::{EncodedFrame, SharedFlatpakSession};
 use tilo_window_share::streaming::InputEvent as SharedInput;
@@ -2798,10 +2800,12 @@ fn shares_resource() -> ResourceSpec {
     ))
 }
 
+mod elsewhere;
 mod hosts;
 mod menu;
 mod page;
 mod paged;
+pub(crate) mod peer;
 mod reading;
 mod viewer;
 pub(crate) use menu::{follow_asks, reading_for_menus};

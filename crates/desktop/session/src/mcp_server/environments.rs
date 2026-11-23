@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 
 use runtime_portal::environment_socket::{Reply, Request};
-use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::word;
 
 use super::{ASK_EVERY, PeerRefusal, Serving, WAIT};

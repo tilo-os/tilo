@@ -260,7 +260,7 @@ fn a_person_s_further_device_enters_their_workspace_at_its_host() {
 }
 
 /// The session a fresh device starts from: one workspace of its own, nothing of the person's.
-fn fresh_session() -> tilo_desktop_surface::DesktopHandle {
+fn fresh_session() -> tilo_session_core::desktop::state::DesktopHandle {
     let mut minter = tilo_desktop_model::IdMinter::new(1);
     let (policy, _surface) = tilo_desktop_policy::DesktopPolicy::with_tree(
         tilo_session_core::desktop::seed_tree(&mut minter, "Session", Vec::new()),
@@ -270,7 +270,7 @@ fn fresh_session() -> tilo_desktop_surface::DesktopHandle {
 }
 
 /// The workspace ids `session`'s shell shows, in its order.
-fn on_shell(session: &tilo_desktop_surface::DesktopHandle) -> Vec<WorkspaceId> {
+fn on_shell(session: &tilo_session_core::desktop::state::DesktopHandle) -> Vec<WorkspaceId> {
     session.read(|tree| {
         tree.workspaces
             .iter()

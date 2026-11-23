@@ -42,7 +42,6 @@ fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
-        shell: true,
         services: vec![Box::new(tilo_settings_service::SettingsService::new())],
         // This device's apps, as the launcher reads them: the store `common::app_store` built and
         // pinned for the run, read once here as a device's store is.

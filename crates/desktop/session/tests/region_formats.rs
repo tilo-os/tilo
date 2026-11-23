@@ -19,7 +19,6 @@ use tilo_session::{Options, Session};
 fn session() -> Session {
     crate::common::headless(Options {
         person: crate::common::PERSON.to_owned(),
-        shell: true,
         collab: false,
         ..Options::default()
     })

@@ -12,7 +12,7 @@ use ed25519_dalek::SigningKey;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND, SharedDesktop};
 use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_resource};
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
@@ -304,7 +304,7 @@ tilo_test_env::scenario! {
     {
         let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
         let person = hex::encode(guest.user_public_key);
-        let (_surface, shell) = DesktopSurface::new(Layout::default(), 7, Box::new(Notices));
+        let shell = DesktopHandle::new(Layout::default(), 7);
 
         let opened = write(
             &peer,
@@ -401,20 +401,6 @@ fn desktop_with_page(owner: &str, person: &str, title: &str, record: &str) -> Sh
     desktop
 }
 
-/// A shell that presents nothing: no window here is laid out or shown, so this
-/// source is never asked for a tile, and it answers the tab's own name when it
-/// is, as a host with no app to open would.
-struct Notices;
-
-impl TileSource for Notices {
-    fn tile(&mut self, _: &Workspace, tab: &Tab) -> ui::widget::TileHost {
-        ui::widget::TileHost::new(ui::widget::TileContent::Notice {
-            title: tab.title.clone(),
-            detail: String::new(),
-        })
-    }
-}
-
 /// One window as a shell draws it: the strip it stands in, its tab, the name on
 /// it, the app it runs, and the record it is a page of when it is one.
 #[derive(Debug, PartialEq, Eq)]
@@ -427,7 +413,7 @@ struct Drawn {
 }
 
 /// The windows `shell` draws once it is given the desktop `peer` replicated, the
-/// way a mount gives its shell one that arrived — through the surface's own
+/// way a mount gives its shell one that arrived — through the desktop's own
 /// reconcile of the tree, with the record each window is a page of beside it.
 fn drawn(shell: &DesktopHandle, peer: &StatePeer) -> Vec<Drawn> {
     let doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_DOCUMENT).unwrap()).unwrap();

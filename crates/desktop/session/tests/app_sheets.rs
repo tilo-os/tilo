@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use crate::common::publisher;
 use tilo_actions::ResourceSpec;
-use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
+use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::{Options, Session};
 
 /// A session on the headless backend, taking no part in the peer network.
@@ -142,7 +142,7 @@ fn searching(session: &Session) -> bool {
             }
         })
     }
-    let still = tilo_desktop::i18n::t("desktop-search-searching");
+    let still = tilo_session_core::desktop::i18n::t("desktop-search-searching");
     find(&session.resources(), SEARCH_RESOURCE)
         .and_then(|search| search.presentation)
         .and_then(|presentation| presentation.detail)

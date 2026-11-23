@@ -150,16 +150,6 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     assert!(session.read(&resource).is_none(), "answered, it is gone");
 }
 
-/// The control assistive technology names `name` under `node` , by target.
-fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
-    if node.name.as_deref() == Some(name)
-        && let Some(target) = &node.action_target
-    {
-        return Some(target.clone());
-    }
-    node.children.iter().find_map(|child| control(child, name))
-}
-
 /// Steps `session` until `asked` answers, or the suite's hang bound runs out.
 fn until<T>(session: &mut Session, asked: impl FnMut(&mut Session) -> Option<T>) -> Option<T> {
     crate::common::wait_maybe(session, asked)
@@ -248,16 +238,25 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
         (app, proxy, id, invoked)
     });
 
-    let archive = until(&mut session, |session| {
-        session
-            .banners()
-            .shown()
-            .accessibility
-            .as_ref()
-            .and_then(|node| control(node, "Archive"))
+    // The shell draws the banner with the button it offers, and the person's press runs the
+    // banner's own published `act`.
+    until(&mut session, |session| {
+        let drawn = session.shell_says("New mail") && session.shell_control("Archive").is_some();
+        drawn.then_some(())
     })
     .expect("the banner shows with its button");
-    assert_eq!(session.banners().shown().banners.len(), 1);
+    let banner = session.notifications().log().active()[0].clone();
+    assert_eq!(
+        session.notifications().log().active().len(),
+        1,
+        "the notification is one banner"
+    );
+    assert_eq!(
+        banner.sender_id,
+        Some(id),
+        "the banner is the app's own notification"
+    );
+    let banner_id = banner.id;
 
     // The app hears what the person chose while the session runs.
     let (heard, hear) = std::sync::mpsc::channel();
@@ -268,8 +267,15 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
         }
     });
     session
-        .banners()
-        .command(tilo_notification_banners::Command::Activate(archive));
+        .invoke(
+            "session:banners",
+            "act",
+            &Map::from_iter([
+                ("banner".to_owned(), Value::from(banner_id.to_string())),
+                ("choice".to_owned(), Value::from("Archive")),
+            ]),
+        )
+        .expect("the banner's button");
     let chosen = until(&mut session, |_| hear.try_recv().ok());
     assert_eq!(chosen, Some((id, "archive".to_owned())));
 
@@ -437,45 +443,45 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
     });
 
     let up = until(&mut session, |session| {
-        session
-            .banners()
-            .shown()
-            .banners
+        let live = session
+            .notifications()
+            .log()
+            .active()
             .iter()
-            .any(|(banner, _)| *banner == id)
-            .then_some(())
+            .any(|banner| banner.id == id);
+        (live && session.shell_says("New mail")).then_some(())
     });
     assert!(up.is_some(), "the banner shows to begin with");
     // Still up on the next pass: it went because its lifetime ran out, not because the test looked
     // again too late.
     let still = until(&mut session, |session| {
-        session
-            .banners()
-            .shown()
-            .banners
+        let live = session
+            .notifications()
+            .log()
+            .active()
             .iter()
-            .any(|(banner, _)| *banner == id)
-            .then_some(())
+            .any(|banner| banner.id == id);
+        (live && session.shell_says("New mail")).then_some(())
     });
     assert!(
         still.is_some(),
         "the banner stays up while its lifetime runs: {:?}",
-        session.banners().shown().banners
+        session.notifications().log().active()
     );
 
     let left = until(&mut session, |session| {
-        session
-            .banners()
-            .shown()
-            .banners
+        let gone = session
+            .notifications()
+            .log()
+            .active()
             .iter()
-            .all(|(banner, _)| *banner != id)
-            .then_some(())
+            .all(|banner| banner.id != id);
+        (gone && !session.shell_says("New mail")).then_some(())
     });
     assert!(
         left.is_some(),
         "the banner leaves once its lifetime runs out: {:?}",
-        session.banners().shown().banners
+        session.notifications().log().active()
     );
     let kept = until(&mut session, |session| {
         session

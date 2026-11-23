@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::Screenshot;
-use tilo_desktop::verbs::CHROME_RESOURCE;
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 
 /// The person's appearance section, as the settings service publishes it.
@@ -36,7 +36,6 @@ fn session() -> Session {
     crate::common::headless(Options {
         person: crate::common::PERSON.to_owned(),
         state: Some(crate::common::device_state()),
-        shell: false,
         collab: false,
         lists: tilo_session::Lists::fixed(tilo_session::AppLists::read()),
         services,

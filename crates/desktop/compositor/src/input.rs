@@ -416,11 +416,20 @@ pub(crate) fn touch_slot(slot: TouchSlot) -> u32 {
     u32::try_from(i32::from(slot)).unwrap_or(0)
 }
 
-/// A device's scroll: a wheel's turn in notches (120 v120 units each), and fingers' or a
-/// continuous device's travel in pixels.
+/// A device's scroll: a wheel's turn in notches (120 v120 units each), fingers' or a continuous
+/// device's travel in pixels, and the fingers lifting, which a touchpad reports as a scroll of
+/// nothing on the axes they moved.
 fn scroll<B: InputBackend>(event: &B::PointerAxisEvent) -> Scroll {
     let (h, v) = (Axis::Horizontal, Axis::Vertical);
     match event.source() {
+        AxisSource::Finger
+            if [h, v]
+                .iter()
+                .all(|axis| event.amount(*axis).is_none_or(|a| a == 0.0))
+                && [h, v].iter().any(|axis| event.amount(*axis).is_some()) =>
+        {
+            Scroll::Lifted
+        }
         AxisSource::Wheel | AxisSource::WheelTilt => {
             let notches = |axis| event.amount_v120(axis).unwrap_or(0.0) / 120.0;
             Scroll::Notches(notches(h), notches(v))

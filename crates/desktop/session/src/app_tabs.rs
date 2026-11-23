@@ -26,7 +26,7 @@ use serde::Deserialize;
 use tilo_app_launch::{Connects, Launch, Open};
 use tilo_compositor::{Compositor, ReadableWatch};
 
-use tilo_desktop::launchpad::LaunchpadAction;
+use tilo_session_core::desktop::launchpad::LaunchpadAction;
 use tilo_desktop_model::apps::app_ids_match;
 use ui::Theme;
 use ui::WindowAppearance;

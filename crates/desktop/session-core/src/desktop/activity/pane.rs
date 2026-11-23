@@ -3364,6 +3364,7 @@ fn join_titles(titles: &[String]) -> String {
 
 include!("native_history_tests.rs");
 include!("workspace_activity_tests.rs");
+include!("workspace_activity_desktop_tests.rs");
 
 #[cfg(test)]
 #[path = "pane/clock_tests.rs"]

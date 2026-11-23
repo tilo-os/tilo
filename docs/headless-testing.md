@@ -72,7 +72,7 @@ mkdir -p "$XDG_RUNTIME_DIR"
 target/debug/tilo-session --backend headless &
 ```
 
-The session's own flags, as `tilo-session --help`'s header documents them: `--backend drm|headless|nested`, `--size WxH`, `--output [NAME=]WxH[@X][,][+X,Y]` (repeatable, for a multi-output layout), `--scale S` or `--panel-mm WxH`, `--connector NAME`, `--shell screen`, `--session-bus ADDRESS`, `--system-bus ADDRESS`, `--no-x11`, `--test-control PATH`, `--admin-control PATH`, `--headless-owner-control`, `--agent-key FILE`, `--seed-apps`, and `-- COMMAND…` to run a program under it (the session then lives as long as that command).
+The session's own flags, as `tilo-session --help`'s header documents them: `--backend drm|headless|nested`, `--size WxH`, `--output [NAME=]WxH[@X][,][+X,Y]` (repeatable, for a multi-output layout), `--scale S` or `--panel-mm WxH`, `--connector NAME`, `--session-bus ADDRESS`, `--system-bus ADDRESS`, `--no-x11`, `--test-control PATH`, `--admin-control PATH`, `--headless-owner-control`, `--agent-key FILE`, `--seed-apps`, and `-- COMMAND…` to run a program under it (the session then lives as long as that command).
 
 `--test-control` and `--seed-apps` are honoured by development builds only; a release build serves the control socket only when built with `--features dev-overrides`, which the dev image's session carries. Every harness here is a development build, and says so when it is not.
 

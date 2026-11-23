@@ -101,14 +101,6 @@ BOUNDARIES = (
         targets=(*NATIVE, WASM),
     ),
     Boundary(
-        package="tilo-desktop",
-        manifest="crates/session/desktop/Cargo.toml",
-        forbidden=frozenset({"iroh", "smithay"}),
-        why="it draws a desktop and talks to no peer itself",
-        not_direct=frozenset({"dirs", "libc", "settings-store", "tokio"}),
-        targets=(*NATIVE, WASM),
-    ),
-    Boundary(
         package="tilo-cli",
         manifest="crates/core/tilo-cli/Cargo.toml",
         forbidden=frozenset({"tilo-media", "tilo-native-media", "tilo-ui"}),

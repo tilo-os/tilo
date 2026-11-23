@@ -28,7 +28,6 @@ use crate::common::{CANVAS, PERSON, layout, on_screen, private_home, show_preset
 fn session(root: &std::path::Path) -> Session {
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        shell: true,
         collab: false,
         services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),
@@ -393,7 +392,6 @@ fn wide_session(root: &std::path::Path) -> Session {
         )],
         Options {
             person: PERSON.to_owned(),
-            shell: true,
             collab: false,
             services: crate::common::seeded_apps(),
             questions: Some(Questions::new()),
@@ -515,7 +513,7 @@ fn a_place_moved_to_a_point_is_drawn_there() {
                 for app in ["so.tilo.tasks", "so.tilo.notes"] {
                     session
                         .invoke(
-                            tilo_desktop::verbs::CHROME_RESOURCE,
+                            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
                             "open-app",
                             serde_json::json!({"app": app})
                                 .as_object()

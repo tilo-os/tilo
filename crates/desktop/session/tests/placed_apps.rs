@@ -58,7 +58,6 @@ fn session(style: &str, apps: &Rc<Apps>) -> Session {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: true,
             collab: false,
             apps: Some(Rc::clone(apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(apps)),

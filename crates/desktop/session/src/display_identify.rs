@@ -4,8 +4,8 @@
 //! display's number and name — the same number its tile on Settings' canvas carries, and the same
 //! name ([`display_names`](settings_store::display_identify::display_names)), read off the
 //! compositor's own display snapshot — and the shell says each on the display it names for a few
-//! seconds ([`tilo_desktop::display_identify`]). Nothing here counts down: the shell holds the cards
-//! for their moment and asks for the frame that takes them away.
+//! seconds. Nothing here counts down: the shell holds the cards for their moment and asks for the
+//! frame that takes them away.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,7 +13,7 @@ use std::rc::Rc;
 use settings_store::display_identify::{IdentifyRequest, display_names, display_numbers};
 use settings_store::hardware::DisplayHardwareSnapshot;
 use tilo_compositor::OutputInfo;
-use tilo_desktop::display_identify::{Ask, Label};
+use tilo_session_core::desktop::host::chrome::{Ask, Label};
 
 /// The Identify answers this session has given, and the shell's end of them: what the bar reads each
 /// pass.

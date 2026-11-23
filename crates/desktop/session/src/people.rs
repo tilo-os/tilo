@@ -12,17 +12,15 @@ use std::rc::Rc;
 
 use settings_store::widgets::{PEOPLE_OVERLAY, PeopleOverlayPrefs};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
-use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::edges::{self, DockEdge, EdgeDrag, Item};
-use tilo_desktop::here::Screen;
-use tilo_desktop::launchpad::LaunchpadAppAction;
-use tilo_desktop::people::{PeopleHit, PeopleModel, PeopleOverlay, RosterRow, roster_rows};
-use tilo_desktop::profile_card::{
-    OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
-};
 use tilo_desktop_model::Layout;
-use tilo_desktop_surface::{DesktopHandle, HostAction};
+use tilo_session_core::desktop::here::Screen;
+use tilo_session_core::desktop::host::chrome::ChromeIntent;
+use tilo_session_core::desktop::launchpad::LaunchpadAppAction;
 use tilo_session_core::desktop::navigation::{ActivityView, ChromeEffect, LayoutEffect};
+use tilo_session_core::desktop::people::{RosterRow, roster_rows};
+use tilo_session_core::desktop::profile::{OtherPerson, ProfileAction};
+use tilo_session_core::desktop::profile::{ProfileChoice, ProfileGroup, ProfileModel};
+use tilo_session_core::desktop::state::{DesktopHandle, HostAction};
 use tilo_session_core::surfaces::{Look, Published};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::{Affine, Point, Rect, Size, Vec2};
@@ -33,7 +31,17 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Duration;
 use ui::widget::Widget;
+use ui::widgets::DockEdge;
 use ui::winit::event::WindowEvent;
+
+use self::edges::{EdgeDrag, Item};
+use self::profile_card::ProfileCard;
+use self::roster::{PeopleHit, PeopleModel, PeopleOverlay};
+
+mod edges;
+mod follow_banner;
+mod profile_card;
+mod roster;
 
 /// How long after the person pressed elsewhere a press on the faces does not reopen the roster:
 /// their press closed it.
@@ -69,7 +77,7 @@ pub enum PeopleAsk {
     Agent {
         who: String,
         client: String,
-        ask: tilo_desktop::profile_card::AgentAsk,
+        ask: tilo_session_core::desktop::launchpad::AgentAsk,
     },
 }
 
@@ -270,9 +278,9 @@ impl Shown {
     }
 
     /// Whether the shell is a phone's: the roster opens as a sheet at its foot and is never kept on
-    /// screen, where it would stand over the one window there is ([`tilo_desktop::people::is_sheet`]).
+    /// screen, where it would stand over the one window there is ([`roster::is_sheet`]).
     fn sheet(&self) -> bool {
-        tilo_desktop::people::is_sheet(self.area)
+        roster::is_sheet(self.area)
     }
 }
 
@@ -616,7 +624,7 @@ pub fn mount(
         chats: RefCell::default(),
         motion_until: Cell::new(0.0),
         followed: RefCell::default(),
-        banner: tilo_desktop::follow_banner::FollowBanner::default(),
+        banner: follow_banner::FollowBanner::default(),
         banner_rect: Rc::clone(&banner_rect),
     };
     let people = Rc::new(RefCell::new(People {
@@ -698,7 +706,7 @@ struct Panel {
     /// Whose view this device follows, as the last frame told the banner.
     followed: RefCell<Option<String>>,
     /// The "Following Ada" banner, as the page draws it, round the shell this panel floats over.
-    banner: tilo_desktop::follow_banner::FollowBanner,
+    banner: follow_banner::FollowBanner,
     /// Where the banner stands to be pressed while following, `Rect::ZERO` otherwise: what the
     /// layer tells a host whose bar takes presses over its band ([`Heard::takes_bar_point`]).
     ///
@@ -864,7 +872,7 @@ impl Panel {
                     row.working_app
                         .as_deref()
                         .map(|app| self.app_called(app))
-                        .map(|app| tilo_desktop::people::in_app(&app))
+                        .map(|app| tilo_session_core::desktop::people::in_app(&app))
                 } else {
                     row.activity.clone()
                 },
@@ -875,7 +883,7 @@ impl Panel {
                 linked,
                 agent: row
                     .is_agent()
-                    .then(|| tilo_desktop::profile_card::AgentFacts {
+                    .then(|| tilo_session_core::desktop::profile::AgentFacts {
                         client: ui::presence::agent_client(&row.label).to_owned(),
                     }),
             }),
@@ -1139,7 +1147,7 @@ impl Panel {
                 .into_iter()
                 .filter_map(|member| Some((member.publisher, member.following?)))
                 .collect();
-            tilo_desktop::people::note_following(
+            tilo_session_core::desktop::people::note_following(
                 &mut rows,
                 &pairs,
                 Some(&sync.publisher().to_string()),
@@ -1402,7 +1410,7 @@ impl Panel {
             }
         }
         let area = shown.area;
-        let bar_h = f64::from(tilo_desktop::topbar::topbar_height(theme));
+        let bar_h = f64::from(tilo_session_core::desktop::overlays::topbar_height(theme));
         let below_bar = Rect::new(area.x0, area.y0 + bar_h, area.x1, area.y1);
         // The banner docks in the top bar, above every window's content: it stands on nothing the
         // person reads, at any width.
@@ -1412,7 +1420,7 @@ impl Panel {
             transform,
             text,
             theme,
-            tilo_desktop::follow_banner::BannerFrame {
+            follow_banner::BannerFrame {
                 work_area: below_bar,
                 bar,
                 cursor: shown.cursor,
@@ -1599,11 +1607,11 @@ impl Panel {
             workspace: &workspace,
             rows: &rows,
             invite: if self.invitable.get() {
-                tilo_desktop::chrome::Invite::Offered
+                tilo_session_core::desktop::host::chrome::Invite::Offered
             } else if self.invite_withheld.get() {
-                tilo_desktop::chrome::Invite::Withheld
+                tilo_session_core::desktop::host::chrome::Invite::Withheld
             } else {
-                tilo_desktop::chrome::Invite::Unavailable
+                tilo_session_core::desktop::host::chrome::Invite::Unavailable
             },
             may_pin: !pinned && !sheet,
             pinned,
@@ -1624,7 +1632,7 @@ impl Panel {
     /// Where the pinned roster waits this frame: its slot at its edge, under a drag, or springing
     /// back from a drop.
     fn place_pinned(pin: &mut Pinned, area: Rect, theme: &Theme, now: ui::time::Instant) {
-        let bar = f64::from(tilo_desktop::topbar::topbar_height(theme));
+        let bar = f64::from(tilo_session_core::desktop::overlays::topbar_height(theme));
         let work = Rect::new(area.x0, area.y0 + bar, area.x1, area.y1);
         pin.work = work;
         // The roster lays itself out in whatever rect it is given: its slot is the one it measured
@@ -1883,13 +1891,13 @@ impl Widget for Panel {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
-        if target == tilo_desktop::follow_banner::STOP_TARGET
+        if target == follow_banner::STOP_TARGET
             && matches!(action, ui::a11y::Action::Activate)
         {
             self.stop_following();
             return true;
         }
-        if target == tilo_desktop::follow_banner::CARD_TARGET
+        if target == follow_banner::CARD_TARGET
             && matches!(action, ui::a11y::Action::Activate)
             && let Some(followed) = self.followed.borrow().clone()
         {
@@ -2112,7 +2120,7 @@ fn roster_place(area: Rect, theme: &Theme) -> Rect {
         .min((area.width() - 2.0 * f64::from(spacing.s4)).max(240.0));
     let right = area.x1 - f64::from(spacing.s3);
     let top =
-        area.y0 + f64::from(tilo_desktop::topbar::topbar_height(theme)) + f64::from(spacing.s2);
+        area.y0 + f64::from(tilo_session_core::desktop::overlays::topbar_height(theme)) + f64::from(spacing.s2);
     Rect::new(right - width, top, right, top)
 }
 

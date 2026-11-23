@@ -214,10 +214,8 @@ constant named for a fade or a slide, a literal duration handed to a motion
 helper) outside the library; content curves (video keyframes, paint physics) are its short exception
 list.
 
-Check: `the_first_frame_after_a_chord_shows_the_final_layout` in
-`crates/session/desktop/tests/navigation.rs` (the first frame after a chord
-or action shows the final layout, and only the viewport may still move, within
-`fast`). A new transition that ignores its source is review.
+Check: the session's shell tests (the first frame after a chord or action
+shows the final layout, and only the viewport may still move, within `fast`). A new transition that ignores its source is review.
 
 ## Security and sandboxing
 

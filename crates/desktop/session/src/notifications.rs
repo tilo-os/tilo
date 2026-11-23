@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_session_core::desktop::state::banners::Banners as _;
 
 use crate::platform::fabric::ContinuityNotificationProjection;
 use crate::platform::fabric::SharedLink;
@@ -19,10 +20,8 @@ use serde_json::{Map, Value};
 use settings_store::notification_policy::{EffectiveNotificationPolicy, NotificationPolicy};
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
-use tilo_desktop_surface::notifications::BannerAsk;
-use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
+use tilo_session_core::desktop::state::banners::BannerAsk;
 use tilo_lock::MutexRecover as _;
-use tilo_notification_banners::{Ask, Link};
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
 use tilo_quick_settings::hosted::NotificationCentre;
 use tilo_resource::Effect;
@@ -32,6 +31,7 @@ use tilo_session_core::desktop::notifications::{
     ContinuityNotificationId, Notification, NotificationIconKind, NotificationPerson, QuietReason,
     RemoteNotificationRoute, ScheduledNotificationTarget,
 };
+use tilo_session_core::desktop::state::{DesktopNotifications, NotificationOutcome};
 use tilo_session_power::PowerLink;
 
 use crate::app_icons;
@@ -77,49 +77,6 @@ pub(crate) fn tell_daemon(notice: &Notice, notifications: &Notifications) -> u32
     let id = notifications.alloc_id();
     notifications.push(served(notice, id));
     id
-}
-
-/// Mount the banners app on the shell with the `banners` link it asks back on. Under the shell none
-/// is mounted: the shell draws the banner itself from the shell it reads (`Shell.banner`), so a stack
-/// of its own would draw a second one and take its presses.
-pub(crate) fn mount_banners(
-    compositor: &mut tilo_compositor::Compositor,
-    surfaces: &mut tilo_session_core::surfaces::Surfaces,
-    notices: &DesktopNotifications,
-    (shell, overlays): (
-        &tilo_desktop_surface::DesktopHandle,
-        &tilo_desktop::overlays::Overlays,
-    ),
-    options: &crate::Options,
-    stack: crate::panels::Reserved,
-    banners: Link,
-) -> Option<Rc<RefCell<crate::panels::Banners>>> {
-    if options.shell {
-        notices.show_banners_elsewhere();
-        return None;
-    }
-    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
-        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
-    {
-        Ok(app) => {
-            let surface = Rc::new(RefCell::new(crate::panels::Banners::new(
-                app,
-                banners,
-                shell.clone(),
-                overlays.clone(),
-                options.scale,
-                stack,
-            )));
-            compositor.add_surface(surface.clone());
-            surfaces.add(surface.clone());
-            notices.show_banners_elsewhere();
-            Some(surface)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "notification banners not mounted");
-            None
-        }
-    }
 }
 
 /// The most unread notifications one app's icon counts to.
@@ -384,11 +341,21 @@ type ActionsChosen = Rc<RefCell<Vec<(String, String)>>>;
 /// The notices that closed since the host last took them, each with why.
 type ClosedTags = Rc<RefCell<Vec<(String, Closed)>>>;
 
-/// What ties the daemon, the desktop's log and the banners app together.
+/// What a person does on a banner the shell shows: each one reaches the desktop's log, the app
+/// that sent it or the call it rings for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Ask {
+    Banner(BannerAsk),
+    Reply { id: u64, text: String },
+    Read(u64),
+    AnswerCall(u64),
+    DeclineCall(u64),
+}
+
+/// What ties the daemon, the desktop's log and the banners the shell draws together.
 pub(crate) struct SessionNotifications {
     daemon: Notifications,
     desktop: DesktopNotifications,
-    banners: Link,
     /// What holding the machine from going idle says: someone is watching (a slideshow, a call).
     power: Option<PowerLink>,
     /// The person's notification policy, kept current by the session's settings watch: what each
@@ -409,8 +376,6 @@ pub(crate) struct SessionNotifications {
     banners_up: BTreeSet<u64>,
     /// Desktop notifications kept out of the centre once their banner left.
     transient: BTreeSet<u64>,
-    /// The log revision the banners were last handed.
-    published: Option<u64>,
     /// Whether the tilolang shell draws the banners itself: then the session ages them here, as a
     /// banner's stack would, so a banner goes a few seconds after it arrived.
     shell_banners: Cell<bool>,
@@ -438,11 +403,10 @@ pub(crate) struct SessionNotifications {
 }
 
 impl SessionNotifications {
-    /// Show `daemon` 's notifications in `desktop` 's log, its banners on `banners` .
+    /// Show `daemon` 's notifications in `desktop` 's log.
     pub(crate) fn new(
         daemon: Notifications,
         desktop: DesktopNotifications,
-        banners: Link,
         policy: Arc<Mutex<NotificationPolicy>>,
         signals: Rc<NoticeSignals>,
         power: Option<PowerLink>,
@@ -520,7 +484,6 @@ impl SessionNotifications {
         Self {
             daemon,
             desktop,
-            banners,
             power,
             policy,
             sounds: SystemSounds::new(),
@@ -534,7 +497,6 @@ impl SessionNotifications {
             up: BTreeSet::new(),
             banners_up: BTreeSet::new(),
             transient: BTreeSet::new(),
-            published: None,
             shell_banners: Cell::new(false),
             generation: 0,
             quiet_changed: Cell::new(None),
@@ -908,11 +870,11 @@ impl SessionNotifications {
         let takes_reply = banner
             .actions
             .iter()
-            .any(|(key, _)| key == tilo_notification_banners::INLINE_REPLY);
+            .any(|(key, _)| key == tilo_session_core::desktop::notifications::INLINE_REPLY);
         if let (Some(sender), true) = (banner.sender_id, takes_reply) {
             self.daemon.replied(sender, text);
             self.desktop
-                .answer(tilo_desktop_surface::notifications::BannerAsk::Dismiss(id));
+                .answer(tilo_session_core::desktop::state::banners::BannerAsk::Dismiss(id));
         }
     }
 
@@ -1021,9 +983,6 @@ impl SessionNotifications {
         for arrival in self.daemon.drain() {
             self.arrive(arrival);
         }
-        for ask in self.banners.take_asks() {
-            self.ask(ask);
-        }
         self.answer_chosen(token);
         self.settle(CloseReason::Dismissed);
         // What the shell no longer shows of this device's notifications leaves the person's other
@@ -1048,11 +1007,6 @@ impl SessionNotifications {
             .collect();
         let appeared = banners.difference(&self.banners_up).next().is_some();
         self.banners_up = banners;
-        let revision = self.desktop.revision();
-        if self.published != Some(revision) {
-            self.published = Some(revision);
-            self.banners.publish(self.desktop.feed());
-        }
         // What the centre kept since the last look is written to this person's state, so a restart
         // opens the centre it had.
         if self.desktop.take_history_dirty()
@@ -1181,7 +1135,7 @@ impl SessionNotifications {
                 let takes_reply = banner
                     .actions
                     .iter()
-                    .any(|(key, _)| key == tilo_notification_banners::INLINE_REPLY);
+                    .any(|(key, _)| key == tilo_session_core::desktop::notifications::INLINE_REPLY);
                 if let (Some(sender), true) = (banner.sender_id, takes_reply) {
                     self.daemon.replied(sender, &text);
                     self.desktop.answer(BannerAsk::Dismiss(id));
@@ -1706,7 +1660,7 @@ impl Served {
                 if !live
                     .actions
                     .iter()
-                    .any(|(key, _)| key == tilo_notification_banners::INLINE_REPLY)
+                    .any(|(key, _)| key == tilo_session_core::desktop::notifications::INLINE_REPLY)
                 {
                     return Err(refused("this notification takes no reply".to_owned()));
                 }

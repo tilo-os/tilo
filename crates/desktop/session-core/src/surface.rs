@@ -241,6 +241,9 @@ pub enum Scroll {
     /// A wheel turned this many notches, fractions of one for a high-resolution wheel. Clients
     /// scroll a line of their own per notch.
     Notches(f64, f64),
+    /// The fingers scrolling a touchpad lifted: what they scrolled may glide on from here, at the
+    /// speed they let go at.
+    Lifted,
 }
 
 impl Scroll {
@@ -253,6 +256,7 @@ impl Scroll {
         match self {
             Self::Pixels(x, y) => (x, y),
             Self::Notches(x, y) => (x * Self::NOTCH_PIXELS, y * Self::NOTCH_PIXELS),
+            Self::Lifted => (0.0, 0.0),
         }
     }
 
@@ -262,6 +266,7 @@ impl Scroll {
         match self {
             Self::Pixels(x, y) => Self::Pixels(x * factor, y * factor),
             Self::Notches(x, y) => Self::Notches(x * factor, y * factor),
+            Self::Lifted => Self::Lifted,
         }
     }
 }

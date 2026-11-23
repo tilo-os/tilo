@@ -32,8 +32,8 @@ use tilo_user_identity::DeviceCert;
 
 use crate::workspace_view::WorkspaceView;
 use neighbour_wire::RefusalReason;
-use tilo_desktop_surface::DesktopHandle;
 use tilo_peer_state::owner::WriteRefusal;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 /// The person `person`, as a history names them.
 fn user(person: &str) -> MemberId {

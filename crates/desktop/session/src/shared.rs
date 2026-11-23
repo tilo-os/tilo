@@ -229,11 +229,11 @@ impl Shared {
         );
         let places: Vec<Place<'_>> = people
             .iter()
-            .map(tilo_desktop::here::Person::place)
+            .map(tilo_session_core::desktop::here::Person::place)
             .collect();
         let member = followed
             .as_deref()
-            .and_then(|id| tilo_desktop::here::followed_member(&people, id));
+            .and_then(|id| tilo_session_core::desktop::here::followed_member(&people, id));
         let owed = self.follow.borrow_mut().owe(
             followed,
             self.underway.get().holds(),
@@ -269,7 +269,7 @@ impl Shared {
             &self.notes,
             &|app: &str| Some(crate::app_names::app_name(app)),
         );
-        tilo_desktop::here::go_to(&self.handle, &people, who);
+        tilo_session_core::desktop::here::go_to(&self.handle, &people, who);
     }
 
     /// The workspace in front, as its id: where a chosen notification's app opens.
@@ -326,29 +326,6 @@ impl Shared {
             {
                 tracing::warn!(%error, app = %place.app, "a mention was not opened");
             }
-        }
-    }
-
-    /// The desktop's control hints: the person's record as their settings hold it, the reasons
-    /// this session knows (following someone, setup over the desktop), and what they
-    /// learned since.
-    pub(crate) fn follow_hints(&self, setup_up: bool) {
-        let settings = settings_store::stamp();
-        if settings != self.hints_stamp.get() {
-            self.hints_stamp.set(settings);
-            self.hints
-                .set_record(settings_store::control_hints::LEARNED.get());
-        }
-        let quiet = if self.follow.borrow().followed().is_some() {
-            Some(ui::control_hints::Quiet::Following)
-        } else {
-            setup_up.then_some(ui::control_hints::Quiet::Busy)
-        };
-        let search_keys = self.shortcut_guide.search_keys();
-        self.hints.set_context(quiet, !setup_up, search_keys);
-        if let Some(learned) = self.hints.take_learned() {
-            // Not kept, a hint at worst shows once more: nothing to tell.
-            settings_store::control_hints::LEARNED.set(learned).ok();
         }
     }
 
@@ -562,7 +539,7 @@ impl Shared {
         if !self.people.borrow().is_open() {
             return;
         }
-        let shell_up = self.surfaces.overlays.here() != tilo_desktop::overlays::Overlay::Rest;
+        let shell_up = self.surfaces.overlays.here() != tilo_session_core::desktop::overlays::Overlay::Rest;
         if shell_up || self.surfaces.beside_up() {
             self.people.borrow().dismiss();
         }

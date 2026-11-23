@@ -32,10 +32,10 @@ pub const PATH: &str = "apps/tl/session/surface.toml";
 /// declared once by the window: the shell's `focus` and `close-tab`, which name the window by
 /// its tab, are left out, so `session.focus(window: w)` and a window's close mean the window's.
 const LEFT_OUT: &[(&str, &str)] = &[
-    (tilo_desktop::verbs::SHELL_RESOURCE, "focus"),
-    (tilo_desktop::verbs::SHELL_RESOURCE, "close-tab"),
-    (tilo_desktop::verbs::SHELL_RESOURCE, "wait-window"),
-    (tilo_desktop::verbs::SHELL_RESOURCE, "force-quit-app"),
+    (tilo_session_core::desktop::verbs::SHELL_RESOURCE, "focus"),
+    (tilo_session_core::desktop::verbs::SHELL_RESOURCE, "close-tab"),
+    (tilo_session_core::desktop::verbs::SHELL_RESOURCE, "wait-window"),
+    (tilo_session_core::desktop::verbs::SHELL_RESOURCE, "force-quit-app"),
 ];
 
 /// The declaration of a resource's action, by its id: where the type of a parameter its wire type
@@ -64,11 +64,11 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
     let words: tilo_session_core::layout::Words = std::rc::Rc::new(crate::i18n::word);
     vec![
         (
-            tilo_desktop::verbs::chrome_resource(&ui::shortcut_table::ShortcutConfig::default()),
+            tilo_session_core::desktop::verbs::chrome_resource(&ui::shortcut_table::ShortcutConfig::default()),
             Some(<ChromeEffect as Effect>::declaration),
         ),
         (
-            tilo_desktop::verbs::shell_resource(&[], &[], &[], None),
+            tilo_session_core::desktop::verbs::shell_resource(&[], &[], &[], None),
             Some(<LayoutEffect as Effect>::declaration),
         ),
         (
@@ -87,8 +87,8 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     let mut out: Vec<(ResourceSpec, Option<Declared>)> = Vec::new();
     // The shell describes each window as a resource of its own; a shell that names none leaves the
     // kind out rather than failing the description.
-    if let Some(window) = tilo_desktop::verbs::shell_resource(
-        &[tilo_desktop::verbs::Shown {
+    if let Some(window) = tilo_session_core::desktop::verbs::shell_resource(
+        &[tilo_session_core::desktop::verbs::Shown {
             tab: 0,
             title: String::new(),
             foreign: None,
@@ -99,7 +99,7 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     )
     .children
     .into_iter()
-    .find(|child| child.kind == tilo_desktop::verbs::WINDOW_KIND)
+    .find(|child| child.kind == tilo_session_core::desktop::verbs::WINDOW_KIND)
     {
         out.push((window, Some(<LayoutEffect as Effect>::declaration)));
     }

@@ -28,7 +28,7 @@ use std::time::Duration;
 use runtime_collab::{CollabClient, Invocation};
 use tilo_actions::ResourceSpec;
 use tilo_actions::remote::InvokeArgument;
-use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
+use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
 

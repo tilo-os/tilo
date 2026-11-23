@@ -42,7 +42,6 @@ fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
-        shell: true,
         ..Options::default()
     }
 }
@@ -1686,7 +1685,6 @@ fn session_with_the_panel(width: i32, height: i32) -> Session {
                 Box::new(speaker()),
             ],
             collab: false,
-            shell: false,
             surfaces: vec![tilo_session::quick_settings::surface_of(
                 tilo_test_env::sibling_binary("tilo-quick-settings", "tilo-quick-settings"),
             )],
@@ -2221,7 +2219,7 @@ fn searching_everywhere_from_the_launcher_opens_the_shells_search_with_the_query
         session.resources().iter().any(|resource| {
             resource.id.as_str() == "desktop:shell"
                 && resource.children.iter().any(|child| {
-                    child.id.as_str() == tilo_desktop::verbs::SEARCH_RESOURCE
+                    child.id.as_str() == tilo_session_core::desktop::verbs::SEARCH_RESOURCE
                         && child.label == "quarterly"
                 })
         })
@@ -2514,11 +2512,11 @@ fn set_here(session: &Session, count: usize) {
         .iter()
         .take(count)
         .enumerate()
-        .map(|(at, name)| tilo_desktop::here::LiveMember {
+        .map(|(at, name)| tilo_session_core::desktop::here::LiveMember {
             publisher: format!("{:064x}", at + 1),
             kind: "person".to_owned(),
             label: (*name).to_owned(),
-            ..tilo_desktop::here::LiveMember::default()
+            ..tilo_session_core::desktop::here::LiveMember::default()
         })
         .collect();
     session

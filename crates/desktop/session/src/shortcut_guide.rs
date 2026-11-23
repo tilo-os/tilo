@@ -80,7 +80,7 @@ impl ShortcutGuide {
     pub(crate) fn peek(
         &self,
         shell: tilo_sheets::shortcut_guide::PeekShell,
-    ) -> Vec<tilo_desktop::super_peek::PeekGroup> {
+    ) -> Vec<tilo_session_core::desktop::super_peek::PeekGroup> {
         tilo_sheets::shortcut_guide::peek(&self.state.table().borrow(), shell)
     }
 

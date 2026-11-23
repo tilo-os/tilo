@@ -14,8 +14,10 @@ use std::time::Instant;
 use iroh::EndpointId;
 use serde_json::{Value, json};
 use tilo_desktop_model::{TabId, TileContent};
-use tilo_desktop_surface::{DesktopHandle, Elsewhere};
+use tilo_session_core::desktop::state::DesktopHandle;
 
+use super::elsewhere::Elsewhere;
+use super::peer::PeerViews as _;
 use super::{WindowShares, device_key};
 use crate::sync::Client;
 use crate::workspace_view::WorkspaceView;

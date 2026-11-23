@@ -89,7 +89,7 @@ impl Session {
             && let Some(placement) = self
                 .shared
                 .overlays
-                .place(tilo_desktop::overlays::Part::WindowMenu)
+                .place(tilo_session_core::desktop::overlays::Part::WindowMenu)
         {
             self.stand_layer(&namespace, &placement);
         }

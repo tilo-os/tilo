@@ -18,7 +18,7 @@ use std::time::Duration;
 use crate::common::window::{Client, KEY_A, KEY_ESCAPE, WINDOW, WINDOW_BYTES, window_of};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, OutputConfig, Screenshot};
-use tilo_desktop::verbs::DISPLAY_KIND;
+use tilo_session_core::desktop::verbs::DISPLAY_KIND;
 use tilo_session::{Options, Session};
 use tilo_sheets::SheetState as _;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
@@ -160,7 +160,7 @@ fn under_bar() -> i32 {
         clippy::cast_possible_truncation,
         reason = "the bar's height is a few dozen pixels"
     )]
-    let height = tilo_desktop::topbar::TOPBAR_HEIGHT_PX.ceil() as i32;
+    let height = tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX.ceil() as i32;
     height
 }
 
@@ -230,7 +230,6 @@ tilo_test_env::scenario! {
     // A banner and an activity card stand where the sheets do: on the display the person is working
     // on, and on the other display once they work there.
     {
-        use tilo_desktop::notifications::{Banner, BannerFeed};
         use tilo_session_core::desktop::notifications::Notification;
         use ui::live_activity::{Kind, Published, Summary};
 
@@ -254,29 +253,23 @@ tilo_test_env::scenario! {
             "so.tilo.clocks",
             Some(serde_json::to_value(card).expect("an activity is JSON")),
         );
-        session.banners().publish(BannerFeed {
-            banners: vec![Banner {
-                notification: Notification::new("Build finished", "All 524 tests passed")
-                    .with_shown_at(ui::time::now())
-                    .with_dismiss_after(Duration::from_secs(60)),
-                actions: Vec::new(),
-            }],
-            locked: false,
-            held: false,
-        });
+        session.notifications().post(
+            Notification::new("Build finished", "All 524 tests passed")
+                .with_shown_at(ui::time::now())
+                .with_dismiss_after(Duration::from_secs(60)),
+        );
         crate::common::wait_for(
             &mut session,
             "the banner and the card drawn on the display in focus",
             |session| {
                 session.step(Duration::from_millis(16)).expect("step");
-                let shown = session.banners().shown();
+                let shown = session.shell_text_bounds("Build finished");
                 let frame = shot(session, "HEADLESS-2");
-                (!shown.stack.is_zero_area() && changed(&right, &frame, under_bar()) > 1_000)
-                    .then_some(())
+                (shown.is_some() && changed(&right, &frame, under_bar()) > 1_000).then_some(())
             },
         );
         assert_eq!(
-            session.banners().shown().banners.len(),
+            session.notifications().log().active().len(),
             1,
             "the banner is up for the person"
         );

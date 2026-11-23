@@ -1,12 +1,18 @@
-//! Alt+Tab on the default Rust session, driven by the compositor's own keys: holding Alt over
-//! a Tab puts the chrome's panel up over the windows of the workspace in front, in the order
-//! Alt+Tab walks them, and the walk crosses the strips of that workspace and no other. Shift
-//! walks the other way, the key above Tab narrows the walk to the app in front's windows,
-//! Home and End choose by place, Escape leaves the person where they were, letting Alt go goes
-//! to the window the walk reached, and a press on a card goes to that window.
+//! Alt+Tab on the tilolang shell, driven by the compositor's own keys: holding Alt over a Tab
+//! walks the windows of the workspace in front, in the order Alt+Tab walks them, and the walk
+//! crosses the strips of that workspace and no other. The shell draws the walk once it outlasts a
+//! flick, as a panel of the windows it crosses in its order: the window the walk reached is the
+//! lifted card, ringed in the person's accent, with the keys the walk answers to under them.
 //!
-//! A flick shorter than the panel's reveal delay switches windows and flashes nothing: the
-//! walk is the shell's from the press of the chord to the release of Alt.
+//! Shift walks the other way, the key above Tab narrows the walk to the app in front's windows,
+//! Home and End choose by place, Escape leaves the person where they were, letting Alt go goes to
+//! the window the walk reached, and a press on a card goes to that window.
+//!
+//! A flick shorter than the panel's reveal delay switches windows and flashes nothing: the walk
+//! is the session's from the press of the chord to the release of Alt. The shell shows what the
+//! session publishes of it (`desktop:overlays` for the surface up and the walk's scope,
+//! `session:windows` for the windows in the walk's order, the one it reached marked `focused`),
+//! and draws its cards from that reading; these tests read both, and the cards as drawn.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -24,7 +30,6 @@ use std::time::{Duration, Instant};
 use crate::common::tree::window;
 use crate::common::{BTN_LEFT, HEIGHT, WIDTH, changed, shot, until};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
-use tilo_desktop::window_switcher::SwitcherView;
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
@@ -37,7 +42,7 @@ const KEY_TAB: u32 = 15;
 const KEY_ENTER: u32 = 28;
 const KEY_LEFTSHIFT: u32 = 42;
 const KEY_GRAVE: u32 = 41;
-const KEY_LEFTALT: u32 = 56;
+pub(crate) const KEY_LEFTALT: u32 = 56;
 const KEY_HOME: u32 = 102;
 const KEY_END: u32 = 107;
 
@@ -92,8 +97,8 @@ fn layout_tree() -> Layout {
     tree
 }
 
-/// The default session — the Rust chrome, not the opt-in shell — on the shell above.
-fn session() -> Session {
+/// The session on the shell above, the tilolang shell as the whole screen.
+pub(crate) fn session() -> Session {
     session_on(WIDTH, HEIGHT)
 }
 
@@ -117,7 +122,7 @@ fn session_on(width: i32, height: i32) -> Session {
     session
 }
 
-fn key(session: &mut Session, keycode: u32, pressed: bool) {
+pub(crate) fn key(session: &mut Session, keycode: u32, pressed: bool) {
     session
         .compositor()
         .input(InputEvent::Key { keycode, pressed })
@@ -126,7 +131,7 @@ fn key(session: &mut Session, keycode: u32, pressed: bool) {
 }
 
 /// The title of the window in front.
-fn front(session: &Session) -> String {
+pub(crate) fn front(session: &Session) -> String {
     crate::common::windows(session)
         .into_iter()
         .find(|window| window.focused)
@@ -134,18 +139,62 @@ fn front(session: &Session) -> String {
         .title
 }
 
-/// What the panel shows now, when it is up.
-fn panel(session: &Session) -> Option<SwitcherView> {
-    session.window_switcher().view()
+/// What the shell shows of the switcher's panel while it is up: the windows Alt+Tab walks, in its
+/// order, the one the walk has reached, and whether the walk crosses the app in front's windows
+/// alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Panel {
+    cards: Vec<String>,
+    /// Which card the walk reached, an index into `cards`.
+    selected: usize,
+    /// The walk crosses the front app's windows (Alt+Grave) rather than the workspace's.
+    app_scope: bool,
+}
+
+/// What the panel shows now, when it is up. The session publishes the surface it shows
+/// (`desktop:overlays`: `here`, `switcher_revealed`, `switcher_scope`) and the windows in the
+/// walk's order, the one the walk reached marked `focused` (`session:windows`); the walk crosses
+/// the workspace in front, or in `app` scope the windows of the app in front, which is the app of
+/// the window the walk lifts.
+pub(crate) fn panel(session: &Session) -> Option<Panel> {
+    let overlays = session.read("desktop:overlays")?;
+    if overlays.get("here")?.as_str()? != "switcher"
+        || !overlays.get("switcher_revealed")?.as_bool()?
+    {
+        return None;
+    }
+    let app_scope = overlays.get("switcher_scope")?.as_str()? == "app";
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+    })?;
+    let windows: Vec<_> = crate::common::windows(session)
+        .into_iter()
+        .filter(|window| window.workspace_key == workspace)
+        .collect();
+    let front_app = windows
+        .iter()
+        .find(|window| window.focused)
+        .map(|window| window.app_key.clone());
+    let cards: Vec<_> = windows
+        .into_iter()
+        .filter(|window| !app_scope || front_app.as_deref() == Some(window.app_key.as_str()))
+        .collect();
+    let selected = cards.iter().position(|window| window.focused)?;
+    Some(Panel {
+        cards: cards.into_iter().map(|window| window.title).collect(),
+        selected,
+        app_scope,
+    })
 }
 
 /// The titles of the panel's cards, in its order.
-fn cards(view: &SwitcherView) -> Vec<String> {
-    view.cards.iter().map(|card| card.title.clone()).collect()
+pub(crate) fn cards(panel: &Panel) -> Vec<String> {
+    panel.cards.clone()
 }
 
 /// Alt+Tab held down from a fresh shell, and the time until its panel shows.
-fn hold_alt_tab(session: &mut Session) -> Duration {
+pub(crate) fn hold_alt_tab(session: &mut Session) -> Duration {
     key(session, KEY_LEFTALT, true);
     let pressed = Instant::now();
     key(session, KEY_TAB, true);
@@ -155,35 +204,105 @@ fn hold_alt_tab(session: &mut Session) -> Duration {
     pressed.elapsed()
 }
 
-/// Run frames until the panel has drawn what it shows now. The panel is up from the pass that shows
-/// it, and the frame that draws it is that pass's or the next one's: a look before that frame finds
-/// no card, or the ones of what the panel showed before, and a capture finds the display without
-/// the panel.
+/// A node the shell lays out for assistive technology: what it is, what it says, and where it
+/// stands, logical `(x0, y0, x1, y1)`: every window's nodes, the shell's among them.
+#[derive(Clone, Debug, PartialEq)]
+struct Node {
+    role: String,
+    label: Option<String>,
+    bounds: Option<[f64; 4]>,
+}
+
+/// The whole laid-out tree, in place: every window's node, as assistive technology reads it from
+/// the session's own export.
+fn laid_out(session: &Session) -> Vec<Node> {
+    let mut out = Vec::new();
+    for (_, _, tree) in session.a11y_windows() {
+        for (_, node) in tree.nodes {
+            out.push(Node {
+                role: format!("{:?}", node.role()),
+                label: node.label().map(str::to_owned),
+                bounds: node
+                    .bounds()
+                    .map(|rect| [rect.x0, rect.y0, rect.x1, rect.y1]),
+            });
+        }
+    }
+    out
+}
+
+/// Where the shell draws the switcher's card titled `title` : the smallest control it lays out
+/// around the title's own words, as each card carries its window's name over its picture.
+fn drawn_card(session: &Session, nodes: &[Node], title: &str) -> Option<Rect> {
+    let named = session.shell_controls(title);
+    nodes
+        .iter()
+        .filter(|node| node.role == "Button")
+        .filter_map(|node| node.bounds)
+        .filter(|[x0, y0, x1, y1]| {
+            named.iter().any(|(x, y, w, h)| {
+                *x0 <= *x && *y0 <= *y && x + w <= *x1 && y + h <= *y1 && (x1 - x0) > w + 1.0
+            })
+        })
+        .min_by(|a, b| area(a).total_cmp(&area(b)))
+        .map(|[x0, y0, x1, y1]| Rect::new(x0, y0, x1, y1))
+}
+
+fn area([x0, y0, x1, y1]: &[f64; 4]) -> f64 {
+    (x1 - x0) * (y1 - y0)
+}
+
+/// Where the panel's cards stand in the shell's laid-out tree now: each card's place in the panel
+/// and its bounds, logical `(x0, y0, x1, y1)`. A page of too many windows draws fewer cards than
+/// the walk crosses, so only the drawn ones are here.
+fn page_of(session: &Session) -> Vec<(usize, Rect)> {
+    let Some(panel) = panel(session) else {
+        return Vec::new();
+    };
+    let nodes = laid_out(session);
+    panel
+        .cards
+        .iter()
+        .enumerate()
+        .filter_map(|(at, title)| drawn_card(session, &nodes, title).map(|rect| (at, rect)))
+        .collect()
+}
+
+/// Run frames until the shell has drawn the card the walk reached, and with it the page of cards
+/// it shows now. The card the walk reached is always on the page, so a page drawn for the walk
+/// before the one the session publishes carries no card for it.
 fn until_drawn(session: &mut Session) {
     until(session, "the panel draws the cards it shows", |session| {
-        let panel = session.window_switcher();
-        !panel.needs_redraw() && !panel.card_rects().is_empty()
+        let Some(panel) = panel(session) else {
+            return false;
+        };
+        page_of(session).iter().any(|(at, _)| *at == panel.selected)
     });
 }
 
-/// Where the panel's cards stand, once it has drawn what it shows now.
+/// Where the panel's cards stand, once the shell has drawn what it shows now.
 fn drawn_cards(session: &mut Session) -> Vec<(usize, Rect)> {
     until_drawn(session);
-    session.window_switcher().card_rects()
+    page_of(session)
+}
+
+/// Run a couple of frames after the panel is drawn, so a capture holds the frame the shell drew
+/// rather than the one standing before it.
+fn settle(session: &mut Session) {
+    for _ in 0..2 {
+        session.step(REFRESH).expect("a turn of the session");
+    }
 }
 
 /// Move the pointer to the centre of card `index` , once the panel has drawn it where it shows it
 /// now.
-fn move_to_card(session: &mut Session, index: usize) {
+pub(crate) fn move_to_card(session: &mut Session, index: usize) {
     until(
         session,
         &format!("the panel draws card {index}"),
-        |session| {
-            let panel = session.window_switcher();
-            !panel.needs_redraw() && panel.card_rects().iter().any(|(at, _)| *at == index)
-        },
+        |session| page_of(session).iter().any(|(at, _)| *at == index),
     );
-    let cards = session.window_switcher().card_rects();
+    let cards = page_of(session);
     let (_, card) = cards
         .iter()
         .find(|(at, _)| *at == index)
@@ -308,6 +427,7 @@ tilo_test_env::scenario! {
     {
         let _settled = ui::motion::testing::settled();
         let mut session = session();
+        settle(&mut session);
         let plain = shot(&mut session, "switcher-shell");
 
         let waited = hold_alt_tab(&mut session);
@@ -328,6 +448,7 @@ tilo_test_env::scenario! {
             "the shell lifts the window the walk reached, as the shell's reading always has"
         );
         until_drawn(&mut session);
+        settle(&mut session);
         let held = shot(&mut session, "switcher-held");
         assert!(
             changed(&plain, &held) > plain.rgba.len() / 4 / 100,
@@ -386,6 +507,7 @@ fn alt_grave_walks_only_the_front_apps_windows() {
     assert!(view.app_scope, "the panel says which walk it shows");
     assert_eq!(view.selected, 1);
     until_drawn(&mut session);
+    settle(&mut session);
     let app = shot(&mut session, "switcher-app-scope");
 
     // Home chooses the window in front, End the last of them.
@@ -397,6 +519,7 @@ fn alt_grave_walks_only_the_front_apps_windows() {
         "Home chooses the first"
     );
     until_drawn(&mut session);
+    settle(&mut session);
     let chosen = shot(&mut session, "switcher-app-scope-first");
     let moved = changed(&app, &chosen);
     assert!(moved > 0, "moving the walk draws another card");
@@ -417,87 +540,6 @@ fn alt_grave_walks_only_the_front_apps_windows() {
         |session| front(session) == "Budget",
     );
     assert!(panel(&session).is_none());
-}
-
-/// The card under the pointer is chosen on sight, and a press on it goes to that window.
-#[test]
-fn a_card_under_the_pointer_is_chosen_on_sight_and_a_press_goes_there() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session
-        .step(Duration::from_millis(300))
-        .expect("the shell settles");
-    hold_alt_tab(&mut session);
-    assert_eq!(
-        cards(&panel(&session).expect("the panel is up")),
-        ["Notes", "Mail", "Budget"]
-    );
-    move_to_card(&mut session, 2);
-    until(
-        &mut session,
-        "the card under the pointer is chosen on sight",
-        |session| front(session) == "Budget",
-    );
-    // The card the walk reached may stand elsewhere: the pointer goes to where it stands now before
-    // the press, as the person's would.
-    move_to_card(&mut session, 2);
-    session
-        .compositor()
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: true,
-        })
-        .expect("the press reaches the session");
-    session
-        .compositor()
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: false,
-        })
-        .expect("the pointer lets go");
-    until(
-        &mut session,
-        "a press on a card goes to that window",
-        |session| panel(session).is_none() && front(session) == "Budget",
-    );
-    key(&mut session, KEY_LEFTALT, false);
-}
-
-/// A press off the panel is no press on the window behind it: the walk ends where it stood.
-#[test]
-fn a_press_off_the_panel_ends_the_walk_where_it_stood() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session
-        .step(Duration::from_millis(300))
-        .expect("the shell settles");
-    hold_alt_tab(&mut session);
-    move_to_card(&mut session, 1);
-    until(&mut session, "the walk reached another window", |session| {
-        front(session) == "Mail"
-    });
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion { x: 5.0, y: 400.0 })
-        .expect("the pointer moves off the panel");
-    session
-        .compositor()
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: true,
-        })
-        .expect("the press reaches the session");
-    until(
-        &mut session,
-        "a press off the panel takes it down",
-        |session| panel(session).is_none(),
-    );
-    key(&mut session, KEY_LEFTALT, false);
-    assert_eq!(
-        front(&session),
-        "Notes",
-        "a press outside the panel switches nothing"
-    );
 }
 
 /// A workspace holding more windows than the display holds cards shows the page the walk has
@@ -574,6 +616,7 @@ fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
         last.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
         "the last window's page is another page"
     );
+    settle(&mut session);
     shot(&mut session, "switcher-last-page");
     key(&mut session, KEY_ENTER, true);
     key(&mut session, KEY_ENTER, false);
@@ -589,19 +632,16 @@ fn the_panels_keys_are_read_under_its_windows() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     hold_alt_tab(&mut session);
-    let root = session
-        .window_switcher()
-        .accessibility()
-        .expect("the panel reads");
-    let keys = root
-        .children
-        .iter()
-        .find(|child| child.role == ui::a11y::Role::StaticText)
-        .expect("the keys are read under the windows");
-    assert_eq!(
-        keys.name.as_deref(),
-        Some("Alt + Tab: Walk, Enter: Go there, Esc: Stay"),
-        "the walk's keys, in the person's words"
+    until_drawn(&mut session);
+    let read: Vec<String> = laid_out(&session)
+        .into_iter()
+        .filter(|node| node.role == "StaticText")
+        .filter_map(|node| node.label)
+        .collect();
+    assert!(
+        read.iter()
+            .any(|said| said == "Alt + Tab: Walk, Enter: Go there, Esc: Stay"),
+        "the walk's keys, in the person's words, are read under its windows: {read:?}"
     );
 }
 
@@ -612,14 +652,22 @@ fn the_walked_card_wears_the_accent_at_its_edge() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     hold_alt_tab(&mut session);
-    until(&mut session, "the panel draws its cards", |session| {
-        !session.window_switcher().card_rects().is_empty()
-    });
+    until_drawn(&mut session);
+    settle(&mut session);
     let view = panel(&session).expect("the panel is up");
+    // The cards where the shell drew them, and the frame it drew: the same pass, so a card's
+    // bounds are where its edge's pixels are.
+    let cards = page_of(&session);
     let frame = shot(&mut session, "switcher-ring");
-    let ring = ui::theme::Theme::dark().border_focus.to_rgba8();
+    // The shell draws the reached card's edge in the person's accent of the theme it draws with:
+    // these sessions draw in Tilo dark, as the headless runner's inputs say.
+    let ring = ui::theme::Theme::dark()
+        .tokens
+        .colors
+        .intent
+        .accent
+        .to_rgba8();
     let ring = [ring.r, ring.g, ring.b];
-    let cards = session.window_switcher().card_rects();
     let chosen = cards
         .iter()
         .find(|(at, _)| *at == view.selected)
@@ -1046,7 +1094,7 @@ fn show_surface_switcher_does_not_open_on_an_empty_workspace() {
 }
 
 /// Invoking `show-surface` or `open-surface` for `switcher` when the active workspace holds one
-/// focused window opens the switcher with that one card, as on main: only an empty walk is refused.
+/// focused window opens the switcher with that one card: only an empty walk is refused.
 #[test]
 fn show_surface_switcher_opens_with_one_focused_window() {
     let _settled = ui::motion::testing::settled();

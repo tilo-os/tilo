@@ -135,8 +135,9 @@ impl Shared {
 
     /// Host the desktop's search, with its kept history and what the session publishes.
     pub(crate) fn start_search(&self) {
-        self.handle
-            .set_search_host(Rc::clone(&self.search) as Rc<dyn tilo_desktop_surface::SearchHost>);
+        self.handle.set_search_host(
+            Rc::clone(&self.search) as Rc<dyn tilo_session_core::desktop::state::SearchHost>
+        );
         if let Some(kept) = self.services.borrow().read(search::HISTORY) {
             self.search.restore(&kept);
         }

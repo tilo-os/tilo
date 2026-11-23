@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The canvas: what a person types on it, and where their windows stand on it.
 
-One headless nested session whose whole screen is the tilolang shell (`--shell screen`), with
+One headless nested session whose whole screen is the tilolang shell, with
 the tree's own apps installed: the shell itself, Board and Chat built from `apps/tl` into
 signed packages, and Notes, Chat, Tasks and the agent from the session's build. Nothing here
 starts an app binary directly and nothing touches this machine's desktop: lavapipe alone, a
@@ -104,7 +104,7 @@ class CanvasSession(real_apps.Session):
         trace, summary = self.out / f"frames-{tag}.csv", self.out / f"frames-{tag}.json"
         self.frames[tag] = {"trace": str(trace), "summary": str(summary)}
         super().start(apps=self.native, fresh=fresh, out=self.out, tag=tag, tapps=self.tapps,
-                      session_args=["--shell", "screen"],
+                      session_args=[],
                       env={"TILO_FRAME_TRACE": str(trace), "TILO_FRAME_SUMMARY": str(summary)})
         return self
 

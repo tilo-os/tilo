@@ -1051,6 +1051,7 @@ shell-window-closed = { $window } geschlossen
 shell-window-closed-undo = Rückgängig
 desktop-no-strip = Hier gibt es keine Leiste namens { $name }
 desktop-workspace-gone = Diesen Arbeitsbereich gibt es hier nicht mehr
+desktop-verb-names-nothing = Das gibt es auf diesem Desktop nicht mehr
 desktop-no-workspace-to-leave = Es gibt keinen Arbeitsbereich zu verlassen
 desktop-no-workspace-to-delete = Es gibt keinen Arbeitsbereich zu löschen
 desktop-only-workspace = Das ist der einzige Arbeitsbereich hier

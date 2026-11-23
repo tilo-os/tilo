@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::Error;
-use tilo_desktop::osd::{Hint, OsdKind};
+use tilo_session_core::desktop::osd::{Hint, OsdKind};
 use tilo_desktop_search::providers::downloaded::APPS_RESOURCE;
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};

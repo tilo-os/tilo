@@ -63,17 +63,6 @@ use tilo_user_identity::DeviceCert;
 /// carries it.
 pub type Invitation = String;
 
-/// Whether the sessions of this process's devices draw the tilolang shell, when a test asked for
-/// it: each test is a process of its own, so the shell is that test's.
-static SHELL: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-
-/// Draw the shell every session this test starts from here on shows: the tilolang shell package,
-/// whose windows are its frames, rather than the desktop's own strips. What a test that reads a
-/// window's bar, a place's tabs or the shell's own actions asks for before it makes its devices.
-pub fn show_the_shell() {
-    let _ = SHELL.set(());
-}
-
 /// The log filter the sessions of this process's devices start under, when a test asked for more
 /// than the fixture's own `info`. Each test runs in a process of its own, so the filter is that
 /// test's.
@@ -1473,11 +1462,6 @@ impl Device {
                 "--test-control",
                 control.to_str().expect("a socket path"),
             ])
-            .args(if SHELL.get().is_some() {
-                vec!["--shell", "screen"]
-            } else {
-                Vec::new()
-            })
             .env("HOME", root.join("home"))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_DATA_HOME", root.join("data"))
