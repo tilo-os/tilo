@@ -637,29 +637,12 @@ fn without_prose(schema: &mut Value) {
 /// A short, stable digest of `value`'s canonical JSON.
 fn digest(value: &Value) -> String {
     use sha2::Digest as _;
-    let canonical = serde_json::to_vec(&canonical(value)).unwrap_or_default();
-    let hash = sha2::Sha256::digest(&canonical);
+    let mut hasher = sha2::Sha256::new();
+    tilo_canonical_json::write_bytes(value, |chunk| {
+        hasher.update(chunk);
+    });
+    let hash = hasher.finalize();
     format!("sha256:{}", hex::encode(hash.get(..8).unwrap_or_default()))
-}
-
-/// `value` with every object's keys in order.
-fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let sorted: BTreeMap<&String, Value> = map
-                .iter()
-                .map(|(key, item)| (key, canonical(item)))
-                .collect();
-            Value::Object(
-                sorted
-                    .into_iter()
-                    .map(|(key, item)| (key.clone(), item))
-                    .collect(),
-            )
-        }
-        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
-        other => other.clone(),
-    }
 }
 
 /// `key` as a TOML key: bare when it can be, else quoted.

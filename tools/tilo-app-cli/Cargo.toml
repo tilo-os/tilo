@@ -44,6 +44,7 @@ sha2.workspace = true
 registry-types = { path = "../../crates/packaging/registry-types" }
 app-registry = { path = "../../crates/packaging/app-registry" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
+tilo-canonical-json = { path = "../../crates/platform/tilo-canonical-json" }
 tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
 bounded-command = { path = "../../crates/system/bounded-command" }
 # The capability evidence table deserializes into typed entries.

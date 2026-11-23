@@ -17705,6 +17705,7 @@ dependencies = [
  "tilo-app-id",
  "tilo-app-package",
  "tilo-automation",
+ "tilo-canonical-json",
  "tilo-caps",
  "tilo-files",
  "tilo-headless-schema",
