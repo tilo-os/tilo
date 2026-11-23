@@ -44,7 +44,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tempfile.workspace = true
 # The end-to-end route test's relay is a loopback one no other test shares.
-tilo-test-env = { path = "../test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 
 [[test]]
 name = "it"

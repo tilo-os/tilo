@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source import is_test_file, line_number, production_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-TREES = ("apps", "crates", "examples")
+TREES = ("apps", "crates", "tools", "examples")
 MANIFEST = "tools/policy/undoable-deletions.toml"
 
 # Kept in step with `GENERIC_CONFIRMATION_WORDS` in

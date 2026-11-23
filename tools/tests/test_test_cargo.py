@@ -62,7 +62,7 @@ class TestCargo(unittest.TestCase):
     def test_the_shared_test_support_crate_is_test_code(self):
         self.assertEqual(
             found("pub fn bin(p: &str) { Command::new(cargo()).arg(p).output(); }",
-                  "crates/dev/test-env/src/binary.rs"),
+                  "tools/test-env/src/binary.rs"),
             [1],
         )
 

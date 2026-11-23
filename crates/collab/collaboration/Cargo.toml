@@ -59,7 +59,7 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand_core.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true
-tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
@@ -98,7 +98,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 tracing-subscriber.workspace = true
-tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
 # The tests read the toolkit's host inputs from the process environment.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 

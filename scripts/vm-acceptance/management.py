@@ -10,7 +10,7 @@ from pathlib import Path
 
 from acceptance.vm import TiloVm, VmError
 
-PROTOCOL_PATH = "crates/dev/tilo-vm-protocol/src/lib.rs"
+PROTOCOL_PATH = "tools/tilo-vm-protocol/src/lib.rs"
 
 
 def protocol_at(commit: str, repo: Path | None = None) -> int:

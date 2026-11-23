@@ -48,7 +48,7 @@ video-editor-samples = { package = "video-editor", path = ".", features = ["samp
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 serial_test.workspace = true
 tempfile.workspace = true
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 # The compose probe example writes rendered frames for inspection.
 

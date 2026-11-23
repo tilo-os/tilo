@@ -420,7 +420,7 @@ class PrePushLintTests(unittest.TestCase):
     def test_the_lint_gets_the_features_the_workspace_builds_with(self):
         # A member's code behind a feature no default build enables is compiled
         # only with the features the workspace's whole build resolves for it.
-        self.write("crates/dev/workspace-unify/Cargo.toml",
+        self.write("tools/workspace-unify/Cargo.toml",
                    '[package]\nname = "workspace-unify"\nversion = "0.0.0"\n\n'
                    "[target.'cfg(all(target_os = \"linux\", target_arch = \"x86_64\"))'.dependencies]\n"
                    '"fixture-native" = { path = "../../../native", default-features = false, '

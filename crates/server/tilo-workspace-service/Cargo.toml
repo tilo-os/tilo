@@ -119,7 +119,7 @@ runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-
 tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
 tilo-broker-core = { path = "../../collab/broker-core", optional = true }
 tilo-workspace-keys = { path = "../../collab/workspace-keys", optional = true }
-tilo-test-env = { path = "../../dev/test-env", optional = true }
+tilo-test-env = { path = "../../../tools/test-env", optional = true }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The file tree's sync, which [features] files runs over this service's member copies.
 tilo-fs = { package = "tilo-fs", path = "../../system/fs", features = ["tree-sync"], optional = true }
@@ -201,7 +201,7 @@ rustix = { workspace = true, features = ["process"], optional = true }
 # The stand-in authorization server a sign-in test walks the browser through.
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
 # A fake OpenAI sign-in and model providers, for signing in on the real path.
-fake-model-providers = { path = "../../dev/fake-model-providers" }
+fake-model-providers = { path = "../../../tools/fake-model-providers" }
 # The MCP tools a device's session takes for an agent whose turn is in its own process, taken as its session's
 # steps in the broker's tests.
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
@@ -222,10 +222,10 @@ tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 # The provider servers a person's key is shown to and their model is asked at
 # in tests, on loopback, each speaking its provider's wire.
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 # `iroh-relay`: the loopback relay a fixture host's endpoint takes as its home, so a
 # host opens without waiting out the probe of an endpoint that reaches none.
-tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # A test's mail server answers over real sockets, and the tester trusts its

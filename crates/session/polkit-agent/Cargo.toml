@@ -31,7 +31,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 futures-util.workspace = true
-tilo-copy-lint = { path = "../../dev/copy-lint" }
+tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread"] }
 zbus = { workspace = true, features = ["p2p", "tokio"] }
 zeroize.workspace = true

@@ -27,7 +27,7 @@ tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [lints]
 workspace = true

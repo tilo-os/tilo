@@ -72,7 +72,7 @@ image = { workspace = true, features = ["png", "jpeg"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A brokered camera whose permission prompt a test answers.
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner", "test-support"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 # A record's content route, whose content a page holds or waits for.
 uuid = { workspace = true }
 

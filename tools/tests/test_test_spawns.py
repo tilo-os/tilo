@@ -55,7 +55,7 @@ class TestSpawns(unittest.TestCase):
 
     def test_the_shared_test_support_crate_is_test_code(self):
         source = 'pub fn bus() { Command::new("dbus-daemon").arg("--nofork").spawn(); }'
-        self.assertEqual(found(source, "crates/dev/test-env/src/bus.rs"), ["spawn"])
+        self.assertEqual(found(source, "tools/test-env/src/bus.rs"), ["spawn"])
 
     def test_a_fixture_payload_is_not_test_code(self):
         source = 'fn main() { Command::new("tar").arg("x").output().unwrap(); }'

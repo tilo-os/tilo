@@ -93,7 +93,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                 ["bash", str(ci / "nextest.sh"), *command],
                 capture_output=True, text=True, check=True, env=env)
             self.assertEqual(self.added_flags(json.loads(result.stdout), command), [])
-            anchor = tomllib.loads((ROOT / "crates/dev/workspace-unify/Cargo.toml").read_text())
+            anchor = tomllib.loads((ROOT / "tools/workspace-unify/Cargo.toml").read_text())
             for table in anchor["target"].values():
                 gateway = table.get("dependencies", {}).get("tilo-model-gateway")
                 if gateway is not None:

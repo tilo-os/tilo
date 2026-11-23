@@ -64,7 +64,7 @@ tilo-compositor = { path = "../compositor", features = ["test-support"] }
 # The colour a window's description says, as the desktop reads it back.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # A child started under the environment lock, outside every other test's scope.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true
 wayland-client = { workspace = true }
 wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }

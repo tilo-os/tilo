@@ -313,7 +313,7 @@ chat = { path = "../../../apps/chat", default-features = false, features = ["sam
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tempfile.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # A Linux turn's takeover is proven past its claim's minute with the process's wall clock pinned.
 tilo-clock = { path = "../../platform/tilo-clock", features = ["local", "test-support"] }
 # The offloadable action the offload journey runs: a batch of thumbnails.
@@ -330,13 +330,13 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # The persistent workspace test's page fetches over the workspace's plain listener.
 hyper = { version = "1", features = ["client", "http1"] }
 # The fetch proxy test's target.
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 # The sources a test has an event look at are servers the test starts, which
 # the fetch reaches only through its fixture entry.
 tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
 # The packet relay on this machine's loopback these tests run their hosts and devices on, and
 # the keys no two runs share: no test reaches a relay or directory out on the internet.
-test-server = { path = "../../dev/test-server" }
+test-server = { path = "../../../tools/test-server" }
 
 [[test]]
 name = "it"

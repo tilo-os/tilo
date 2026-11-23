@@ -87,7 +87,7 @@ WORKSPACE_LOCK = "Cargo.lock"
 # The manifest that gives every member the features the workspace's whole build
 # resolves for it (tools/ci/workspace_unify.py); a lint without it compiles code
 # no other family's build leaves out of a default feature set.
-UNIFY_MANIFEST = Path("crates/dev/workspace-unify/Cargo.toml")
+UNIFY_MANIFEST = Path("tools/workspace-unify/Cargo.toml")
 # How much of a failed run's output is shown before the rest is counted. The
 # rerun command in the failure line prints all of it.
 SHOWN_DIAGNOSTIC_LINES = 80
@@ -447,7 +447,7 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
 def unified_features(root: Path, selected: Iterable[str]) -> list[str]:
     """The features the workspace's whole build gives the selected packages.
 
-    crates/dev/workspace-unify unifies every family's build for the members, in
+    tools/workspace-unify unifies every family's build for the members, in
     the manifest tools/ci/workspace_unify.py generates. A lint that leaves it out
     compiles those members with their default features only, so code behind a
     feature another family enables goes unlinted.

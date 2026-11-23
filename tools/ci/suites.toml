@@ -551,7 +551,7 @@ inputs = [
   "crates/system/fs/tests/performance_timing.rs",
   "crates/server/tilo-server/examples/server_load/main.rs",
   # scripts/perf/render_bench.py reads the dashboard benchmark's output.
-  "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
+  "tools/ui-examples/examples/dashboard_perf_bench.rs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
   # default collection.
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
@@ -902,7 +902,7 @@ package = "tilo-local"
 # The launcher runs the development session's scripts, the web bundle's build and the local
 # hosting stack from the checkout it is built in.
 inputs = ["dist/dev/nested-session.sh", "dist/dev/nested-session-build.sh", "os/containers/tilo-sh/", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
-readers = ["crates/dev/tilo-local/src/main.rs"]
+readers = ["tools/tilo-local/src/main.rs"]
 
 [[cargo]]
 package = "tilo-peer-state"
@@ -1182,12 +1182,12 @@ inputs = [
   "os/dev-image/usr/lib/systemd/system/tilo-vm-lan.service",
   "os/dev-image/usr/lib/NetworkManager/conf.d/40-tilo-vm-lan.conf",
 ]
-readers = ["crates/dev/tilo-vm/src/build.rs", "crates/dev/tilo-vm/src/app/branch_tests.rs"]
+readers = ["tools/tilo-vm/src/build.rs", "tools/tilo-vm/src/app/branch_tests.rs"]
 
 [[cargo]]
 package = "tilo-vm-protocol"
 inputs = ["os/components.toml", "os/hardware/profiles/lenovo-83ed/input/*.json"]
-readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs", "crates/dev/tilo-vm-protocol/src/profile.rs"]
+readers = ["tools/tilo-vm-protocol/src/manifest.rs", "tools/tilo-vm-protocol/src/profile.rs"]
 
 [[cargo]]
 package = "tilo-vmd"
@@ -1218,7 +1218,7 @@ package = "tilo-app-cli"
 # standalone scaffolds embed the workspace's lock, patches, profiles and toolchain.
 # `--from-example` embeds the example apps, and a test checks them and their index.
 inputs = [
-  "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
+  "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "tools/ui-builder/Cargo.toml",
   ".cargo/config.toml",
   "examples/apps/", "examples/README.md",
   # Task guides are embedded by the CLI from the published documentation.
@@ -1246,32 +1246,32 @@ inputs = [
 # The record-kinds tests read the sources of the local crates the apps depend on, the
 # production resource regression Music's whole normal local dependency closure.
 readers = [
-  "crates/dev/tilo-app-cli/src/tests.rs",
+  "tools/tilo-app-cli/src/tests.rs",
   # The SDK's current interfaces are the image's declaration from the same commit.
-  "crates/dev/tilo-app-cli/src/interface_versions.rs",
-  "crates/dev/tilo-app-cli/src/guide.rs",
+  "tools/tilo-app-cli/src/interface_versions.rs",
+  "tools/tilo-app-cli/src/guide.rs",
   # Messages' history is checked against the app's own surface (`apps/` above).
-  "crates/dev/tilo-app-cli/src/surface.rs",
+  "tools/tilo-app-cli/src/surface.rs",
   # Focused source lookup verifies the embedded shared-checklist test bytes.
-  "crates/dev/tilo-app-cli/tests/json_output.rs",
-  "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
-  "crates/dev/tilo-app-cli/src/capability_usage.rs",
+  "tools/tilo-app-cli/tests/json_output.rs",
+  "tools/tilo-app-cli/src/standalone.rs", "tools/tilo-app-cli/tests/outside_repo.rs",
+  "tools/tilo-app-cli/src/capability_usage.rs",
   # Android packaging copies the standalone font catalog out of the SDK.
-  "crates/dev/tilo-app-cli/src/android.rs",
+  "tools/tilo-app-cli/src/android.rs",
   # The model module embeds the wasm-opt argument list ("tools/web/wasm-opt-flags").
-  "crates/dev/tilo-app-cli/src/model_wasm.rs",
-  "crates/dev/tilo-app-cli/src/resource_kinds.rs",
+  "tools/tilo-app-cli/src/model_wasm.rs",
+  "tools/tilo-app-cli/src/resource_kinds.rs",
   # Workspace certification's compute-package test reads real manifests.
-  "crates/dev/tilo-app-cli/src/main.rs",
-  "crates/dev/tilo-app-cli/src/native_sdk/tests.rs", "crates/dev/tilo-app-cli/tests/native_sdk.rs",
+  "tools/tilo-app-cli/src/main.rs",
+  "tools/tilo-app-cli/src/native_sdk/tests.rs", "tools/tilo-app-cli/tests/native_sdk.rs",
   # `--from-example` embeds the example apps' files.
-  "crates/dev/tilo-app-cli/src/examples.rs",
+  "tools/tilo-app-cli/src/examples.rs",
 ]
 
 [[cargo]]
 package = "tilo-app-template-smoke"
-inputs = ["crates/dev/tilo-app-cli/templates/", "crates/dev/tilo-app-cli/src/lib.rs"]
-readers = ["crates/dev/tilo-app-template-smoke/src/lib.rs"]
+inputs = ["tools/tilo-app-cli/templates/", "tools/tilo-app-cli/src/lib.rs"]
+readers = ["tools/tilo-app-template-smoke/src/lib.rs"]
 
 [[cargo]]
 package = "tilo-device-identity"
@@ -1377,7 +1377,7 @@ readers = [
 [[cargo]]
 package = "tilo-app-package-cli"
 inputs = ["apps/browser/tilo-app.toml"]
-readers = ["crates/packaging/tilo-app-package-cli/src/main.rs"]
+readers = ["tools/tilo-app-package-cli/src/main.rs"]
 
 [[cargo]]
 package = "tilo-imager-profile"
@@ -1584,14 +1584,14 @@ inputs = [
   "crates/browser/paint-stream/tests/fixtures/layers.top.json",
   "crates/browser/paint-stream/tests/fixtures/controls.json",
 ]
-readers = ["crates/dev/ui-examples/examples/page_view_shots.rs"]
+readers = ["tools/ui-examples/examples/page_view_shots.rs"]
 
 [[cargo]]
 package = "tilo-test-env"
 # The ci profile's setup (its nextest setup scripts) and the audio endpoint
 # that ends with its owner.
 inputs = [".config/nextest.toml", "tools/test-env-setup.sh", "tools/with-headless-audio.sh", "tools/with-test-environment.sh"]
-readers = ["crates/dev/test-env/tests/run_environment.rs"]
+readers = ["tools/test-env/tests/run_environment.rs"]
 
 # Exercised by a suite that is already guarded.
 

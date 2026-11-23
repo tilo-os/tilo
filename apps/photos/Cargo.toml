@@ -60,7 +60,7 @@ photos-samples = { package = "photos", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 vello_encoding.workspace = true
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [[test]]
 name = "it"

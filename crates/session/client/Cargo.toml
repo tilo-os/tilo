@@ -125,10 +125,10 @@ tilo-automerge-isolate.workspace = true
 # The crowded entry's step trace (`TILO_CROWD_WIRE`): the host's timings
 # beside the wire's.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 # The model providers a flow is answered through, on loopback: OpenAI with a key and signed
 # in, and Anthropic.
-fake-model-providers = { path = "../../dev/fake-model-providers" }
+fake-model-providers = { path = "../../../tools/fake-model-providers" }
 # The relays and DNS a device's endpoint binds with, as a runtime binds its own.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 tilo-server = { path = "../../server/tilo-server", features = ["web", "test-support"] }
@@ -151,9 +151,9 @@ tilo-paths.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true
-tilo-test-env = { path = "../../dev/test-env", features = ["tokio"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["tokio"] }
 # A server on this machine's loopback, which is what a test's devices relay through.
-test-server = { path = "../../dev/test-server" }
+test-server = { path = "../../../tools/test-server" }
 # A call's voice channel is a real Chat channel, written by Chat's own model.
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 # A refused commit reaches the app that made it, mounted headlessly.

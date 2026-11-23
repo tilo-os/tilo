@@ -200,11 +200,11 @@ tilo-environment = { path = "../../runtime/environment" }
 tilo-api = { path = "../../server/tilo-api", features = ["test-support"] }
 # A message with large attachments, split as `tilo migrate` splits one.
 # A device's endpoint on this machine's loopback relay, as a person's device dials.
-test-server = { path = "../../dev/test-server" }
+test-server = { path = "../../../tools/test-server" }
 # A hosted Terminal session's stream, dialled as a device dials it, and a host selling Linux
 # machines whose programs a test reads back.
 ush = { path = "../../runtime/ush", features = ["quic", "test-host"] }
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 # Opens an invitation's link as a page does, asking the workspace's host for it.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
 # `tilolang repl`, driven in process against a workspace the server hosts.
@@ -219,7 +219,7 @@ tokio-rustls.workspace = true
 rustls.workspace = true
 sha2.workspace = true
 bytes.workspace = true
-tilo-test-env = { path = "../../dev/test-env", features = ["tokio"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["tokio"] }
 # The tools a hosted agent's turn works through, asked as a turn asks them.
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
 tokio = { workspace = true, features = ["full"] }

@@ -37,7 +37,7 @@ hex.workspace = true
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
 [lints]

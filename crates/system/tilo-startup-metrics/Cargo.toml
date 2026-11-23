@@ -18,7 +18,7 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

@@ -14,7 +14,7 @@
 | Compositor            | `docs/headless-testing.md`                                           |
 | Apps/UI               | `crates/sdk/ui-core/HIG.md`, `docs/design-language.md`               |
 | tilolang              | `docs/designs/app-language/README.md`                                |
-| Dev VM/device         | `tilo device guide quickstart` (source: `crates/dev/tilo-vm/guide/`) |
+| Dev VM/device         | `tilo device guide quickstart` (source: `tools/tilo-vm/guide/`) |
 
 ## What Tilo is
 

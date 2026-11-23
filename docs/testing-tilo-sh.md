@@ -135,7 +135,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 | Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's entry bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy at `http://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command, signed with the stack's own key, which the site's installer downloads and trusts instead of Tilo's release key |
 | Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | the image as root through `sudo` where the machine has `/dev/kvm`: with `--images`, or natively when `TILO_SH_VM_HOST=1` names its images; otherwise skipped with the reason |
 | Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the server places it there ([hosted Browser](hosted-browser.md)) |
-| Discord | discord.com | `stack.sh up --discord` starts `crates/dev/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
+| Discord | discord.com | `stack.sh up --discord` starts `tools/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
 
 With `--images`, the first three are the images themselves.
 

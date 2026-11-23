@@ -20,7 +20,7 @@ tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["b
 md-5 = { workspace = true, optional = true }
 sha1 = { version = "0.11", optional = true }
 sha2 = { workspace = true, optional = true }
-test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
+test-http = { version = "0.1.0", path = "../../../tools/test-http", optional = true }
 
 [[test]]
 name = "gdrive-rystic"
@@ -41,7 +41,7 @@ fake-server = ["dep:test-http", "dep:md-5", "dep:sha1", "dep:sha2", "dep:hex"]
 cloud-source = { path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
 cloud-source-gdrive = { path = ".", features = ["fake-server"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 uuid.workspace = true
 zeroize.workspace = true
 

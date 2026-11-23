@@ -42,7 +42,7 @@ import rust_source  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 
 # Where the records this tree publishes are declared.
-SCOPES = ("apps", "crates")
+SCOPES = ("apps", "crates", "tools")
 # Sample text a tool copies rather than code this tree builds.
 SAMPLES = ("templates", "examples")
 # The session's own surfaces: their records are the session process's, and no

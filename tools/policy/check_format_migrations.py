@@ -499,7 +499,7 @@ class Definitions:
         if self._names is not None:
             return self._names
         files = []
-        for base in ("crates", "apps"):
+        for base in ("crates", "tools", "apps"):
             directory = self.root / base
             if not directory.is_dir():
                 continue
@@ -955,7 +955,7 @@ def check(root: Path = ROOT) -> list[str]:
 
 def kept_goldens(root: Path, revision: str) -> list[str]:
     listed = subprocess.run(
-        ["git", "ls-tree", "-r", "--name-only", revision, "--", "crates", "apps"],
+        ["git", "ls-tree", "-r", "--name-only", revision, "--", "crates", "tools", "apps"],
         cwd=root,
         capture_output=True,
         text=True,

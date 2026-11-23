@@ -124,7 +124,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features =
 # commits is what the stream carrying the window's frames announces.
 tilo-window-share = { path = "../window-share" }
 # A subject's cases are the phases of one test (`scenario!`).
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

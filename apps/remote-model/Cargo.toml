@@ -35,7 +35,7 @@ tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 # Real endpoint ids for the tests, made as a device makes its own.
 iroh-base = { workspace = true, features = ["key"] }
 data-encoding.workspace = true
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

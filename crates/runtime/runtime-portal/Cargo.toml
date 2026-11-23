@@ -52,7 +52,7 @@ tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true
 
 [[test]]

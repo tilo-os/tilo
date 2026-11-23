@@ -181,7 +181,7 @@ fs-protocol = { version = "0.1.0", path = "../fs-protocol" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
 # The idle endpoint tests' relay is a loopback one no test shares.
-tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
 cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }

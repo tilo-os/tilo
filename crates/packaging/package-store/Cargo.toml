@@ -74,7 +74,7 @@ tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identit
 [dev-dependencies]
 libc.workspace = true
 tempfile.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [[test]]
 name = "it"

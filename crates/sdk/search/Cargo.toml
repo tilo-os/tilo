@@ -31,7 +31,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
 
 # The native tests cover `DiskIndex` too.
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]

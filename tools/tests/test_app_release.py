@@ -233,7 +233,7 @@ class AppReleaseTests(unittest.TestCase):
                             'dependencies': [{'path': str(root / dep)} for dep in dependencies]}
                 metadata = {'packages': [
                     package('format', 'crates/format'),
-                    package('tilo-app-package-cli', 'crates/packaging/tilo-app-package-cli', ['crates/format']),
+                    package('tilo-app-package-cli', 'tools/tilo-app-package-cli', ['crates/format']),
                     package('runtime-dylib', 'crates/runtime/runtime-dylib'),
                     package('notes-bin', 'apps/files'), package('settings-bin', 'apps/settings'),
                 ]}

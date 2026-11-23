@@ -27,7 +27,7 @@ rustix = { workspace = true, features = ["process"] }
 zeroize.workspace = true
 
 [dev-dependencies]
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 postcard = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "test-util", "time"] }
 

@@ -62,7 +62,7 @@ uuid.workspace = true
 # A window's thread that must not wait on storage, as the window closes (`tests/gallery_close.rs`).
 durable-store = { path = "../../crates/system/durable-store" }
 # The started gallery in `tests/gallery_start.rs` starts outside every other test's environment.
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [lints]
 workspace = true

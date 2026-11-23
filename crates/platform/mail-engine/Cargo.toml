@@ -82,7 +82,7 @@ tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] 
 # The fake authorization server and browser for the Gmail and Outlook
 # sign-in tests.
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

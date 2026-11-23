@@ -25,7 +25,7 @@ import rust_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
-SCOPES = ("crates", "apps")
+SCOPES = ("crates", "tools", "apps")
 IMPL = re.compile(
     r"\bimpl\b(?:\s*<[^{;]*?>)?\s+(?:[A-Za-z_][\w:]*::)?Widget\s+for\s+[^{;]+\{")
 HTML = re.compile(r"\bfn\s+html\s*\(")

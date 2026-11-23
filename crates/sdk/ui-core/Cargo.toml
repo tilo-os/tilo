@@ -154,7 +154,7 @@ tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", 
 # A host search result the OS wakes this app for goes to the runtime.
 tilo-host-search = { version = "0.1.0", path = "../../platform/tilo-host-search", optional = true }
 # Test builds bound their waits with the shared hang bound.
-tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # Browser processes on one profile meet at one Chromium host (`webview::chromium`).
 tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
@@ -411,7 +411,7 @@ tempfile.workspace = true
 # Tests whose interface is the process environment (launcher variables such
 # as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
 # prior value and serialises every such test in the process.
-tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
 # Paused-clock tests of the collaboration endpoints' deadlines.
 tokio = { workspace = true, features = ["test-util"] }
 # The scoped chooser and URI fixtures the invocation-scope tests select.

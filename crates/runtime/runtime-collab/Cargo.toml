@@ -64,7 +64,7 @@ wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = [
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc.workspace = true

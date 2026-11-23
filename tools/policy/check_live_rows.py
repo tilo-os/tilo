@@ -68,7 +68,7 @@ FRAMEWORK = (
     "crates/sdk/tilo-resource",
     "crates/sdk/ui-core",
 )
-SCOPES = ("apps", "crates")
+SCOPES = ("apps", "crates", "tools")
 
 RULES = {
     "untyped-live-row": re.compile(r"\bLiveRow::new\s*\("),

@@ -192,7 +192,7 @@ budget or an invalid value in an ignore-on-error parser is not a passing check. 
 16,667 µs p99 check is a useful 60 Hz screen, not proof that every frame met its
 deadline. The million-event frozen test measures **zero redraws**, not a million
 rendered frames. Source:
-[dashboard harness](../crates/dev/ui-examples/examples/dashboard_perf_bench.rs).
+[dashboard harness](../tools/ui-examples/examples/dashboard_perf_bench.rs).
 
 ### Other UI performance scenarios
 
@@ -208,9 +208,9 @@ results are not interchangeable with native-4K dashboard redraws:
 | `PERF_HUD_OUT`                               | `/tmp/perf_hud/hud.png`; PNG output path for the HUD fixture, which creates parent directories and writes the image. Use a dedicated path to avoid replacing an existing image. |
 
 Sources:
-[perf_scenario.rs](../crates/dev/ui-examples/examples/perf_scenario.rs),
-[widget_perf_bench.rs](../crates/dev/ui-examples/examples/widget_perf_bench.rs),
-[perf_hud_shot.rs](../crates/dev/ui-examples/examples/perf_hud_shot.rs).
+[perf_scenario.rs](../tools/ui-examples/examples/perf_scenario.rs),
+[widget_perf_bench.rs](../tools/ui-examples/examples/widget_perf_bench.rs),
+[perf_hud_shot.rs](../tools/ui-examples/examples/perf_hud_shot.rs).
 
 ## Presentation-loop controls
 

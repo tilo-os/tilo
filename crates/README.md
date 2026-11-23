@@ -12,7 +12,7 @@ service.
 |---|---|
 | `agent/` | Provider configuration, model gateway, and local-model services |
 | `collab/` | Production collaboration protocols, actions, identity primitives, and reference state |
-| `dev/` | Developer tools, UI schema/graph support, generated-code checks, and collaboration probes |
+| `dev/` | The dev-image daemon and its device-admin route; developer tools live in `../tools/` |
 | `doc/` | Native document model, format-provider interfaces and import/export adapters |
 | `hosting/` | Relay and home-peer services |
 | `media/` | Shared media primitives, OCR, thumbnail generation, and vision libraries |
@@ -27,13 +27,13 @@ service.
 
 ## Developer tools and fixtures
 
-- `dev/nested-session-bus`: the build environment's dbus-daemon in a cargo-built executable, the
+- `../tools/nested-session-bus`: the build environment's dbus-daemon in a cargo-built executable, the
   private session bus of a nested session on hosts without one.
-- `dev/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
-- `dev/collab-probe`: sandboxed collaboration test app, driven by
+- `../tools/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
+- `../tools/collab-probe`: sandboxed collaboration test app, driven by
   `scripts/headless-examples/tilolang-e2e.py`.
-- `dev/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.
-- `dev/copy-lint`: the source scan that keeps English copy literals out of UI builders,
+- `../tools/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.
+- `../tools/copy-lint`: the source scan that keeps English copy literals out of UI builders,
   run from the shell's and desktop's tests with their own allow-lists.
 - `../examples/packaging/hello` and `../examples/packaging/notes-cli`: executable
   packaging/SDK examples used by walkthroughs and integration scripts.

@@ -69,7 +69,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 # `scenario!`: one test function holds the cases of one subject.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [[test]]
 name = "it"

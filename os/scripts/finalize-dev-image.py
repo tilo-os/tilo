@@ -66,7 +66,7 @@ ELF_ARCHES = {0x3E: "x86_64", 0xB7: "aarch64", 0xF3: "riscv64gc"}
 
 def elf_facts(path: Path) -> tuple[str, str]:
     """(target, toolchain) of a Rust ELF binary, as `tilo-vm layer-pack` reads them
-    (crates/dev/tilo-vm/src/build.rs, elf_facts)."""
+    (tools/tilo-vm/src/build.rs, elf_facts)."""
     data = path.read_bytes()
     if data[:6] != b"\x7fELF\x02\x01":
         fail(f"{path} is not a 64-bit little-endian ELF file")

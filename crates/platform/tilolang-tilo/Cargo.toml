@@ -54,7 +54,7 @@ collaboration = { version = "0.1.0", path = "../../collab/collaboration", featur
 bounded-zip = { path = "../../doc/bounded-zip" }
 tempfile.workspace = true
 uuid.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # The toolkit's words, as the session's hosts read them: what the tests' published
 # types are labelled in.
 tilo-app-window = { version = "0.1.0", path = "../tilo-app-window" }

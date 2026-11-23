@@ -129,9 +129,9 @@ workspace-hack = { version = "0.1" }
 tilo-fs = { package = "tilo-fs", path = "../fs", features = ["tree-sync"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # A scripted `/v1` server: the hosted commands' request mapping, without a host.
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 tempfile.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # A server a ticket's computer enters, as the person's device.
 migration-sources = { path = "../../platform/migration-sources", features = ["fixture"] }
 # Fake cloud drives for `tilo migrate`'s cloud sources.

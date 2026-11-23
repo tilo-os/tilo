@@ -7,7 +7,7 @@
 #
 # Runs against the VM os/dev/vm.sh booted (same TILO_* environment). The
 # handshake is what `tilo-vm` sends first over `ssh <vm> tilo-vmd rpc`
-# (crates/dev/tilo-vm-protocol); `hello` never changes shape, so protocol 0
+# (tools/tilo-vm-protocol); `hello` never changes shape, so protocol 0
 # is answered by any daemon with its own version.
 set -euo pipefail
 

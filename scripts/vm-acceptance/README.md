@@ -193,7 +193,7 @@ the resume arrives and unlocks. I05-I08 are `calibrating`: their observables com
 code and have not yet been seen in a CI run, so a failure is **xfail** (with its reason) until
 the marker is removed. hwdb `KEYBOARD_KEY_` remaps need the real driver and are not covered.
 Capture a new profile from a device's `/sys/class/input/eventN/device/capabilities/*` and HID
-report descriptor (see `crates/dev/tilo-vm-protocol/src/profile.rs`).
+report descriptor (see `tools/tilo-vm-protocol/src/profile.rs`).
 
 Pull requests touching the input path, tilo-vm(d), the profiles or the MCP server run only
 these areas (`ci_select.py`).

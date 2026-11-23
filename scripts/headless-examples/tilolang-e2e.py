@@ -51,7 +51,7 @@ app gets on a real system:
   idle       each app untouched for 10 s, the tilolang host that runs the apps'
              instances included: every thread of them sleeps
   routes     the broker's route access, as the attested launch of an app: the
-             collaboration probe (crates/dev/collab-probe) is installed as Today
+             collaboration probe (tools/collab-probe) is installed as Today
              (which declares that it reads Notes' kinds) and as Tasks (which
              declares no read), in a second start of the same throwaway session.
              Tasks cannot join Notes' route at all; Today joins it to read, and

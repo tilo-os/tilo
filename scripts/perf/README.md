@@ -13,7 +13,7 @@ executable stand-alone; the higher-level flow is described below.
   the session's `windows` rows). It consumes an already-built `tilo-session`
   (a development build, so its test-control socket opens) and an existing app
   store, so it does not build an RPM or image. `--load windowed|fullscreen`
-  runs `tilo-loadclient` (`crates/dev/click-test-client`, built with `cargo
+  runs `tilo-loadclient` (`tools/click-test-client`, built with `cargo
   build --release -p click-test-client --bin tilo-loadclient`) beside it: a
   window that draws a frame for every frame shown. `--load-client PATH` names
   another one.

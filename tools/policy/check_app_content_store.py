@@ -39,7 +39,7 @@ from rust_source import is_test_file, production_source  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCANNED = (Path("apps"), Path("crates"))
+SCANNED = (Path("apps"), Path("crates"), Path("tools"))
 ALLOWED = (
     Path("crates/system/content"),
     Path("crates/system/content-device"),

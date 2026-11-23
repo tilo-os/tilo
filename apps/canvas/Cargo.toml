@@ -88,7 +88,7 @@ canvas-samples = { package = "canvas", path = ".", features = ["samples"] }
 tempfile.workspace = true
 # A fresh content store, for opening a saved artwork where its pictures
 # never were.
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 # A stand-in subject model on the gateway's own descriptor and wire, held
 # mid-inference to show the window keeps taking input.
 tilo-model-client = { path = "../../crates/agent/model-client", default-features = false }

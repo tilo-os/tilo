@@ -128,7 +128,7 @@ name = "proxy_host"
 required-features = ["proxy-host"]
 
 [dev-dependencies]
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 tokio-websockets = { version = "0.13.3", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 futures-util = { workspace = true, features = ["sink"] }
 # A loopback WebTransport server with a pinned self-signed certificate.
@@ -142,7 +142,7 @@ serde = { workspace = true, features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # The relay tests' home relay is a loopback one no test shares.
-tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 # The iroh trust test: endpoints and a relay under a locally issued CA.
 iroh.workspace = true
 iroh-relay = { version = "1.0.3", features = ["server"] }

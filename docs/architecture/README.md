@@ -128,7 +128,7 @@ names are stable even when directories move.
 | Web runtime (the page a browser enters a workspace with) | `crates/browser/tilo-browser-runtime` |
 | Platform services with one API on Linux, macOS and the web | `crates/platform/` |
 | Packages, sandboxed launch, the registry | `crates/packaging/` |
-| The `tilo-app` command | `crates/dev/tilo-app-cli` |
+| The `tilo-app` command | `tools/tilo-app-cli` |
 | The OS image | `os/` |
 
 Apps and the portable SDK crates hold no platform code: anything that differs

@@ -504,7 +504,7 @@ def load_save_exceptions(path: Path) -> set[SaveException]:
 def rust_sources(root: Path) -> list[Path]:
     """Production Rust sources of apps and crates."""
     found = []
-    for top in ("apps", "crates"):
+    for top in ("apps", "crates", "tools"):
         base = root / top
         if not base.is_dir():
             continue
@@ -2524,7 +2524,7 @@ def written_labels(root: Path) -> list[tuple[str, int, str]]:
     Rust source of apps, crates and examples, tests included: a label names a key of
     the crate's catalogue."""
     found = []
-    for top in ("apps", "crates", "examples"):
+    for top in ("apps", "crates", "tools", "examples"):
         base = root / top
         if not base.is_dir():
             continue

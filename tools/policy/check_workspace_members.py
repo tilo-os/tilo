@@ -17,7 +17,7 @@ from typing import NamedTuple
 
 EDITION = "2024"
 # The directories a crate can live in.
-CRATE_DIRS = ("apps", "crates", "examples")
+CRATE_DIRS = ("apps", "crates", "tools", "examples")
 
 
 class WorkspaceInventory(NamedTuple):

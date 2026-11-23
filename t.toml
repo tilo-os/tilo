@@ -6558,7 +6558,7 @@ dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
 app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "devices", "displays-across-devices", "notes", "settings", "shell", "tube"]
 
-# `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
+# `cargo headless --check` and `cargo desktop --check` (tools/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks
 # it something (its actions; its window, opened on a throwaway headless Tilo in place of the
 # developer's desktop) and stops it, with listening traps where the host's session bus, system bus,

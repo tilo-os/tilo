@@ -169,9 +169,9 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             TILO_SH_VM_HOST=1 names it
   mail      the mail sink the entry's mail goes to (production: Resend),
             http://127.0.0.1:BASE+23; stack.sh mail lists what it kept
-  discord   with --discord, the fake Discord (crates/dev/fake-discord)
+  discord   with --discord, the fake Discord (tools/fake-discord)
   models    with TILO_SH_FAKE_MODELS=1, the fake OpenAI sign-in and model
-            providers (crates/dev/fake-model-providers) at
+            providers (tools/fake-model-providers) at
             http://127.0.0.1:BASE+43, which the server signs people in to
             OpenAI at; its sign-in page takes any code it showed
 

@@ -54,11 +54,11 @@ tilo-seal = { path = "../../../crates/system/tilo-seal" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-fake-discord = { path = "../../../crates/dev/fake-discord" }
+fake-discord = { path = "../../../tools/fake-discord" }
 tempfile.workspace = true
 collab-types = { path = "../../../crates/collab/collab-types" }
 # `relay`: the loopback packet relay the bridge's host takes as its home.
-tilo-test-env = { path = "../../../crates/dev/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
 # The bridge end to end: its program on a workspace's host, with this binary.

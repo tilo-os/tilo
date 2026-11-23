@@ -54,7 +54,7 @@ tempfile.workspace = true
 serial_test.workspace = true
 # The counting allocator behind `heap::held`: what one unit and one document hold.
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [[bench]]
 name = "record_cost"

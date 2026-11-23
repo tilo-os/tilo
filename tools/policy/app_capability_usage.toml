@@ -1,6 +1,6 @@
 # What in an app's code shows that it uses a capability (tilo-caps).
 #
-# One table, one reader: crates/dev/tilo-app-cli/src/capability_usage.rs
+# One table, one reader: tools/tilo-app-cli/src/capability_usage.rs
 # embeds this file, and `tilo-app check` /
 # `tilo-app build` refuse an app whose code uses a capability its tilo-app.toml
 # does not declare, with the line to add, before anything compiles. The

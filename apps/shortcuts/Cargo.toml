@@ -38,7 +38,7 @@ serde_json.workspace = true
 # collection build, and the app then links the whole runtime statically.
 shortcuts-samples = { package = "shortcuts", path = ".", features = ["samples"] }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

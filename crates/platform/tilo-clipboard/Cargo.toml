@@ -57,7 +57,7 @@ js-sys = "=0.3.85"
 
 [dev-dependencies]
 # Bounds the Wayland worker tests' waits.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Already locked by the compositor; the isolated fixture drives the real

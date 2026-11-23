@@ -65,7 +65,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time", "test-util"] }
 tilo-automerge-isolate.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

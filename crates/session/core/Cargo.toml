@@ -60,9 +60,9 @@ audio = { package = "tilo-audio-service", version = "0.1.0", path = "../audio-se
 
 [dev-dependencies]
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
-tilo-copy-lint = { path = "../../dev/copy-lint" }
+tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

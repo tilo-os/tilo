@@ -3,7 +3,7 @@
 # Run: cargo deny check
 
 # crates/workspace-hack (cargo hakari) names every feature-unified crate only to
-# fix its features, and crates/dev/workspace-unify (tools/ci/workspace_unify.py)
+# fix its features, and tools/workspace-unify (tools/ci/workspace_unify.py)
 # every library the workspace builds. Pruned from the graph, deny sees the
 # dependency edges members really have, so `workspace` scoped advisories stay
 # about direct dependencies.

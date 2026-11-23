@@ -67,7 +67,7 @@ rustix = { workspace = true, features = ["process"] }
 [dev-dependencies]
 # Isolated on-disk fixtures so the persistence tests never touch
 # /var/lib/tilo on the developer's machine.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true
 
 [lints]

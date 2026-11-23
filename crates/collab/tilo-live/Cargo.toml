@@ -56,7 +56,7 @@ iroh = { version = "1.0.3", default-features = false, features = ["tls-ring"], o
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 serde_json.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [[test]]
 name = "live_native"

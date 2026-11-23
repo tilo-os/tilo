@@ -49,7 +49,7 @@ ENGINE_OWNERS = (
     "crates/sdk/ui-core/",
     # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
     # into this non-default member; they still exercise the same surfaces.
-    "crates/dev/ui-examples/",
+    "tools/ui-examples/",
     "crates/collab/actions/",
     # A document's history, revert and undo log, moved below the toolkit: a
     # revert writes any document's text and marks back as they were.
@@ -59,7 +59,7 @@ ENGINE_OWNERS = (
     # content documents itself, so it writes their text and marks.
     "crates/collab/resource-store/",
 )
-SCANNED_ROOTS = ("apps", "crates", "examples")
+SCANNED_ROOTS = ("apps", "crates", "tools", "examples")
 
 RULES = {
     "rich_text_engine": re.compile(r"\bautomerge::marks\b|\bExpandMark\b"),

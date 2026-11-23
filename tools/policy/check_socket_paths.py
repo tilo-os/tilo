@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-SCANNED = ("apps", "crates")
+SCANNED = ("apps", "crates", "tools")
 # The one place that binds and connects by path.
 HELPER = "crates/platform/tilo-socket/src/lib.rs"
 CALL = re.compile(r"\bUnix(?:Listener::bind|Stream::connect)\s*\(")

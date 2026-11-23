@@ -363,7 +363,7 @@ file = "crates/dev/ui-graph/src/component.rs"
 enum = "Value"
 reason = "renames the Principal variant to Actor: the component catalogue is generated from the tree and read by the same build"
 [[break]]
-file = "crates/dev/tilo-vm-protocol/src/lib.rs"
+file = "tools/tilo-vm-protocol/src/lib.rs"
 enum = "Request"
 reason = "the account-slot variants are renamed at the same indexes; the request names are JSON-RPC between the tilo-vm CLI and its daemon, built and shipped together, so no older reader meets them"
 

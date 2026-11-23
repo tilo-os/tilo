@@ -82,7 +82,7 @@ class WorkspaceUnifyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.manifest = self.root / "crates" / "dev" / "workspace-unify" / "Cargo.toml"
+        self.manifest = self.root / "tools" / "workspace-unify" / "Cargo.toml"
         for patcher in (
             mock.patch.object(unify, "ROOT", self.root),
             mock.patch.object(unify, "DIR", self.manifest.parent),

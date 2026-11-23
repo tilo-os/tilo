@@ -69,7 +69,7 @@ fnv.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

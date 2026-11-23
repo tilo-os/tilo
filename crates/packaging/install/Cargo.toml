@@ -49,10 +49,10 @@ getrandom.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
 toml.workspace = true
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 # A sealed runtime needs a filesystem with fs-verity; the test says so where
 # there is none.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [[test]]
 name = "it"

@@ -15,7 +15,7 @@ import rust_source  # noqa: E402
 
 # Test support: every source of the crate tests share is test code, as the
 # files under `tests/` are.
-SUPPORT = (Path("crates/dev/test-env/src"),)
+SUPPORT = (Path("tools/test-env/src"),)
 SCANNED = ("apps", "crates", "examples", "fuzz", "os", "tools")
 
 

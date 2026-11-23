@@ -42,7 +42,7 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

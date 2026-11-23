@@ -32,7 +32,7 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        for shared in ("Cargo.toml", "apps", "crates", "examples"):
+        for shared in ("Cargo.toml", "apps", "crates", "tools", "examples"):
             if (REPO / shared).exists():
                 (root / shared).symlink_to(REPO / shared)
         (root / "os/scripts").mkdir(parents=True)

@@ -103,8 +103,8 @@ image = { optional = true, workspace = true, features = ["png", "jpeg", "webp"] 
 # Tests keep their provider settings in memory.
 settings-store = { path = "../../system/settings-store" }
 tempfile.workspace = true
-test-http = { path = "../../dev/test-http" }
-tilo-test-env = { path = "../../dev/test-env" }
+test-http = { path = "../../../tools/test-http" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

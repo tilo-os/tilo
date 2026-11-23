@@ -195,7 +195,7 @@ def audit_reads(files: Judged) -> list[Violation]:
 def audit_pins(files: Judged) -> list[Violation]:
     """Every wall-clock pin in the tree sits where only its caller can reach it."""
     violations: list[Violation] = []
-    for scope in (Path("crates"), Path("apps")):
+    for scope in (Path("crates"), Path("tools"), Path("apps")):
         for relative, text in files.sources(scope, errors="strict"):
             hits = list(CAPTURE_PIN.finditer(text)) + list(PROCESS_PIN.finditer(text))
             if not hits:

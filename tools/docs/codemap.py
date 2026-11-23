@@ -22,8 +22,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = "docs/codemap.md"
-# Group depth below the root: apps/<app>, crates/<domain>/<crate>, examples/<kind>/<crate>.
-GROUP_DEPTH = {"apps": 1, "crates": 2, "examples": 2}
+# Group depth below the root: apps/<app>, crates/<group>/<crate>, examples/<kind>/<crate>,
+# tools/<crate>.
+GROUP_DEPTH = {"apps": 1, "crates": 2, "examples": 2, "tools": 1}
 MAX_SUMMARY = 64
 # Words every line would repeat; dropping them keeps the map cheap to read.
 BOILERPLATE = [

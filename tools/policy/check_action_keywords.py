@@ -65,7 +65,7 @@ def catalogue_findings(root: Path) -> list[str]:
 
 def declaration_findings(root: Path) -> list[str]:
     findings = []
-    for directory in ("apps", "crates", "examples"):
+    for directory in ("apps", "crates", "tools", "examples"):
         for path in sorted((root / directory).glob("**/*.rs")):
             if "/target/" in path.as_posix() or "/vendor/" in path.as_posix():
                 continue

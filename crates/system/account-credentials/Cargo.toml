@@ -102,10 +102,10 @@ tilo-secrets.workspace = true
 cloud-source-onedrive = { path = "../cloud-source-onedrive", features = ["fake-server"] }
 cloud-source-dropbox = { path = "../cloud-source-dropbox", features = ["fake-server"] }
 cloud-source-icloud = { path = "../cloud-source-icloud", features = ["fake-server"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-oauth = { path = "../tilo-oauth", features = ["fake"] }
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 tempfile.workspace = true
 agent-provider-config = { path = "../../agent/provider-config" }
 

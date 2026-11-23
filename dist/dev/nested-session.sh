@@ -166,7 +166,7 @@ runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-1
 # and the apps it launches) inherits addresses that lead nowhere, and the
 # session gets a bus of its own (session-bus.sh). The window is the one thing
 # shared with the host desktop, through its Wayland socket alone.
-# `cargo desktop --check` (crates/dev/tilo-local) proves it.
+# `cargo desktop --check` (tools/tilo-local) proves it.
 for name in DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE AT_SPI_BUS_ADDRESS \
             NOTIFY_SOCKET LISTEN_PID LISTEN_FDS LISTEN_FDNAMES MANAGERPID \
             XDG_SESSION_ID XDG_SESSION_TYPE XDG_SESSION_CLASS XDG_SESSION_DESKTOP \
