@@ -1789,12 +1789,15 @@ const WORKSPACES: &str = "workspaces";
 /// ends it with ([`NeighbourMsg::AppDocument`]), and version 3 is the frames a document write may
 /// name its own content key in ([`collab_types::EncryptionScheme::DocumentContentKey`]). Version 4
 /// keeps them in segments, each frame as version 3 writes it. Version 5 is the frames whose
-/// document writes no longer name the member's own record they were. A build before a version
+/// document writes no longer name the member's own record they were. Version 6 is version 5's
+/// layout, whose identity hello names a certificate whose capabilities carry the retired grants
+/// they already wrote in their binary form
+/// ([`tilo_user_identity::DeviceCapabilities`]). A build before a version
 /// refuses the store by version instead of reading what it cannot; a store opening an earlier
 /// version moves its frames into segments, each written as today
 /// ([`crate::before_own_removal::frame`]), before it
 /// records the version it keeps.
-pub(crate) const FRAMES_VERSION: u32 = 5;
+pub(crate) const FRAMES_VERSION: u32 = 6;
 /// The first version that kept frames in segments.
 const SEGMENTS_VERSION: u32 = 4;
 /// Where a store opening segments of an earlier version sets them aside while it packs their
