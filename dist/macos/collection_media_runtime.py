@@ -24,17 +24,14 @@ PACKAGES = {'gstreamer', 'libass', 'libunibreak', 'harfbuzz', 'graphite2', 'free
             'libxrender', 'libx11', 'libxext', 'fontconfig', 'pango', 'libthai', 'libdatrie'}
 DATA = {'libthai': 'share/libthai/thbrk.tri', 'libunibreak': 'LICENCE'}
 PLUGIN_ADDITIONS = {
-    'tube': set(),
-    'video-player': {'avi'},
     'video-editor': {'avi', 'x264', 'opus', 'ogg', 'wavparse', 'aiff', 'asf', 'flac',
                      'flv', 'mpegpsdemux', 'mpegtsdemux', 'id3demux', 'apetag'},
 }
 LIBRARY_ADDITIONS = {
-    'tube': set(), 'video-player': set(),
     'video-editor': {'libgstmpegts-1.0.0.dylib', 'libFLAC.14.dylib', 'libogg.0.8.6.dylib',
                      'libgstsdp-1.0.0.dylib', 'libgstrtsp-1.0.0.dylib'},
 }
-PACKAGE_ADDITIONS = {'tube': set(), 'video-player': set(), 'video-editor': {'flac', 'libogg'}}
+PACKAGE_ADDITIONS = {'video-editor': {'flac', 'libogg'}}
 
 
 def expected_packages(name):
