@@ -933,6 +933,37 @@ tilo_test_env::scenario! {
         workspace
             .check_invite(&carol, Role::Viewer, &cx(), false)
             .expect("commenter invites viewer");
+
+        // A workspace that denies its Editors outside effects denies them to
+        // whoever is handed Editor too: an Editor there still invites one,
+        // and no Moderator.
+        let mut workspace = workspace_with_members(&[(BOB, Role::Editor)]);
+        workspace.grants.extend([
+            Grant::new(
+                "editors-no-outside",
+                Grantee::role(Role::Editor),
+                TreePath::workspace("r"),
+                KindSet::OUTSIDE,
+                Answer::Deny,
+                Grantee::person(ALICE),
+            ),
+            Grant::new(
+                "editors-invite",
+                Grantee::role(Role::Editor),
+                roles::governance_action("r", governance::INVITE),
+                KindSet::OUTSIDE,
+                Answer::Allow,
+                Grantee::person(ALICE),
+            ),
+        ]);
+        let bob = Authority::person(workspace.party(BOB));
+        workspace
+            .check_invite(&bob, Role::Editor, &cx(), false)
+            .expect("an Editor held to the workspace's Deny invites an Editor");
+        assert_eq!(
+            workspace.check_invite(&bob, Role::Moderator, &cx(), false),
+            Err(Refusal::AboveActorRole(Role::Moderator))
+        );
     }
 
     phase a_policy_moves_to_another_workspace_id;

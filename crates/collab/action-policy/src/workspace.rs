@@ -900,9 +900,12 @@ impl WorkspacePolicy {
         target != actor_person && self.is_administrator(target)
     }
 
-    /// Whether `actor` may hand out `role`: each of the role's grants is
-    /// within what the actor holds ([`Self::check_within`]), or the actor is
-    /// an administrator. Ownership is handed over, never handed out.
+    /// Whether `actor` may hand out `role`: what the role holds in this
+    /// workspace, at each node its grants name, is within what the actor
+    /// holds there, or the actor is an administrator. A workspace's own grant
+    /// to the role binds whoever it is handed to as much as the giver, so an
+    /// Editor of a workspace that denies its Editors outside effects still
+    /// hands out Editor. Ownership is handed over, never handed out.
     fn check_role_handout(
         &self,
         actor: &Authority<'_>,
@@ -919,11 +922,21 @@ impl WorkspacePolicy {
         }
         let grantee = Grantee::role(role);
         let lifetime = Lifetime::UntilRevoked;
-        roles::role_preset(role, &self.workspace)
+        let handed = Party::new(vec![grantee.clone()], &self.grants);
+        let within = roles::role_preset(role, &self.workspace)
             .assign("handout", &grantee, &grantee, &lifetime)
             .iter()
-            .try_for_each(|grant| Self::check_within(actor, grant, cx))
-            .map_err(|_| Refusal::AboveActorRole(role))
+            .all(|grant| {
+                grant.kinds.iter().all(|kind| {
+                    actor.decide(&grant.node, kind, cx).answer
+                        >= handed.decide(&grant.node, kind, cx).answer
+                })
+            });
+        if within {
+            Ok(())
+        } else {
+            Err(Refusal::AboveActorRole(role))
+        }
     }
 
     /// Whether `actor_person` (acting through `actor`) may make `change`,
