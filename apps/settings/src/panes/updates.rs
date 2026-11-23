@@ -42,6 +42,7 @@ crate::effects::effect_family!(UpdatesEffect => answer);
 
 crate::area::pane_area! {
     UpdatesArea;
+    crate::area::serves!(Updates);
     fn poll(&self) {
         UpdatesArea::poll(self);
     }

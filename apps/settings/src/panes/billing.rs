@@ -68,6 +68,7 @@ fn page_of(account: &ServerAccount, effect: BillingEffect) -> Result<String, Str
 
 crate::area::pane_area! {
     BillingArea;
+    crate::area::serves!(Billing);
     fn poll(&self) {
         BillingArea::poll(self);
     }

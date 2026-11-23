@@ -45,6 +45,10 @@ crate::effects::effect_family!(AudioEffect => answer);
 
 crate::area::pane_area! {
     AudioArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Sound);
     fn poll(&self) {
         AudioArea::poll(self);
     }

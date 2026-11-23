@@ -32,6 +32,7 @@ crate::effects::effect_family!(ZoneEffect => answer);
 
 crate::area::pane_area! {
     ZoneArea;
+    crate::area::serves!(RegionFormats);
     fn poll(&self) {
         ZoneArea::poll(self);
     }

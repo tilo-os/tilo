@@ -173,6 +173,7 @@ impl Binds<SettingsEffect, String> for Chosen {
 
 crate::area::pane_area! {
     AccountsArea;
+    crate::area::serves!(ExternalAccounts);
     fn poll(&self) {
         AccountsArea::poll(self);
     }
@@ -183,6 +184,7 @@ crate::area::pane_area! {
 
 crate::area::pane_area! {
     ProvidersArea;
+    crate::area::serves!(AgentModels);
     fn poll(&self) {
         ProvidersArea::poll(self);
     }

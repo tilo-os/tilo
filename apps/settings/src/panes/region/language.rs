@@ -20,6 +20,7 @@ crate::effects::effect_family!(LanguageEffect => answer);
 
 crate::area::pane_area! {
     LanguageArea;
+    crate::area::serves!(RegionFormats);
     fn poll(&self) {
         LanguageArea::poll(self);
     }
