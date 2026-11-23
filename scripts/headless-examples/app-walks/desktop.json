@@ -2,12 +2,11 @@
   "app": "desktop",
   "said": "The desktop a person signs in to",
   "family": "shell",
-  "live": "rust",
+  "live": "tl",
   "apps": "chat settings terminal",
   "packages": [
     "files"
   ],
-  "rust": {},
   "tl": {
     "session_args": []
   },

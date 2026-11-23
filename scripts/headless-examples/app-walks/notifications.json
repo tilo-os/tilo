@@ -2,12 +2,11 @@
   "app": "notifications",
   "said": "A notification arrives",
   "family": "shell",
-  "live": "rust",
+  "live": "tl",
   "apps": "chat settings terminal",
   "packages": [
     "files"
   ],
-  "rust": {},
   "tl": {
     "session_args": []
   },

@@ -3,12 +3,11 @@
   "said": "Sign in, lock the screen",
   "family": "shell",
   "order": 99,
-  "live": "rust",
+  "live": "tl",
   "apps": "chat settings terminal",
   "packages": [
     "files"
   ],
-  "rust": {},
   "tl": {
     "session_args": []
   },

@@ -2,12 +2,11 @@
   "app": "workspace-settings",
   "said": "The workspace's settings",
   "family": "shell",
-  "live": "rust",
+  "live": "tl",
   "apps": "chat settings terminal",
   "packages": [
     "files"
   ],
-  "rust": {},
   "tl": {
     "session_args": []
   },
