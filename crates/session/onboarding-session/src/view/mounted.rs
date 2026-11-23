@@ -18,7 +18,7 @@ use super::{
     KEY_BEGIN, KEY_CHOOSE_NEARBY, KEY_CHOOSE_RECOVERY_KEY, KEY_CHOOSE_RESTORE, KEY_CODECS_CONTINUE,
     KEY_CODECS_INSTALL, KEY_CODECS_SKIP, KEY_CONNECT_BROWSE, KEY_CONNECT_CANCEL,
     KEY_CONNECT_NEARBY, KEY_CONNECT_RETRY, KEY_CREATE, KEY_EXISTING, KEY_FINISH, KEY_IMPORT,
-    KEY_PREPARED_IMPORT, KEY_RECOVERY_KEY_CLOSE, KEY_RECOVERY_KEY_CONFIRM,
+    KEY_RECOVERY_KEY_CLOSE, KEY_RECOVERY_KEY_CONFIRM,
     KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, KEY_TOUR_BACK, KEY_TOUR_NEXT, KEY_TOUR_SKIP,
     OnboardingView, PickerPurpose,
 };
@@ -245,25 +245,10 @@ impl OnboardingView {
         reason = "one plain field per fact the setup page shows"
     )]
     pub(super) fn page(&self) -> Page {
-        let migration = self.migration_active().then(|| tilo_onboarding::Migration {
-            transfer: self.migration_transfer(),
-            status: self.migration_status().unwrap_or_default(),
-            needs_password: self.migration_needs_password(),
-            cancellable: self.migration_cancellable(),
-        });
-        #[cfg(target_os = "linux")]
-        let peer = self.peer.as_ref().map(crate::peer::Peer::verification_code);
-        #[cfg(not(target_os = "linux"))]
-        let peer = None;
         Page {
             screen: self.flow.screen(),
             context: self.context,
             recovery_only: self.recovery_only,
-            prepared: self.prepared_pending.then(|| tilo_onboarding::Prepared {
-                working: self.prepared_working(),
-                peer,
-            }),
-            migration,
             portable_backup_only: self.portable_backup_only,
             identity_ready_page: self.identity_ready_page,
             joined_device: self.joined_device.clone(),
@@ -354,72 +339,6 @@ impl OnboardingView {
         }
     }
 
-    /// Which carried-over transfer the migration page is about.
-    fn migration_transfer(&self) -> tilo_onboarding::Transfer {
-        use tilo_onboarding::Transfer;
-        if self
-            .portable_home
-            .as_ref()
-            .is_some_and(crate::portable_home::Pending::pending)
-        {
-            Transfer::PortableHome
-        } else if self
-            .portable_applications
-            .as_ref()
-            .is_some_and(crate::portable_applications::Pending::pending)
-        {
-            Transfer::PortableApplications
-        } else if self
-            .browser
-            .as_ref()
-            .is_some_and(crate::browser::Pending::pending)
-        {
-            Transfer::Browser
-        } else {
-            Transfer::Migration
-        }
-    }
-
-    fn migration_needs_password(&self) -> bool {
-        self.portable_home
-            .as_ref()
-            .is_some_and(crate::portable_home::Pending::needs_password)
-            || self
-                .portable_applications
-                .as_ref()
-                .is_some_and(crate::portable_applications::Pending::needs_password)
-            || self
-                .browser
-                .as_ref()
-                .is_some_and(crate::browser::Pending::needs_password)
-    }
-
-    /// Whether the transfer under way can still be cancelled.
-    fn migration_cancellable(&self) -> bool {
-        let status = self.migration_status().unwrap_or_default();
-        let state = status
-            .get("state")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unavailable");
-        let flag = |key: &str| status.get(key).and_then(serde_json::Value::as_bool) == Some(true);
-        state != "cancelling"
-            && (state != "reviewing"
-                || self
-                    .portable_home
-                    .as_ref()
-                    .is_some_and(crate::portable_home::Pending::busy)
-                || self
-                    .portable_applications
-                    .as_ref()
-                    .is_some_and(crate::portable_applications::Pending::busy)
-                || self
-                    .browser
-                    .as_ref()
-                    .is_some_and(crate::browser::Pending::busy)
-                || flag("original_copy")
-                || flag("retained_access"))
-    }
-
     /// Show the app the page the ceremony stands on now.
     pub(super) fn show_page(&self) {
         self.app.state().show(self.page());
@@ -477,15 +396,11 @@ impl OnboardingView {
             (OnboardingEffect::Continue, Step::RecoveryKey) => KEY_RECOVERY_KEY_RESTORE,
             (OnboardingEffect::Continue, Step::RecoveryKeyCopy) => KEY_RECOVERY_KEY_CONFIRM,
             (OnboardingEffect::Continue, Step::Restore) => KEY_IMPORT,
-            (OnboardingEffect::Continue, Step::Prepared) => KEY_PREPARED_IMPORT,
             (OnboardingEffect::Continue, Step::Protect) => KEY_CREATE,
             (OnboardingEffect::Continue, Step::Backup) => KEY_BACKUP_CONTINUE,
             (OnboardingEffect::Continue, Step::Tour(_)) => KEY_TOUR_NEXT,
             (OnboardingEffect::Continue, Step::Codecs) => KEY_CODECS_CONTINUE,
             (OnboardingEffect::Continue, Step::Ready) | (OnboardingEffect::Finish, _) => KEY_FINISH,
-            (OnboardingEffect::Continue | OnboardingEffect::Retry, Step::Migration) => {
-                "onboarding.migration.next"
-            }
             (OnboardingEffect::Back, Step::RecoveryKeyCopy) => KEY_RECOVERY_KEY_CLOSE,
             (OnboardingEffect::Back, Step::Tour(_)) => KEY_TOUR_BACK,
             (OnboardingEffect::Back, _) => KEY_BACK,
@@ -498,19 +413,16 @@ impl OnboardingView {
                 "write-down-recovery-key" => KEY_RECOVERY_KEY_SHOW,
                 "another-copy" => KEY_BACKUP_ANOTHER,
                 "install-codecs" => KEY_CODECS_INSTALL,
-                "accept-incomplete" => "onboarding.migration.continue",
                 _ => return None,
             },
             (OnboardingEffect::Browse, Step::Restore) => KEY_CONNECT_BROWSE,
             (OnboardingEffect::Browse, Step::Backup) => KEY_BACKUP_BROWSE,
             (OnboardingEffect::Skip, Step::Tour(_)) => KEY_TOUR_SKIP,
             (OnboardingEffect::Skip, Step::Codecs) => KEY_CODECS_SKIP,
-            (OnboardingEffect::Skip, Step::Migration) => "onboarding.migration.later",
             (OnboardingEffect::Retry, Step::Nearby) => KEY_CONNECT_NEARBY,
             (OnboardingEffect::Retry, Step::Existing) => KEY_CONNECT_RETRY,
             (OnboardingEffect::Retry, Step::Codecs) => KEY_CODECS_INSTALL,
             (OnboardingEffect::Cancel, Step::Nearby) => KEY_CONNECT_CANCEL,
-            (OnboardingEffect::Cancel, Step::Migration) => "onboarding.migration.cancel",
             (OnboardingEffect::Cancel, Step::Backup) if self.portable_backup_only => KEY_FINISH,
             _ => return None,
         })

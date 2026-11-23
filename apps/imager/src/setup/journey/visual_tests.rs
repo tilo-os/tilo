@@ -30,10 +30,7 @@ fn inspect_controls(preview: &InstallerPreview, ids: &[&str], viewport: (u32, u3
             "vertical clipping {id}: {rect:?}"
         );
     }
-    let showing_password = preview.journey.page == Page::Password;
-    #[cfg(unix)]
-    let showing_password = showing_password && !preview.restart.blocks();
-    if showing_password && !preview.unlocking_preparation() {
+    if preview.journey.page == Page::Password {
         let first = control(preview, "installer.password").unwrap().get_rect();
         let second = control(preview, "installer.confirmation")
             .unwrap()
@@ -49,9 +46,6 @@ fn paint_screen(scenario: &str, ids: &[&str], viewport: (u32, u32), theme: Theme
     app.harness().set_theme(theme.with_reduce_motion(true));
     paint_app(&mut app, scenario, ids, viewport, tag);
 }
-
-mod scroll;
-pub(super) use scroll::scroll_into_view;
 
 pub(super) fn paint_app<A: ui::framework::ResourceApp>(
     app: &mut TestApp<A>,
@@ -115,7 +109,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
             .find_map(|child| heading_font(child, theme))
     }
     for theme in [Theme::dark(), Theme::light()] {
-        let mut unscaled: Option<(f32, f64, f64, f64)> = None;
+        let mut unscaled: Option<(f32, f64, f64)> = None;
         for host_scale in [1.0, 1.5, 2.0] {
             let initial = match host_scale {
                 1.0 => (1180, 820),
@@ -123,7 +117,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 _ => (2360, 1640),
             };
             let mut app =
-                TestApp::<ImagerShell>::capture_at(Some("installer-profile"), initial).unwrap();
+                TestApp::<ImagerShell>::capture_at(Some("installer-migrate"), initial).unwrap();
             app.harness().set_theme(
                 theme
                     .clone()
@@ -135,8 +129,8 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 app.harness().resize(viewport).unwrap();
                 paint_app(
                     &mut app,
-                    "installer-profile",
-                    &["installer.name", "installer.next"],
+                    "installer-migrate",
+                    &["installer.ticket", "installer.next"],
                     viewport,
                     &format!("logical-size-{host_scale}"),
                 );
@@ -145,11 +139,8 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                         let heading_size =
                             heading_font(preview, &theme.clone().with_ui_scale(host_scale))
                                 .unwrap();
-                        let name = control(preview, "installer.name").unwrap().get_rect();
+                        let name = control(preview, "installer.ticket").unwrap().get_rect();
                         let next = control(preview, "installer.next").unwrap().get_rect();
-                        let avatar = control(preview, "installer.profile.avatar")
-                            .unwrap()
-                            .get_rect();
                         let metrics = &theme.tokens.metrics;
                         assert!(
                             (name.width() - f64::from(metrics.content_min_width * host_scale))
@@ -157,7 +148,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                                 < 1.0
                         );
                         assert!((name.center().x - preview.rect.center().x).abs() < 1.0);
-                        (heading_size, name.height(), next.height(), avatar.height())
+                        (heading_size, name.height(), next.height())
                     })
                     .unwrap();
                 if let Some(expected) = original {
@@ -168,13 +159,9 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 } else {
                     original = Some(dimensions);
                 }
-                if let Some((font, field, button, avatar)) = unscaled {
+                if let Some((font, field, button)) = unscaled {
                     assert_eq!(dimensions.0, font * host_scale);
-                    for (actual, base) in [
-                        (dimensions.1, field),
-                        (dimensions.2, button),
-                        (dimensions.3, avatar),
-                    ] {
+                    for (actual, base) in [(dimensions.1, field), (dimensions.2, button)] {
                         assert!(
                             (actual - base * f64::from(host_scale)).abs() < 0.01,
                             "host UI scale must apply exactly once: {actual}, {base}, {host_scale}"
@@ -217,7 +204,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 app.harness().click_named("installer.back").unwrap();
                 app.settle();
                 app.with_widget::<InstallerPreview, _>(|preview| {
-                    assert_eq!(preview.journey.page, Page::Profile);
+                    assert_eq!(preview.journey.page, Page::Migrate);
                 })
                 .unwrap();
             }
@@ -233,11 +220,8 @@ fn destination_review_edit_exposes_cancel_and_restores_choices_through_public_ac
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = false;
             preview.capture = true;
-            preview.restart = restart_controller::Restart::default();
-            preview.journey = Journey::new("Ada Lovelace".into());
+            preview.journey = Journey::new();
             preview.journey.destination = Some(Destination::Computer);
-            preview.journey.migrate = Some(true);
-            preview.journey.identity = Some(Identity::New);
             preview.journey.page = Page::Review;
             preview.dirty = true;
         })
@@ -279,7 +263,7 @@ fn destination_review_edit_exposes_cancel_and_restores_choices_through_public_ac
             .value
             .unwrap();
         assert_eq!(restored["page"], "review");
-        for field in ["destination", "name", "device_name", "identity", "migrate"] {
+        for field in ["destination", "device_name"] {
             assert_eq!(
                 restored[field], original[field],
                 "changed {field} on cancel"
@@ -299,73 +283,6 @@ fn destination_review_edit_exposes_cancel_and_restores_choices_through_public_ac
 }
 
 #[test]
-fn review_summary_scrolls_without_moving_navigation_at_large_text_sizes() {
-    for (tag, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
-        let viewport = (2560, 1440);
-        let mut app =
-            TestApp::<ImagerShell>::capture_at(Some("installer-review"), viewport).unwrap();
-        app.harness()
-            .set_theme(theme.with_ui_scale(2.0).with_reduce_motion(true));
-        app.settle();
-        paint_app(
-            &mut app,
-            "installer-review-top",
-            &["installer.next", "installer.back"],
-            viewport,
-            tag,
-        );
-        let (next, back, last, heading) = app
-            .with_widget::<InstallerPreview, _>(|preview| {
-                inspect_controls(preview, &["installer.next", "installer.back"], viewport);
-                (
-                    control(preview, "installer.next").unwrap().get_rect(),
-                    control(preview, "installer.back").unwrap().get_rect(),
-                    control(preview, "installer.review.flatpak")
-                        .unwrap()
-                        .get_rect(),
-                    control(preview, "installer.heading").unwrap().get_rect(),
-                )
-            })
-            .unwrap();
-        assert!(last.y1 > next.y0, "the real summary must overflow its body");
-        eprintln!(
-            "Review initial geometry {tag}: heading={heading:?}, next={next:?}, back={back:?}, last={last:?}"
-        );
-        assert!(
-            heading.y0 >= 0.0 && heading.y1 < next.y0,
-            "Review heading must initially be visible above footer: heading={heading:?}, next={next:?}, back={back:?}, last={last:?}"
-        );
-        app.harness().click_at(
-            f64::midpoint(heading.x0, heading.x1),
-            f64::midpoint(heading.y0, heading.y1),
-        );
-        for _ in 0..40 {
-            app.harness().scroll(0.0, -10.0);
-        }
-        app.settle();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            let last = control(preview, "installer.review.flatpak")
-                .unwrap()
-                .get_rect();
-            assert!(
-                last.y0 >= 0.0 && last.y1 <= next.y0,
-                "summary stays above footer: {last:?}"
-            );
-            assert_eq!(control(preview, "installer.next").unwrap().get_rect(), next);
-            assert_eq!(control(preview, "installer.back").unwrap().get_rect(), back);
-        })
-        .unwrap();
-        paint_app(
-            &mut app,
-            "installer-review-scrolled",
-            &["installer.next", "installer.back"],
-            viewport,
-            tag,
-        );
-    }
-}
-
-#[test]
 fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
     let screens: &[(&str, &[&str])] = &[
         (
@@ -373,8 +290,8 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
             &["installer.choice.computer", "installer.choice.another"],
         ),
         (
-            "installer-profile",
-            &["installer.avatar", "installer.name", "installer.next"],
+            "installer-migrate",
+            &["installer.ticket", "installer.next"],
         ),
         (
             "installer-password",
@@ -387,15 +304,6 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
         (
             "installer-devices",
             &["installer.device-name", "installer.next"],
-        ),
-        (
-            "installer-belongings",
-            &[
-                "installer.category.files",
-                "installer.category.accounts",
-                "installer.details",
-                "installer.next",
-            ],
         ),
         (
             "installer-storage",
@@ -428,359 +336,6 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
             }
         }
     }
-}
-
-#[cfg(unix)]
-#[track_caller]
-fn wait_for_preview(app: &mut TestApp<ImagerShell>, predicate: impl Fn(&InstallerPreview) -> bool) {
-    fn ready(root: &dyn Widget, predicate: &impl Fn(&InstallerPreview) -> bool) -> bool {
-        if let Some(preview) = root
-            .as_any()
-            .and_then(|widget| widget.downcast_ref::<InstallerPreview>())
-        {
-            return predicate(preview);
-        }
-        root.children()
-            .into_iter()
-            .any(|child| ready(child, predicate))
-    }
-    let settled = app
-        .harness()
-        .wait_until(tilo_test_env::hang_bound(), |harness| {
-            ready(harness.root_widget(), &predicate)
-        });
-    if !settled {
-        let state = app.effect(&InstallerPreviewEffect::ReadPreview).unwrap();
-        panic!("installer preparation did not settle: {state:?}");
-    }
-}
-
-#[cfg(unix)]
-fn wait_for_fresh_preparation(app: &mut TestApp<ImagerShell>) {
-    wait_for_preview(app, |preview| {
-        preview.restart.projection()["state"] == "missing"
-            && !preview.restart.busy()
-            && !preview.personal_busy()
-            && !preview.direct.active
-    });
-    let state = app
-        .effect(&InstallerPreviewEffect::ReadPreview)
-        .unwrap()
-        .value
-        .unwrap();
-    assert_eq!(state["restart"]["state"], "missing", "{state}");
-    assert_eq!(state["page"], "destination", "{state}");
-}
-
-#[cfg(unix)]
-fn identify_other_computer(app: &mut TestApp<ImagerShell>) {
-    for (field, value) in [
-        ("manufacturer", "Test Vendor"),
-        ("model", "Other Test Laptop"),
-        ("variant", "OTHER-TEST-BOARD"),
-    ] {
-        app.effect(&InstallerPreviewEffect::SetTargetIdentityField {
-            field: field.into(),
-            value: value.into(),
-        })
-        .unwrap();
-    }
-}
-
-#[cfg(unix)]
-fn choose(app: &mut TestApp<ImagerShell>, choice: &str) {
-    app.effect(&InstallerPreviewEffect::ChoosePreview {
-        choice: choice.into(),
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    let page = app
-        .effect(&InstallerPreviewEffect::ReadPreview)
-        .unwrap()
-        .value
-        .unwrap()["page"]
-        .clone();
-    if page == "target" {
-        identify_other_computer(app);
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-    }
-}
-
-#[test]
-#[cfg(unix)]
-fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
-    let root = ownership.path().canonicalize().unwrap();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-    env.set("TILO_OAUTH_SPOTIFY_CLIENT_ID", "installer-render-client");
-    env.set("XDG_CONFIG_HOME", root.join("config"));
-    for (tag, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
-        for (viewport, scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
-            env.set("XDG_STATE_HOME", root.join(format!("{tag}-{}", viewport.0)));
-            let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-            wait_for_fresh_preparation(&mut app);
-            for choice in ["another", "fresh", "new"] {
-                choose(&mut app, choice);
-            }
-            app.effect(&InstallerPreviewEffect::SetPreviewName {
-                value: "Ada Lovelace".into(),
-            })
-            .unwrap();
-            app.effect(&InstallerPreviewEffect::ContinuePreview)
-                .unwrap();
-            wait_for_preview(&mut app, |preview| {
-                preview.journey.page == Page::Devices
-                    && !preview.personal_busy()
-                    && !preview.restart.busy()
-            });
-            app.with_widget::<InstallerPreview, _>(|preview| {
-                preview.journey.page = Page::Accounts;
-                preview.dirty = true;
-            })
-            .unwrap();
-            app.harness().resize(viewport).unwrap();
-            app.harness()
-                .set_theme(theme.clone().with_ui_scale(scale).with_reduce_motion(true));
-            wait_for_preview(&mut app, |preview| {
-                preview.accounts.can_continue() && preview.restart.projection()["checking"] == false
-            });
-            paint_app(
-                &mut app,
-                "installer-account-overview",
-                &["installer.account.add", "installer.next"],
-                viewport,
-                tag,
-            );
-            let overview = app.harness().inspection_json().unwrap();
-            assert!(!overview.contains("installer.account.provider.google-drive"));
-            app.effect(&InstallerPreviewEffect::AccountStep {
-                step: "add-account".into(),
-                selection: None,
-            })
-            .unwrap();
-            paint_app(
-                &mut app,
-                "installer-account-providers",
-                &["installer.account.provider.nextcloud", "installer.back"],
-                viewport,
-                tag,
-            );
-            assert!(
-                app.effect(&InstallerPreviewEffect::ContinuePreview)
-                    .is_err(),
-                "a service choice cannot be skipped by Continue"
-            );
-            paint_spotify_choices(&mut app, viewport, tag);
-            app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-            app.settle();
-            let returned = app.harness().inspection_json().unwrap();
-            assert!(returned.contains("installer.account.add"));
-            assert!(!returned.contains("installer.account.provider.google-drive"));
-        }
-    }
-}
-
-fn paint_spotify_choices(app: &mut TestApp<ImagerShell>, viewport: (u32, u32), tag: &str) {
-    let providers = app.harness().inspection_json().unwrap();
-    assert!(providers.contains("installer.account.provider.spotify"));
-    assert!(!providers.contains("installer.account.provider.spotify-streaming"));
-    app.effect(&InstallerPreviewEffect::AccountStep {
-        step: "choose-provider".into(),
-        selection: Some("spotify-options".into()),
-    })
-    .unwrap();
-    paint_app(
-        app,
-        "installer-spotify-purpose",
-        &[
-            "installer.account.spotify.spotify",
-            "installer.account.spotify.spotify-streaming",
-            "installer.back",
-        ],
-        viewport,
-        tag,
-    );
-    let purpose = app.harness().inspection_json().unwrap();
-    assert!(!purpose.contains("installer.account.provider.google-drive"));
-    assert!(!purpose.contains("installer.account.confirm"));
-    app.effect(&InstallerPreviewEffect::AccountStep {
-        step: "choose-provider".into(),
-        selection: Some("spotify-streaming".into()),
-    })
-    .unwrap();
-    paint_app(
-        app,
-        "installer-spotify-playback-consent",
-        &["installer.account.confirm", "installer.back"],
-        viewport,
-        tag,
-    );
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        let back = control(preview, "installer.back").unwrap().get_rect();
-        let connect = control(preview, "installer.account.confirm")
-            .unwrap()
-            .get_rect();
-        assert!(connect.x0 > back.x1, "Connect belongs at the trailing edge");
-        assert!(
-            (connect.y0 - back.y0).abs() < 1.0,
-            "Back and Connect must share the navigation row"
-        );
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-    app.settle();
-    assert!(
-        app.harness()
-            .inspection_json()
-            .unwrap()
-            .contains("installer.account.spotify.spotify-streaming")
-    );
-    app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-    app.settle();
-    assert!(
-        app.harness()
-            .inspection_json()
-            .unwrap()
-            .contains("installer.account.provider.spotify")
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[cfg(unix)]
-fn account_motion_fixture() -> TestApp<ImagerShell> {
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.live = true;
-        preview.capture = false;
-        preview.restart = restart_controller::Restart::default();
-        preview.journey.page = Page::Accounts;
-        preview.pending_slide = None;
-        preview.slide = None;
-        preview.dirty = true;
-    })
-    .unwrap();
-    app.harness().resize((1180, 820)).unwrap();
-    app.harness()
-        .set_theme(Theme::dark().with_reduce_motion(false));
-    app.settle();
-    app
-}
-
-#[cfg(target_os = "linux")]
-fn account_motion_step(app: &mut TestApp<ImagerShell>, step: &str, selection: Option<&str>) {
-    app.effect(&InstallerPreviewEffect::AccountStep {
-        step: step.into(),
-        selection: selection.map(str::to_owned),
-    })
-    .unwrap();
-}
-
-#[cfg(target_os = "linux")]
-fn motion_frames(app: &mut TestApp<ImagerShell>, name: &str, direction: f64) {
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.slide.as_ref().unwrap().0, direction);
-        assert!(preview.outgoing.is_some());
-    })
-    .unwrap();
-    let mut previous = None;
-    for percent in [0, 25, 50, 75, 100] {
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            let presence = if percent == 100 {
-                ui::motion::Presence::opened()
-            } else {
-                ui::motion::Presence::held_at(u16::try_from(percent * 10).unwrap())
-            };
-            preview.slide = Some((direction, presence));
-        })
-        .unwrap();
-        let pixels = app.harness().render_rgba();
-        assert_eq!(pixels.len(), 1180 * 820 * 4);
-        if let Some(previous) = previous.replace(pixels.clone()) {
-            assert_ne!(pixels, previous, "{name} at {percent}% did not move");
-        }
-        if let Some(directory) = std::env::var_os("TILO_UI_SCREENSHOT_DIR") {
-            let directory = PathBuf::from(directory).join("installer-motion");
-            std::fs::create_dir_all(&directory).unwrap();
-            app.harness()
-                .render_png(&directory.join(format!("{name}-{percent:03}.png")));
-        }
-    }
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.slide = Some((direction, ui::motion::Presence::opened()));
-    })
-    .unwrap();
-    app.harness().render_rgba();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert!(preview.slide.is_none());
-        assert!(preview.outgoing.is_none());
-    })
-    .unwrap();
-}
-
-fn personal_motion_frames(
-    app: &mut TestApp<ImagerShell>,
-    name: &str,
-    direction: f64,
-    viewport: (u32, u32),
-    control_height: f64,
-) {
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(
-            control(preview, "installer.next")
-                .unwrap()
-                .get_rect()
-                .height(),
-            control_height,
-            "{name}: controls resized"
-        );
-        assert_eq!(
-            preview.slide.as_ref().expect("page transition was lost").0,
-            direction
-        );
-        assert!(
-            preview.outgoing.is_some(),
-            "{name}: departing scene was lost"
-        );
-    })
-    .unwrap();
-    let mut previous = None;
-    for percent in [0, 50, 100] {
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            let presence = if percent == 100 {
-                ui::motion::Presence::opened()
-            } else {
-                ui::motion::Presence::held_at(u16::try_from(percent * 10).unwrap())
-            };
-            preview.slide = Some((direction, presence));
-        })
-        .unwrap();
-        let pixels = app.harness().render_rgba();
-        assert_eq!(pixels.len(), viewport.0 as usize * viewport.1 as usize * 4);
-        if let Some(previous) = previous.replace(pixels.clone()) {
-            assert_ne!(pixels, previous, "{name}: {percent}% did not move");
-        }
-        if let Some(directory) = std::env::var_os("TILO_UI_SCREENSHOT_DIR") {
-            let directory = PathBuf::from(directory).join("installer-motion");
-            std::fs::create_dir_all(&directory).unwrap();
-            app.harness().render_png(&directory.join(format!(
-                "{name}-{}x{}-{percent:03}.png",
-                viewport.0, viewport.1
-            )));
-        }
-    }
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.slide = Some((direction, ui::motion::Presence::opened()));
-    })
-    .unwrap();
-    app.harness().render_rgba();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert!(preview.slide.is_none());
-        assert!(preview.outgoing.is_none());
-    })
-    .unwrap();
 }
 
 fn validation_copy<'a>(root: &'a dyn Widget, error: &str) -> Option<&'a dyn Widget> {
@@ -836,247 +391,6 @@ pub(super) fn body_scroll_geometry(root: &mut dyn Widget) -> Option<(vello::kurb
 
 #[test]
 #[cfg(unix)]
-fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
-    for (viewport, host_scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
-        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.live = false;
-            preview.capture = false;
-            preview.restart = restart_controller::Restart::default();
-            preview.journey = Journey::new("Ada Lovelace".into());
-            preview.journey.destination = Some(Destination::Computer);
-            preview.journey.migrate = Some(false);
-            preview.journey.identity = Some(Identity::New);
-            preview.journey.device_name = "My computer".into();
-            preview.journey.page = Page::Profile;
-            preview.journey.history = vec![Page::Destination, Page::Migration, Page::Identity];
-            preview.dirty = true;
-        })
-        .unwrap();
-        app.harness().set_theme(
-            Theme::dark()
-                .with_ui_scale(host_scale)
-                .with_reduce_motion(true),
-        );
-        app.harness().resize(viewport).unwrap();
-        app.settle();
-        let (back, next) = app
-            .with_widget::<InstallerPreview, _>(|preview| {
-                inspect_controls(
-                    preview,
-                    &["installer.name", "installer.back", "installer.next"],
-                    viewport,
-                );
-                let heading = control(preview, "installer.heading").unwrap().get_rect();
-                let name = control(preview, "installer.name").unwrap().get_rect();
-                let (body, overflowing) = body_scroll_geometry(preview).unwrap();
-                assert!(!overflowing, "short profile should fit: {body:?}");
-                let visible_center = f64::midpoint(heading.y0, name.y1);
-                assert!(
-                    (visible_center - body.center().y).abs() < 40.0 * f64::from(host_scale),
-                    "short body stays centered: heading={heading:?}, name={name:?}, body={body:?}"
-                );
-                (
-                    control(preview, "installer.back").unwrap().get_rect(),
-                    control(preview, "installer.next").unwrap().get_rect(),
-                )
-            })
-            .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.journey.page = Page::Password;
-            preview.dirty = true;
-        })
-        .unwrap();
-        for effect in [
-            InstallerPreviewEffect::SetPreviewPassword {
-                value: "several unrelated installation words".into(),
-            },
-            InstallerPreviewEffect::SetPreviewConfirmation {
-                value: "several unrelated installation words".into(),
-            },
-            InstallerPreviewEffect::ContinuePreview,
-        ] {
-            app.effect(&effect).unwrap();
-        }
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.journey.page, Page::Devices);
-            assert_eq!(control(preview, "installer.back").unwrap().get_rect(), back);
-            assert_eq!(control(preview, "installer.next").unwrap().get_rect(), next);
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(control(preview, "installer.back").unwrap().get_rect(), back);
-            assert_eq!(control(preview, "installer.next").unwrap().get_rect(), next);
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::SetPreviewPassword {
-            value: "short".into(),
-        })
-        .unwrap();
-        assert!(
-            app.effect(&InstallerPreviewEffect::ContinuePreview)
-                .is_err()
-        );
-        app.settle();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.journey.page, Page::Password);
-            assert!(
-                preview.error.is_some(),
-                "semantic Continue must show validation"
-            );
-            inspect_password_validation(
-                preview,
-                "installer.password",
-                "installer-preview-password-short",
-            );
-        })
-        .unwrap();
-        app.harness()
-            .set_theme(Theme::dark().with_ui_scale(2.0).with_reduce_motion(true));
-        app.harness().resize((480, 800)).unwrap();
-        app.settle();
-        let (back, next, body) = app
-            .with_widget::<InstallerPreview, _>(|preview| {
-                inspect_controls(preview, &["installer.back", "installer.next"], (480, 800));
-                let (body, overflowing) = body_scroll_geometry(preview).unwrap();
-                assert!(overflowing, "the real error/form must overflow: {body:?}");
-                let next = control(preview, "installer.next").unwrap().get_rect();
-                assert!(body.y1 <= next.y0, "scroll body must stop above navigation");
-                (
-                    control(preview, "installer.back").unwrap().get_rect(),
-                    next,
-                    body,
-                )
-            })
-            .unwrap();
-        app.harness().click_at(body.center().x, body.center().y);
-        for _ in 0..40 {
-            app.harness().scroll(0.0, -10.0);
-        }
-        app.settle();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(control(preview, "installer.back").unwrap().get_rect(), back);
-            assert_eq!(control(preview, "installer.next").unwrap().get_rect(), next);
-            let error = validation_copy(preview, "installer-preview-password-short")
-                .unwrap()
-                .get_rect();
-            let confirmation = control(preview, "installer.confirmation")
-                .unwrap()
-                .get_rect();
-            assert!(
-                confirmation.y0 >= body.y0 && confirmation.y1 <= body.y1,
-                "confirmation remains reachable with the validation: {confirmation:?}, {body:?}"
-            );
-            assert!(
-                error.y0 >= body.y0 && error.y1 <= body.y1,
-                "validation error is reachable within scrolling body: {error:?}, {body:?}"
-            );
-        })
-        .unwrap();
-        paint_app(
-            &mut app,
-            "installer-password-error-scrolled",
-            &["installer.back", "installer.next"],
-            (480, 800),
-            "dark",
-        );
-    }
-}
-
-#[test]
-#[cfg(unix)]
-fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
-    for (viewport, host_scale) in [((1180, 820), 1.0), ((2560, 1440), 1.0), ((2560, 1440), 2.0)] {
-        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.live = false;
-            preview.capture = false;
-            preview.restart = restart_controller::Restart::default();
-            preview.journey = Journey::new("Ada Lovelace".into());
-            preview.journey.destination = Some(Destination::Computer);
-            preview.journey.migrate = Some(false);
-            preview.journey.identity = Some(Identity::New);
-            preview.journey.device_name = "My computer".into();
-            preview.journey.page = Page::Profile;
-            preview.dirty = true;
-        })
-        .unwrap();
-        let mut theme = Theme::dark()
-            .with_ui_scale(host_scale)
-            .with_reduce_motion(false);
-        theme.tokens.motion.durations.base_ms = 30_000;
-        app.harness().set_theme(theme);
-        app.harness().resize(viewport).unwrap();
-        app.settle();
-        let next_height = app
-            .with_widget::<InstallerPreview, _>(|preview| {
-                inspect_controls(preview, &["installer.name", "installer.next"], viewport);
-                control(preview, "installer.next")
-                    .unwrap()
-                    .get_rect()
-                    .height()
-            })
-            .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        personal_motion_frames(&mut app, "profile-to-password", 1.0, viewport, next_height);
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.journey.page = Page::Password;
-            preview.dirty = true;
-        })
-        .unwrap();
-        for effect in [
-            InstallerPreviewEffect::SetPreviewPassword {
-                value: "several unrelated installation words".into(),
-            },
-            InstallerPreviewEffect::SetPreviewConfirmation {
-                value: "several unrelated installation words".into(),
-            },
-            InstallerPreviewEffect::ContinuePreview,
-        ] {
-            app.effect(&effect).unwrap();
-        }
-        personal_motion_frames(&mut app, "password-to-devices", 1.0, viewport, next_height);
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.journey.page, Page::Devices);
-            inspect_controls(
-                preview,
-                &["installer.device-name", "installer.next"],
-                viewport,
-            );
-            assert_eq!(
-                control(preview, "installer.next")
-                    .unwrap()
-                    .get_rect()
-                    .height(),
-                next_height
-            );
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        personal_motion_frames(&mut app, "devices-to-password", -1.0, viewport, next_height);
-        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        personal_motion_frames(&mut app, "password-to-profile", -1.0, viewport, next_height);
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.journey.page, Page::Profile)
-        })
-        .unwrap();
-    }
-}
-
-#[test]
-#[cfg(unix)]
 fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
     let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -1085,12 +399,10 @@ fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
-        preview.restart = restart_controller::Restart::default();
-        preview.journey = Journey::new("Ada Lovelace".into());
+        preview.journey = Journey::new();
         preview.journey.destination = Some(Destination::Computer);
-        preview.journey.migrate = Some(false);
-        preview.journey.identity = Some(Identity::New);
-        preview.journey.page = Page::Profile;
+        preview.journey.history = vec![Page::Destination];
+        preview.journey.page = Page::Migrate;
         preview.dirty = true;
     })
     .unwrap();
@@ -1138,214 +450,8 @@ fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn account_decision_pages_slide_forward_back_and_block_pointer_until_settled() {
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("TILO_OAUTH_SPOTIFY_CLIENT_ID", "installer-motion-client");
-    let mut app = account_motion_fixture();
-    account_motion_step(&mut app, "add-account", None);
-    motion_frames(&mut app, "accounts-overview-to-providers", 1.0);
-    account_motion_step(&mut app, "choose-provider", Some("spotify-options"));
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.accounts.navigation_step(), "spotify-purpose");
-    })
-    .unwrap();
-    motion_frames(&mut app, "accounts-providers-to-purpose", 1.0);
-    account_motion_step(&mut app, "choose-provider", Some("spotify-streaming"));
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.accounts.navigation_step(), "confirm");
-        let direction = preview.slide.as_ref().unwrap().0;
-        preview.slide = Some((direction, ui::motion::Presence::held_at(500)));
-    })
-    .unwrap();
-    app.harness().click_named("installer.back").unwrap();
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(
-            preview.accounts.navigation_step(),
-            "confirm",
-            "a pointer must not activate a destination rectangle while its page is moving"
-        );
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-    motion_frames(&mut app, "accounts-consent-to-purpose", -1.0);
-    account_motion_step(&mut app, "back", None);
-    motion_frames(&mut app, "accounts-purpose-to-providers", -1.0);
-    app.harness()
-        .set_theme(Theme::dark().with_reduce_motion(true));
-    app.harness().click_named("installer.back").unwrap();
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(
-            preview.accounts.navigation_step(),
-            "overview",
-            "pointer navigation must resume after the transition finishes"
-        );
-        assert!(preview.slide.is_none());
-        assert!(preview.outgoing.is_none());
-        assert!(preview.pending_slide.is_none());
-    })
-    .unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[test]
 #[cfg(unix)]
-fn account_field_pages_advance_through_public_continue_and_preserve_keyboard_focus() {
-    let mut app = account_motion_fixture();
-    account_motion_step(&mut app, "add-account", None);
-    motion_frames(&mut app, "accounts-field-provider-selection", 1.0);
-    account_motion_step(&mut app, "choose-provider", Some("webdav"));
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.slide = Some((1.0, ui::motion::Presence::held_at(500)));
-    })
-    .unwrap();
-    app.harness()
-        .perform_named("installer.account.dav.server", &ui::a11y::Action::Focus)
-        .unwrap();
-    app.harness().type_text("https://dav.example.test");
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert!(
-            preview.slide.is_some(),
-            "keyboard edits must work during the page slide"
-        );
-        assert!(
-            control(preview, "installer.account.dav.server")
-                .unwrap()
-                .is_focused(),
-            "editing must preserve focus through the page's production recomposition"
-        );
-        assert_eq!(preview.accounts.navigation_step(), "dav-server");
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.page, Page::Accounts);
-        assert_eq!(preview.accounts.navigation_step(), "dav-user");
-    })
-    .unwrap();
-    motion_frames(&mut app, "accounts-server-to-user", 1.0);
-    app.effect(&InstallerPreviewEffect::SetAccountField {
-        field: "login".into(),
-        value: "Ada".into(),
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.accounts.navigation_step(), "dav-password");
-    })
-    .unwrap();
-    motion_frames(&mut app, "accounts-user-to-password", 1.0);
-}
-
-/// Called only after native qualification discovered an actual signed
-/// installation as its original user. No application inventory is fabricated.
-#[cfg(all(target_os = "linux", feature = "native-capture-qualification"))]
-pub(super) fn paint_native_flatpak_inventory(
-    home: &std::path::Path,
-    inventory: &imager_backend::setup::flatpak_transfer::Inventory,
-) {
-    assert!(inventory.refs.iter().any(|item| item.app_id().is_some()));
-    for destination in [Destination::Computer, Destination::Another] {
-        for (tag, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
-            for (viewport, scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
-                let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-                app.harness().resize(viewport).unwrap();
-                app.with_widget::<InstallerPreview, _>(|preview| {
-                    preview.live = true;
-                    preview.restart = restart_controller::Restart::default();
-                    preview.journey.page = Page::Belongings;
-                    preview.journey.destination = Some(destination);
-                    preview.journey.migrate = Some(true);
-                    preview.journey.categories = [true, true, false];
-                    preview.journey.details = false;
-                    preview.belongings = belongings::Belongings {
-                        home: Some(home.to_owned()),
-                        flatpak: Some(inventory.clone()),
-                        ..Default::default()
-                    };
-                    preview.dirty = true;
-                })
-                .unwrap();
-                app.harness()
-                    .set_theme(theme.clone().with_ui_scale(scale).with_reduce_motion(true));
-                let expected = t_args(
-                    if destination == Destination::Computer {
-                        "installer-preview-flatpak-found"
-                    } else {
-                        "installer-preview-flatpak-system-found"
-                    },
-                    &[(
-                        "count",
-                        inventory
-                            .refs
-                            .iter()
-                            .filter(|item| item.app_id().is_some())
-                            .count()
-                            .to_string()
-                            .into(),
-                    )],
-                );
-                assert!(app.harness().inspection_json().unwrap().contains(&expected));
-                paint_app(
-                    &mut app,
-                    if destination == Destination::Computer {
-                        "installer-native-apps-shared-home"
-                    } else {
-                        "installer-native-apps-portable-home"
-                    },
-                    &[
-                        "installer.category.flatpak",
-                        "installer.details",
-                        "installer.next",
-                    ],
-                    viewport,
-                    tag,
-                );
-                let expanded = app
-                    .effect(&InstallerPreviewEffect::TogglePreviewDetails)
-                    .unwrap()
-                    .value
-                    .unwrap();
-                let apps = expanded["belongings"]["apps"].as_array().unwrap();
-                assert!(apps.iter().any(|app| app["included"] == true));
-                let row = apps.iter().position(|app| app["included"] == true).unwrap();
-                let native_app = &apps[row];
-                assert!(inventory.refs.iter().any(|item| item.app_id().is_some()
-                    && (item.name.trim() == native_app["name"].as_str().unwrap()
-                        || item.name.trim().is_empty()
-                            && item.app_id() == native_app["name"].as_str())));
-                app.settle();
-                let view = app.harness().inspection_json().unwrap();
-                assert!(view.contains(native_app["name"].as_str().unwrap()));
-                assert!(
-                    !view.contains(home.to_str().unwrap()),
-                    "full source location remains behind explicit details action"
-                );
-                let app_id = format!("installer.flatpak.app.{row}");
-                paint_app(
-                    &mut app,
-                    if destination == Destination::Computer {
-                        "installer-native-app-names-shared-home"
-                    } else {
-                        "installer-native-app-names-portable-home"
-                    },
-                    &[&app_id, "installer.details", "installer.next"],
-                    viewport,
-                    tag,
-                );
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-#[cfg(unix)]
-fn destination_discloses_usb_route_before_personal_setup() {
+fn destination_discloses_usb_route_before_the_install_questions() {
     let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
@@ -1359,15 +465,13 @@ fn destination_discloses_usb_route_before_personal_setup() {
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.capture = false;
-            preview.restart = restart_controller::Restart::default();
-            preview.journey = Journey::new(String::new());
+            preview.journey = Journey::new();
             preview.dirty = true;
         })
         .unwrap();
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Destination);
-            assert!(preview.journey.name.is_empty());
             let name = control(preview, "installer.choice.computer")
                 .unwrap()
                 .accessibility()
@@ -1390,240 +494,6 @@ fn destination_discloses_usb_route_before_personal_setup() {
     }
 }
 
-#[test]
-#[cfg(unix)]
-fn live_migration_choice_does_not_inspect_sources_before_profile() {
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.stage(Some("installer-migration"));
-        preview.restart = restart_controller::Restart::default();
-        preview.live = true;
-        preview.capabilities.prepared_installation = true;
-        preview.journey.identity = None;
-        preview.journey.name.clear();
-        preview.belongings = belongings::Belongings::default();
-        preview.dirty = true;
-    })
-    .unwrap();
-    app.settle();
-    app.effect(&InstallerPreviewEffect::ChoosePreview {
-        choice: "migrate".into(),
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    app.effect(&InstallerPreviewEffect::ChoosePreview {
-        choice: "new".into(),
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.page, Page::Profile);
-        assert!(
-            preview.belongings_worker.is_none(),
-            "inventory must not race identity setup"
-        );
-        assert!(preview.belongings.home.is_none());
-        assert!(preview.belongings.roots.is_none());
-        assert!(preview.belongings.accounts.candidates.is_empty());
-    })
-    .unwrap();
-    assert!(
-        app.effect(&InstallerPreviewEffect::CheckBelongings)
-            .is_err()
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-#[cfg(unix)]
-fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
-    let fixture = crate::setup::test_support::qualified_tempdir();
-    let home = fixture.path().join("home");
-    let config = home.join(".config");
-    std::fs::create_dir_all(config.join("Nextcloud")).unwrap();
-    std::fs::write(
-        config.join("Nextcloud/nextcloud.cfg"),
-        r"[Accounts]
-0\url=https://cloud.example
-0\http_user=ada
-0\authType=http
-",
-    )
-    .unwrap();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("HOME", &home);
-    env.set("XDG_CONFIG_HOME", &config);
-    for edit in [false, true] {
-        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-        wait_for_fresh_preparation(&mut app);
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.stage(Some("installer-belongings"));
-            preview.live = true;
-            preview.capabilities.prepared_installation = true;
-            preview.journey.destination = Some(Destination::Another);
-            preview.belongings = belongings::Belongings::default();
-            if edit {
-                preview.journey.page = Page::Review;
-                preview.journey.migrate = Some(false);
-                preview.journey.edit("belongings").unwrap();
-            } else {
-                preview.journey.page = Page::Devices;
-                preview.journey.migrate = Some(true);
-                preview.journey.identity = Some(Identity::New);
-                preview.journey.name = "Ada".into();
-                preview.journey.device_name = "Ada's computer".into();
-            }
-            preview.dirty = true;
-        })
-        .unwrap();
-        app.settle();
-        if edit {
-            app.effect(&InstallerPreviewEffect::ChoosePreview {
-                choice: "migrate".into(),
-            })
-            .unwrap();
-        }
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.journey.page, Page::Belongings);
-        })
-        .unwrap();
-        wait_for_preview(&mut app, |preview| {
-            preview.belongings_worker.is_none()
-                && preview.belongings.home.as_ref() == Some(&home)
-                && preview.belongings.roots.is_some()
-                && preview
-                    .belongings
-                    .accounts
-                    .candidates
-                    .iter()
-                    .any(|account| {
-                        account.provider == imager_backend::account_transfer::Provider::Nextcloud
-                    })
-        });
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.belongings.home.as_ref(), Some(&home));
-            assert!(preview.belongings.roots.is_some());
-            assert!(
-                preview
-                    .belongings
-                    .accounts
-                    .candidates
-                    .iter()
-                    .any(|account| {
-                        account.provider == imager_backend::account_transfer::Provider::Nextcloud
-                    })
-            );
-        })
-        .unwrap();
-    }
-}
-
-#[test]
-#[cfg(unix)]
-fn profile_keeps_picture_action_and_name_without_redundant_explanation() {
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.stage(Some("installer-profile"));
-        preview.restart = restart_controller::Restart::default();
-    })
-    .unwrap();
-    app.settle();
-    let view = app.harness().inspection_json().unwrap();
-    assert!(view.contains(&t("installer-preview-avatar-change")));
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert!(control(preview, "installer.profile.avatar-help").is_none());
-        assert!(control(preview, "installer.avatar").is_some());
-        assert!(control(preview, "installer.name").is_some());
-        assert!(control(preview, "installer.category.files").is_none());
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.page, Page::Devices);
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.page, Page::Profile);
-        assert_eq!(preview.journey.name, "Ada Lovelace");
-    })
-    .unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn account_overview_explains_where_to_connect_after_setup() {
-    let mut app = account_motion_fixture();
-    let view = app.harness().inspection_json().unwrap();
-    assert!(view.contains(&t("installer-accounts-intro")));
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.accounts.navigation_step(), "overview");
-        assert!(control(preview, "installer.account.add").is_some());
-    })
-    .unwrap();
-    for (tag, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high-contrast", Theme::high_contrast()),
-    ] {
-        app.harness().set_theme(theme.with_reduce_motion(true));
-        app.harness().resize((800, 600)).unwrap();
-        paint_app(
-            &mut app,
-            "installer-accounts-connect-later",
-            &["installer.account.add", "installer.next"],
-            (800, 600),
-            tag,
-        );
-    }
-}
-
-#[test]
-fn migration_route_consequences_are_present_in_the_semantic_choice() {
-    for (destination, key) in [
-        (
-            Destination::Computer,
-            "installer-preview-migrate-shared-body",
-        ),
-        (
-            Destination::Another,
-            "installer-preview-migrate-portable-body",
-        ),
-    ] {
-        let mut app = TestApp::<ImagerShell>::capture(Some("installer-migration")).unwrap();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.journey.destination = Some(destination);
-            preview.dirty = true;
-        })
-        .unwrap();
-        app.settle();
-        assert!(
-            app.harness()
-                .inspection_json()
-                .unwrap()
-                .contains(&t("installer-preview-migration-intro"))
-        );
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            let name = control(preview, "installer.choice.migrate")
-                .unwrap()
-                .accessibility()
-                .unwrap()
-                .name
-                .unwrap();
-            assert!(
-                name.contains(&t(key)),
-                "route consequences must be announced: {name}"
-            );
-        })
-        .unwrap();
-    }
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 #[cfg(unix)]
@@ -1638,12 +508,11 @@ fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation()
         ("high-contrast", Theme::high_contrast()),
     ] {
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-        wait_for_fresh_preparation(&mut app);
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.capture = false;
             preview.capabilities.prepared_installation = false;
-            preview.journey = Journey::new(String::new());
+            preview.journey = Journey::new();
             preview.dirty = true;
         })
         .unwrap();
@@ -1699,11 +568,8 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.capture = false;
-            preview.restart = restart_controller::Restart::default();
-            preview.journey = Journey::new("Ada Lovelace".into());
+            preview.journey = Journey::new();
             preview.journey.destination = Some(Destination::Computer);
-            preview.journey.migrate = Some(false);
-            preview.journey.identity = Some(Identity::New);
             preview.journey.page = Page::Review;
             preview.dirty = true;
         })
@@ -1732,24 +598,6 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
 }
 
 #[test]
-fn a_blocked_preparation_still_lets_the_person_go_back() {
-    let mut app = TestApp::<ImagerShell>::capture(Some("installer-destination")).unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.live = true;
-        preview.direct.active = false;
-        preview.restart.mark_changed();
-        preview.dirty = true;
-    })
-    .unwrap();
-    if let Err(refused) = app.effect(&InstallerPreviewEffect::BackInPreview) {
-        assert!(
-            !format!("{refused:?}").contains("installer-restart-unavailable"),
-            "the stored preparation must not refuse Back: {refused:?}"
-        );
-    }
-}
-
-#[test]
 #[cfg(unix)]
 fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview() {
     let ownership = crate::setup::test_support::qualified_tempdir();
@@ -1761,11 +609,8 @@ fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview()
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;
-        preview.restart = restart_controller::Restart::default();
-        preview.journey = Journey::new("Ada Lovelace".into());
+        preview.journey = Journey::new();
         preview.journey.destination = Some(Destination::Computer);
-        preview.journey.migrate = Some(false);
-        preview.journey.identity = Some(Identity::New);
         preview.journey.device_name = "My computer".into();
         preview.journey.page = Page::Password;
         preview.dirty = true;
@@ -1864,10 +709,8 @@ fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;
-        preview.restart = restart_controller::Restart::default();
-        preview.journey = Journey::new("Ada Lovelace".into());
+        preview.journey = Journey::new();
         preview.journey.destination = Some(Destination::Computer);
-        preview.journey.identity = Some(Identity::New);
         preview.journey.page = Page::Password;
         preview.dirty = true;
     })
@@ -1933,11 +776,8 @@ fn password_policy_feedback_explains_the_actual_requirement_through_public_effec
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;
-        preview.restart = restart_controller::Restart::default();
-        preview.journey = Journey::new("Ada Lovelace".into());
+        preview.journey = Journey::new();
         preview.journey.destination = Some(Destination::Computer);
-        preview.journey.migrate = Some(false);
-        preview.journey.identity = Some(Identity::New);
         preview.journey.device_name = "My computer".into();
         preview.journey.page = Page::Password;
         preview.dirty = true;
@@ -2061,10 +901,8 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
             app.with_widget::<InstallerPreview, _>(|preview| {
                 preview.live = false;
                 preview.capture = false;
-                preview.restart = restart_controller::Restart::default();
-                preview.journey = Journey::new("Ada Lovelace".into());
+                preview.journey = Journey::new();
                 preview.journey.destination = Some(Destination::Computer);
-                preview.journey.identity = Some(Identity::New);
                 preview.journey.page = Page::Password;
                 preview.dirty = true;
             })
@@ -2312,37 +1150,18 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
 
 #[test]
 #[cfg(unix)]
-fn personal_fields_enter_advances_and_password_enter_focuses_confirmation() {
+fn password_enter_focuses_confirmation_and_then_submits() {
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
-        preview.restart = restart_controller::Restart::default();
         preview.journey.destination = Some(Destination::Computer);
-        preview.journey.migrate = Some(false);
-        preview.journey.identity = Some(Identity::New);
-        preview.journey.page = Page::Profile;
-        preview.journey.name = "Keyboard User".into();
+        preview.journey.history = vec![Page::Destination, Page::Migrate];
+        preview.journey.page = Page::Password;
         preview.dirty = true;
     })
     .unwrap();
     app.harness()
         .set_theme(Theme::dark().with_reduce_motion(true));
-    app.settle();
-    app.harness()
-        .perform_named("installer.name", &ui::a11y::Action::Focus)
-        .unwrap();
-    app.harness().key("Enter");
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(
-            preview.journey.page,
-            Page::Devices,
-            "the interactive profile advances to Devices"
-        );
-        preview.journey.page = Page::Password;
-        preview.dirty = true;
-    })
-    .unwrap();
     app.settle();
     app.harness()
         .perform_named("installer.password", &ui::a11y::Action::Focus)
@@ -2398,8 +1217,6 @@ fn personal_fields_enter_advances_and_password_enter_focuses_confirmation() {
     app.settle();
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert_eq!(preview.journey.page, Page::Devices);
-        assert_eq!(preview.journey.migrate, Some(false));
-        assert_eq!(preview.journey.name, "Keyboard User");
         assert!(
             preview.slide.is_none(),
             "reduced-motion navigation remains immediate"
@@ -2408,142 +1225,9 @@ fn personal_fields_enter_advances_and_password_enter_focuses_confirmation() {
     .unwrap();
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn account_one_field_enter_advances_without_starting_a_connection() {
-    let mut app = account_motion_fixture();
-    app.harness()
-        .set_theme(Theme::dark().with_reduce_motion(true));
-    account_motion_step(&mut app, "add-account", None);
-    account_motion_step(&mut app, "choose-provider", Some("webdav"));
-    app.harness()
-        .perform_named("installer.account.dav.server", &ui::a11y::Action::Focus)
-        .unwrap();
-    app.harness().type_text("https://dav.example.test");
-    app.harness().key("Enter");
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.page, Page::Accounts);
-        assert_eq!(preview.accounts.navigation_step(), "dav-user");
-        assert!(!preview.accounts.active());
-    })
-    .unwrap();
-    app.harness()
-        .perform_named("installer.account.dav.login", &ui::a11y::Action::Focus)
-        .unwrap();
-    app.harness().type_text("Keyboard Ada");
-    app.harness().key("Enter");
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.accounts.navigation_step(), "dav-password");
-        assert!(
-            !preview.accounts.active(),
-            "field navigation does not authorize a connection"
-        );
-    })
-    .unwrap();
-}
-
 #[test]
 #[cfg(unix)]
-fn profile_keyboard_name_updates_retained_avatar_and_preserves_mid_string_caret() {
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.live = false;
-        preview.restart = restart_controller::Restart::default();
-        preview.journey.page = Page::Profile;
-        preview.journey.name = "Ada Lovelace".into();
-        preview.dirty = true;
-    })
-    .unwrap();
-    app.harness()
-        .set_theme(Theme::dark().with_reduce_motion(true));
-    app.settle();
-    let inspect = |preview: &InstallerPreview, expected_name: &str, expected_initials: &str| {
-        let picture = control(preview, "installer.profile.avatar").unwrap();
-        let children = picture.children();
-        let avatar = children[0]
-            .as_any()
-            .unwrap()
-            .downcast_ref::<Avatar>()
-            .unwrap();
-        assert_eq!(
-            avatar.initials(),
-            expected_initials,
-            "inspect the actual rendered avatar"
-        );
-        assert_eq!(
-            avatar.accessibility().unwrap().name.as_deref(),
-            Some(expected_name)
-        );
-        std::ptr::from_ref(avatar) as usize
-    };
-    let inspect_input = |input: &dyn Widget| {
-        let state = ui::undo::get_state(input).expect("actual input caret/selection state");
-        let parts: Vec<_> = state.split(':').collect();
-        assert!(
-            (1..=3).contains(&parts.len()),
-            "unexpected input state: {state}"
-        );
-        let caret = parts[0].parse::<usize>().unwrap();
-        if let Some(affinity) = parts.get(1) {
-            assert!(matches!(*affinity, "a" | "b"), "invalid affinity: {state}");
-        }
-        let anchor = parts.get(2).map(|anchor| anchor.parse::<usize>().unwrap());
-        (caret, anchor)
-    };
-    let avatar_address = app
-        .with_widget::<InstallerPreview, _>(|preview| inspect(preview, "Ada Lovelace", "AL"))
-        .unwrap();
-    app.harness()
-        .perform_named("installer.name", &ui::a11y::Action::Focus)
-        .unwrap();
-    app.harness().key("Home");
-    app.harness().type_text("Grace ");
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.name, "Grace Ada Lovelace");
-        assert_eq!(
-            inspect(preview, "Grace Ada Lovelace", "GL"),
-            avatar_address,
-            "typing updates the retained avatar rather than replacing the page"
-        );
-        let input = control(preview, "installer.name").unwrap();
-        assert!(input.is_focused());
-        assert_eq!(
-            inspect_input(input),
-            (6, None),
-            "successive frames preserve the insertion caret without a selection"
-        );
-    })
-    .unwrap();
-    app.harness().set_modifiers(&["shift".into()]);
-    app.harness().key("End");
-    app.harness().set_modifiers(&[]);
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        let input = control(preview, "installer.name").unwrap();
-        assert!(input.is_focused());
-        assert_eq!(inspect_input(input), (18, Some(6)));
-        assert_eq!(inspect(preview, "Grace Ada Lovelace", "GL"), avatar_address);
-    })
-    .unwrap();
-    app.harness().type_text("Hopper");
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.name, "Grace Hopper");
-        assert_eq!(inspect(preview, "Grace Hopper", "GH"), avatar_address);
-        let input = control(preview, "installer.name").unwrap();
-        assert!(input.is_focused());
-        assert_eq!(inspect_input(input), (12, None));
-        assert_eq!(preview.journey.page, Page::Profile);
-    })
-    .unwrap();
-}
-
-#[test]
-#[cfg(unix)]
-fn personal_form_labels_and_navigation_share_the_real_page_alignment() {
+fn password_form_labels_and_navigation_share_the_real_page_alignment() {
     fn field_label<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
         if root.name() == "Field" && control(root, id).is_some() {
             return root
@@ -2561,10 +1245,8 @@ fn personal_form_labels_and_navigation_share_the_real_page_alignment() {
             app.with_widget::<InstallerPreview, _>(|preview| {
                 preview.live = false;
                 preview.capture = true;
-                preview.restart = restart_controller::Restart::default();
-                preview.journey = Journey::new("Ada Lovelace".into());
+                preview.journey = Journey::new();
                 preview.journey.destination = Some(Destination::Computer);
-                preview.journey.identity = Some(Identity::New);
                 preview.journey.page = Page::Password;
                 preview.dirty = true;
             })
@@ -2640,21 +1322,18 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
             preview.live = false;
             preview.capture = false;
             preview.linux = true;
-            preview.restart = restart_controller::Restart::default();
-            preview.journey = Journey::new("Ada Lovelace".into());
+            preview.journey = Journey::new();
             preview.dirty = true;
         })
         .unwrap();
         app.harness().resize(viewport).unwrap();
         app.harness().set_theme(theme.with_reduce_motion(true));
-        for choice in ["computer", "fresh", "new"] {
-            app.effect(&InstallerPreviewEffect::ChoosePreview {
-                choice: choice.into(),
-            })
+        app.effect(&InstallerPreviewEffect::ChoosePreview {
+            choice: "computer".into(),
+        })
+        .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-            app.effect(&InstallerPreviewEffect::ContinuePreview)
-                .unwrap();
-        }
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
@@ -2666,7 +1345,7 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
         let footer = app
             .with_widget::<InstallerPreview, _>(|preview| {
                 assert_eq!(preview.journey.page, Page::Password);
-                assert_eq!(preview.journey.history.last(), Some(&Page::Profile));
+                assert_eq!(preview.journey.history.last(), Some(&Page::Migrate));
                 assert!(
                     has_guidance(preview),
                     "inline password guidance must be visible"
@@ -2754,7 +1433,7 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
         }
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.journey.page, Page::Profile);
+            assert_eq!(preview.journey.page, Page::Migrate);
         })
         .unwrap();
     }

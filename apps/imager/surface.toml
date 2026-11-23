@@ -45,10 +45,6 @@ fields = [
   { path = "profile.wifi_ssid", type = "text" },
   { path = "profile.device_label", type = "text" },
   { path = "profile.enroll_local_identity", type = "bool" },
-  { path = "profile.prepared_setup", type = { option = { named = "MediaPreparedSetup" } }, stored = "record" },
-  { path = "profile.prepared_setup.schema", type = "int" },
-  { path = "profile.prepared_setup.sealed_bytes", type = "int" },
-  { path = "profile.prepared_setup.ciphertext_sha256", type = "text" },
 ]
 
 [[resources.verbs]]
@@ -102,15 +98,6 @@ fields = [
   { name = "wifi_ssid", type = "text" },
   { name = "device_label", type = "text" },
   { name = "enroll_local_identity", type = "bool" },
-  { name = "prepared_setup", type = { option = { named = "MediaPreparedSetup" } } },
-]
-
-[[resources.types]]
-name = "MediaPreparedSetup"
-fields = [
-  { name = "schema", type = "int" },
-  { name = "sealed_bytes", type = "int" },
-  { name = "ciphertext_sha256", type = "text" },
 ]
 
 [[resources.types]]

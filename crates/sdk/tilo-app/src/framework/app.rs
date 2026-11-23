@@ -148,16 +148,6 @@ pub trait ResourceApp: 'static {
         None
     }
 
-    /// Import a former document format using host-local ownership, before typed
-    /// projection or resource publication. Unlike schema evolution this may
-    /// depend on device services. A pending or failed import must leave the
-    /// document unchanged; returning an error withholds the resource. Reopening
-    /// retries the import, so retain acknowledged writes across pending retries.
-    fn import_resource(context: &ProcessContext) -> Result<(), String> {
-        let _ = context;
-        Ok(())
-    }
-
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
     /// it must build widgets and nothing else.
@@ -1238,9 +1228,6 @@ fn open_root<A: ResourceApp>(
     capture: bool,
     created: bool,
 ) -> Result<Result<OpenedRoot, String>, LaunchError> {
-    if let Err(reason) = A::import_resource(context) {
-        return Ok(Err(reason));
-    }
     let migrated = migrate_older(
         context,
         tilo_resource::evolution::needs_migrate::<A::Resource>,

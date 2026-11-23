@@ -71,37 +71,6 @@ pub struct WriteRequest {
     pub profile: InstallProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_stage: Option<std::path::PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) windows_preparation: Option<imager_backend::windows_media::WindowsMedia>,
-    #[serde(default)]
-    pub provision_migration_data: bool,
-    #[cfg(target_os = "linux")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offline_layout: Option<OfflineLayout>,
-}
-#[cfg(target_os = "linux")]
-pub use imager_backend::setup::OfflineLayout;
-
-fn validate_windows_preparation(req: &WriteRequest) -> io::Result<()> {
-    if let Some(held) = &req.windows_preparation {
-        if !req.source.installable
-            || req.provision_migration_data
-            || req.handoff_stage.is_some()
-            || req.profile.prepared_setup.is_some()
-            || req.profile.enroll_local_identity
-            || req.target.stable_id.as_ref().is_none_or(String::is_empty)
-        {
-            return Err(io::Error::other(
-                "Windows media requires a reviewed stable target and live-session new identity",
-            ));
-        }
-        held.prepared.verify()?;
-        imager_backend::profile::encode_profile_block_with_windows(
-            &req.profile,
-            Some(&held.prepared),
-        )?;
-    }
-    Ok(())
 }
 
 impl WriteRequest {
@@ -125,28 +94,6 @@ impl WriteRequest {
 }
 
 pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
-    if let Err(error) = validate_windows_preparation(req) {
-        return JobStart::InvalidProfile(error.to_string());
-    }
-    if req.provision_migration_data
-        && (!cfg!(target_os = "linux")
-            || !req.source.installable
-            || req.handoff_stage.is_some()
-            || req.target.stable_id.as_ref().is_none_or(String::is_empty))
-    {
-        return JobStart::InvalidProfile("Migration media requires Linux, stable device identity and encrypted prepared setup without legacy tail handoff".into());
-    }
-    #[cfg(target_os = "linux")]
-    if let Some(pending) = &req.offline_layout
-        && (!req.provision_migration_data
-            || pending.reserved_bytes == 0
-            || req.profile.prepared_setup.as_ref() != Some(&pending.setup)
-            || req.target.stable_id.as_deref() != Some(pending.binding.target_stable_id.as_str()))
-    {
-        return JobStart::InvalidProfile(
-            "Pending export differs from authorized media/setup selection".into(),
-        );
-    }
     if req.source.size == 0 || req.target.name.is_empty() {
         return JobStart::Incomplete;
     }
@@ -358,14 +305,6 @@ fn acquire_target_write_lock(
 ) -> io::Result<imager_backend::write::TargetWriteLock> {
     imager_backend::write::acquire_target_write_lock(target)
 }
-#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
-fn with_locked_media_root<T>(
-    target: &TargetDrive,
-    callback: impl FnOnce() -> io::Result<T>,
-) -> io::Result<T> {
-    imager_backend::write::with_locked_media_root(target, callback)
-}
-
 pub use imager_backend::write::{CHUNK, stream_copy, verify_readback};
 
 pub fn run_job_paths(
@@ -404,100 +343,33 @@ fn run_job_file_bound(
     should_cancel: &impl Fn() -> bool,
     on_progress: impl FnMut(Progress),
 ) -> JobResult {
-    if let Err(error) = validate_windows_preparation(req).and_then(|()| {
-        req.windows_preparation
-            .as_ref()
-            .map_or(Ok(()), |held| held.validate(&req.target))
-    }) {
-        return JobResult::WriteFailed(error.to_string());
-    }
     imager_backend::write::transaction::run_job_file_bound(
         &imager_backend::write::transaction::DescriptorWriteRequest {
             source: reviewed_source(req),
             expected_sha256: req.source.expected_sha256.clone(),
             target_size: req.target.size,
-            target_stable_id: req.target.stable_id.clone().unwrap_or_default(),
             installable: req.source.installable,
-            provision_migration_data: req.provision_migration_data,
-            has_legacy_handoff: req.handoff_stage.is_some(),
-            #[cfg(target_os = "linux")]
-            expected_layout: req.offline_layout.as_ref().map(|pending| {
-                imager_backend::write::transaction::ExpectedLayout {
-                    binding: pending.binding.clone(),
-                    reserved_bytes: pending.reserved_bytes,
-                }
-            }),
         },
         device,
         should_cancel,
         on_progress,
-        |device| {
-            #[cfg(target_os = "linux")]
-            {
-                validate_pending_descriptor(req, device)
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = device;
-                Ok(())
-            }
-        },
-        {
-            #[cfg(target_os = "linux")]
-            {
-                crate::setup::media_setup::writer::payload_capacity
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                |_| {
-                    Err(io::Error::other(
-                        "Migration data provisioning requires Linux",
-                    ))
-                }
-            }
-        },
-        || {
-            imager_backend::profile::encode_profile_block_with_windows(
-                &req.profile,
-                req.windows_preparation.as_ref().map(|held| &held.prepared),
-            )
-        },
+        || encode_profile_block(&req.profile),
     )
-}
-
-#[cfg(all(target_os = "linux", feature = "installation"))]
-pub(crate) fn attest_target_descriptor(
-    target: &TargetDrive,
-    file: &std::fs::File,
-) -> io::Result<()> {
-    imager_backend::write::attest_target_descriptor(target, file)
 }
 
 fn run_system_job(
     req: &WriteRequest,
     should_cancel: &impl Fn() -> bool,
     on_progress: impl FnMut(Progress),
-    authenticated_caller: Option<u32>,
 ) -> JobResult {
-    if let Err(error) = validate_windows_preparation(req).and_then(|()| {
-        req.windows_preparation
-            .as_ref()
-            .map_or(Ok(()), |held| held.validate(&req.target))
-    }) {
-        return JobResult::WriteFailed(error.to_string());
-    }
     imager_backend::write::job::run_system_job(
         &imager_backend::write::job::SystemWriteRequest {
             source: reviewed_source(req),
             target: req.target.clone(),
             expected_sha256: req.source.expected_sha256.clone(),
             installable: req.source.installable,
-            provision_migration_data: req.provision_migration_data,
         },
-        &AppWriteSetup {
-            req,
-            authenticated_caller,
-        },
+        &AppWriteSetup { req },
         should_cancel,
         on_progress,
     )
@@ -505,26 +377,8 @@ fn run_system_job(
 
 struct AppWriteSetup<'a> {
     req: &'a WriteRequest,
-    authenticated_caller: Option<u32>,
 }
 impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
-    fn output_preflight(&self) -> io::Result<()> {
-        #[cfg(target_os = "linux")]
-        if let Some(layout) = &self.req.offline_layout {
-            return self
-                .authenticated_caller
-                .ok_or_else(|| {
-                    io::Error::other("Original migration requires authenticated helper ownership")
-                })
-                .and_then(|uid| crate::setup::media_setup::writer::validate_caller(layout, uid));
-        }
-        Ok(())
-    }
-
-    fn validate_pending_source_disks(&self) -> io::Result<()> {
-        validate_pending_source_disks(self.req)
-    }
-
     fn write_descriptor(
         &self,
         device: &mut std::fs::File,
@@ -538,7 +392,7 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
         #[cfg(not(any(test, target_os = "linux")))]
         {
             let _ = (device, should_cancel, on_progress);
-            JobResult::WriteFailed("Migration data provisioning requires Linux".into())
+            JobResult::WriteFailed("Writing through a device descriptor requires Linux".into())
         }
     }
 
@@ -547,14 +401,10 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
         destination: &Path,
         should_cancel: &dyn Fn() -> bool,
     ) -> io::Result<()> {
-        imager_backend::profile::write_windows_profile_block_bound(
+        imager_backend::profile::write_profile_block_bound(
             destination,
             self.req.target.size,
             &self.req.profile,
-            self.req
-                .windows_preparation
-                .as_ref()
-                .map(|held| &held.prepared),
             &|| should_cancel(),
         )
     }
@@ -571,50 +421,9 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
         Ok(())
     }
 
-    fn provision_after_write(&self, should_cancel: &dyn Fn() -> bool) -> io::Result<()> {
-        #[cfg(target_os = "linux")]
-        if let Some(pending) = &self.req.offline_layout {
-            return self
-                .authenticated_caller
-                .ok_or_else(|| io::Error::other("Original migration caller ownership missing"))
-                .and_then(|uid| {
-                    crate::setup::media_setup::writer::provision_after_write(
-                        &self.req.target,
-                        pending,
-                        uid,
-                        &|| should_cancel(),
-                    )
-                });
-        }
-        let _ = should_cancel;
-        Ok(())
-    }
-
     fn release_handoff(&self) {
         release_handoff_stage(self.req);
     }
-}
-
-#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
-fn open_udisks_device(target: &TargetDrive) -> io::Result<std::fs::File> {
-    imager_backend::write::udisks::open_udisks_device(target)
-}
-
-#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
-pub(crate) fn with_qualification_udisks_target<T>(
-    target: &TargetDrive,
-    callback: impl FnOnce(std::fs::File) -> io::Result<T>,
-) -> io::Result<T> {
-    if !target.is_media_target() {
-        return Err(io::ErrorKind::PermissionDenied.into());
-    }
-    with_locked_media_root(target, || {
-        let device = open_udisks_device(target)?;
-        attest_target_descriptor(target, &device)?;
-        let result = callback(device);
-        revalidate_target(target)?;
-        result
-    })
 }
 
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
@@ -625,10 +434,7 @@ fn run_udisks_job(
 ) -> JobResult {
     imager_backend::write::job::run_udisks_job(
         &req.target,
-        &AppWriteSetup {
-            req,
-            authenticated_caller: None,
-        },
+        &AppWriteSetup { req },
         should_cancel,
         on_progress,
     )
@@ -736,14 +542,7 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     let exit = imager_backend::write::helper::serve_helper(
         progress_path,
         cancel_path,
-        |should_cancel, on_progress| {
-            run_system_job(
-                &request,
-                &|| should_cancel(),
-                on_progress,
-                authorized.caller_uid,
-            )
-        },
+        |should_cancel, on_progress| run_system_job(&request, &|| should_cancel(), on_progress),
     )?;
     Ok(Some(exit))
 }
@@ -810,10 +609,6 @@ fn relay_cancellation(control: &JobControl, cancel_path: &Path, sent: &mut bool)
     imager_backend::write::helper::relay_cancellation(&|| control.is_cancelled(), cancel_path, sent)
 }
 
-#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
-fn revalidate_target(target: &TargetDrive) -> io::Result<()> {
-    imager_backend::write::revalidate_target(target)
-}
 #[cfg(test)]
 fn target_identity_matches(selected: &TargetDrive, current: &TargetDrive) -> bool {
     imager_backend::write::target_identity_matches(selected, current)
@@ -840,14 +635,9 @@ pub fn spawn_job(
         .name("imager-write".into())
         .spawn(move || match backend {
             WriteBackend::System => {
-                let _ = run_system_job(
-                    &req,
-                    &|| worker_control.is_cancelled(),
-                    |p| {
-                        let _ = tx.send(p);
-                    },
-                    None,
-                );
+                let _ = run_system_job(&req, &|| worker_control.is_cancelled(), |p| {
+                    let _ = tx.send(p);
+                });
             }
             WriteBackend::PrivilegedHelper => {
                 spawn_privileged_helper(req, &worker_control, &tx);
@@ -881,24 +671,6 @@ pub fn spawn_job(
     };
     control.bind_worker(joined);
     (JobStart::Started, Some(rx), Some(control))
-}
-
-fn validate_pending_source_disks(req: &WriteRequest) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
-    if let Some(pending) = &req.offline_layout {
-        crate::setup::media_setup::writer::validate_source_disks(&req.target, pending)?;
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = req;
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn validate_pending_descriptor(req: &WriteRequest, device: &std::fs::File) -> io::Result<()> {
-    if let Some(pending) = &req.offline_layout {
-        crate::setup::media_setup::writer::validate_descriptor(&req.target, device, pending)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1215,10 +987,6 @@ mod tests {
             action: Action::Flash,
             profile: InstallProfile::default(),
             handoff_stage: None,
-            windows_preparation: None,
-            provision_migration_data: false,
-            #[cfg(target_os = "linux")]
-            offline_layout: None,
         }
     }
 
@@ -1599,7 +1367,7 @@ mod tests {
                 let mut updates = Vec::new();
 
                 let result =
-                    run_system_job(&request, &|| false, |progress| updates.push(progress), None);
+                    run_system_job(&request, &|| false, |progress| updates.push(progress));
 
                 assert!(matches!(result, JobResult::WriteFailed(_)));
                 let terminal = updates.last().expect("terminal progress event");
@@ -1983,52 +1751,6 @@ mod tests {
                 );
             }
             assert_eq!(std::fs::read(device.path()).unwrap(), before);
-        }
-
-        phase descriptor_writer_provisions_large_home_media_and_embeds_profile_in_gpt_gap;
-        {
-            use std::os::unix::fs::FileExt;
-            let (_source_dir, source_path, source) = crate::media_layout::tests::disk();
-            source
-                .set_len(4 * 1024 * 1024)
-                .expect("exact installer fixture");
-            let mut target = tempfile::tempfile().expect("target fixture");
-            target
-                .set_len(64 * 1024 * 1024)
-                .expect("large media fixture");
-            let mut request = req();
-            request.source.path = source_path.to_string_lossy().into_owned();
-            request.source.size = 4 * 1024 * 1024;
-            request.source.identity = None;
-            request.source.expected_sha256 = None;
-            request.source.installable = true;
-            request.target.size = 64 * 1024 * 1024;
-            request.target.stable_id = Some("usb:fixture".into());
-            request.provision_migration_data = true;
-            assert_eq!(
-                run_job_file_bound(&request, &mut target, &|| false, |_| {}),
-                JobResult::Verified
-            );
-            let binding = crate::media_layout::binding(&target, request.target.size, "usb:fixture")
-                .expect("actual writer GPT");
-            let mut profile = vec![0; PROFILE_BLOCK_SIZE];
-            target
-                .read_exact_at(&mut profile, binding.profile_offset)
-                .expect("profile gap");
-            assert_eq!(
-                profile,
-                encode_profile_block(&request.profile).expect("canonical profile")
-            );
-            let mut boot = vec![0; 19];
-            target
-                .read_exact_at(&mut boot, 2048 * 512)
-                .expect("boot payload");
-            assert_eq!(boot, b"signed boot payload");
-            let mut old = vec![0; PROFILE_BLOCK_SIZE];
-            target
-                .read_exact_at(&mut old, request.target.size - PROFILE_BLOCK_SIZE as u64)
-                .expect("relocated backup");
-            assert_ne!(old, profile);
         }
     }
 }

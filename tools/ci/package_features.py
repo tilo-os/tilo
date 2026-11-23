@@ -26,10 +26,8 @@ NATIVE_TEST_FEATURES = {
     # and lints cover the guided installation as the host downloads ship it,
     # and its destination side as the live installer medium ships it.
     "imager": ("installation", "destination"),
-    # Its Discord session reader (LevelDB, C++) is the installation's alone, so
-    # the Tilo app does not link libstdc++; its tests and lints cover it, and
-    # the live installer's platform half.
-    "imager-backend": ("installation", "destination"),
+    # Its tests and lints cover the live installer's platform half.
+    "imager-backend": ("destination",),
     "tilo-media": ("decode", "encode", "realtime", "voice", "test-support"),
     # The fetch proxy a workspace host serves is a feature its server enables;
     # tilo-net's own tests of it (`proxy_host`) and the development program

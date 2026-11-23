@@ -1,7 +1,6 @@
 //! The places of this login that first use reads and writes: the home a
-//! prepared setup, a migration or a picker starts from, and the system
-//! identity root that minting, restoring and adding this computer with a
-//! code provision into.
+//! picker starts from, and the system identity that minting, restoring and
+//! adding this computer with a code provision into.
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tilo_device_identity::IdentityPaths;
@@ -20,18 +19,15 @@ pub struct SessionPaths {
 
 #[derive(Clone, Debug)]
 pub struct SystemIdentity {
-    pub root: PathBuf,
     pub paths: IdentityPaths,
 }
 
 impl SessionPaths {
     pub fn from_process() -> Self {
-        let root = tilo_identity::provisioning::collaboration_identity_root();
         Self {
             home: crate::identity::session_home(),
             user: std::env::var_os("USER").filter(|value| !value.is_empty()),
             identity: Some(SystemIdentity {
-                root,
                 paths: crate::firstboot::collaboration_identity_paths(),
             }),
             device_label: std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into()),

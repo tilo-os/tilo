@@ -1,15 +1,11 @@
 //! The setup window: the pages from choosing Full Tilo or Desktop to the install
 //! that follows.
 
-mod guided_desktop;
 mod support_report;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, Sender};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
@@ -57,7 +53,6 @@ type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetupCapabilities {
     pub platform: Capabilities,
-    pub connected_folders: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -114,14 +109,12 @@ pub struct SetupApp {
     actions: Option<ui::framework::Actions<Imager>>,
     published: Rc<RefCell<Published>>,
     guided_navigation: LocalState<bool>,
-    guided_desktop: Option<guided_desktop::DesktopPreparation>,
     desktop_only: bool,
     full_os_check: Option<LocalState<Option<FullOsCheck>>>,
     check_facts: Option<super::staging::probe::HostFacts>,
     support_report: Option<SupportReport>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
-    desktop_offer: fn(),
     internal_download_flow: Option<InternalDownloadFlow>,
     internal_download_error: Option<String>,
     internal_download_revision: u64,
@@ -176,7 +169,7 @@ impl SetupApp {
                 .set(self.host_command_pending.is_none());
             return;
         }
-        let allowed = self.guided_desktop_can_navigate()
+        let allowed = !self.desktop_flow.has_pending_operation()
             && !self.internal_install.is_running()
             && !self.internal_install.can_restart()
             && self.internal_install.pending().is_none()
@@ -202,7 +195,6 @@ impl SetupApp {
                 desktop_session: false,
                 internal_dual_boot: false,
             },
-            connected_folders: false,
         };
         let mut app = Self::with_parts(
             capabilities,
@@ -287,14 +279,6 @@ impl SetupApp {
     pub fn start_live(&mut self) {
         self.starts_when_live = false;
         self.desktop_flow = DesktopFlow::new_live();
-        if let Some(preparation) = &self.guided_desktop {
-            self.desktop_flow
-                .require_account_protocol(preparation.prepared.account_credentials_protocol());
-            self.desktop_flow
-                .require_service_session_protocol(preparation.prepared.service_session_protocol());
-            self.refresh_guided_navigation();
-            return;
-        }
         if !self.desktop_only {
             self.start_host_probe();
         }
@@ -352,19 +336,12 @@ impl SetupApp {
             actions: None,
             published: Rc::default(),
             guided_navigation: LocalState::new(false),
-            guided_desktop: None,
             desktop_only: false,
             full_os_check: None,
             check_facts: None,
             support_report: None,
             desktop_flow,
             desktop_revision: 0,
-            // Tests never look up or offer this computer's folders.
-            desktop_offer: if cfg!(test) {
-                || {}
-            } else {
-                super::desktop_continuation::offer_familiar_folders
-            },
             internal_download_flow,
             internal_download_error,
             internal_download_revision: 0,
@@ -427,31 +404,6 @@ impl SetupApp {
             SetupEffect::InstallDesktop
             | SetupEffect::CancelDesktopDownload
             | SetupEffect::RecheckDesktop => return self.answer_desktop(effect),
-            SetupEffect::RetryDesktop => {
-                if !self.guided_delivery_retry_available() || !self.retry_guided_desktop() {
-                    return Err(super::strings::t("installer-desktop-unavailable"));
-                }
-                self.refresh_guided_navigation();
-                return Ok(self.setup_projection().value());
-            }
-            SetupEffect::UseMigrationIntent { directory } => {
-                if self.experience != Some(Experience::FullOs)
-                    || self.internal_install.is_running()
-                    || self.internal_install.pending().is_some()
-                    || !matches!(self.internal_install.run_state(), RunState::Idle)
-                {
-                    return Err(super::strings::t(
-                        "imager-setup-error-migration-intent-unavailable",
-                    ));
-                }
-                let directory = zeroize::Zeroizing::new(directory);
-                let intent = imager_backend::setup::migration_intent::MigrationIntent::load(
-                    std::path::Path::new(directory.as_str()),
-                )
-                .map_err(|_| super::strings::t("imager-setup-error-migration-intent-invalid"))?;
-                self.internal_install.set_migration_intent(Some(intent))?;
-                return Ok(self.setup_projection().value());
-            }
             SetupEffect::ContinueSetup => SetupCommand::Next,
             effect => match self.internal_operation_command(effect)? {
                 Some(command) => command,
@@ -499,29 +451,9 @@ impl SetupApp {
         Ok(self.setup_projection().value())
     }
 
-    fn guided_delivery_retry_available(&self) -> bool {
-        {
-            self.guided_desktop
-                .as_ref()
-                .is_some_and(|p| p.failed && p.pending.is_none())
-        }
-    }
-    fn retry_guided_desktop(&mut self) -> bool {
-        if let Some(preparation) = &mut self.guided_desktop
-            && preparation.failed
-            && preparation.pending.is_none()
-        {
-            preparation.failed = false;
-            self.status_is_error = false;
-            self.poll_guided_desktop();
-            return true;
-        }
-        false
-    }
     fn start_desktop_install(&mut self) {
         match self.desktop_flow.start_install() {
             Ok(()) => {
-                (self.desktop_offer)();
                 self.status = super::strings::t("imager-setup-status-rechecking-before-download");
             }
             Err(error) => {
@@ -564,7 +496,6 @@ impl SetupApp {
                     self.status = super::strings::t("imager-setup-status-cancelling-package");
                 }
             }
-            SetupCommand::RetryDesktop if self.retry_guided_desktop() => {}
             SetupCommand::RetryDesktop => match self.desktop_flow.retry() {
                 Ok(()) => {
                     self.status = super::strings::t("imager-setup-status-rechecking-before-retry");
@@ -745,13 +676,8 @@ impl SetupApp {
                 changed = true;
             }
         }
-        {
-            changed |= self.poll_internal_install();
-        }
-        {
-            changed |= self.poll_guided_desktop();
-            self.refresh_guided_navigation();
-        }
+        changed |= self.poll_internal_install();
+        self.refresh_guided_navigation();
         changed
     }
 
@@ -769,9 +695,6 @@ impl SetupApp {
         let effect = match command {
             SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
             SetupCommand::CancelDesktopDownload => Some(SetupEffect::CancelDesktopDownload),
-            SetupCommand::RetryDesktop if self.guided_delivery_retry_available() => {
-                Some(SetupEffect::RetryDesktop)
-            }
             SetupCommand::RetryDesktop => Some(SetupEffect::RecheckDesktop),
             _ => None,
         };
@@ -853,19 +776,13 @@ impl SetupApp {
                 "imager-desktop-verifying",
                 &[("host", ui::i18n::ArgValue::Text(selection.host.clone()))],
             ),
-            DesktopFlowState::Installed { selection, result } => {
-                if self.guided_desktop.is_some() {
-                    self.status.clone()
-                } else {
-                    CATALOG.t_args(
-                        "imager-desktop-installed",
-                        &[
-                            ("version", ui::i18n::ArgValue::Text(result.version.clone())),
-                            ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
-                        ],
-                    )
-                }
-            }
+            DesktopFlowState::Installed { selection, result } => CATALOG.t_args(
+                "imager-desktop-installed",
+                &[
+                    ("version", ui::i18n::ArgValue::Text(result.version.clone())),
+                    ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                ],
+            ),
             DesktopFlowState::Failed { kind, message, .. } => {
                 let what = CATALOG.t(match kind {
                     DesktopFailureKind::DownloadCancelled => "imager-desktop-download-cancelled",
@@ -1110,16 +1027,6 @@ impl SetupApp {
                         Some((
                             "setup.retry-desktop",
                             "imager-setup-desktop-recheck",
-                            SetupCommand::RetryDesktop,
-                            true,
-                        ))
-                    }
-                    DesktopFlowState::Installed { .. }
-                        if self.guided_delivery_retry_available() =>
-                    {
-                        Some((
-                            "setup.retry-desktop",
-                            "installer-desktop-retry",
                             SetupCommand::RetryDesktop,
                             true,
                         ))
@@ -2023,8 +1930,6 @@ fn launch_worker(name: &str, task: WorkerTask) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-pub(super) use imager_backend::setup::native_host::system_folder_reason;
-
 fn fixture_desktop_release() -> DesktopRelease {
     let sha256 = "a".repeat(64);
     DesktopRelease {
@@ -2037,7 +1942,6 @@ fn fixture_desktop_release() -> DesktopRelease {
         url: "https://code.tilo.so/tilo/releases/fixture.rpm".into(),
         byte_size: 7,
         sha256: sha256.clone(),
-        account_credentials: None,
         verified_runtime: Some(RuntimeEvidence {
             schema: 1,
             reference: "nonproduction screenshot fixture".into(),
@@ -2133,13 +2037,6 @@ impl Widget for SetupApp {
         self.desktop_flow.has_pending_operation()
             || {
                 {
-                    self.guided_desktop
-                        .as_ref()
-                        .is_some_and(|p| p.pending.is_some())
-                }
-            }
-            || {
-                {
                     self.internal_download_flow
                         .as_ref()
                         .is_some_and(InternalDownloadFlow::has_pending_operation)
@@ -2171,19 +2068,11 @@ impl PublishingWindow for SetupApp {
     }
 
     fn statuses(&self) -> Vec<EffectStatus> {
-        let mut statuses = super::actions::statuses(&self.setup_projection());
-        statuses.push(super::actions::desktop_preparation_status(
-            self.guided_delivery_retry_available(),
-        ));
-        statuses
+        super::actions::statuses(&self.setup_projection())
     }
 
     fn rows(&self) -> Vec<LiveRow> {
-        let mut rows = vec![super::actions::row(&self.setup_projection())];
-        if self.reviewed() == Experience::Desktop {
-            rows.push(super::actions::desktop_preparation_row());
-        }
-        rows
+        vec![super::actions::row(&self.setup_projection())]
     }
 
     fn row_statuses(&self) -> Vec<(String, Vec<EffectStatus>)> {
@@ -2198,14 +2087,6 @@ impl PublishingWindow for SetupApp {
                 super::desktop_journey::row_status(&setup.desktop),
             ),
         ];
-        if self.reviewed() == Experience::Desktop {
-            by_row.push((
-                "imager.setup.desktop-preparation".to_owned(),
-                super::actions::desktop_preparation_row_status(
-                    self.guided_delivery_retry_available(),
-                ),
-            ));
-        }
         by_row.retain(|(_, statuses)| !statuses.is_empty());
         by_row
     }
@@ -2242,20 +2123,48 @@ mod tests {
     include!("setup_buttons_language_tests.rs");
 
     tilo_test_env::scenario! {
-        fn guided_setup_refuses_what_the_review_did_not_admit;
+        #[cfg(target_os = "linux")]
+        fn a_desktop_only_install_checks_its_packages_first;
 
-        phase migration_intent_cannot_be_attached_outside_full_os_review;
+        phase desktop_only_records_intent_without_inventing_support;
         {
-            let mut app = SetupApp::new();
-            let before = app.setup_projection().value();
-            assert!(
-                app.answer(SetupEffect::UseMigrationIntent {
-                    directory: "/must-not-be-opened".into()
-                })
-                .is_err()
-            );
-            assert_eq!(app.setup_projection().value(), before);
+            let app = SetupApp::for_desktop();
+            assert_eq!(app.experience, Some(Experience::Desktop));
+            assert!(!app.capabilities.platform.desktop_session);
+            assert!(!app.internal_install.is_probing());
+            assert!(!app.setup_projection().desktop.actions.install);
         }
+
+        phase desktop_only_install_checks_packages_and_blocks_navigation;
+        {
+            let mut app = SetupApp::for_desktop();
+            app.desktop_flow = DesktopFlow::with_runtime_and_state(
+                crate::setup::desktop_flow::DesktopRuntime {
+                    launch_probe: || {
+                        let (_sender, receiver) = mpsc::channel();
+                        Ok(receiver)
+                    },
+                    launch_download: |_, _| Err("unexpected download".into()),
+                    launch_install: |_| Err("unexpected native install".into()),
+                },
+                DesktopFlowState::Ready(fixture_desktop_selection(false)),
+            );
+            assert!(!app.capabilities.platform.desktop_session);
+            assert!(app.setup_projection().desktop.actions.install);
+            app.answer(SetupEffect::InstallDesktop).unwrap();
+            assert!(app.desktop_flow.has_pending_operation());
+            assert!(matches!(
+                app.desktop_flow.state(),
+                DesktopFlowState::Checking
+            ));
+            assert!(!app.guided_navigation.get());
+            assert!(app.answer(SetupEffect::InstallDesktop).is_err());
+            assert!(!app.internal_install.is_probing());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn guided_setup_refuses_what_the_review_did_not_admit;
 
         phase guided_navigation_follows_actual_download_and_staging_and_refuses_legacy_back;
         {
@@ -2291,7 +2200,6 @@ mod tests {
                     desktop_session: false,
                     internal_dual_boot: false,
                 },
-                connected_folders: false,
             });
             let projection = app.setup_projection();
             assert_eq!(projection.internal, app.internal_projection());
@@ -2320,7 +2228,6 @@ mod tests {
                 desktop_session: true,
                 internal_dual_boot: true,
             },
-            connected_folders: true,
         })
     }
 
@@ -2606,7 +2513,6 @@ mod tests {
                     desktop_session: false,
                     internal_dual_boot: false,
                 },
-                connected_folders: false,
             });
             review(&mut app, Experience::Desktop);
             app.desktop_flow =
@@ -2927,8 +2833,6 @@ mod tests {
             .unwrap();
         let launches = fixture.fakes.launches.lock().unwrap();
         assert_eq!(launches.len(), 1);
-        assert!(launches[0].prepared_setup.is_none());
-        assert!(launches[0].migration.is_none());
         assert!(launches[0].profile.is_empty());
         assert_eq!(launches[0].plan_sha256, launches[0].plan.digest().unwrap());
         assert_eq!(fixture.fakes.manifests.lock().unwrap()[0], fixture.bytes);

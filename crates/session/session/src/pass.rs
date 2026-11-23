@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{Session, import_readiness, quick_settings};
+use crate::{Session, quick_settings};
 use tilo_compositor::Compositor;
 
 use crate::Error;
@@ -251,9 +251,6 @@ impl Session {
         self.follow_language();
         // The dates, clocks and weeks they write, as their region now says them.
         self.follow_formats();
-        // Add folders: answered whether the identity ceremony is over, and the review the person
-        // left opens once it is.
-        self.follow_folder_import();
         // What the person is in the middle of, as the session may not move under it (shell.md §1).
         let tilo_compositor::Underway { gesture, typing } = self.compositor.underway();
         let underway = tilo_session_core::layout::Busy { gesture, typing };
@@ -626,35 +623,6 @@ impl Session {
             );
         }
         Ok(())
-    }
-
-    /// Answer the installed folder importer this pass, and open the review it saved once the
-    /// person's first use is over: the Add folders click they left for after setup rather than one
-    /// they must remember.
-    fn follow_folder_import(&self) {
-        let first_use_over = !self.setup_up();
-        let opens_now = self
-            .shared
-            .folder_import
-            .borrow_mut()
-            .as_mut()
-            .is_some_and(|import| import.follow(first_use_over));
-        if !opens_now {
-            return;
-        }
-        let Some(apps) = &self.shared.launch else {
-            return;
-        };
-        let launch = tilo_app_launch::Launch::Host {
-            desktop_id: import_readiness::IMPORT_DESKTOP_ID.to_owned(),
-            open: None,
-        };
-        if let Err(error) = apps.open(&launch) {
-            tracing::warn!(
-                %error,
-                "the saved folder import did not open; Add folders opens it"
-            );
-        }
     }
 
     /// What the person is writing with besides the keyboard: dictation and the emoji picker, both

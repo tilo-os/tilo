@@ -1,46 +1,102 @@
-//! Desktop uses the current user's home and the canonical native package flow.
-use super::{Destination, InstallerPreview, InstallerPreviewEffect, Page};
-use ui::widget::{ButtonRole, Row};
+//! Desktop uses the current user's home and the canonical native package flow;
+//! a host without the guided pages installs Full Tilo through the same native
+//! setup, or writes a USB installer.
+use super::*;
+
 impl InstallerPreview {
     pub(super) fn prepare_desktop(&mut self) -> Result<(), &'static str> {
         if !self.live
             || self.journey.page != Page::Review
             || self.journey.destination != Some(Destination::Desktop)
             || self.direct.context.is_none()
-            || self.media_preparation.busy()
-            || self.personal_busy()
-            || self.migration_busy()
+            || self.busy()
         {
             return Err("installer-desktop-unavailable");
         }
         let child = crate::setup::view::SetupApp::for_desktop();
         self.show_desktop(child)
     }
-    pub(super) fn finish_desktop(
-        &mut self,
-        prepared: std::sync::Arc<super::prepared_media::PreparedMedia>,
-    ) -> Result<(), &'static str> {
-        self.desktop_pending = false;
-        let home = imager_backend::home_transfer::current_home()
-            .map_err(|_| "installer-desktop-unavailable")?;
-        let child = crate::setup::view::SetupApp::from_guided_desktop(prepared, home)
-            .map_err(|_| "installer-desktop-unavailable")?;
-        self.show_desktop(child)
-    }
 
     pub(super) fn prepare_native_full_os(&mut self) -> Result<(), &'static str> {
         if !self.live
-            || !self.windows.enabled
+            || !self.full_os_host
             || self.journey.page != Page::Destination
             || self.journey.destination != Some(Destination::Computer)
             || self.direct.context.is_none()
-            || self.windows.busy()
-            || self.personal_busy()
-            || self.migration_busy()
         {
             return Err("installer-review-installation-unavailable");
         }
         self.show_desktop(crate::setup::view::SetupApp::for_full_os())
+    }
+
+    /// A host without the guided pages chooses between installing here, with
+    /// the native Full Tilo setup, and writing a USB installer.
+    pub(super) fn apply_full_os_host(
+        &mut self,
+        effect: InstallerPreviewEffect,
+    ) -> Result<(), &'static str> {
+        match effect {
+            InstallerPreviewEffect::ReadPreview => return Ok(()),
+            InstallerPreviewEffect::ChoosePreview { choice }
+                if self.journey.page == Page::Destination =>
+            {
+                self.journey.destination = Some(match choice.as_str() {
+                    "computer" => Destination::Computer,
+                    "another" => Destination::Another,
+                    _ => return Err("installer-preview-invalid-choice"),
+                });
+            }
+            InstallerPreviewEffect::ContinuePreview
+                if self.journey.page == Page::Destination
+                    && self.journey.destination == Some(Destination::Computer) =>
+            {
+                self.native_full_os_review_pending = true;
+            }
+            InstallerPreviewEffect::ContinuePreview | InstallerPreviewEffect::PrepareUsb
+                if self.journey.page == Page::Destination
+                    && self.journey.destination == Some(Destination::Another) =>
+            {
+                self.media
+                    .as_ref()
+                    .ok_or("installer-preview-storage-unavailable")?
+                    .set(true);
+            }
+            InstallerPreviewEffect::BackInPreview => {
+                self.journey.destination = None;
+                self.journey.page = Page::Destination;
+            }
+            _ => return Err("installer-preview-wrong-page"),
+        }
+        self.error = None;
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub(super) fn full_os_host_view(&self) -> Box<dyn Widget> {
+        let mut content = page::stack()
+            .push(Box::new(
+                Text::new(&t("installer-preview-destination-heading")).with_role(TextRole::Heading),
+            ))
+            .push(Box::new(self.choice(
+                "computer",
+                self.journey.destination == Some(Destination::Computer),
+            )))
+            .push(Box::new(self.choice(
+                "another",
+                self.journey.destination == Some(Destination::Another),
+            )));
+        if let Some(error) = self.error {
+            content = content.push(Box::new(Text::new(&t(error))));
+        }
+        content = content.push(Box::new(
+            self.button(
+                "installer.continue",
+                "installer-preview-continue",
+                InstallerPreviewEffect::ContinuePreview,
+            )
+            .with_enabled(self.journey.destination.is_some()),
+        ));
+        page::Frame::new(content).with_cursor(self.cursor).build()
     }
 
     pub(super) fn show_desktop(

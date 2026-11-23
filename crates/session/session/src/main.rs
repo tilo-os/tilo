@@ -823,7 +823,6 @@ fn start(
         Some(&launch),
         session_bus.as_deref(),
         reach.export_displays,
-        host_desktop,
         &Sockets {
             agent: mcp_server.as_deref(),
             test_control: test_control.as_deref(),
@@ -946,7 +945,6 @@ fn run(
     launch: Option<&std::rc::Rc<tilo_session::apps::Apps>>,
     session_bus: Option<&str>,
     export_displays: bool,
-    host_desktop: bool,
     sockets: &Sockets<'_>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
@@ -964,12 +962,6 @@ fn run(
     // from a terminal, or `tilo-app dev`. Published beside the display, for as long as the session
     // runs, when this session is the one the login's programs reach.
     session.publish_workspace(&socket);
-    // A session added to this machine's own login serves the installed folder importer: whether
-    // identity setup is over, on the socket named for this session's display, and the review the
-    // person left to be opened after it.
-    if host_desktop && let Err(error) = session.serve_folder_import(std::ffi::OsStr::new(&socket)) {
-        tracing::warn!(%error, display = %socket, "Add folders cannot ask whether setup is done");
-    }
     // Where a program of this login asks to work here as an agent. The session bound it as it
     // started.
     if let Some(agent) = sockets.agent.filter(|agent| agent.exists()) {

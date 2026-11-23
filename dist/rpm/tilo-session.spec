@@ -207,8 +207,6 @@ install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
 install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
 install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_libexecdir}/tilo/tilo-launcher
 ln -s ../libexec/tilo/tilo-launcher %{buildroot}%{_bindir}/tilo-launcher
-install -Dpm 0755 bin/tilo-import-folders %{buildroot}%{_bindir}/tilo-import-folders
-install -Dpm 0644 applications/tilo-import-folders.desktop %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
 # /usr/libexec, not on $PATH: only the compositor invokes it, and the path is
 # compiled into the compositor as lock_auth::DEFAULT_UNLOCK_HELPER. Installing
 # it anywhere else means a session that can be locked and never unlocked.
@@ -282,12 +280,9 @@ install -Dpm 0644 wayland-sessions/tilo-app.desktop \
 for program in fs; do
     test -x %{buildroot}%{_bindir}/$program
 done
-test -x %{buildroot}%{_bindir}/tilo-import-folders
 test -x %{buildroot}%{_bindir}/tilo
 test -x %{buildroot}%{_bindir}/tilo-runtime
 test -x %{buildroot}%{_bindir}/tilolang-process
-grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
-%{buildroot}%{_bindir}/tilo-import-folders --tilo-package-smoke
 # A session entry that names a binary the package does not install is the
 # failure mode this whole package exists to avoid, so prove the two agree
 # rather than trusting the spec to have been edited consistently.
@@ -358,8 +353,6 @@ done
 %{_userunitdir}/tilo-files-workspace.service
 %{_bindir}/tilo-launcher
 %{_libexecdir}/tilo/tilo-launcher
-%{_bindir}/tilo-import-folders
-%{_datadir}/applications/tilo-import-folders.desktop
 %{_libexecdir}/tilo-unlock-helper
 %{_libexecdir}/tilo-session
 %{_libexecdir}/tilo-session-runner

@@ -41,9 +41,7 @@ fn names_retain_form_anchors_and_mid_string_caret() {
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = false;
-            preview.restart = restart_controller::Restart::default();
             preview.journey.page = Page::Devices;
-            preview.journey.name = "Ada".into();
             preview.journey.device_name = "PC".into();
             preview.dirty = true;
         })
@@ -103,68 +101,6 @@ fn names_retain_form_anchors_and_mid_string_caret() {
         intro_heights[1] > intro_heights[0],
         "purpose copy wraps on narrow screens"
     );
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn approved_name_explains_why_it_cannot_be_edited() {
-    let (_ownership, identity) = crate::setup::test_support::enrolled_identity();
-    let label = identity.enrolled_device_label().unwrap().to_owned();
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.live = false;
-        preview.personal.adopt(identity).unwrap();
-        preview.journey.page = Page::Devices;
-        preview.journey.identity = Some(Identity::Existing);
-        preview.journey.device_name = label.clone();
-        preview.dirty = true;
-    })
-    .unwrap();
-    app.settle();
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_no_fleet(preview);
-        assert!(control(preview, "installer.device-name").is_none());
-        assert_eq!(
-            control(preview, "installer.devices.approved-name")
-                .unwrap()
-                .accessibility()
-                .unwrap()
-                .name
-                .as_deref(),
-            Some(label.as_str())
-        );
-        assert_eq!(
-            control(preview, "installer.devices.name-locked")
-                .unwrap()
-                .accessibility()
-                .unwrap()
-                .name
-                .as_deref(),
-            Some(t("installer-device-name-set-by-identity").as_str())
-        );
-    })
-    .unwrap();
-    assert!(
-        app.effect(&InstallerPreviewEffect::SetPreviewDeviceName {
-            value: "Unapproved rename".into(),
-        })
-        .is_err()
-    );
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.journey.page = Page::Review;
-        preview.dirty = true;
-    })
-    .unwrap();
-    assert!(
-        app.effect(&InstallerPreviewEffect::EditPreview {
-            section: "devices".into(),
-        })
-        .is_err()
-    );
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.device_name, label);
-    })
-    .unwrap();
 }
 
 #[test]

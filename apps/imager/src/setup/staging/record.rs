@@ -7,9 +7,6 @@ use std::path::{Path, PathBuf};
 
 use super::plan::Plan;
 
-#[cfg(target_os = "linux")]
-mod browser;
-
 pub const SCHEMA: u32 = 1;
 
 pub use imager_backend::staging::protocol::{Step, StepEntry, StepState};
@@ -54,14 +51,8 @@ pub struct Record {
     pub owned_boot_entry: Option<OwnedBootEntry>,
     #[serde(default)]
     pub bundle: Option<RecordedBundle>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub migration: Option<serde_json::Value>,
     #[serde(default)]
     pub profile: serde_json::Map<String, serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prepared_setup: Option<crate::model::PreparedSetupExpectation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prepared_browser: Option<imager_backend::staging::browser::HostExpectation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,18 +101,10 @@ impl Record {
             original_firmware,
             owned_boot_entry: None,
             bundle: None,
-            migration: None,
             profile: serde_json::Map::new(),
-            prepared_setup: None,
-            prepared_browser: None,
         })
     }
 
-    pub(super) fn browser_expectation(
-        &self,
-    ) -> Option<&imager_backend::staging::browser::HostExpectation> {
-        self.prepared_browser.as_ref()
-    }
     pub fn step(&self, step: Step) -> Option<&StepEntry> {
         self.steps.iter().find(|s| s.step == step)
     }
@@ -342,42 +325,6 @@ impl Record {
         }
         self.validate_resize_checkpoints()?;
         super::handoff::validate_stored_profile(&self.profile)?;
-        if let Some(expected) = &self.prepared_setup
-            && (!expected.valid()
-                || expected.sealed_bytes > imager_backend::staging::prepared_setup::SLOT_BYTES
-                || self.plan.basis.host_os() != super::plan::HostOs::Linux)
-        {
-            return Err("invalid prepared setup ownership in staging record".into());
-        }
-        if let Some(browser) = &self.prepared_browser {
-            imager_backend::staging::browser::Expectation::validate(browser)
-                .map_err(|error| error.to_string())?;
-            if self.prepared_setup.is_none()
-                || self.plan.basis.host_os() != super::plan::HostOs::Linux
-            {
-                return Err("Browser ownership requires prepared Linux identity".into());
-            }
-        }
-        if let Some(raw) = &self.migration {
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = raw;
-                return Err("Linux migration cannot be resumed on this host".into());
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let migration = imager_backend::setup::migration_handoff::Plan::parse(
-                    &serde_json::to_vec(raw).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-                migration
-                    .validate_for_install(&self.plan)
-                    .map_err(|error| error.to_string())?;
-                if migration.operation_id != self.operation_id {
-                    return Err("staging migration consent belongs to another operation".into());
-                }
-            }
-        }
         Ok(())
     }
 }
@@ -417,67 +364,6 @@ impl RecordStore {
         }
     }
 
-    pub(super) fn prepared_path(&self, id: &str) -> Result<PathBuf, String> {
-        if !valid_operation_id(id) {
-            return Err("invalid operation ID".into());
-        }
-        Ok(self.dir.join(format!("{id}.prepared-setup.sealed")))
-    }
-    pub(super) fn retain_prepared(
-        &self,
-        id: &str,
-        bytes: &[u8],
-        expected: &crate::model::PreparedSetupExpectation,
-    ) -> Result<(), String> {
-        imager_backend::staging::prepared_setup::verify(bytes, expected)
-            .map_err(|error| error.to_string())?;
-        secure::ensure_dir(&self.dir, false)?;
-        let path = self.prepared_path(id)?;
-        match std::fs::symlink_metadata(&path) {
-            Ok(_) => return self.read_prepared(id, expected).map(|_| ()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.to_string()),
-        }
-        let mut temporary =
-            tempfile::NamedTempFile::new_in(&self.dir).map_err(|error| error.to_string())?;
-        std::io::Write::write_all(&mut temporary, bytes).map_err(|error| error.to_string())?;
-        temporary
-            .as_file()
-            .sync_all()
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = temporary.persist_noclobber(&path)
-            && error.error.kind() != std::io::ErrorKind::AlreadyExists
-        {
-            return Err(error.to_string());
-        }
-        std::fs::File::open(&self.dir)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| error.to_string())?;
-        self.read_prepared(id, expected).map(|_| ())
-    }
-    pub(super) fn read_prepared(
-        &self,
-        id: &str,
-        expected: &crate::model::PreparedSetupExpectation,
-    ) -> Result<Vec<u8>, String> {
-        let artifact = super::prepared_setup::PreparedArtifact {
-            browser: None,
-            tpm_handoff: None,
-            source_path: self
-                .prepared_path(id)?
-                .to_str()
-                .ok_or("invalid ownership path")?
-                .into(),
-            expectation: expected.clone(),
-        };
-        #[cfg(unix)]
-        // SAFETY: reads credentials only, never changes source ownership.
-        let owner = rustix::process::geteuid().as_raw();
-        #[cfg(not(unix))]
-        let owner = 0;
-        artifact.read(owner).map_err(|error| error.to_string())
-    }
-
     pub fn save(&self, record: &Record) -> Result<(), String> {
         record.validate_resize_checkpoints()?;
         let name = Self::file_name(&record.operation_id)?;
@@ -491,11 +377,8 @@ impl RecordStore {
         written.map_err(|e| format!("record write: {e}"))?;
         if let Some(public) = &self.public_dir {
             secure::ensure_dir(public, true)?;
-            let mut display = record.clone();
-            display.migration = None;
-            display.profile.remove("tpm_handoff");
             let display_bytes =
-                serde_json::to_vec_pretty(&display).map_err(|error| error.to_string())?;
+                serde_json::to_vec_pretty(record).map_err(|error| error.to_string())?;
             #[cfg(unix)]
             let written = tilo_files::native::atomic::write_with_mode(
                 &public.join(&name),
@@ -576,9 +459,6 @@ pub fn pending_in(dir: &Path) -> Vec<Record> {
 }
 
 use imager_backend::staging::record_io::{read_bounded, secure};
-
-#[cfg(all(test, target_os = "linux", feature = "installation"))]
-mod migration_handoff_tests;
 
 #[cfg(test)]
 mod tests {

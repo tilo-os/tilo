@@ -60,13 +60,10 @@ fn fixture(viewport: (u32, u32), theme: Theme) -> TestApp<ImagerShell> {
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;
-        preview.restart = restart_controller::Restart::default();
-        preview.journey = Journey::new("Ada Lovelace".into());
+        preview.journey = Journey::new();
         preview.journey.destination = Some(Destination::Computer);
-        preview.journey.migrate = Some(false);
-        preview.journey.identity = Some(Identity::New);
         preview.journey.device_name = "My computer".into();
-        preview.journey.page = Page::Profile;
+        preview.journey.page = Page::Migrate;
         preview.dirty = true;
     })
     .unwrap();
@@ -78,7 +75,7 @@ fn fixture(viewport: (u32, u32), theme: Theme) -> TestApp<ImagerShell> {
 
 #[test]
 #[cfg(unix)]
-fn current_personal_and_review_raster_matrix() {
+fn current_migrate_password_and_review_raster_matrix() {
     let private = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
     for key in [
@@ -104,7 +101,7 @@ fn current_personal_and_review_raster_matrix() {
             for text_scale in [1.0, 2.0] {
                 let tag = format!("{tag}-{}x{}-text{text_scale}", viewport.0, viewport.1);
                 let mut app = fixture(viewport, theme.clone().with_text_scale(text_scale));
-                evidence(app.harness(), &format!("profile-{tag}"));
+                evidence(app.harness(), &format!("migrate-{tag}"));
                 app.effect(&InstallerPreviewEffect::ContinuePreview)
                     .unwrap();
                 app.with_widget::<InstallerPreview, _>(|preview| {
@@ -188,134 +185,6 @@ fn current_personal_and_review_raster_matrix() {
                 })
                 .unwrap();
                 evidence(app.harness(), &format!("review-blocked-bottom-{tag}"));
-            }
-        }
-    }
-}
-
-#[test]
-#[cfg(unix)]
-fn current_belongings_71_rows_raster_matrix() {
-    use imager_backend::setup::flatpak_transfer::{Installation, InstalledRef, Inventory};
-    let private = tempfile::tempdir().unwrap();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    for key in [
-        "HOME",
-        "XDG_STATE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_RUNTIME_DIR",
-    ] {
-        let path = private.path().join(key);
-        std::fs::create_dir_all(&path).unwrap();
-        environment.set(key, path);
-    }
-    environment.remove("DISPLAY");
-    environment.remove("WAYLAND_DISPLAY");
-    for (tag, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high-contrast", Theme::high_contrast()),
-    ] {
-        for viewport in [(1180, 820), (640, 800), (320, 800)] {
-            for text_scale in [1.0, 2.0] {
-                let tag = format!("{tag}-{}x{}-text{text_scale}", viewport.0, viewport.1);
-                let mut app = fixture(viewport, theme.clone().with_text_scale(text_scale));
-                app.with_widget::<InstallerPreview, _>(|preview| {
-                    preview.live = true;
-                    preview.journey.page = Page::Belongings;
-                    preview.journey.destination = Some(Destination::Another);
-                    preview.journey.migrate = Some(true);
-                    preview.journey.categories = [false, true, false];
-                    preview.journey.details = true;
-                    preview.belongings.flatpak = Some(Inventory {
-                        refs: (0..71)
-                            .map(|index| InstalledRef {
-                                reference: format!(
-                                    "app/org.example.Application{index}/x86_64/stable"
-                                ),
-                                origin: "example".into(),
-                                installation: Installation::User,
-                                name: format!("Application {index}"),
-                            })
-                            .collect(),
-                        remotes: Vec::new(),
-                    });
-                    preview.dirty = true;
-                })
-                .unwrap();
-                app.settle();
-                let (body, footer) = app
-                    .with_widget::<InstallerPreview, _>(|preview| {
-                        assert_eq!(preview.flatpak_apps().len(), 71);
-                        (
-                            visual_tests::body_scroll_geometry(preview).unwrap().0,
-                            visual_tests::control(preview, "installer.next")
-                                .unwrap()
-                                .get_rect(),
-                        )
-                    })
-                    .unwrap();
-                evidence(app.harness(), &format!("belongings-top-{tag}"));
-                app.harness().send(&ui::synthetic_input::cursor_moved(
-                    body.x0 + 2.0,
-                    body.center().y,
-                ));
-                let target = app
-                    .with_widget::<InstallerPreview, _>(|preview| {
-                        let last = visual_tests::control(preview, "installer.flatpak.app.70")
-                            .unwrap()
-                            .get_rect();
-                        (last.y1 - body.y1).max(0.0) / 2.0
-                    })
-                    .unwrap();
-                let first_top = app
-                    .with_widget::<InstallerPreview, _>(|preview| {
-                        visual_tests::control(preview, "installer.flatpak.app.0")
-                            .unwrap()
-                            .get_rect()
-                            .y0
-                    })
-                    .unwrap();
-                for _ in 0..1000 {
-                    let moved = app
-                        .with_widget::<InstallerPreview, _>(|preview| {
-                            first_top
-                                - visual_tests::control(preview, "installer.flatpak.app.0")
-                                    .unwrap()
-                                    .get_rect()
-                                    .y0
-                        })
-                        .unwrap();
-                    if moved >= target {
-                        break;
-                    }
-                    app.harness().scroll(0.0, -1.0);
-                }
-                app.settle();
-                evidence(app.harness(), &format!("belongings-middle-{tag}"));
-                for _ in 0..100 {
-                    app.harness().scroll(0.0, -10.0);
-                }
-                app.settle();
-                app.with_widget::<InstallerPreview, _>(|preview| {
-                    assert_eq!(
-                        visual_tests::control(preview, "installer.next")
-                            .unwrap()
-                            .get_rect(),
-                        footer
-                    );
-                    let last = visual_tests::control(preview, "installer.flatpak.app.70")
-                        .unwrap()
-                        .get_rect();
-                    assert!(
-                        last.y0 >= body.y0 && last.y1 <= body.y1,
-                        "last row must actually be visible: {last:?}, body={body:?}"
-                    );
-                })
-                .unwrap();
-                evidence(app.harness(), &format!("belongings-bottom-{tag}"));
             }
         }
     }

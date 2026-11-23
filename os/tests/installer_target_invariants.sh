@@ -243,24 +243,20 @@ fi
 
 installer_identity_fixture() (
   id() { printf 0; }
-  local generation
-  generation="$(mktemp -d)"
-  trap 'rm -rf -- "$generation"' EXIT
-  export generation
+  local scratch
+  scratch="$(mktemp -d)"
+  trap 'rm -rf -- "$scratch"' EXIT
   export -f id
-  # Hardware selection still executes from this checkout. Generation selection
-  # is outside this disk-identity fixture; native transport has its own tests.
-  python3 - "$backend" "$generation/backend" "$board_successor" <<'PY'
+  # Hardware selection still executes from this checkout.
+  python3 - "$backend" "$scratch/backend" "$board_successor" <<'PY'
 from pathlib import Path
 import sys
 source = Path(sys.argv[1]).read_text()
-selection = '$(/usr/libexec/tilo-installer-prepared-setup-extract selected-generation)'
 resolver = '$(/usr/libexec/tilo-board-successor \\\n  install-update-origin'
-assert source.count(selection) == 1 and source.count(resolver) == 1
-source = source.replace(selection, '$generation')
+assert source.count(resolver) == 1
 Path(sys.argv[2]).write_text(source.replace(resolver, resolver.replace('/usr/libexec/tilo-board-successor', sys.argv[3])))
 PY
-  TILO_INSTALL_TRANSIENT=1 bash "$generation/backend" "$@"
+  TILO_INSTALL_TRANSIENT=1 bash "$scratch/backend" "$@"
 )
 
 identity_error="$(

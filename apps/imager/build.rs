@@ -1,11 +1,6 @@
-// The signed host and native backend use one exact capture admission.
-#[path = "../../crates/os/imager-backend/capture_build.rs"]
-mod capture_build;
-
 use std::{env, fs, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    capture_build::main()?;
     release_catalog()
 }
 

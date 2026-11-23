@@ -134,13 +134,11 @@ suites = ["os/tests/test_container_signature_policy.py"]
 name = "os"
 # test_image_size_budget.py reads tools/perf/image_size.py's report fields.
 # test_boot_unit_ordering.py holds the extension activation unit's conditions
-# to the helper's own early return. test_service_candidate_bridge.py holds the
-# fixture's receiving closure to the installed producer's list. The installer
+# to the helper's own early return. The installer
 # script suites build and run tilo-staging-handoff, which their scripts hand
 # their checks to.
 inputs = [
   "os/", "tools/perf/image_size.py", "crates/os/extension-helper/src/machine.rs",
-  "crates/os/imager-backend/src/account_admission.rs",
   "crates/os/install-helpers/",
   "apps/staging-handoff-model/",
   # The packing reads the app set's plan and the tilolang packages' build steps,
@@ -270,13 +268,8 @@ suites = [
   "os/tests/test_raw_rootfs_receipt.py",
   "os/tests/test_rebind_development_rootfs.py",
   "os/tests/test_rebind_development_trust.py",
-  "os/scripts/installer-receive-fixture/test_prerequisite_image.py",
-  "os/scripts/installer-receive-fixture/test_delivery.py",
-  "os/scripts/installer-source-fixture/test_bounded_native.py",
-  "os/scripts/installer-source-fixture/test_source.py",
   "os/tests/test_install_purpose.py",
   "os/tests/test_install_development_layers.py",
-  "os/tests/test_service_candidate_bridge.py",
   "os/tests/test_reconstructed_partials.py",
   "os/tests/test_reseal_image.py",
   "os/tests/test_retain_development_rootfs.py",
@@ -494,7 +487,7 @@ suites = ["os/tests/test_project_kernel_crate.py"]
 [[group]]
 name = "imager-packaging"
 inputs = ["apps/imager/packaging/", "tools/ci/linux-imager/", "tools/ci/imager-release/", "os/scripts/build-thin-apps.sh", "dist/apps/app-collections.toml", "apps/imager/desktop-catalog.json", "os/dev/probe-release-signer.py", "dist/session/vm-e2e/run.py"]
-suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py", "apps/imager/packaging/test_target_policy.py"]
+suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_target_policy.py"]
 
 [[group]]
 name = "native-qualification-storage"
@@ -1064,10 +1057,6 @@ by = "crates/os/install-helpers/tests/native_python.rs"
 suite = "os/tests/test_installer_firstboot_runtime.py"
 by = "crates/os/install-helpers/tests/native_python.rs"
 
-[[covered]]
-suite = "os/tests/test_prepared_first_use_binding.py"
-by = "crates/os/install-helpers/tests/native_python.rs"
-
 [[cargo]]
 package = "tilo-install-helpers"
 # The helpers' tests check how the installer backend and its guided
@@ -1090,8 +1079,6 @@ inputs = [
   "os/tests/test_firstboot_home_seeds_native.py",
   "os/tests/test_firstboot_transaction.py",
   "os/tests/test_installer_firstboot_runtime.py",
-  "os/tests/test_prepared_first_use_binding.py",
-  "apps/imager/src/bin/tilo-installer-prepared-setup-extract/",
   "os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py",
   "os/dev/dev-target-uki.py", "os/hardware/profiles/lenovo-83ed.json",
 ]
@@ -1119,7 +1106,6 @@ readers = ["crates/os/pam-tilo/tests/conversation.rs"]
 package = "launcher"
 inputs = [
   "apps/*/tilo-app.toml",
-  "apps/imager/packaging/",
   "os/usr/lib/tilo/jit-entitled.conf",
   "os/usr/lib/tilo/web-engine-entitled.conf",
   "os/usr/share/tilo/system-interfaces.toml",
@@ -1146,7 +1132,6 @@ readers = [
   "crates/core/launcher/src/services.rs",
   "crates/core/launcher/examples/startup_frame_timeline.rs",
   "crates/core/launcher/examples/web_engine_sandbox.rs",
-  "crates/core/launcher/tests/capture_service/openpgp_native.rs",
 ]
 
 [[cargo]]
@@ -1258,7 +1243,6 @@ inputs = [
   "crates/integrations/mail-session/",
   "crates/integrations/tilo-cloud-files/",
   "crates/integrations/tilo-contact-directory/",
-  "crates/os/tilo-handoff/",
   "crates/integrations/tilo-host-search/",
   "crates/integrations/tilo-innertube/",
   "crates/integrations/tilo-messaging/",
@@ -1383,12 +1367,10 @@ inputs = [
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
-  "crates/os/imager-backend/capture_build.rs",
 ]
 readers = [
   "apps/imager/build.rs", "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
-  "apps/imager/tests/profile_transport.rs",
 ]
 
 [[cargo]]
@@ -1404,9 +1386,7 @@ inputs = [
 readers = [
   "crates/os/imager-backend/src/destination/disks.rs",
   "crates/os/imager-backend/src/destination/online_accounts/browser.rs",
-  "crates/os/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
   "crates/os/imager-backend/src/probe.rs",
-  "crates/os/imager-backend/src/setup/prepared_tpm/native.rs",
 ]
 
 [[cargo]]

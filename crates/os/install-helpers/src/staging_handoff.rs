@@ -34,8 +34,6 @@ use crate::args::{self, Arg, Command};
 use crate::py::Dumps;
 
 pub mod backend_commands;
-mod retained_commands;
-mod user_commands;
 
 const HANDOFF_MAX_BYTES: usize = 64 * 1024;
 const HANDOFF_RELATIVE: &str = "EFI/tilo-staging/handoff.json";
@@ -50,7 +48,7 @@ const GUIDED_BOOT_BYTES: i128 = 1024 * 1024 * 1024;
 const MIN_GUIDED_ROOT_BYTES: i128 = 32 * 1024 * 1024 * 1024;
 const MIB: i128 = 1024 * 1024;
 const MAX_LBA: i128 = 1 << 62;
-const PROFILE_KEYS: [&str; 11] = [
+const PROFILE_KEYS: [&str; 10] = [
     "schema",
     "hostname",
     "username",
@@ -59,7 +57,6 @@ const PROFILE_KEYS: [&str; 11] = [
     "keyboard",
     "timezone",
     "filesystem",
-    "prepared_setup",
     "device_label",
     "purpose",
 ];
@@ -428,7 +425,6 @@ pub struct Handoff {
     pub original_boot_order: Vec<String>,
     pub profile: Map<String, Value>,
     pub plan: Option<Value>,
-    pub migration: Option<Value>,
 }
 
 impl Handoff {
@@ -453,11 +449,6 @@ impl Handoff {
         {
             object.insert("plan".into(), plan.clone());
         }
-        if let Some(migration) = &self.migration
-            && let Some(object) = value.as_object_mut()
-        {
-            object.insert("migration".into(), migration.clone());
-        }
         value
     }
 
@@ -476,10 +467,7 @@ impl Handoff {
 /// Validates a parsed handoff against schema 1.
 pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
     let Some(raw) = raw.as_object().filter(|map| {
-        let optional = ["migration", "plan"]
-            .iter()
-            .filter(|key| map.contains_key(**key))
-            .count();
+        let optional = usize::from(map.contains_key("plan"));
         map.len() == HANDOFF_KEYS.len().saturating_add(optional)
             && HANDOFF_KEYS.iter().all(|key| map.contains_key(*key))
     }) else {
@@ -540,7 +528,6 @@ pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
         original_boot_order: order,
         profile: sanitized_profile,
         plan: None,
-        migration: None,
     };
     let (esp, root, target) = (
         &handoff.staging_esp,
@@ -563,17 +550,6 @@ pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
         }
     }
     validate_plan(raw, &mut handoff)?;
-    if let Some(raw_migration) = raw.get("migration") {
-        let migration: staging_handoff_model::Migration =
-            serde_json::from_value(raw_migration.clone())
-                .map_err(|e| Fail::Refusal(e.to_string()))?;
-        let typed: staging_handoff_model::Handoff =
-            serde_json::from_value(handoff.json()).map_err(|e| Fail::Refusal(e.to_string()))?;
-        migration
-            .validate_in_handoff(&typed)
-            .map_err(Fail::Refusal)?;
-        handoff.migration = Some(raw_migration.clone());
-    }
     Ok(handoff)
 }
 
@@ -592,7 +568,7 @@ fn validate_plan(raw: &Map<String, Value>, handoff: &mut Handoff) -> Result<()> 
 
 fn validate_profile(profile: &Map<String, Value>) -> Result<()> {
     for (key, value) in profile {
-        if matches!(key.as_str(), "prepared_setup" | "device_label" | "purpose") {
+        if matches!(key.as_str(), "device_label" | "purpose") {
             continue;
         }
         if key == "schema" {
@@ -606,13 +582,6 @@ fn validate_profile(profile: &Map<String, Value>) -> Result<()> {
         }
     }
     staging_handoff_model::validate_profile(profile).map_err(Fail::Refusal)
-}
-
-fn validate_migration(raw: &Value) -> Result<Value> {
-    let migration: staging_handoff_model::Migration =
-        serde_json::from_value(raw.clone()).map_err(|e| Fail::Refusal(e.to_string()))?;
-    migration.validate_standalone().map_err(Fail::Refusal)?;
-    Ok(raw.clone())
 }
 
 /// Parses and validates handoff bytes.
@@ -1132,74 +1101,7 @@ fn disk_facts(host: &dyn Host, disk: &str, handoff: &Handoff) -> Result<(i128, V
             mounts: subtree_mounts(&child),
         });
     }
-    validate_source_partition(&node, handoff, sector)?;
     Ok((sector, partitions))
-}
-
-fn validate_source_partition(
-    node: &Map<String, Value>,
-    handoff: &Handoff,
-    sector: i128,
-) -> Result<()> {
-    if let Some(migration) = &handoff.migration {
-        let source = migration
-            .get("home")
-            .and_then(|home| home.get("volume"))
-            .unwrap_or(&Value::Null);
-        let matches: Vec<_> = children(node)
-            .into_iter()
-            .filter(|part| {
-                or_empty(part.get("partuuid")).eq_ignore_ascii_case(
-                    source
-                        .get("partition_guid")
-                        .unwrap_or(&Value::Null)
-                        .as_str()
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
-        let [part] = matches.as_slice() else {
-            return refuse("retained migration source identity or geometry changed");
-        };
-        let first = int(
-            source.get("first_lba").unwrap_or(&Value::Null),
-            "source first LBA",
-            1,
-        )?;
-        let last = int(
-            source.get("last_lba").unwrap_or(&Value::Null),
-            "source last LBA",
-            1,
-        )?;
-        if int(
-            source.get("sector_bytes").unwrap_or(&Value::Null),
-            "source sector",
-            1,
-        )? != sector
-            || number(part, "start")?.checked_mul(512) != first.checked_mul(sector)
-            || Some(number(part, "size")?)
-                != last
-                    .checked_sub(first)
-                    .and_then(|n| n.checked_add(1))
-                    .and_then(|n| n.checked_mul(sector))
-            || !or_empty(part.get("uuid")).eq_ignore_ascii_case(
-                source
-                    .get("filesystem_uuid")
-                    .unwrap_or(&Value::Null)
-                    .as_str()
-                    .unwrap_or_default(),
-            )
-            || or_empty(part.get("fstype")).to_lowercase()
-                != source
-                    .get("filesystem")
-                    .unwrap_or(&Value::Null)
-                    .as_str()
-                    .unwrap_or_default()
-        {
-            return refuse("retained migration source identity or geometry changed");
-        }
-    }
-    Ok(())
 }
 
 fn staged_partition<'a>(
@@ -1495,14 +1397,6 @@ pub fn write_reclaim_record(
         &canonical(&record),
         0o600,
     )?;
-    // Preserve every migration policy, including legacy copy intent, for first
-    // boot; use the same private, no-clobber publication as authenticated retained
-    // delivery.
-    retained_commands::deliver_retained(
-        handoff.migration.as_ref(),
-        target_var,
-        validate_migration,
-    )?;
     Ok("recorded staging reclaim for the installed system\n".into())
 }
 
@@ -1650,24 +1544,20 @@ pub fn firmware_finalize(
 }
 
 const PROG: &str = "tilo-staging-handoff";
-const COMMANDS: [&str; 9] = [
+const COMMANDS: [&str; 5] = [
     "detect",
     "check-install",
     "check-mounts",
     "write-reclaim-record",
     "firmware-finalize",
-    "preflight-retained",
-    "deliver-retained",
-    "required-user-id",
-    "deliver-user-plan",
 ];
 const USAGE: &str = "usage: tilo-staging-handoff [-h]
-                            {detect,check-install,check-mounts,write-reclaim-record,firmware-finalize,preflight-retained,deliver-retained,required-user-id,deliver-user-plan,check-device-label,write-machine-info,check-prepared-choices,guided-geometry,gpt,unpack-setup-handoff}
+                            {detect,check-install,check-mounts,write-reclaim-record,firmware-finalize,check-device-label,write-machine-info,guided-geometry,gpt,unpack-setup-handoff}
                             ...
 ";
 const HELP: &str = "
 positional arguments:
-  {detect,check-install,check-mounts,write-reclaim-record,firmware-finalize,preflight-retained,deliver-retained,required-user-id,deliver-user-plan,check-device-label,write-machine-info,check-prepared-choices,guided-geometry,gpt,unpack-setup-handoff}
+  {detect,check-install,check-mounts,write-reclaim-record,firmware-finalize,check-device-label,write-machine-info,guided-geometry,gpt,unpack-setup-handoff}
 
 options:
   -h, --help            show this help message and exit
@@ -1975,17 +1865,6 @@ fn run_finalize(host: &dyn Host, rest: &[OsString]) -> SubOutcome {
 
 fn dispatch(host: &dyn Host, command: &str, rest: &[OsString]) -> SubOutcome {
     match command {
-        "preflight-retained" | "deliver-retained" => Ok(finish(
-            retained_commands::run(host, command, rest, validate_migration).map(|()| 0),
-            String::new(),
-            String::new(),
-        )),
-        "required-user-id" | "deliver-user-plan" => {
-            Ok(match user_commands::run(host, command, rest) {
-                Ok(stdout) => finish(Ok(0), stdout, String::new()),
-                Err(error) => finish(Err(error), String::new(), String::new()),
-            })
-        }
         "detect" => run_detect(host, rest),
         "check-install" => run_check_install(host, rest),
         "check-mounts" => run_check_mounts(host, rest),

@@ -54,10 +54,6 @@ pub const USH_LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
 /// `{"protocol":1,"app_id":"…","workspace":"…"}`.
 const USH_HANDOFF_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
 
-/// Big-endian `u32` length-prefixed JSON for the retained-view and consuming-bootstrap channels.
-pub(crate) fn json_framing(limit: usize) -> Framing {
-    Framing::big_endian(limit).reject_empty()
-}
 /// Document media.
 pub const BLOB_SERVICE: &str = "blobs";
 /// The filesystem daemon's document-media socket (`runtime_fs::blobs`).
@@ -127,48 +123,13 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     ACCOUNT_CHILD_FD,
     SERVICE_NAMESPACE_CHILD_FD,
     #[cfg(target_os = "linux")]
-    crate::owned_service::capture::SOURCE_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::capture::SHIM_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::capture::OUTPUT_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::capture::executable::BWRAP_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::capture::executable::LOADER_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::capture::original::BOOTSTRAP_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::capture::original::CLAIM_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::target_projection::TOKEN_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::target_projection::FUSE_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::target_projection::READY_FD,
-    #[cfg(target_os = "linux")]
-    crate::retained_view::VIEW_FD,
-    #[cfg(target_os = "linux")]
-    crate::retained_view::ALIAS_VIEW_FD,
-    #[cfg(target_os = "linux")]
-    crate::retained_view::ALIAS_ARGS_FD,
-    #[cfg(target_os = "linux")]
     crate::system_stats::CHILD_FD,
     #[cfg(target_os = "linux")]
     runtime_portal::process_link::CHILD_FD,
 ];
 
 fn child_fd_reserved(fd: i32) -> bool {
-    if RESERVED_CHILD_FDS.contains(&fd) {
-        return true;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if crate::owned_service::capture::archive_reserved_fd(fd) {
-            return true;
-        }
-    }
-    false
+    RESERVED_CHILD_FDS.contains(&fd)
 }
 /// Settings holds `package-service` for the person's languages alone: the host answers it which language packs
 /// are offered and installs one, never the Store's package-management interface (the host decides by
@@ -1501,7 +1462,7 @@ mod tests {
             }
         }
 
-        phase declared_services_cannot_replace_a_reserved_view_descriptor;
+        phase declared_services_cannot_replace_a_reserved_descriptor;
         {
             let dir = tempfile::tempdir().unwrap();
             let _env = runtime_dir_env(dir.path());
@@ -1521,18 +1482,6 @@ mod tests {
             for &reserved in RESERVED_CHILD_FDS {
                 assert!(resolved.iter().any(|service| service.child_fd > reserved));
                 assert!(resolved.iter().all(|service| service.child_fd != reserved));
-            }
-            // Assert the Linux view slots directly as well, so accidentally omitting one from the
-            // reservation table cannot make the test pass.
-            #[cfg(target_os = "linux")]
-            {
-                for reserved in [
-                    crate::retained_view::ALIAS_VIEW_FD,
-                    crate::retained_view::ALIAS_ARGS_FD,
-                ] {
-                    assert!(resolved.iter().any(|service| service.child_fd > reserved));
-                    assert!(resolved.iter().all(|service| service.child_fd != reserved));
-                }
             }
         }
 

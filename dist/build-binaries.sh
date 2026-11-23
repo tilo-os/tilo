@@ -17,8 +17,6 @@ cargo build "${cargo_args[@]}" -p tilo-cli --bin tilo
 # Beside it, the daemon `tilo login` starts, and the program a task's tilolang programs run in.
 cargo build "${cargo_args[@]}" -p tilo-runtime --bin tilo-runtime --no-default-features
 cargo build "${cargo_args[@]}" -p tilolang-process --bin tilolang-process
-# The host package installs Tilo and imports the old folders: the installation.
-cargo build "${cargo_args[@]}" -p imager --bin imager --features installation
 # The host package deliberately excludes the test-control socket. Video
 # codecs come from the distribution's GStreamer at runtime.
 # The session a login starts. Building the package without an explicit binary

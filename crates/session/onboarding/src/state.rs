@@ -25,8 +25,7 @@ pub type WordMistakes = fn(&str) -> Vec<Range<usize>>;
 /// The secret fields setup shows, each the shell's buffer.
 #[derive(Clone, Default)]
 pub struct Secrets {
-    /// The passphrase of a backup being restored, and the prepared setup's
-    /// password.
+    /// The passphrase of a backup being restored.
     pub connect_passphrase: SecretBuffer,
     /// The one-use code another device printed, typed into first-use setup.
     pub ticket: SecretBuffer,
@@ -44,7 +43,7 @@ impl Secrets {
     #[must_use]
     pub fn field(&self, name: &str) -> Option<&SecretBuffer> {
         Some(match name {
-            "backup-passphrase" | "prepared-password" => &self.connect_passphrase,
+            "backup-passphrase" => &self.connect_passphrase,
             "new-passphrase" => &self.backup_passphrase,
             "new-passphrase-confirmation" => &self.backup_confirmation,
             "recovery-key" => &self.recovery_words,

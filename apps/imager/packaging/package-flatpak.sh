@@ -24,8 +24,7 @@ else
   exit 1
 fi
 
-if [ "${TILO_REQUIRE_SIGNING:-0}" = 1 ]; then export TILO_REQUIRE_CAPTURE=1; fi
-source "$repo/apps/imager/packaging/build-capture-host.sh" --features flatpak-media-writer
+"${CARGO:-cargo}" build --locked --release -p imager --bin imager --features flatpak-media-writer
 binary="${TILO_IMAGER_BINARY:-${CARGO_TARGET_DIR:-$repo/target}/release/imager}"
 
 work="$(mktemp -d)"
@@ -34,14 +33,6 @@ stage="$work/manifest"
 mkdir -p "$stage" "$out"
 cp "$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml" "$stage/"
 cp "$binary" "$stage/tilo-imager-bin"
-"$repo/apps/imager/packaging/stage-capture-sidecar.sh" "$binary" "$stage/capture-prefix" "$stage/tilo-imager-bin"
-if [ -d "$stage/capture-prefix/share/tilo-imager/capture" ]; then
-  tar -C "$stage/capture-prefix" -cf "$stage/tilo-capture-sidecar.tar" share/tilo-imager/capture
-else
-  # Flatpak keeps a fixed manifest; fresh-install builds carry an empty archive.
-  mkdir -p "$stage/empty-capture"
-  tar -C "$stage/empty-capture" -cf "$stage/tilo-capture-sidecar.tar" --files-from /dev/null
-fi
 sed 's/^Icon=tilo-imager$/Icon=org.tilo.Imager/' \
   "$repo/apps/imager/packaging/linux/tilo-imager.desktop" \
   >"$stage/org.tilo.Imager.desktop"

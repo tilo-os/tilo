@@ -17,10 +17,6 @@ use super::{Commands, InstallerPreviewEffect};
 use crate::page;
 use crate::setup::strings::{t, t_args};
 
-/// The private restart record has a 32 KiB bound; leave room for the rest of
-/// the selection instead of making a large report fail the whole save.
-const MAX_DRAFT_REPORT_BYTES: usize = 16 * 1024;
-
 const FIELD_IDS: [(&str, &str); 5] = [
     ("manufacturer", "installer.target.manufacturer"),
     ("model", "installer.target.model"),
@@ -252,42 +248,6 @@ impl Target {
     pub(super) fn clear_report(&mut self) {
         self.report = None;
         self.error = None;
-    }
-
-    pub(super) fn draft_choices(&self) -> super::draft::TargetDraft {
-        let mut draft = super::draft::TargetDraft {
-            manufacturer: self.manufacturer.get(),
-            model: self.model.get(),
-            variant: self.variant.get(),
-            board: self.board.get(),
-            sku: self.sku.get(),
-            architecture: self.architecture().to_string(),
-            report_omitted: false,
-            report: self.report.clone(),
-        };
-        if let Some(report) = &draft.report
-            && !serde_json::to_vec(report).is_ok_and(|bytes| bytes.len() <= MAX_DRAFT_REPORT_BYTES)
-        {
-            draft.report = None;
-            draft.report_omitted = true;
-        }
-        draft
-    }
-
-    pub(super) fn restore(&mut self, draft: Option<&super::draft::TargetDraft>) {
-        let Some(draft) = draft else {
-            return;
-        };
-        self.manufacturer.set(draft.manufacturer.clone());
-        self.model.set(draft.model.clone());
-        self.variant.set(draft.variant.clone());
-        self.board.set(draft.board.clone());
-        self.sku.set(draft.sku.clone());
-        self.architecture.clone_from(&draft.architecture);
-        self.report.clone_from(&draft.report);
-        self.error = draft
-            .report_omitted
-            .then(|| t("installer-preview-target-report-too-large-to-resume"));
     }
 
     pub(super) fn recheck(&mut self) -> Result<(), &'static str> {

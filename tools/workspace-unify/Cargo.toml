@@ -531,7 +531,7 @@ doc = false
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
 "imager" = { path = "../../apps/imager", default-features = false, features = ["destination", "installation"] }
-"imager-backend" = { path = "../../crates/os/imager-backend", default-features = false, features = ["destination", "installation", "test-support"] }
+"imager-backend" = { path = "../../crates/os/imager-backend", default-features = false, features = ["destination", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
 "indenter-0_3_4" = { package = "indenter", version = "^0.3.4", default-features = false, features = ["default"] }
@@ -829,7 +829,6 @@ doc = false
 "ppv-lite86-0_2_21" = { package = "ppv-lite86", version = "^0.2.21", default-features = false, features = ["simd", "std"] }
 "precomputed-hash-0_1_1" = { package = "precomputed-hash", version = "^0.1.1", default-features = false, features = [] }
 "prefix-trie-0_8_4" = { package = "prefix-trie", version = "^0.8.4", default-features = false, features = ["default", "ipnet"] }
-"prepared-setup-model" = { path = "../../crates/session/prepared-setup-model", default-features = false, features = ["default", "receipt"] }
 "presser-0_3_1" = { package = "presser", version = "^0.3.1", default-features = false, features = [] }
 "primal-check-0_3_4" = { package = "primal-check", version = "^0.3.4", default-features = false, features = [] }
 "primefield-0_14_0" = { package = "primefield", version = "^0.14.0", default-features = false, features = [] }
@@ -935,7 +934,6 @@ doc = false
 "runtime-bundle" = { path = "../../crates/core/runtime-bundle", default-features = false, features = [] }
 "runtime-collab" = { path = "../../crates/core/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-fs" = { path = "../../crates/core/runtime-fs", default-features = false, features = [] }
-"runtime-fs-fuse" = { path = "../../crates/os/runtime-fs-fuse", default-features = false, features = [] }
 "runtime-portal" = { path = "../../crates/core/runtime-portal", default-features = false, features = [] }
 "runtime-update" = { path = "../../crates/os/runtime-update", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
@@ -1222,7 +1220,6 @@ doc = false
 "tilo-frame-metrics" = { path = "../../crates/session/frame-metrics", default-features = false, features = [] }
 "tilo-fs" = { path = "../../crates/core/fs", default-features = false, features = ["default", "document-media", "filesystem", "tree-sync"] }
 "tilo-fs-client" = { path = "../../crates/core/tilo-fs-client", default-features = false, features = [] }
-"tilo-handoff" = { path = "../../crates/os/tilo-handoff", default-features = false, features = ["default", "peer", "test-support"] }
 "tilo-headless-schema" = { path = "../../crates/ui/headless-schema", default-features = false, features = [] }
 "tilo-highlight" = { path = "../../crates/ui/highlight", default-features = false, features = [] }
 "tilo-highlight-grammars" = { path = "../../crates/ui/highlight-grammars", default-features = false, features = ["syntax-definitions"] }
@@ -3168,7 +3165,7 @@ doc = false
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
 "imager" = { path = "../../apps/imager", default-features = false, features = ["destination", "installation"] }
-"imager-backend" = { path = "../../crates/os/imager-backend", default-features = false, features = ["destination", "installation", "test-support"] }
+"imager-backend" = { path = "../../crates/os/imager-backend", default-features = false, features = ["destination", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
 "indenter-0_3_4" = { package = "indenter", version = "^0.3.4", default-features = false, features = ["default"] }
@@ -3463,7 +3460,6 @@ doc = false
 "ppv-lite86-0_2_21" = { package = "ppv-lite86", version = "^0.2.21", default-features = false, features = ["simd", "std"] }
 "precomputed-hash-0_1_1" = { package = "precomputed-hash", version = "^0.1.1", default-features = false, features = [] }
 "prefix-trie-0_8_4" = { package = "prefix-trie", version = "^0.8.4", default-features = false, features = ["default", "ipnet"] }
-"prepared-setup-model" = { path = "../../crates/session/prepared-setup-model", default-features = false, features = ["default", "receipt"] }
 "presser-0_3_1" = { package = "presser", version = "^0.3.1", default-features = false, features = [] }
 "primal-check-0_3_4" = { package = "primal-check", version = "^0.3.4", default-features = false, features = [] }
 "primefield-0_14_0" = { package = "primefield", version = "^0.14.0", default-features = false, features = [] }
@@ -3569,7 +3565,6 @@ doc = false
 "runtime-bundle" = { path = "../../crates/core/runtime-bundle", default-features = false, features = [] }
 "runtime-collab" = { path = "../../crates/core/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-fs" = { path = "../../crates/core/runtime-fs", default-features = false, features = [] }
-"runtime-fs-fuse" = { path = "../../crates/os/runtime-fs-fuse", default-features = false, features = [] }
 "runtime-portal" = { path = "../../crates/core/runtime-portal", default-features = false, features = [] }
 "runtime-update" = { path = "../../crates/os/runtime-update", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
@@ -3856,7 +3851,6 @@ doc = false
 "tilo-frame-metrics" = { path = "../../crates/session/frame-metrics", default-features = false, features = [] }
 "tilo-fs" = { path = "../../crates/core/fs", default-features = false, features = ["default", "document-media", "filesystem", "tree-sync"] }
 "tilo-fs-client" = { path = "../../crates/core/tilo-fs-client", default-features = false, features = [] }
-"tilo-handoff" = { path = "../../crates/os/tilo-handoff", default-features = false, features = ["default", "peer", "test-support"] }
 "tilo-headless-schema" = { path = "../../crates/ui/headless-schema", default-features = false, features = [] }
 "tilo-highlight" = { path = "../../crates/ui/highlight", default-features = false, features = [] }
 "tilo-highlight-grammars" = { path = "../../crates/ui/highlight-grammars", default-features = false, features = ["syntax-definitions"] }

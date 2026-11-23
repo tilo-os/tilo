@@ -33,7 +33,3 @@ mod workspace_confinement;
 #[cfg(target_os = "linux")]
 #[path = "netproxy.rs"]
 mod netproxy;
-
-#[cfg(target_os = "linux")]
-#[path = "capture_service.rs"]
-mod capture_service;

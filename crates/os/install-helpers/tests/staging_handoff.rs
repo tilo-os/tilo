@@ -17,9 +17,8 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::path::PathBuf;
+use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
@@ -860,176 +859,78 @@ fn finalize_edits_only_its_own_boot_entries() {
     assert_eq!(fixture.var("BootNext"), None);
 }
 
-// The staging reclaim record binds both staging identities and the adjacent root,
-// and publishes the migration consent privately, once, for every policy.
+// The staging reclaim record binds both staging identities and the adjacent root.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one journey through one command reads as one flow"
-)]
-fn the_staging_record_binds_and_publishes() {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+fn the_staging_record_binds_both_staging_identities() {
+    use std::os::unix::fs::PermissionsExt;
 
-    let candidate = parser_parity_cases()
-        .into_iter()
-        .find(|case| case["name"] == "migration default copy")
-        .expect("candidate migration fixture");
-    for policy in [None, Some("copy")] {
-        let temporary = tempfile::tempdir().unwrap();
-        let handoff = temporary.path().join("handoff.json");
-        let target_var = temporary.path().join("var");
-        fs::create_dir(&target_var).unwrap();
-        let mut document = candidate["normalized"].clone();
-        if let Some(policy) = policy {
-            document["migration"]["home_policy"] = json!(policy);
-        }
-        fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
-        let root_start = TARGET.0 * 512;
-        let root_size = (TARGET.1 - TARGET.0 + 1) * 512;
-        let invoke = |start: i64, size: i64| {
-            Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
-                .args(["write-reclaim-record", "--handoff"])
-                .arg(&handoff)
-                .arg("--target-var")
-                .arg(&target_var)
-                .args([
-                    "--target-root-partuuid",
-                    "EEEEEEEE-0000-4000-8000-000000000005",
-                    "--target-esp-partuuid",
-                    TARGET_ESP_UUID,
-                    "--target-root-start-bytes",
-                    &start.to_string(),
-                    "--target-root-size-bytes",
-                    &size.to_string(),
-                    "--sector-size",
-                    "512",
-                ])
-                .output_locked()
-                .unwrap()
-        };
-        // A root that does not end where staging begins is not reclaimable.
-        assert_eq!(
-            invoke(root_start, root_size - 1024 * 1024).status.code(),
-            Some(1)
-        );
-        let result = invoke(root_start, root_size);
-        assert!(result.status.success(), "{policy:?}: {result:?}");
-        assert!(result.stderr.is_empty(), "{result:?}");
-        assert_eq!(
-            result.stdout,
-            b"recorded staging reclaim for the installed system\n"
-        );
-        let seed = target_var.join("lib/tilo/migration-plan.json");
-        let reclaim = target_var.join("lib/tilo/staging-reclaim.json");
-        let bytes = fs::read(&seed).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<Value>(&bytes).unwrap(),
-            document["migration"]
-        );
-        let metadata = fs::metadata(&seed).unwrap();
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-        let recorded = fs::read(&reclaim).unwrap();
-        assert_eq!(
-            fs::metadata(&reclaim).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let record: Value = serde_json::from_slice(&recorded).unwrap();
-        assert_eq!(record["operation_id"], document["operation_id"]);
-        assert_eq!(record["disk_guid"], DISK_GUID);
-        assert_eq!(record["staging_esp"]["partuuid"], ESP_UUID);
-        assert_eq!(record["staging_root"]["last_lba"], STAGING_ROOT.1);
-        assert_eq!(
-            record["target_root"]["partuuid"],
-            "eeeeeeee-0000-4000-8000-000000000005"
-        );
-        assert_eq!(record["target_root"]["last_lba"], TARGET.1);
-        assert_eq!(
-            record["target_root"]["last_lba"].as_i64().unwrap() + 1,
-            STAGING_ESP.0
-        );
-        assert_eq!(record["sector_bytes"], 512);
+    let temporary = tempfile::tempdir().unwrap();
+    let handoff = temporary.path().join("handoff.json");
+    let target_var = temporary.path().join("var");
+    fs::create_dir(&target_var).unwrap();
+    let document = handoff_document();
+    fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
+    let root_start = TARGET.0 * 512;
+    let root_size = (TARGET.1 - TARGET.0 + 1) * 512;
+    let invoke = |start: i64, size: i64| {
+        Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
+            .args(["write-reclaim-record", "--handoff"])
+            .arg(&handoff)
+            .arg("--target-var")
+            .arg(&target_var)
+            .args([
+                "--target-root-partuuid",
+                "EEEEEEEE-0000-4000-8000-000000000005",
+                "--target-esp-partuuid",
+                TARGET_ESP_UUID,
+                "--target-root-start-bytes",
+                &start.to_string(),
+                "--target-root-size-bytes",
+                &size.to_string(),
+                "--sector-size",
+                "512",
+            ])
+            .output_locked()
+            .unwrap()
+    };
+    // A root that does not end where staging begins is not reclaimable.
+    assert_eq!(
+        invoke(root_start, root_size - 1024 * 1024).status.code(),
+        Some(1)
+    );
+    let result = invoke(root_start, root_size);
+    assert!(result.status.success(), "{result:?}");
+    assert!(result.stderr.is_empty(), "{result:?}");
+    assert_eq!(
+        result.stdout,
+        b"recorded staging reclaim for the installed system\n"
+    );
+    let reclaim = target_var.join("lib/tilo/staging-reclaim.json");
+    let recorded = fs::read(&reclaim).unwrap();
+    assert_eq!(
+        fs::metadata(&reclaim).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let record: Value = serde_json::from_slice(&recorded).unwrap();
+    assert_eq!(record["operation_id"], document["operation_id"]);
+    assert_eq!(record["disk_guid"], DISK_GUID);
+    assert_eq!(record["staging_esp"]["partuuid"], ESP_UUID);
+    assert_eq!(record["staging_root"]["last_lba"], STAGING_ROOT.1);
+    assert_eq!(
+        record["target_root"]["partuuid"],
+        "eeeeeeee-0000-4000-8000-000000000005"
+    );
+    assert_eq!(record["target_root"]["last_lba"], TARGET.1);
+    assert_eq!(
+        record["target_root"]["last_lba"].as_i64().unwrap() + 1,
+        STAGING_ESP.0
+    );
+    assert_eq!(record["sector_bytes"], 512);
+    assert!(!target_var.join("lib/tilo/migration-plan.json").exists());
 
-        let retry = invoke(root_start, root_size);
-        assert!(retry.status.success(), "{retry:?}");
-        assert_eq!(fs::read(&seed).unwrap(), bytes);
-        assert_eq!(fs::metadata(&seed).unwrap().ino(), metadata.ino());
-        assert_eq!(fs::read(&reclaim).unwrap(), recorded);
-
-        // A valid but different plan must never replace already-published consent.
-        document["migration"]["home"]["inode"] = json!(124);
-        fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
-        let conflict = invoke(root_start, root_size);
-        assert_eq!(conflict.status.code(), Some(1), "{conflict:?}");
-        assert!(conflict.stdout.is_empty(), "{conflict:?}");
-        assert!(
-            String::from_utf8_lossy(&conflict.stderr).contains("migration intent conflicts"),
-            "{conflict:?}"
-        );
-        assert_eq!(fs::read(&seed).unwrap(), bytes);
-        assert_eq!(fs::read(&reclaim).unwrap(), recorded);
-
-        // A handoff without migration retains the original reclaim-only behavior.
-        document.as_object_mut().unwrap().remove("migration");
-        fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
-        fs::remove_file(&seed).unwrap();
-        let legacy = invoke(root_start, root_size);
-        assert!(legacy.status.success(), "{legacy:?}");
-        assert!(!seed.exists());
-        assert_eq!(fs::read(&reclaim).unwrap(), recorded);
-    }
-
-    // Valid home_exclusions survive publication verbatim; invalid exclusions are refused.
-    {
-        let temporary = tempfile::tempdir().unwrap();
-        let handoff = temporary.path().join("handoff.json");
-        let target_var = temporary.path().join("var");
-        fs::create_dir(&target_var).unwrap();
-        let root_start = TARGET.0 * 512;
-        let root_size = (TARGET.1 - TARGET.0 + 1) * 512;
-        let invoke = || {
-            Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
-                .args(["write-reclaim-record", "--handoff"])
-                .arg(&handoff)
-                .arg("--target-var")
-                .arg(&target_var)
-                .args([
-                    "--target-root-partuuid",
-                    "EEEEEEEE-0000-4000-8000-000000000005",
-                    "--target-esp-partuuid",
-                    TARGET_ESP_UUID,
-                    "--target-root-start-bytes",
-                    &root_start.to_string(),
-                    "--target-root-size-bytes",
-                    &root_size.to_string(),
-                    "--sector-size",
-                    "512",
-                ])
-                .output_locked()
-                .unwrap()
-        };
-
-        let mut bad = candidate["normalized"].clone();
-        bad["migration"]["home_exclusions"] = json!([
-            {"platform": "Unix", "units": b"../escape"}
-        ]);
-        fs::write(&handoff, serde_json::to_vec(&bad).unwrap()).unwrap();
-        let refused = invoke();
-        assert_eq!(refused.status.code(), Some(1), "{refused:?}");
-        assert!(!target_var.join("lib/tilo/migration-plan.json").exists());
-
-        let mut good = candidate["normalized"].clone();
-        good["migration"]["home_exclusions"] = json!([
-            {"platform": "Unix", "units": b"Documents/Private"}
-        ]);
-        fs::write(&handoff, serde_json::to_vec(&good).unwrap()).unwrap();
-        let accepted = invoke();
-        assert!(accepted.status.success(), "{accepted:?}");
-        let seed = target_var.join("lib/tilo/migration-plan.json");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&fs::read(&seed).unwrap()).unwrap(),
-            good["migration"]
-        );
-    }
+    let retry = invoke(root_start, root_size);
+    assert!(retry.status.success(), "{retry:?}");
+    assert_eq!(fs::read(&reclaim).unwrap(), recorded);
 }
 
 #[test]
@@ -1046,196 +947,4 @@ fn usage_errors_exit_2() {
             .stderr
             .ends_with("error: the following arguments are required: --disk\n")
     );
-}
-
-fn parser_parity_cases() -> Vec<Value> {
-    serde_json::from_str(include_str!("fixtures/staging_handoff_parity.json")).unwrap()
-}
-
-fn authenticated_parity_cases() -> Vec<Value> {
-    serde_json::from_str(include_str!(
-        "fixtures/staging_handoff_authenticated_parity.json"
-    ))
-    .unwrap()
-}
-
-/// Stage the real ELF pair together so `current_exe` sibling lookup works even
-/// when a remote runner copies test artifacts out of Cargo's target directory.
-fn native_retained_runtime() -> tempfile::TempDir {
-    let helper = tilo_test_env::package_binary!("tilo-staging-handoff");
-    let helper = helper.as_path();
-    // The package-local target compiles the production extractor source, not a
-    // replacement implementation; the explicit path also supports runners that
-    // provision the separately built imager binary.
-    let extractor = std::env::var_os("TILO_PREPARED_EXTRACT_BINARY")
-        .map(PathBuf::from)
-        .or_else(|| {
-            option_env!("CARGO_BIN_EXE_staging-handoff-native-extractor").map(|built| {
-                tilo_test_env::package_binary_at("staging-handoff-native-extractor", built)
-            })
-        })
-        .unwrap_or_else(|| helper.with_file_name("tilo-installer-prepared-setup-extract"));
-    let runtime = tempfile::tempdir().unwrap();
-    for (source, name) in [
-        (helper, "tilo-staging-handoff"),
-        (extractor.as_path(), "tilo-installer-prepared-setup-extract"),
-    ] {
-        use std::io::Read;
-        let mut magic = [0; 4];
-        fs::File::open(source)
-                .and_then(|mut file| file.read_exact(&mut magic))
-                .unwrap_or_else(|error| panic!("native runtime requires {}: {error}; build the production extractor or set TILO_PREPARED_EXTRACT_BINARY", source.display()));
-        assert_eq!(
-            &magic,
-            b"\x7fELF",
-            "{} is not a native ELF",
-            source.display()
-        );
-        fs::copy(source, runtime.path().join(name)).unwrap();
-    }
-    runtime
-}
-
-/// Exercise the shipped ELF entry point, including argument parsing and stdin:
-/// no interpreter or fixture executable participates in this command path.
-/// `runtime` is one test's staged pair: the commands only read it, and staging
-/// it again for each of them copied both executables every time.
-fn native_retained_command(runtime: &Path, command: &str, args: &[&str], input: &[u8]) -> Output {
-    let mut child = Command::new(runtime.join("tilo-staging-handoff"))
-        .arg(command)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn_locked()
-        .unwrap();
-    if let Err(error) = child.stdin.take().unwrap().write_all(input) {
-        // A bounded parser may refuse before consuming the complete payload.
-        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
-    }
-    child.wait_with_output().unwrap()
-}
-
-#[test]
-fn native_authenticated_retained_delivery_matches_candidate_responses() {
-    use std::os::unix::fs::PermissionsExt;
-    let runtime = native_retained_runtime();
-    let deliver = |target: &str, input: &[u8]| {
-        native_retained_command(
-            runtime.path(),
-            "deliver-retained",
-            &["--target-var", target],
-            input,
-        )
-    };
-    for case in authenticated_parity_cases() {
-        let temporary = tempfile::tempdir().unwrap();
-        let target = temporary.path().to_str().unwrap();
-        let input = case["input"].as_str().unwrap().as_bytes();
-        let result = deliver(target, input);
-        let seed = temporary.path().join("lib/tilo/migration-plan.json");
-        assert!(result.stdout.is_empty(), "{}: {result:?}", case["name"]);
-        if let Some(refusal) = case.get("refusal") {
-            assert_eq!(
-                result.status.code(),
-                Some(1),
-                "{}: {result:?}",
-                case["name"]
-            );
-            assert!(!seed.exists(), "refused receipt must never publish a seed");
-            assert!(
-                String::from_utf8_lossy(&result.stderr).starts_with("error: staged installation:")
-                    && String::from_utf8_lossy(&result.stderr).contains(refusal.as_str().unwrap()),
-                "{result:?}"
-            );
-            continue;
-        }
-        assert!(result.status.success(), "{}: {result:?}", case["name"]);
-        assert!(result.stderr.is_empty(), "{result:?}");
-        let plan = &case["plan"];
-        if plan.is_null() {
-            assert!(
-                !temporary.path().join("lib").exists(),
-                "no consent means no metadata writes"
-            );
-            continue;
-        }
-        let contents = fs::read(&seed).unwrap();
-        assert_eq!(serde_json::from_slice::<Value>(&contents).unwrap(), *plan);
-        assert_eq!(
-            fs::metadata(&seed).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let retry = deliver(target, input);
-        assert!(retry.status.success(), "{retry:?}");
-        assert_eq!(fs::read(&seed).unwrap(), contents);
-        let mut conflicting = plan.clone();
-        conflicting["home"]["inode"] = json!(999);
-        let conflicting = serde_json::to_vec(&conflicting).unwrap();
-        fs::write(&seed, &conflicting).unwrap();
-        let retry = deliver(target, input);
-        assert_eq!(retry.status.code(), Some(1), "{retry:?}");
-        assert_eq!(
-            fs::read(&seed).unwrap(),
-            conflicting,
-            "conflicting consent must survive refusal"
-        );
-    }
-}
-
-#[test]
-fn native_retained_commands_refuse_what_they_cannot_bind() {
-    {
-        let runtime = native_retained_runtime();
-        let temporary = tempfile::tempdir().unwrap();
-        // Duplicate keys at any depth, unknown fields, a non-boolean schema, a
-        // non-JSON number, invalid UTF-8 and an oversized receipt are all refused
-        // before any destination write.
-        let inputs = [
-            br#"{"schema":1,"schema":1}"#.to_vec(),
-            br#"{"schema":1,"retained_home":{"home":{"inode":1,"inode":2}}}"#.to_vec(),
-            br#"{"schema":1,"unknown":null}"#.to_vec(),
-            br#"{"schema":true}"#.to_vec(),
-            br#"{"schema":1,"retained_home":NaN}"#.to_vec(),
-            vec![0xff],
-            vec![b' '; 64 * 1024 + 32769],
-        ];
-        for input in inputs {
-            for (command, args) in [
-                (
-                    "deliver-retained",
-                    vec!["--target-var", temporary.path().to_str().unwrap()],
-                ),
-                (
-                    "preflight-retained",
-                    vec!["--disk", "/dev/no-such-staging-parity-disk"],
-                ),
-            ] {
-                let result = native_retained_command(runtime.path(), command, &args, &input);
-                assert_eq!(result.status.code(), Some(1), "{command}: {result:?}");
-                assert!(result.stdout.is_empty(), "{result:?}");
-                assert!(
-                    String::from_utf8_lossy(&result.stderr)
-                        .starts_with("error: staged installation:"),
-                    "{result:?}"
-                );
-                assert!(!temporary.path().join("lib").exists());
-            }
-        }
-    }
-
-    {
-        let runtime = native_retained_runtime();
-        let result = native_retained_command(
-            runtime.path(),
-            "preflight-retained",
-            &["--disk", "/dev/no-such-staging-parity-disk"],
-            br#"{"schema":1}"#,
-        );
-        assert!(result.status.success(), "{result:?}");
-        assert!(
-            result.stdout.is_empty() && result.stderr.is_empty(),
-            "{result:?}"
-        );
-    }
 }

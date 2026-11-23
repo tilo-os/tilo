@@ -7,11 +7,8 @@ fn fixture() -> TestApp<ImagerShell> {
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
-        preview.restart = restart_controller::Restart::default();
         preview.error = None;
         preview.journey.destination = Some(Destination::Computer);
-        preview.journey.migrate = Some(false);
-        preview.journey.identity = Some(Identity::New);
         preview.journey.page = Page::Password;
         preview.journey.password.clear();
         preview.journey.confirmation.clear();

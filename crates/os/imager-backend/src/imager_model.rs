@@ -205,18 +205,6 @@ pub struct TiloRelease {
     /// SHA-256 of the expanded image that is written to the device.
     #[serde(default)]
     pub image_sha256: String,
-    /// Exact target consumer proof authenticated with the media catalog's image digest.
-    #[serde(default)]
-    pub account_credentials: Option<crate::account_admission::ConsumerCapability>,
-    /// Home archive consumers authenticated with the selected image digest.
-    #[serde(default)]
-    pub home_archive: Option<crate::home_admission::ConsumerCapability>,
-    /// Selected app-state consumers authenticated with the exact image digest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub applications: Option<crate::applications_admission::ConsumerCapability>,
-    /// Original-source consumer proof authenticated with the selected image.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_source: Option<crate::original_admission::ConsumerCapability>,
 }
 
 impl TiloRelease {
@@ -610,8 +598,7 @@ pub enum TargetName {
 // The profile types and their codec live in `install-profile-model`, which the
 // standalone media tools take without the document stack this app keeps.
 pub use install_profile_model::media::{
-    DEFAULT_HOSTNAME, Filesystem, InstallProfile, MediaPreparedSetup as PreparedSetupExpectation,
-    UserAccount,
+    DEFAULT_HOSTNAME, Filesystem, InstallProfile, UserAccount,
 };
 
 // ---------------------------------------------------------------------------
@@ -793,10 +780,6 @@ pub fn sample_releases() -> Vec<TiloRelease> {
             archive_sha256: String::new(),
             archive_size: 0,
             image_sha256: "1111111111111111111111111111111111111111111111111111111111111111".into(),
-            account_credentials: None,
-            home_archive: None,
-            applications: None,
-            original_source: None,
         },
         TiloRelease {
             name: "Tilo".into(),
@@ -810,10 +793,6 @@ pub fn sample_releases() -> Vec<TiloRelease> {
             archive_sha256: String::new(),
             archive_size: 0,
             image_sha256: "2222222222222222222222222222222222222222222222222222222222222222".into(),
-            account_credentials: None,
-            home_archive: None,
-            applications: None,
-            original_source: None,
         },
     ]
 }
@@ -1085,45 +1064,6 @@ mod tests {
             };
             assert_eq!(done.overall(), 1.0);
         }
-    }
-}
-
-#[cfg(test)]
-mod prepared_setup_binding_tests {
-    use super::*;
-
-    #[test]
-    fn media_profile_carries_only_valid_ciphertext_binding_and_public_device_name() {
-        let mut profile = InstallProfile::default();
-        let legacy: serde_json::Value =
-            serde_json::from_slice(&profile.to_media_profile_json().unwrap()).unwrap();
-        assert!(legacy.get("prepared_setup").is_none());
-        profile.device_label = "Travel laptop".into();
-        profile.user.password = "private startup secret".into();
-        profile.encryption_passphrase = "private disk secret".into();
-        let expectation = PreparedSetupExpectation {
-            schema: 1,
-            sealed_bytes: 4096,
-            ciphertext_sha256: "a".repeat(64),
-        };
-        profile.prepared_setup = Some(expectation.clone());
-        profile.validate_media_profile().unwrap();
-        let bytes = profile.to_media_profile_json().unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["device_label"], "Travel laptop");
-        assert_eq!(
-            serde_json::from_value::<PreparedSetupExpectation>(value["prepared_setup"].clone())
-                .unwrap(),
-            expectation
-        );
-        let text = String::from_utf8(bytes).unwrap();
-        assert!(!text.contains("private startup secret"));
-        assert!(!text.contains("private disk secret"));
-        profile.prepared_setup.as_mut().unwrap().ciphertext_sha256 = "A".repeat(64);
-        assert!(profile.validate_media_profile().is_err());
-        profile.prepared_setup.as_mut().unwrap().ciphertext_sha256 = "a".repeat(64);
-        profile.prepared_setup.as_mut().unwrap().sealed_bytes = 40 * 1024 * 1024 + 1;
-        assert!(profile.validate_media_profile().is_err());
     }
 }
 

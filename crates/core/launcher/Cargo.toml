@@ -34,21 +34,14 @@ path = "src/lib.rs"
 # in a release build. Debug builds always honour them; shipped images never
 # enable this.
 dev-overrides = ["package-store/dev-overrides"]
-# Explicit opt-in qualification for the native tests that need real root and kernel facilities.
-native-qualification = []
-# Explicit signed-worker/FUSE alias qualification; no authority constructor.
-native-home-alias-qualification = []
 
 [dependencies]
-browser-continuity = { workspace = true, features = ["native"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Kernel-authenticated ownership of the executing native service peer.
 runtime-portal = { path = "../runtime-portal", default-features = false }
-tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # Supervisors sleep on a child's pidfd and a wake descriptor instead of polling.
 bounded-command = { path = "../../platform/bounded-command" }
 blake3.workspace = true
-sha2.workspace = true
 hex.workspace = true
 tempfile.workspace = true
 tilo-paths.workspace = true
@@ -76,7 +69,6 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libc.workspace = true
-getrandom.workspace = true
 runtime-bundle = { path = "../runtime-bundle" }
 # The canonical manifest schema and its one decoder (`view`), so the
 # sandbox reads exactly what the registry and the installer read.
@@ -97,7 +89,6 @@ tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 # The system information service's handoff, written before the app holds
 # the connection (`system_stats`).
 tilo-system-stats = { path = "../../system/system-stats" }
-uuid.workspace = true
 # Host applications: the `.desktop` entries already installed on the
 # machine. Kept in its own crate because nothing about it is Tilo
 # packaging — it is the freedesktop format, and the compositor's search

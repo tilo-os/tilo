@@ -101,14 +101,11 @@ RUN case "${TILO_GENERATION}" in \
       "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
  && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"
 
-# Of the desktop's programs only those the consumer receipts certify run here: t
-# lays the others over the finished image (os/image/binaries.Containerfile), and
-# os-image-contracts checks them in the composed image (os/tests/image-programs-
-# contract.sh). This checks that no package claims one of tilo's nouns as its
-# command, the browser engine resolves every library it loads from this rootfs,
-# and the AirPlay sender starts. Then the prepared-setup helper publishes the
-# account and Home consumer receipts (/usr/share/tilo), which the installer's
-# media validation and a device's first boot hold the image's consumers to.
+# None of the desktop's programs run here: t lays them over the finished image
+# (os/image/binaries.Containerfile), and os-image-contracts checks them in the
+# composed image (os/tests/image-programs-contract.sh). This checks that no
+# package claims one of tilo's nouns as its command, the browser engine resolves
+# every library it loads from this rootfs, and the AirPlay sender starts.
 ARG CHROMIUM_RUNTIME_VERSION
 RUN for name in device action package agent system tilo-app tilo-action tilo-device tilo-package tilo-agent; do \
       if rpm --quiet -qf "/usr/bin/$name"; then \
@@ -131,11 +128,7 @@ RUN for name in device action package agent system tilo-app tilo-action tilo-dev
     && cat /usr/share/tilo/browser-runtime-publisher.hex \
         >> /etc/tilo/runtime-bundle-trusted-publishers.txt \
     && cat /usr/share/tilo/registry-runtime-publisher.hex \
-        >> /etc/tilo/runtime-bundle-trusted-publishers.txt \
-    && /usr/libexec/tilo-prepared-setup --verify-account-consumer-capability \
-    && /usr/libexec/tilo-prepared-setup --verify-account-consumer-capability --check >/dev/null \
-    && /usr/libexec/tilo-prepared-setup --verify-home-consumer-capability \
-    && /usr/libexec/tilo-prepared-setup --verify-home-consumer-capability --check >/dev/null
+        >> /etc/tilo/runtime-bundle-trusted-publishers.txt
 
 # Finish the rootfs.
 #

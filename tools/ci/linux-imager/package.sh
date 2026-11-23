@@ -44,31 +44,13 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 export NO_STRIP=1
 export TILO_REQUIRE_NATIVE_PACKAGES=1
 
-# A release tag ships the migration capture service beside the installer, signed by its own
-# runtime and service identities (t secrets, written to private files for this step) and
-# qualified on the pinned base image. Main's dry run builds the installer without it.
 case "${T_REF:-}" in
   tag:imager-v*)
     # The installer offers the media this tag built: release-catalog/imager's catalogue.
     export TILO_RELEASE_CATALOG=/target/imager-release/catalog/tilo-installer-catalog-v2.json
     [ -s "$TILO_RELEASE_CATALOG" ] \
       || { printf 'missing %s: a release tag builds the installer with its own media catalogue\n' "$TILO_RELEASE_CATALOG" >&2; exit 1; }
-    for input in TILO_CAPTURE_RUNTIME_IDENTITY_KEY TILO_CAPTURE_SERVICE_IDENTITY_KEY \
-                 TILO_CAPTURE_QUALIFIER_BASE TILO_CAPTURE_SOURCE_ASSETS; do
-      [ -n "${!input:-}" ] || { printf 'missing %s: a release tag needs it to sign the capture service\n' "$input" >&2; exit 1; }
-    done
-    identities="$(mktemp -d)"
-    trap 'rm -rf -- "$identities"' EXIT
-    printf '%s\n' "$TILO_CAPTURE_RUNTIME_IDENTITY_KEY" > "$identities/runtime"
-    printf '%s\n' "$TILO_CAPTURE_SERVICE_IDENTITY_KEY" > "$identities/service"
-    chmod 0400 "$identities/runtime" "$identities/service"
-    export TILO_VERSION="${T_REF#tag:imager-v}" \
-      TILO_CAPTURE_RUNTIME_IDENTITY="$identities/runtime" TILO_CAPTURE_SERVICE_IDENTITY="$identities/service"
-    capture_env="$identities/environment"
-    python3 apps/imager/packaging/prepare-capture-release.py \
-      --output "$identities/capture" --feature host-media-writer --github-env "$capture_env"
-    while IFS='=' read -r name value; do export "$name=$value"; done < "$capture_env"
-    export TILO_REQUIRE_CAPTURE=1
+    export TILO_VERSION="${T_REF#tag:imager-v}"
     ;;
 esac
 

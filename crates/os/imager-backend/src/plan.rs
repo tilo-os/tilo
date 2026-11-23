@@ -528,6 +528,26 @@ pub fn target_bounds(basis: &Basis, requirements: Requirements) -> Result<Target
     })
 }
 
+/// Recompute a reviewed plan and require its placement to remain unchanged.
+pub fn admit_reviewed(plan: &Plan, requirements: Requirements) -> Result<(), PlanError> {
+    let mut expected = compute(&plan.basis, requirements)?;
+    // UUIDs are minted once per review, not placement inputs.
+    expected
+        .staging_esp
+        .partition_guid
+        .clone_from(&plan.staging_esp.partition_guid);
+    expected
+        .staging_root
+        .partition_guid
+        .clone_from(&plan.staging_root.partition_guid);
+    if expected != *plan {
+        return Err(PlanError::Unsupported(
+            "Storage changed after review; review capacity again. The original system has not been removed.".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Rewrites the bundle's `boot_binding.efi_path` (`/EFI/BOOT/BOOTX64.EFI`) into the plan's
 /// backslash form.
 pub fn with_loader_path(mut plan: Plan, efi_path: &str) -> Plan {

@@ -1,4 +1,4 @@
-//! One held-descriptor copy, migration geometry commit, and profile transaction.
+//! One held-descriptor copy and profile transaction.
 #[cfg(test)]
 mod tests;
 use super::helper::ReviewedSource;
@@ -13,39 +13,22 @@ use crate::media_model::PROFILE_BLOCK_SIZE;
 #[cfg(any(test, feature = "test-support", target_os = "linux"))]
 use std::io::{self, Seek, SeekFrom, Write};
 
-#[cfg(target_os = "linux")]
-pub struct ExpectedLayout {
-    pub binding: crate::media_layout::MediaPartitionBinding,
-    pub reserved_bytes: u64,
-}
-
 /// Neutral inputs held for the full authorized-descriptor transaction.
 pub struct DescriptorWriteRequest {
     pub source: ReviewedSource,
     pub expected_sha256: Option<String>,
     pub target_size: u64,
-    pub target_stable_id: String,
     pub installable: bool,
-    pub provision_migration_data: bool,
-    pub has_legacy_handoff: bool,
-    #[cfg(target_os = "linux")]
-    pub expected_layout: Option<ExpectedLayout>,
 }
 
-/// The app supplies only profile encoding and migration policy. All raw I/O,
-/// digest validation, GPT commitment, synchronization and read-back live here.
+/// The app supplies only profile encoding. All raw I/O, digest validation,
+/// synchronization and read-back live here.
 #[cfg(any(test, feature = "test-support", target_os = "linux"))]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the held descriptor remains borrowed through one linear copy, layout, and profile transaction"
-)]
 pub fn run_job_file_bound(
     request: &DescriptorWriteRequest,
     device: &mut std::fs::File,
     should_cancel: &impl Fn() -> bool,
     mut on_progress: impl FnMut(HelperProgress),
-    validate_pending: impl Fn(&std::fs::File) -> io::Result<()>,
-    payload_capacity: fn(u64) -> io::Result<u64>,
     encode_profile: impl FnOnce() -> io::Result<Vec<u8>>,
 ) -> JobResult {
     let mut source = match super::open_reviewed_source(
@@ -58,45 +41,6 @@ pub fn run_job_file_bound(
         Ok(source) => source,
         Err(result) => return result,
     };
-    #[cfg(target_os = "linux")]
-    let layout = if request.provision_migration_data {
-        if let Err(error) = validate_pending(device) {
-            return JobResult::WriteFailed(error.to_string());
-        }
-        if !request.installable || request.has_legacy_handoff {
-            return JobResult::WriteFailed("Migration layout refuses legacy tail handoff".into());
-        }
-        let prepared = if let Some(pending) = &request.expected_layout {
-            crate::media_layout::prepare_expected(
-                &source,
-                device,
-                request.source.size,
-                request.target_size,
-                &pending.binding,
-                pending.reserved_bytes,
-                payload_capacity,
-            )
-        } else {
-            crate::media_layout::prepare(
-                &source,
-                device,
-                request.source.size,
-                request.target_size,
-                &request.target_stable_id,
-                payload_capacity,
-            )
-        };
-        match prepared {
-            Ok(layout) => Some(layout),
-            Err(error) => return JobResult::WriteFailed(error.to_string()),
-        }
-    } else {
-        None
-    };
-    #[cfg(not(target_os = "linux"))]
-    if request.provision_migration_data {
-        return JobResult::WriteFailed("Migration data provisioning requires Linux".into());
-    }
     let result = super::copy_verify_descriptor(
         &mut source,
         device,
@@ -125,30 +69,6 @@ pub fn run_job_file_bound(
     if !result.is_success() {
         return result;
     }
-    #[cfg(target_os = "linux")]
-    let profile_offset = match layout {
-        Some(layout) => match layout.commit(device, should_cancel) {
-            Ok(binding) => {
-                if request
-                    .expected_layout
-                    .as_ref()
-                    .is_some_and(|pending| pending.binding != binding)
-                {
-                    return JobResult::VerifyFailed(
-                        "Committed migration layout differs from sealed expectation".into(),
-                    );
-                }
-                Some(binding.profile_offset)
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                return JobResult::Cancelled;
-            }
-            Err(error) => return JobResult::VerifyFailed(error.to_string()),
-        },
-        None => None,
-    };
-    #[cfg(not(target_os = "linux"))]
-    let profile_offset: Option<u64> = None;
     if request.installable {
         let block = match encode_profile() {
             Ok(block) => block,
@@ -159,9 +79,7 @@ pub fn run_job_file_bound(
                 "installation profile has an invalid block length".into(),
             );
         }
-        let Some(offset) =
-            profile_offset.or_else(|| request.target_size.checked_sub(PROFILE_BLOCK_SIZE as u64))
-        else {
+        let Some(offset) = request.target_size.checked_sub(PROFILE_BLOCK_SIZE as u64) else {
             return JobResult::VerifyFailed("target is too small for installation profile".into());
         };
         if let Err(error) = device

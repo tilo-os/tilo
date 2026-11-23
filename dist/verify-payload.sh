@@ -15,14 +15,14 @@ libexec_dir=${TILO_LIBEXEC_DIR:-/usr/libexec}
 # /usr/bin/tilo: a terminal reaches the desktop's apps and actions with it; /usr/bin/tilo-runtime
 # is the daemon its login starts, and /usr/bin/tilolang-process runs a task's tilolang programs.
 for file in /usr/bin/tilo-session /usr/bin/tilo /usr/bin/tilo-runtime /usr/bin/tilolang-process \
-            /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders \
+            /usr/libexec/tilo/tilo-launcher \
             "$libexec_dir/tilo-unlock-helper" "$libexec_dir/tilo-session" \
             "$libexec_dir/tilo-session-runner" \
             "$libexec_dir/tilo-flight-recorder" \
             "$libexec_dir/tilo-session-report"; do
     [[ -x $(path "$file") ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
-for file in /usr/share/applications/tilo-import-folders.desktop /etc/pam.d/tilo-unlock \
+for file in /etc/pam.d/tilo-unlock \
             /usr/share/wayland-sessions/tilo.desktop \
             /usr/share/xdg-desktop-portal/portals/tilo.portal \
             /usr/share/xdg-desktop-portal/tilo-portals.conf \
@@ -77,16 +77,12 @@ grep -Fqx 'Wants=tilo-package-service.socket tilo-models.socket tilo-model-gatew
 [[ ! -e $(path /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tilo.service) ]]
 [[ ! -e $(path /usr/lib/systemd/user/tilo-portal.service) ]]
 
-grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" "$(path /usr/share/applications/tilo-import-folders.desktop)"
-grep -Fxq "TryExec=/usr/bin/tilo-import-folders" "$(path /usr/share/applications/tilo-import-folders.desktop)"
-"$(path /usr/bin/tilo-import-folders)" --tilo-package-smoke
-
 # Commands of the apps a package ships each need their sidecar to run.
 apps_bin=$(path /usr/lib/tilo-apps/bin)
 [[ ! -d $apps_bin ]] || "$(dirname "${BASH_SOURCE[0]}")/verify-cli-shims.sh" "$apps_bin"
 
 for elf in /usr/bin/tilo-session /usr/bin/tilo /usr/bin/tilo-runtime /usr/bin/tilolang-process \
-           /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders "$libexec_dir/tilo-unlock-helper" \
+           /usr/libexec/tilo/tilo-launcher "$libexec_dir/tilo-unlock-helper" \
            "$libexec_dir/tilo-flight-recorder" "$libexec_dir/tilo-session-report"; do
     elf_description=$(LC_ALL=C file "$(path "$elf")")
     case ${TILO_EXPECT_ARCH:-} in

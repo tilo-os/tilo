@@ -60,7 +60,7 @@ OS_BASE = ("os/", "keys/")
 # Read by the layer packer, not by the base: a change applies through the layers it packs.
 LAYER_INPUTS = ("os/components.toml", "os/scripts/install-components.py")
 # Components whose programs the live installer runs: the medium is sealed and takes no layer.
-MEDIUM_COMPONENTS = {"installer", "install-helpers", "prepared-setup"}
+MEDIUM_COMPONENTS = {"installer", "install-helpers"}
 # Programs of other components the live installer runs too (the login a ticket makes, and
 # the unlock from another of the person's devices).
 MEDIUM_BINS = {"tilo", "tilo-crypto", "tilo-auth"}

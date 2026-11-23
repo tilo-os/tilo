@@ -12,7 +12,7 @@ pub(crate) const RESCAN: &str = "imager.rescan";
 impl ImagerApp {
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = WindowToolbar::default();
-        if self.step == Step::Drive && !self.prepared_delivery.needs_source_review() {
+        if self.step == Step::Drive {
             toolbar.actions.push(ToolbarAction::new(
                 RESCAN,
                 "refresh",

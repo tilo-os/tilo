@@ -188,31 +188,12 @@ elif id "$user" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Writable shared originals depend on preserving their original Linux UID.
-# The strict root helper validates the private plan, regular-account policy and
-# both username/UID availability before any account creation side effect.
+# The selected online accounts are bound to the installed account's UID 1000.
 uid_args=()
 online_accounts=0
 if [ -e /etc/tilo/online-accounts ] || [ -L /etc/tilo/online-accounts ]; then
   online_accounts=1
   uid_args=(-u 1000)
-fi
-if [ "$retry" -eq 0 ] && { [ -e /var/lib/tilo/migration-plan.json ] || [ -L /var/lib/tilo/migration-plan.json ]; }; then
-  required_uid="$(/usr/libexec/tilo-staging-handoff required-user-id --username "$user")" || {
-    echo "tilo-firstboot-user: migration ownership validation failed; preserving credential seed" >&2
-    exit 1
-  }
-  if [ -n "$required_uid" ]; then
-    if [[ ! "$required_uid" =~ ^[1-9][0-9]{0,9}$ ]]; then
-      echo "tilo-firstboot-user: migration user-ID response is malformed" >&2
-      exit 1
-    fi
-    if [ "$online_accounts" -eq 1 ] && [ "$required_uid" != 1000 ]; then
-      echo "tilo-firstboot-user: migration UID conflicts with selected account destination" >&2
-      exit 1
-    fi
-    uid_args=(-u "$required_uid")
-  fi
 fi
 
 if [ -z "$lock_value" ]; then
@@ -292,87 +273,7 @@ fi
 
 repair_enrolled_device_key
 
-# This only delivers bounded metadata. Source mounts, data copies and final
-# promotion require an explicit first-login migration action by this account.
-if [ -f /var/lib/tilo/migration-plan.json ]; then
-  if ! /usr/libexec/tilo-staging-handoff deliver-user-plan --username "$user"; then
-    # Do not permit a first login that silently loses reviewed migration.
-    # Preserve both root metadata and the private credential seed for repair.
-    echo "tilo-firstboot-user: migration metadata delivery failed; account remains locked" >&2
-    exit 1
-  fi
-fi
-
-# The public other-computer handoff belongs to this account's state. It names
-# one opaque peer and a package digest, never a path or credential.
-if [ -f /var/lib/tilo/other-device.json ] && [ ! -L /var/lib/tilo/other-device.json ]; then
-  install -d -m 0700 -o "$user" -g "$user" "$account_home/.local/state/tilo" \
-    || exit 1
-  install -m 0600 -o "$user" -g "$user" /var/lib/tilo/other-device.json \
-    "$account_home/.local/state/tilo/other-device.json" || exit 1
-fi
-
-# Keep prepared setup encrypted through firstboot. Only the actual account's
-# explicit import action may authenticate and adopt its contents later.
-if [ -e /var/lib/tilo/prepared-setup ] || [ -L /var/lib/tilo/prepared-setup ]; then
-  root_setup=/var/lib/tilo/prepared-setup
-  secret_root=/run/tilo-prepared-setup
-  secret_pending=""
-  deliver_setup=1
-  # The same-computer handoff carries a machine-generated package secret
-  # sealed to this TPM and this signed boot. Unseal it once into the account's
-  # private /run state, so first use never asks for a preparation password.
-  if [ -e "$root_setup/tpm-handoff.json" ] && [ ! -L "$root_setup/tpm-handoff.json" ] \
-     && [ -e "$root_setup/prepared-setup.sealed" ] && [ ! -L "$root_setup/prepared-setup.sealed" ]; then
-    install -d -m 0700 "$secret_root" || exit 1
-    chown "$account_uid:$account_gid" "$secret_root" || exit 1
-    secret_pending="$secret_root/.$account_uid.pending"
-    if /etc/tilo/prepared-setup --unseal-prepared-handoff \
-         --sidecar "$root_setup/tpm-handoff.json" \
-         --package "$root_setup/prepared-setup.sealed" > "$secret_pending" \
-       && [ -s "$secret_pending" ]; then
-      chmod 0600 "$secret_pending" || exit 1
-    else
-      rm -f -- "$secret_pending"
-      secret_pending=""
-      deliver_setup=0
-      # The package cannot be opened on this boot. Keep it for an explicit
-      # recovery path, but do not deliver an unusable password prompt or let
-      # first use believe the approved identity was transferred.
-      unopened=/var/lib/tilo/prepared-setup-unopened
-      if [ -e "$unopened" ] || [ -L "$unopened" ]; then
-        rm -rf -- "$unopened" || exit 1
-      fi
-      mv -- "$root_setup" "$unopened" || exit 1
-      echo "tilo-firstboot-user: the prepared setup could not be opened on this TPM and boot; retained for recovery" >&2
-    fi
-  fi
-  if [ "$deliver_setup" -eq 1 ]; then
-    if ! /etc/tilo/prepared-setup-transport deliver-user --username "$user"; then
-      echo "tilo-firstboot-user: encrypted prepared setup delivery failed; account remains locked" >&2
-      exit 1
-    fi
-    if [ -n "$secret_pending" ]; then
-      secret_file="$secret_root/$account_uid.secret"
-      mv -- "$secret_pending" "$secret_file" || exit 1
-      chown "$account_uid:$account_gid" "$secret_file" || exit 1
-      chmod 0600 "$secret_file" || exit 1
-    fi
-  fi
-fi
-
-# Selected encrypted data changes ownership without a second archive allocation.
-# Failure retains the root metadata and account seed, as for prepared setup.
-if [ -e /var/lib/tilo/prepared-home ] || [ -L /var/lib/tilo/prepared-home ] \
-    || [ -e /var/lib/tilo/prepared-applications ] || [ -L /var/lib/tilo/prepared-applications ] \
-    || [ -e /var/lib/tilo/prepared-browser ] || [ -L /var/lib/tilo/prepared-browser ]; then
-  if ! /etc/tilo/prepared-setup-transport deliver-home-user --username "$user"; then
-    echo "tilo-firstboot-user: portable data ownership delivery failed; account remains locked" >&2
-    exit 1
-  fi
-fi
-
-# All fallible migration runs while the account is expired and password locked.
+# Everything fallible runs while the account is expired and password locked.
 # Expiration also blocks SSH public-key authentication until final release.
 # Credential bytes travel only through stdin, never process arguments.
 printf '%s:%s\n' "$user" "$hash" | chpasswd --encrypted

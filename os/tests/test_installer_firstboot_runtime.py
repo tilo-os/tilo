@@ -21,7 +21,7 @@ class FirstbootRuntime(unittest.TestCase):
 # The fixture cannot relabel host files; record every production label call.
 label_installed_tilo_path() { printf '%s\n' "$2" >> "$LABEL_TRACE"; }
 die() { printf '%s\n' "$*" >&2; exit 1; }
-""" + function + '\nPREPARED_SETUP_RUN="$1/no-prepared-setup"\nstage_installed_firstboot_runtime "$1" "$2"',
+""" + function + '\nstage_installed_firstboot_runtime "$1" "$2"',
              "firstboot-fixture", str(source), str(target)],
             env={**os.environ, "LABEL_TRACE": str(target.parent / "labels")},
             text=True, capture_output=True,
@@ -44,7 +44,6 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             helper_files.chmod(0o755)
             for relative in ("usr/libexec/tilo-firstboot-user",
                              "usr/libexec/tilo-firstboot-home-seeds",
-                             "usr/libexec/tilo-installer-prepared-setup-extract",
                              "usr/lib/systemd/system/tilo-firstboot-user.service",
                              "usr/libexec/tilo-firstboot-autologin-cleanup",
                              "usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service",
@@ -52,10 +51,9 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
                              "usr/lib/systemd/system/tilo-session-recovery.service"):
                 out = source / relative
                 out.parent.mkdir(parents=True, exist_ok=True)
-                if out.name in ("tilo-firstboot-home-seeds", "tilo-installer-prepared-setup-extract"):
-                    override = {"tilo-firstboot-home-seeds": "TILO_FIRSTBOOT_HOME_SEEDS_BINARY",
-                                "tilo-installer-prepared-setup-extract": "TILO_PREPARED_EXTRACT_BINARY"}[out.name]
-                    binary = Path(os.environ.get(override, ROOT / "target/debug" / out.name))
+                if out.name == "tilo-firstboot-home-seeds":
+                    binary = Path(os.environ.get("TILO_FIRSTBOOT_HOME_SEEDS_BINARY",
+                                                 ROOT / "target/debug" / out.name))
                     self.assertEqual(binary.read_bytes()[:4], b"\x7fELF", str(binary))
                     shutil.copyfile(binary, out)
                     out.chmod(0o755)
@@ -84,10 +82,6 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             self.assertEqual(seeds.read_bytes(), (source / "usr/libexec/tilo-firstboot-home-seeds").read_bytes())
             self.assertEqual(seeds.stat().st_mode & 0o777, 0o755)
             self.assertEqual(subprocess.run([str(seeds), "--capabilities"], capture_output=True).returncode, 0)
-            transport = target / "tilo/prepared-setup-transport"
-            self.assertEqual(transport.read_bytes(), (source / "usr/libexec/tilo-installer-prepared-setup-extract").read_bytes())
-            self.assertEqual(transport.stat().st_mode & 0o777, 0o755)
-            self.assertNotEqual(subprocess.run([str(transport), "invalid-operation"], capture_output=True).returncode, 0)
             self.assertIn("/etc/tilo/firstboot-home-seeds", (work / "target/labels").read_text())
             unit = target / "systemd/system/tilo-firstboot-user.service"
             self.assertIn("ExecStart=/usr/bin/bash /etc/tilo/firstboot-user\n", unit.read_text())

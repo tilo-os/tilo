@@ -285,91 +285,6 @@ tilo_test_env::scenario! {
         assert!(app.accounts_controller.as_ref().unwrap().connected() == connected);
     }
 
-    phase prepared_media_unlock_is_private_review_and_skip_preserves_medium;
-    {
-        use account_credentials::hints::{
-            AccountHint, Provider,
-            media::{BLOCK_BYTES, Prepared},
-        };
-        let hint = AccountHint {
-            provider: Provider::Nextcloud,
-            email: "local-only@example.org".into(),
-            server: "https://private-cloud.example.org".into(),
-            sources: account_credentials::hints::HintSources::default(),
-        };
-        let prepared = Prepared::seal(
-            b"prepared-password",
-            "12345678-1234-1234-1234-123456789abc",
-            std::slice::from_ref(&hint),
-            b"verified copies",
-        )
-        .unwrap();
-        let mut block = vec![0; BLOCK_BYTES];
-        prepared.embed(&mut block).unwrap();
-        let original = block.clone();
-        let (mut app, mut doc) = app(&FakeBackend::new());
-        app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
-            purpose: String::new(),
-            device_label: String::new(),
-            prepared_setup: None,
-            tpm_handoff: None,
-            windows_preparation: Some(prepared.expectation),
-            hostname: None,
-            username: None,
-            full_name: None,
-            locale: None,
-            keyboard: None,
-            timezone: None,
-            filesystem: None,
-            repairs: Vec::new(),
-        });
-        app.step = Step::Accounts;
-        app.accounts_initialized = true;
-        app.windows_hints
-            .private_test_unlock(&app.accounts_form, &block, "wrong-password");
-        app.sync_accounts();
-        finish_private_unlock(&mut app);
-        assert!(app.accounts_form.choose_hint(0).is_err());
-        app.windows_hints
-            .private_test_unlock(&app.accounts_form, &block, "prepared-password");
-        app.sync_accounts();
-        finish_private_unlock(&mut app);
-        app.accounts_form.choose_hint(0).unwrap();
-        assert_eq!(app.accounts_form.email.with(Clone::clone), hint.email);
-        assert_eq!(app.accounts_form.server.with(Clone::clone), hint.server);
-        assert!(!app.accounts_form.mail.with(|v| *v));
-        assert!(!app.accounts_form.calendar.with(|v| *v));
-        let local_view = app.accounts_form.view();
-        assert!(
-            !local_labels(local_view.as_ref())
-                .iter()
-                .any(|label| label.starts_with("Connected for "))
-        );
-        assert_eq!(
-            input_value(local_view.as_ref(), "installer.online.email"),
-            Some(hint.email.clone())
-        );
-        assert_eq!(
-            input_value(local_view.as_ref(), "installer.online.server"),
-            Some(hint.server.clone())
-        );
-        let published = public(&mut app, &mut doc);
-        for private in [
-            &hint.email,
-            &hint.server,
-            "prepared-password",
-            "wrong-password",
-        ] {
-            assert!(!published.contains(private));
-        }
-        crate::setup::destination::accounts_hints::WindowsReview::private_test_skip(&app.accounts_form);
-        app.sync_accounts();
-        assert!(app.accounts_form.email.with(String::is_empty));
-        assert!(app.accounts_form.choose_hint(0).is_err());
-        assert_eq!(block, original);
-        assert!(app.accounts_controller.is_none());
-    }
-
     phase calendar_review_confirmation_uses_selected_private_collections;
     {
         let (directory, controller) =
@@ -432,16 +347,6 @@ tilo_test_env::scenario! {
             selected_calendar
         );
     }
-}
-
-fn finish_private_unlock(app: &mut InstallerApp) {
-    tilo_test_env::wait_until("the private unlock to finish", || {
-        if !app.windows_hints.is_pending() {
-            return true;
-        }
-        app.sync_accounts();
-        false
-    });
 }
 
 tilo_test_env::scenario! {

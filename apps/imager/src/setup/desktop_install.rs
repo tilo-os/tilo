@@ -902,7 +902,6 @@ mod tests {
             url: "https://code.tilo.so/tilo/test.rpm".into(),
             byte_size: 7,
             sha256: digest.clone(),
-            account_credentials: None,
             verified_runtime: Some(RuntimeEvidence {
                 schema: 1,
                 reference: "test fixture only".into(),

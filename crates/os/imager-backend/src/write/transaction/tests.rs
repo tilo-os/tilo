@@ -15,12 +15,7 @@ fn request(
         },
         expected_sha256: None,
         target_size,
-        target_stable_id: String::new(),
         installable: true,
-        provision_migration_data: false,
-        has_legacy_handoff: false,
-        #[cfg(target_os = "linux")]
-        expected_layout: None,
     }
 }
 
@@ -42,8 +37,6 @@ tilo_test_env::scenario! {
             &mut target,
             &|| false,
             |event| events.push(event),
-            |_| Ok(()),
-            Ok,
             || Ok(profile.clone()),
         );
         assert_eq!(result, JobResult::Verified);
@@ -75,8 +68,6 @@ tilo_test_env::scenario! {
             &mut target,
             &|| true,
             |_| panic!("cancelled job must not report copied bytes"),
-            |_| Ok(()),
-            Ok,
             || panic!("cancelled job must not encode or write a profile"),
         );
         assert_eq!(result, JobResult::Cancelled);

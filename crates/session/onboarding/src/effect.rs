@@ -24,7 +24,6 @@ pub const CHOICES: &[&str] = &[
     "another-copy",
     "tour",
     "install-codecs",
-    "accept-incomplete",
 ];
 
 /// The fields a value is entered into that are not secret.
@@ -33,7 +32,6 @@ pub const FIELDS: &[&str] = &["backup-file"];
 /// The secret fields.
 pub const SECRET_FIELDS: &[&str] = &[
     "backup-passphrase",
-    "prepared-password",
     "new-passphrase",
     "new-passphrase-confirmation",
     "recovery-key",

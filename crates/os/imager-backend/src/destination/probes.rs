@@ -65,7 +65,7 @@ pub fn has_tpm2() -> bool {
     if !present {
         return false;
     }
-    if !crate::native_root::is_root() {
+    if rustix::process::geteuid().as_raw() != 0 {
         return true;
     }
     *PROBE.get_or_init(|| {

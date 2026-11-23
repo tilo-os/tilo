@@ -10,14 +10,12 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
-use super::retained_commands::parse_receipt;
 use super::{Fail, Outcome, Result, refuse};
 
 /// The commands this module answers.
-pub const COMMANDS: [&str; 6] = [
+pub const COMMANDS: [&str; 5] = [
     "check-device-label",
     "write-machine-info",
-    "check-prepared-choices",
     "guided-geometry",
     "gpt",
     "unpack-setup-handoff",
@@ -95,99 +93,6 @@ pub fn write_machine_info(path: &Path, label: &OsStr) -> Result<()> {
         machine_info(&existing, label).as_bytes(),
         0o644,
     )?;
-    Ok(())
-}
-
-/// The choices `tilo-install` was given, by flag.
-const CHOICE_FLAGS: [&str; 10] = [
-    "--username",
-    "--full-name",
-    "--device-label",
-    "--purpose",
-    "--hostname",
-    "--locale",
-    "--timezone",
-    "--filesystem",
-    "--keymap",
-    "--keyvariant",
-];
-
-fn choices(args: &[OsString]) -> Result<[String; 10]> {
-    let mut values: [Option<String>; 10] = Default::default();
-    let mut args = args.iter();
-    while let Some(flag) = args.next() {
-        let slot = CHOICE_FLAGS
-            .iter()
-            .position(|known| OsStr::new(known) == flag)
-            .and_then(|index| values.get_mut(index))
-            .ok_or_else(|| Fail::Refusal(format!("unknown argument {}", flag.display())))?;
-        let value = args
-            .next()
-            .ok_or_else(|| Fail::Refusal(format!("{} needs a value", flag.display())))?;
-        if slot.replace(text(value)?.to_owned()).is_some() {
-            return refuse(format!("{} given twice", flag.display()));
-        }
-    }
-    let mut out: [String; 10] = Default::default();
-    for ((value, flag), slot) in values.into_iter().zip(CHOICE_FLAGS).zip(out.iter_mut()) {
-        *slot = value.ok_or_else(|| Fail::Refusal(format!("missing {flag}")))?;
-    }
-    Ok(out)
-}
-
-/// `check-prepared-choices`: an install profile in the authenticated prepared
-/// setup must equal the choices the backend acts on. The keyboard is compared
-/// as the backend splits it: Dvorak and Colemak are US variants.
-pub fn check_prepared_choices(args: &[OsString], input: impl std::io::Read) -> Result<()> {
-    let [
-        username,
-        full_name,
-        device_label,
-        purpose,
-        hostname,
-        locale,
-        timezone,
-        filesystem,
-        keymap,
-        keyvariant,
-    ] = choices(args)?;
-    let receipt = parse_receipt(input)?;
-    let profile = match receipt.get("install_profile") {
-        None => return refuse("authenticated prepared choices have no install profile"),
-        Some(Value::Null) => return Ok(()),
-        Some(Value::Object(profile)) => profile,
-        Some(_) => return refuse("authenticated install profile is malformed"),
-    };
-    let is = |key: &str, expected: &str| profile.get(key).and_then(Value::as_str) == Some(expected);
-    let or_default = |key: &str, default: &str, expected: &str| match profile.get(key) {
-        None => default == expected,
-        Some(value) => value.as_str() == Some(expected),
-    };
-    if !(is("username", &username) && is("full_name", &full_name)) {
-        return refuse("prepared account differs from authenticated choices");
-    }
-    if !or_default("device_label", "", &device_label) {
-        return refuse("prepared device label differs from authenticated choices");
-    }
-    if !is("purpose", &purpose) {
-        return refuse("prepared purpose differs from authenticated choices");
-    }
-    if !(is("hostname", &hostname)
-        && is("locale", &locale)
-        && is("timezone", &timezone)
-        && is("filesystem", &filesystem))
-    {
-        return refuse("prepared preferences differ from authenticated choices");
-    }
-    let keyboard = profile.get("keyboard").and_then(Value::as_str);
-    let expected = match keyboard {
-        Some(variant @ ("dvorak" | "colemak")) => Some(("us", variant)),
-        Some(layout) => Some((layout, "")),
-        None => None,
-    };
-    if expected != Some((keymap.as_str(), keyvariant.as_str())) {
-        return refuse("prepared keyboard differs from authenticated choices");
-    }
     Ok(())
 }
 
@@ -472,9 +377,6 @@ pub fn run(command: &str, args: &[OsString]) -> Outcome {
         ("check-device-label", _) => usage("check-device-label LABEL"),
         ("write-machine-info", [path, label]) => done(write_machine_info(Path::new(path), label)),
         ("write-machine-info", _) => usage("write-machine-info PATH LABEL"),
-        ("check-prepared-choices", _) => {
-            done(check_prepared_choices(args, std::io::stdin().lock()))
-        }
         ("guided-geometry", _) => match guided_geometry(&words) {
             Ok(()) => ok(String::new()),
             Err(error) => failed(format!("guided allocation: {error}")),

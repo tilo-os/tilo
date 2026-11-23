@@ -42,10 +42,6 @@ pub struct ShimArgs {
     pub landlock_best_effort: bool,
     /// Connected broker descriptors intentionally handed to the app.
     pub keep_fds: Vec<i32>,
-    /// Fixed inherited root-broker token, consumed before source credential drop.
-    pub original_source_fd: Option<i32>,
-    pub retained_io_fd: Option<i32>,
-    pub target_projection_fd: Option<i32>,
     /// The app argv passed to `execvp` after restricting.
     pub command: Vec<String>,
 }
@@ -74,26 +70,6 @@ impl std::fmt::Display for ShimParseError {
 impl std::error::Error for ShimParseError {}
 
 impl ShimArgs {
-    fn parse_bootstrap_fd(&mut self, arg: &str, value: &str) -> Result<(), ShimParseError> {
-        let expected = match arg {
-            "--target-projection-fd" => crate::owned_service::target_projection::TOKEN_FD,
-            "--retained-io-fd" => crate::owned_service::retained_io::TOKEN_FD,
-            _ => crate::owned_service::capture::original::BOOTSTRAP_FD,
-        };
-        if value != expected.to_string()
-            || self.original_source_fd.is_some()
-            || self.retained_io_fd.is_some()
-            || self.target_projection_fd.is_some()
-        {
-            return Err(ShimParseError::DanglingValue(arg.into()));
-        }
-        match arg {
-            "--target-projection-fd" => self.target_projection_fd = Some(expected),
-            "--retained-io-fd" => self.retained_io_fd = Some(expected),
-            _ => self.original_source_fd = Some(expected),
-        }
-        Ok(())
-    }
     /// Parse the slice AFTER the `__sandbox-exec` token.
     pub fn parse(args: &[String]) -> Result<ShimArgs, ShimParseError> {
         let mut parsed = ShimArgs::default();
@@ -110,13 +86,6 @@ impl ShimArgs {
                         .command
                         .extend_from_slice(args.get(rest_start..).unwrap_or(&[]));
                     break;
-                }
-                "--target-projection-fd" | "--retained-io-fd" | "--original-source-fd" => {
-                    let value = args
-                        .get(i.saturating_add(1))
-                        .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
-                    parsed.parse_bootstrap_fd(arg, value)?;
-                    i = i.saturating_add(1);
                 }
                 "--net-restricted" => parsed.net_restricted = true,
                 "--no-landlock" => parsed.no_landlock = true,
@@ -332,74 +301,6 @@ fn spawn_relay(proxy: &std::path::Path, port: u16) {
     }
 }
 
-fn prepare_target_projection(
-    parsed: &mut ShimArgs,
-) -> std::io::Result<Option<crate::owned_service::target_projection::MountedTargetBootstrap>> {
-    if parsed.target_projection_fd.is_none() {
-        return Ok(None);
-    }
-    if !parsed.net_restricted
-        || parsed.egress_proxy.is_some()
-        || parsed.no_landlock
-        || parsed.landlock_best_effort
-        || !parsed.keep_fds.is_empty()
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "target projection confinement differs",
-        ));
-    }
-    let target = crate::owned_service::target_projection::RootTargetBootstrap::prepare().and_then(
-        crate::owned_service::target_projection::RootTargetBootstrap::mount_and_publish,
-    )?;
-    parsed.keep_fds.extend([
-        crate::owned_service::target_projection::TOKEN_FD,
-        crate::owned_service::target_projection::FUSE_FD,
-        crate::owned_service::target_projection::READY_FD,
-    ]);
-    Ok(Some(target))
-}
-
-fn confine_application(
-    parsed: &ShimArgs,
-    target: Option<&mut crate::owned_service::target_projection::MountedTargetBootstrap>,
-) -> LandlockOutcome {
-    if let Some(target) = target {
-        match target.confine(&ruleset_spec(parsed), |path, error| {
-            eprintln!(
-                "tilo-sandbox-exec: skipping rule for {} (open failed: {error})",
-                path.display()
-            );
-        }) {
-            Ok(status) => outcome_from_status(&status.ruleset),
-            Err(error) => {
-                eprintln!("tilo-sandbox-exec: target held read confinement failed: {error}");
-                LandlockOutcome::Errored
-            }
-        }
-    } else {
-        apply(parsed)
-    }
-}
-
-fn prepare_original_source(parsed: &mut ShimArgs) -> std::io::Result<()> {
-    if parsed.original_source_fd.is_none() {
-        return Ok(());
-    }
-    if !parsed.net_restricted
-        || parsed.egress_proxy.is_some()
-        || parsed.no_landlock
-        || parsed.landlock_best_effort
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "Original-source confinement was changed",
-        ));
-    }
-    // This signed shim alone has transient SETUID/SETGID.
-    crate::owned_service::capture::original::enter(&mut parsed.keep_fds)
-}
-
 /// Entry point for `tilo-launcher __sandbox-exec ...`.
 #[allow(
     clippy::exit,
@@ -410,49 +311,12 @@ fn prepare_original_source(parsed: &mut ShimArgs) -> std::io::Result<()> {
 pub fn run_sandbox_exec(args: &[String]) -> ! {
     // Bubblewrap's set-up is done once this runs inside the sandbox.
     let entered = tilo_startup_metrics::handoff_entry("sandbox-entered");
-    let mut parsed = match ShimArgs::parse(args) {
+    let parsed = match ShimArgs::parse(args) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("tilo-sandbox-exec: {e}");
             std::process::exit(2);
         }
-    };
-
-    if let Err(error) = prepare_original_source(&mut parsed) {
-        eprintln!("tilo-sandbox-exec: original-source admission refused: {error}");
-        std::process::exit(126);
-    }
-
-    let mut target_credentials = match prepare_target_projection(&mut parsed) {
-        Ok(target) => target,
-        Err(error) => {
-            eprintln!(
-                "tilo-sandbox-exec: target projection bootstrap refused: kind={:?} errno={:?}",
-                error.kind(),
-                error.raw_os_error()
-            );
-            std::process::exit(126);
-        }
-    };
-    let retained_credentials = if parsed.retained_io_fd.is_some() {
-        if !parsed.net_restricted
-            || parsed.egress_proxy.is_some()
-            || parsed.no_landlock
-            || parsed.landlock_best_effort
-            || !parsed.keep_fds.is_empty()
-        {
-            eprintln!("tilo-sandbox-exec: retained I/O confinement differs");
-            std::process::exit(126);
-        }
-        match crate::owned_service::retained_io::prepare(&parsed.keep_fds, &parsed.command) {
-            Ok(facts) => Some(facts),
-            Err(error) => {
-                eprintln!("tilo-sandbox-exec: retained I/O refused: {error}");
-                std::process::exit(126);
-            }
-        }
-    } else {
-        None
     };
 
     // Before Landlock: the relay needs accesses the app is about to be denied, and it must exist
@@ -461,7 +325,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         spawn_relay(proxy, port);
     }
 
-    let outcome = confine_application(&parsed, target_credentials.as_mut());
+    let outcome = apply(&parsed);
     eprintln!(
         "tilo-sandbox-exec: {} ({} ro, {} rw, net_restricted={}, proxy_port={:?})",
         outcome.describe(),
@@ -484,31 +348,13 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         );
     }
 
-    if retained_credentials.is_none()
-        && let Err(error) = close_ambient_fds(&parsed.keep_fds)
-    {
+    if let Err(error) = close_ambient_fds(&parsed.keep_fds) {
         eprintln!(
             "tilo-sandbox-exec: refusing tapp launch: could not close ambient descriptors: {error}"
         );
         std::process::exit(126);
     }
 
-    if let Some(facts) = retained_credentials
-        && let Err(error) = crate::owned_service::retained_io::drop_after_confinement(facts)
-    {
-        eprintln!("tilo-sandbox-exec: retained I/O credential transition refused: {error}");
-        std::process::exit(126);
-    }
-    if let Some(target) = target_credentials
-        && let Err(error) = target.drop_after_confinement()
-    {
-        eprintln!(
-            "tilo-sandbox-exec: target credential transition refused: kind={:?} errno={:?}",
-            error.kind(),
-            error.raw_os_error()
-        );
-        std::process::exit(126);
-    }
     exec_real_command(&parsed.command, entered.as_deref())
 }
 
@@ -934,71 +780,6 @@ mod provider_sandbox_tests {
 }
 
 #[cfg(test)]
-mod target_projection_parser_tests {
-    use super::*;
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|v| (*v).into()).collect()
-    }
-    #[test]
-    fn target_bootstrap_selector_is_fixed_and_mutually_exclusive() {
-        let parsed = ShimArgs::parse(&args(&[
-            "--target-projection-fd",
-            "52",
-            "--net-restricted",
-            "--",
-            "/app/bin",
-        ]))
-        .unwrap();
-        assert_eq!(parsed.target_projection_fd, Some(52));
-        for values in [
-            vec!["--target-projection-fd", "53", "--", "/app/bin"],
-            vec![
-                "--target-projection-fd",
-                "52",
-                "--target-projection-fd",
-                "52",
-                "--",
-                "/app/bin",
-            ],
-            vec![
-                "--target-projection-fd",
-                "52",
-                "--retained-io-fd",
-                "49",
-                "--",
-                "/app/bin",
-            ],
-            vec![
-                "--retained-io-fd",
-                "49",
-                "--target-projection-fd",
-                "52",
-                "--",
-                "/app/bin",
-            ],
-            vec![
-                "--target-projection-fd",
-                "52",
-                "--original-source-fd",
-                "49",
-                "--",
-                "/app/bin",
-            ],
-            vec![
-                "--original-source-fd",
-                "49",
-                "--target-projection-fd",
-                "52",
-                "--",
-                "/app/bin",
-            ],
-        ] {
-            assert!(ShimArgs::parse(&args(&values)).is_err());
-        }
-    }
-}
-
-#[cfg(test)]
 mod readonly_data_noexec_tests {
     use super::*;
     use landlock::AccessFs;
@@ -1008,12 +789,12 @@ mod readonly_data_noexec_tests {
             "--ro".into(),
             "/usr".into(),
             "--ro-noexec".into(),
-            "/run/tilo/retained-home".into(),
+            "/run/tilo/data".into(),
             "--".into(),
             "/app/bin".into(),
         ])
         .unwrap();
-        assert_eq!(args.ro_noexec, [PathBuf::from("/run/tilo/retained-home")]);
+        assert_eq!(args.ro_noexec, [PathBuf::from("/run/tilo/data")]);
         let spec = ruleset_spec(&args);
         let runtime = spec
             .rules
@@ -1024,7 +805,7 @@ mod readonly_data_noexec_tests {
         let data = spec
             .rules
             .iter()
-            .find(|rule| rule.path == std::path::Path::new("/run/tilo/retained-home"))
+            .find(|rule| rule.path == std::path::Path::new("/run/tilo/data"))
             .unwrap();
         assert_eq!(
             data.access,

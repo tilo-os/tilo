@@ -52,12 +52,11 @@ impl InstallerPreview {
     fn prepare_compatibility(&mut self) -> Result<(), &'static str> {
         if !self.live
             || !self.linux
-            || self.windows.enabled
+            || self.full_os_host
             || self.journey.page != Page::Destination
             || self.journey.destination != Some(Destination::Computer)
             || self.direct.active
-            || self.personal_busy()
-            || self.migration_busy()
+            || self.busy()
         {
             return Err("installer-review-installation-unavailable");
         }
@@ -74,21 +73,20 @@ mod tests {
     use super::*;
 
     /// A preview of the Linux route these phases model; a Windows host takes
-    /// the Windows preparation route instead, which its own tests cover.
+    /// the native Full Tilo setup straight from its destination instead.
     fn linux_preview() -> InstallerPreview {
-        let mut preview = InstallerPreview {
+        InstallerPreview {
             live: true,
             linux: true,
+            full_os_host: false,
             ..Default::default()
-        };
-        preview.windows.enabled = false;
-        preview
+        }
     }
 
     tilo_test_env::scenario! {
         fn the_full_os_check_runs_only_where_it_decides_something;
 
-        phase full_os_check_is_deferred_before_identity_and_not_used_for_another_computer;
+        phase full_os_check_comes_first_and_is_not_used_for_another_computer;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(crate::setup::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
@@ -100,10 +98,7 @@ mod tests {
                 .unwrap();
             assert!(preview.compatibility.pending);
             assert_eq!(preview.journey.page, Page::Destination);
-            assert!(preview.journey.identity.is_none());
             assert!(preview.journey.password.is_empty());
-            assert!(!preview.personal.busy());
-            assert!(preview.direct.prepared_belongings.is_none());
             assert!(!preview.direct.active);
 
             let mut another = linux_preview();
@@ -130,7 +125,7 @@ mod tests {
                 .unwrap();
             assert!(!preview.compatibility.pending);
             assert!(!preview.direct.active);
-            assert_eq!(preview.journey.page, Page::Migration);
+            assert_eq!(preview.journey.page, Page::Migrate);
             assert!(preview.storage.facts.is_none());
         }
 
@@ -147,10 +142,10 @@ mod tests {
                 .unwrap();
             assert!(!preview.compatibility.pending);
             assert!(!preview.direct.active);
-            assert_eq!(preview.journey.page, Page::Migration);
+            assert_eq!(preview.journey.page, Page::Migrate);
         }
 
-        phase full_os_check_back_keeps_destination_and_history_without_preparing_identity;
+        phase full_os_check_back_keeps_destination_and_history;
         {
             let mut preview = linux_preview();
             preview.journey.destination = Some(Destination::Computer);
@@ -166,11 +161,10 @@ mod tests {
             assert_eq!(preview.journey.destination, Some(Destination::Computer));
             assert_eq!(preview.journey.page, Page::Destination);
             assert_eq!(preview.journey.history, history);
-            assert!(preview.journey.identity.is_none());
             assert!(preview.journey.password.is_empty());
         }
 
-        phase full_os_check_display_facts_enter_the_normal_migration_flow;
+        phase full_os_check_display_facts_enter_the_normal_flow;
         {
             let mut preview = linux_preview();
             preview.journey.destination = Some(Destination::Computer);
@@ -183,7 +177,7 @@ mod tests {
             preview.direct.active = true;
             assert!(preview.drain_compatibility());
             assert!(!preview.direct.active);
-            assert_eq!(preview.journey.page, Page::Migration);
+            assert_eq!(preview.journey.page, Page::Migrate);
             assert_eq!(preview.journey.history, vec![Page::Destination]);
             assert_eq!(
                 preview
@@ -199,7 +193,6 @@ mod tests {
                 guid
             );
             assert!(preview.journey.password.is_empty());
-            assert!(preview.journey.identity.is_none());
         }
     }
 }

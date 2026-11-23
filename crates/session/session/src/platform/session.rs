@@ -1856,7 +1856,6 @@ impl Session {
             asker,
             mcp_server: RefCell::new(mcp_server),
             session_services,
-            folder_import: RefCell::new(None),
             sync,
             engine,
             view,
@@ -2137,9 +2136,6 @@ impl Session {
         }
         if let Some(server) = self.shared.mcp_server.get_mut() {
             server.wake_on(&mut self.compositor)?;
-        }
-        if let Some(import) = self.shared.folder_import.get_mut().as_mut() {
-            import.wake_on(&mut self.compositor)?;
         }
         Ok(())
     }
@@ -2752,31 +2748,6 @@ impl Session {
     #[must_use]
     pub fn setup_up(&self) -> bool {
         self.setup.as_ref().is_some_and(|setup| setup.borrow().up())
-    }
-
-    /// Serve the installed folder importer for this session's `display`, the
-    /// Wayland socket it bound: whether first use is over, and the review the
-    /// person left to be opened once it is.
-    ///
-    /// Add folders reads the answer before it continues a saved import, so
-    /// nothing it carries lands under an identity ceremony still under way.
-    ///
-    /// # Errors
-    /// There is no runtime directory, or the socket cannot be bound.
-    pub fn serve_folder_import(&mut self, display: &std::ffi::OsStr) -> std::io::Result<()> {
-        let mut continuation = crate::import_readiness::Continuation::serve(display)?;
-        // The importer asks as the person clicks Add folders: its socket ends
-        // the loop's wait, so the answer is drawn at once.
-        continuation.wake_on(&mut self.compositor)?;
-        *self.shared.folder_import.borrow_mut() = Some(continuation);
-        Ok(())
-    }
-
-    /// The verified browser projection a carried-over setup brought: the
-    /// browser starts with it.
-    #[must_use]
-    pub fn browser_continuity(&self) -> Option<std::path::PathBuf> {
-        crate::setup::browser_continuity()
     }
 
     /// Whether quick settings is open.

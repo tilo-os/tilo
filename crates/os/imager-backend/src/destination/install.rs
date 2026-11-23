@@ -129,9 +129,6 @@ pub struct InstallOptions {
     /// which has no login account; its identity comes from enrollment).
     pub purpose: String,
     pub device_label: String,
-    pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
-    /// Public TPM-sealed sidecar for the prepared package above.
-    pub tpm_handoff: Option<String>,
     pub hostname: String,
     /// Account name (GECOS); never a credential.
     pub full_name: String,
@@ -221,8 +218,6 @@ impl Default for InstallOptions {
             expected_partitions: Vec::new(),
             purpose: install_profile_model::default_purpose(),
             device_label: String::new(),
-            prepared_setup: None,
-            tpm_handoff: None,
             filesystem: "btrfs".to_string(),
             hostname: "tilo".to_string(),
             full_name: String::new(),
@@ -393,19 +388,6 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     }
     if !opts.device_label.is_empty() {
         cmd.arg("--device-label").arg(&opts.device_label);
-    }
-    if let Some(expected) = &opts.prepared_setup {
-        cmd.arg("--prepared-setup-receipt").arg(
-            serde_json::json!({
-                "schema": expected.schema,
-                "sealed_bytes": expected.sealed_bytes,
-                "ciphertext_sha256": expected.ciphertext_sha256,
-            })
-            .to_string(),
-        );
-    }
-    if let Some(handoff) = &opts.tpm_handoff {
-        cmd.arg("--prepared-tpm-handoff").arg(handoff);
     }
     if opts.purpose != "computer" {
         cmd.arg("--purpose").arg(&opts.purpose);
@@ -693,9 +675,9 @@ pub fn run_install<F: FnMut(String)>(
         if password.is_empty() {
             return Err(std::io::Error::other("missing account password hash"));
         }
-        if opts.prepared_setup.is_some() || opts.online_accounts.is_some() {
+        if opts.online_accounts.is_some() {
             return Err(std::io::Error::other(
-                "a prepared setup or account transport cannot take a password hash",
+                "an account transport cannot take a password hash",
             ));
         }
     }
@@ -1379,31 +1361,18 @@ mod tests {
             }
         }
 
-        phase install_command_preserves_the_reviewed_ciphertext_binding_and_label;
+        phase install_command_preserves_the_reviewed_label;
         {
-            let expected = install_profile_model::PreparedSetupExpectation {
-                schema: 1,
-                sealed_bytes: 4096,
-                ciphertext_sha256: "a".repeat(64),
-            };
             let command = install_command(
                 "/dev/test",
                 "owner",
                 &InstallOptions {
                     purpose: "server".into(),
                     device_label: "Travel computer".into(),
-                    prepared_setup: Some(expected.clone()),
                     ..Default::default()
                 },
             );
             let args: Vec<_> = command.get_args().collect();
-            let receipt = args
-                .windows(2)
-                .find(|pair| pair[0] == "--prepared-setup-receipt")
-                .unwrap();
-            let decoded: install_profile_model::PreparedSetupExpectation =
-                serde_json::from_str(receipt[1].to_str().unwrap()).unwrap();
-            assert_eq!(decoded, expected);
             let label = args
                 .windows(2)
                 .find(|pair| pair[0] == "--device-label")
@@ -1538,19 +1507,6 @@ mod tests {
                     !args.iter().any(|arg| arg.starts_with("$6$")),
                     "a credential hash must not travel on argv"
                 );
-            }
-            {
-                let opts = InstallOptions {
-                    password_is_hash: true,
-                    prepared_setup: Some(install_profile_model::PreparedSetupExpectation {
-                        schema: 1,
-                        sealed_bytes: 48,
-                        ciphertext_sha256: "0".repeat(64),
-                    }),
-                    ..InstallOptions::default()
-                };
-                let error = run_install("/dev/vdb", "ada", "$6$salt$AAAA", &opts, |_| {}).unwrap_err();
-                assert!(error.to_string().contains("password hash"), "{error}");
             }
         }
 

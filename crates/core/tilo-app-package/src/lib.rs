@@ -32,7 +32,7 @@ pub use image::{
 pub use manifest::{
     Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Image, Manifest,
     ManifestParseError, NetMode, Package, Platform, Providers, Publisher, Requirement, Sandbox,
-    SandboxNet, ServiceProtocol, ServiceReq, ServiceReqParseError, SplashSegment,
+    SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment,
     SplashSegmentError, Target, Trust, TrustAttestation, WindowKind,
 };
 pub use pack::{PackError, Packed, SigningIdentity, pack, sign_placeholder_root};

@@ -26,27 +26,9 @@ pub(crate) struct ReviewedFullOs {
     pub facts: HostFacts,
     pub plan: Plan,
     pub profile: crate::model::InstallProfile,
-    pub migration: Option<imager_backend::setup::migration_intent::MigrationIntent>,
-    pub prepared: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
+    /// The person's data comes over after first login, through the migration app; a
+    /// review that asks for anything else is refused.
     pub deferred: bool,
-}
-
-fn remember_tpm_handoff(
-    profile: &mut serde_json::Map<String, serde_json::Value>,
-    prepared: &super::journey::prepared_media::PreparedMedia,
-) -> Result<(), String> {
-    let Some(handoff) = prepared.tpm_handoff() else {
-        return Ok(());
-    };
-    let bytes = handoff.encode().map_err(|error| error.to_string())?;
-    profile.insert(
-        "tpm_handoff".into(),
-        serde_json::Value::String(
-            String::from_utf8(bytes)
-                .map_err(|_| super::strings::t("imager-setup-internal-error-prepared-setup"))?,
-        ),
-    );
-    Ok(())
 }
 
 pub(super) use super::staging::{PROVISIONAL_STAGING_ESP_BYTES, PROVISIONAL_STAGING_ROOT_BYTES};
@@ -145,11 +127,7 @@ fn live_component_paths(_: &SelectedManifest) -> Result<ComponentPaths, String> 
 
 #[derive(Clone)]
 struct Intent {
-    migration: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     profile: serde_json::Map<String, serde_json::Value>,
-    prepared_setup: Option<super::staging::prepared_setup::PreparedArtifact>,
-    prepared_ownership: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
-    deferred: bool,
     operation_id: String,
     plan: Plan,
     plan_sha256: String,
@@ -284,66 +262,9 @@ fn partition_bytes(plan: &Plan, first_lba: u64, last_lba: u64) -> u64 {
 fn stage_request(
     link: &StagingLink,
     selected: &SelectedManifest,
-    mut intent: Intent,
+    intent: Intent,
     manifest_dir: &Path,
-    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Request, Outcome> {
-    selected
-        .bundle()
-        .require_service_session_protocol(
-            intent
-                .prepared_ownership
-                .as_ref()
-                .and_then(|media| media.service_session_protocol()),
-        )
-        .map_err(|_| {
-            refusal(
-                "account-consumer-unavailable",
-                super::strings::t("imager-setup-account-consumer-unavailable"),
-            )
-        })?;
-    selected
-        .bundle()
-        .require_account_protocol(
-            intent
-                .prepared_ownership
-                .as_ref()
-                .and_then(|media| media.account_credentials_protocol()),
-        )
-        .map_err(|_| {
-            refusal(
-                "account-consumer-unavailable",
-                super::strings::t("imager-setup-account-consumer-unavailable"),
-            )
-        })?;
-    selected
-        .bundle()
-        .require_home_protocol(
-            intent
-                .prepared_ownership
-                .as_ref()
-                .and_then(|media| media.home_archive_protocol()),
-        )
-        .map_err(|_| {
-            refusal(
-                "home-consumer-unavailable",
-                super::strings::t("imager-setup-home-consumer-unavailable"),
-            )
-        })?;
-    selected
-        .bundle()
-        .require_applications_protocol(
-            intent
-                .prepared_ownership
-                .as_ref()
-                .and_then(|media| media.applications_protocol()),
-        )
-        .map_err(|_| {
-            refusal(
-                "applications-consumer-unavailable",
-                super::strings::t("imager-setup-applications-consumer-unavailable"),
-            )
-        })?;
     let (esp_min, root_min) =
         manifest_requirements(selected).map_err(|error| refusal("manifest", error))?;
     link.lock().requirements = Some((esp_min, root_min));
@@ -400,121 +321,6 @@ fn stage_request(
             .map_err(|error| refusal("plan-digest", error.to_string()))?;
         (replanned, digest)
     };
-    let migration = intent
-        .migration
-        .as_ref()
-        .map(|grant| grant.bind(&intent.operation_id, &plan))
-        .transpose()
-        .map_err(|error| refusal("migration-changed", error.to_string()))?;
-    if let (Some(raw), Some(grant)) = (&migration, &intent.migration) {
-        let source = imager_backend::setup::migration_handoff::Plan::parse(
-            &serde_json::to_vec(raw)
-                .map_err(|error| refusal("migration-changed", error.to_string()))?,
-        )
-        .map_err(|error| refusal("migration-changed", error.to_string()))?;
-        if !intent.deferred
-            && grant
-                .has_computer_applications()
-                .map_err(|error| refusal("migration-changed", error.to_string()))?
-        {
-            let reservation = plan
-                .target_extent
-                .lbas()
-                .checked_mul(plan.basis.disk.sector_bytes)
-                .ok_or_else(|| {
-                    refusal(
-                        "migration-changed",
-                        "Selected application target capacity overflows.",
-                    )
-                })?;
-            let prepared = intent
-                .prepared_ownership
-                .as_ref()
-                .ok_or_else(|| {
-                    refusal(
-                        "migration-changed",
-                        "Computer application preparation ownership is missing.",
-                    )
-                })?
-                .prepare_computer_applications(
-                    grant,
-                    &intent.operation_id,
-                    &plan,
-                    reservation,
-                    cancel,
-                )
-                .map_err(|error| refusal("migration-changed", error.to_string()))?;
-            intent.prepared_setup = Some(
-                prepared
-                    .staging_artifact()
-                    .map_err(|error| refusal("migration-changed", error.to_string()))?,
-            );
-            intent.profile.insert(
-                "prepared_setup".into(),
-                serde_json::to_value(prepared.expectation())
-                    .map_err(|error| refusal("migration-changed", error.to_string()))?,
-            );
-            remember_tpm_handoff(&mut intent.profile, &prepared)
-                .map_err(|error| refusal("migration-changed", error))?;
-            intent.prepared_ownership = Some(prepared);
-        }
-        if source.home_policy == imager_backend::setup::migration_handoff::HomePolicy::Copy
-            && (source.categories.home || source.categories.flatpak)
-        {
-            if plan.shrink.is_some() {
-                return Err(refusal(
-                    "migration-changed",
-                    "Original-copy source records require explicit renewal after a source resize.",
-                ));
-            }
-            let reservation = plan
-                .target_extent
-                .lbas()
-                .checked_mul(plan.basis.disk.sector_bytes)
-                .ok_or_else(|| {
-                    refusal(
-                        "migration-changed",
-                        "Original-copy target capacity overflows.",
-                    )
-                })?;
-            if !intent.deferred {
-                // A deferred selection keeps the retained source untouched
-                // until first login; the installed onboarding then performs
-                // the copy with a renewed source grant and its own receipt.
-                let prepared = intent
-                    .prepared_ownership
-                    .as_ref()
-                    .ok_or_else(|| {
-                        refusal(
-                            "migration-changed",
-                            "Original-copy preparation ownership is missing.",
-                        )
-                    })?
-                    .prepare_staging_copy(grant, &source, reservation, cancel)
-                    .map_err(|error| refusal("migration-changed", error.to_string()))?;
-                intent.prepared_setup = Some(
-                    prepared
-                        .staging_artifact()
-                        .map_err(|error| refusal("migration-changed", error.to_string()))?,
-                );
-                intent.profile.insert(
-                    "prepared_setup".into(),
-                    serde_json::to_value(prepared.expectation())
-                        .map_err(|error| refusal("migration-changed", error.to_string()))?,
-                );
-                remember_tpm_handoff(&mut intent.profile, &prepared)
-                    .map_err(|error| refusal("migration-changed", error))?;
-                // prepare_staging_copy caches the final generation in the actual
-                // previous Arc retained by the download consumer through drive().
-                intent.prepared_ownership = Some(prepared);
-            }
-        }
-    }
-    if let Some(prepared) = &intent.prepared_ownership {
-        prepared
-            .validate_recovery_for_stage(&plan, cancel)
-            .map_err(|error| refusal("recovery-unverified", error.to_string()))?;
-    }
     let component_paths =
         (link.runtime.component_paths)(selected).map_err(|error| refusal("paths", error))?;
     let manifest_path = manifest_dir.join("manifest.json");
@@ -542,8 +348,6 @@ fn stage_request(
         plan,
         plan_sha256,
         profile: intent.profile,
-        prepared_setup: intent.prepared_setup,
-        migration,
         install_plan: None,
         token_file: None,
         development_layers: None,
@@ -566,42 +370,13 @@ pub(super) fn staging_consumer(
             link.finish(Action::Stage, &outcome);
             return Err(outcome.message.unwrap_or_default());
         };
-        let mut intent = intent;
-        if let Some(prepared) = &intent.prepared_ownership {
-            if let Ok((fresh, artifact, expected)) =
-                crate::setup::journey::prepared_media::refresh_for_write(prepared, cancel.signal())
-                    .and_then(|fresh| {
-                        let artifact = fresh.staging_artifact()?;
-                        let expected = serde_json::to_value(fresh.expectation())
-                            .map_err(std::io::Error::other)?;
-                        Ok((fresh, artifact, expected))
-                    })
-            {
-                intent.profile.insert("prepared_setup".into(), expected);
-                if let Err(error) = remember_tpm_handoff(&mut intent.profile, &fresh) {
-                    let outcome = refusal("prepared-source", error);
-                    link.finish(Action::Stage, &outcome);
-                    return Err(outcome.message.unwrap_or_default());
-                }
-                intent.prepared_setup = Some(artifact);
-                intent.prepared_ownership = Some(fresh);
-            } else {
-                let outcome = refusal(
-                    "prepared-source",
-                    "Selected browser contents could not be prepared",
-                );
-                link.finish(Action::Stage, &outcome);
-                return Err(outcome.message.unwrap_or_default());
-            }
-        }
-        let _prepared_ownership = intent.prepared_ownership.clone();
         let manifest_dir = tempfile::Builder::new()
             .prefix("tilo-staging-")
             .tempdir()
             .map_err(|error| error.to_string());
         let outcome = match manifest_dir {
             Err(error) => refusal("manifest", error),
-            Ok(dir) => match stage_request(&link, selected, intent, dir.path(), cancel.signal()) {
+            Ok(dir) => match stage_request(&link, selected, intent, dir.path()) {
                 Err(outcome) => outcome,
                 Ok(request) => drive(&link, &request, &|| cancel.is_cancelled()),
             },
@@ -637,9 +412,6 @@ pub(super) enum Readiness {
 pub(super) type Task = Box<dyn FnOnce() + Send + 'static>;
 
 pub(super) struct InternalInstall {
-    migration_intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
-    prepared_ownership: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
-    deferred: bool,
     profile: serde_json::Map<String, serde_json::Value>,
     link: StagingLink,
     check: bool,
@@ -663,9 +435,6 @@ pub(super) struct InternalInstall {
 impl InternalInstall {
     pub(super) fn new(runtime: StagingRuntime, check: bool, host: HostOs) -> Self {
         Self {
-            migration_intent: None,
-            prepared_ownership: None,
-            deferred: false,
             profile: serde_json::Map::new(),
             link: StagingLink {
                 runtime,
@@ -926,26 +695,6 @@ impl InternalInstall {
         Ok(())
     }
 
-    pub(super) fn set_migration_intent(
-        &mut self,
-        intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
-    ) -> Result<(), String> {
-        if self.is_running() || self.pending().is_some() {
-            return Err(
-                "Migration consent cannot change while installation is running or already staged."
-                    .into(),
-            );
-        }
-        self.minimum_target_bytes = intent.as_ref().map_or(
-            super::staging::MIN_TARGET_BYTES,
-            imager_backend::setup::migration_intent::MigrationIntent::application_minimum,
-        );
-        self.migration_intent = intent;
-        self.recompute();
-        self.bump();
-        Ok(())
-    }
-
     pub(super) fn adopt_reviewed(
         &mut self,
         reviewed: ReviewedFullOs,
@@ -956,20 +705,10 @@ impl InternalInstall {
             return Err(refused());
         }
         let profile = super::staging::handoff::profile_from_install(&reviewed.profile)?;
-        let authenticated_profile =
-            imager_backend::prepared_setup::PublicInstallProfile::from_draft(&reviewed.profile)
-                .map_err(|_| refused())?;
         if !reviewed.profile.user.password.is_empty()
             || !reviewed.profile.encryption_passphrase.is_empty()
             || reviewed.facts.basis.as_ref() != Some(&reviewed.plan.basis)
-            || (!reviewed.deferred && reviewed.prepared.is_none())
-            || match &reviewed.prepared {
-                Some(prepared) => {
-                    reviewed.profile.prepared_setup.as_ref() != Some(prepared.expectation())
-                        || prepared.install_profile() != Some(&authenticated_profile)
-                }
-                None => reviewed.profile.prepared_setup.is_some(),
-            }
+            || !reviewed.deferred
         {
             return Err(refused());
         }
@@ -979,10 +718,7 @@ impl InternalInstall {
             .lbas()
             .checked_mul(reviewed.plan.basis.disk.sector_bytes)
             .ok_or_else(refused)?;
-        let minimum = reviewed.migration.as_ref().map_or(
-            super::staging::MIN_TARGET_BYTES,
-            imager_backend::setup::migration_intent::MigrationIntent::application_minimum,
-        );
+        let minimum = super::staging::MIN_TARGET_BYTES;
         if bytes < minimum || !bytes.is_multiple_of(GIB) {
             return Err(refused());
         }
@@ -1003,17 +739,9 @@ impl InternalInstall {
         if !self.check || !has_release || !reviewed.facts.offers_full_os() {
             return Err(super::strings::t("imager-setup-internal-error-unavailable"));
         }
-        if let Some(prepared) = &reviewed.prepared {
-            prepared
-                .staging_artifact()
-                .map_err(|_| super::strings::t("imager-setup-internal-error-prepared-setup"))?;
-        }
         self.target_bytes = bytes;
         self.minimum_target_bytes = minimum;
-        self.migration_intent = reviewed.migration;
         self.profile = profile;
-        self.prepared_ownership = reviewed.prepared;
-        self.deferred = reviewed.deferred;
         self.accept_probe(reviewed.facts, Vec::new(), has_release);
         self.plan = Some(Ok(reviewed.plan));
         Ok(())
@@ -1032,11 +760,7 @@ impl InternalInstall {
         }
         let intent = if let Some(record) = self.pending() {
             Intent {
-                migration: None,
                 profile: record.profile.clone(),
-                prepared_setup: None,
-                prepared_ownership: None,
-                deferred: record.profile.get("prepared_setup").is_none(),
                 operation_id: record.operation_id.clone(),
                 plan: record.plan.clone(),
                 plan_sha256: record.plan_sha256.clone(),
@@ -1046,21 +770,7 @@ impl InternalInstall {
                 return Err(super::strings::t("imager-setup-internal-error-no-plan"));
             };
             Intent {
-                migration: self.migration_intent.clone(),
                 profile: self.profile.clone(),
-                deferred: self.deferred,
-                prepared_setup: {
-                    {
-                        self.prepared_ownership
-                            .as_ref()
-                            .map(|prepared| prepared.staging_artifact())
-                            .transpose()
-                            .map_err(|_| {
-                                super::strings::t("imager-setup-internal-error-prepared-setup")
-                            })?
-                    }
-                },
-                prepared_ownership: self.prepared_ownership.clone(),
                 operation_id: new_operation_id(),
                 plan: plan.clone(),
                 plan_sha256: plan.digest().map_err(|error| error.to_string())?,
@@ -1122,8 +832,6 @@ impl InternalInstall {
             plan: record.plan,
             plan_sha256: record.plan_sha256,
             profile: serde_json::Map::new(),
-            prepared_setup: None,
-            migration: None,
             install_plan: None,
             token_file: None,
             development_layers: None,
@@ -1597,10 +1305,7 @@ pub(super) mod tests {
             },
             owned_boot_entry: None,
             bundle: None,
-            migration: None,
             profile: serde_json::Map::new(),
-            prepared_setup: None,
-            prepared_browser: None,
         }
     }
 
@@ -1609,134 +1314,6 @@ pub(super) mod tests {
         let (facts, records) = install.probe_task().unwrap()();
         install.accept_probe(facts, records, has_release);
         install
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn selected_application_budget_survives_controller_size_edits_and_reprobe() {
-        let (_source, intent) =
-            imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
-        let minimum = intent.application_minimum().div_ceil(GIB);
-        let fakes = Fakes::new(Vec::new());
-        let mut install = probed(&fakes, true);
-        install.set_migration_intent(Some(intent)).unwrap();
-        assert_eq!(install.bounds_gib().unwrap().0, minimum);
-        assert!(install.set_target_gib(minimum - 1).is_err());
-        install.target_state().set(1.0);
-        install.poll();
-        assert_eq!(install.target_bytes(), minimum * GIB);
-        let (facts, records) = install.probe_task().unwrap()();
-        install.accept_probe(facts, records, true);
-        assert_eq!(install.bounds_gib().unwrap().0, minimum);
-        assert!(install.set_target_gib(minimum - 1).is_err());
-        assert!(fakes.launches.lock().unwrap().is_empty());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn guided_review_retains_authenticated_ciphertext_and_refuses_changed_inputs() {
-        use super::super::journey::prepared_media::PreparedMedia;
-        use imager_backend::prepared_identity::PreparedIdentity;
-        use std::os::unix::fs::PermissionsExt;
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let identity = PreparedIdentity::create(
-            &root.join("identity"),
-            "Ada",
-            [20, 80, 140],
-            tilo_identity::provisioning::IdentityStorage::for_session(),
-        )
-        .unwrap();
-        let identity_bytes = std::fs::read(root.join("identity/primary.json")).unwrap();
-        let mut profile = crate::model::InstallProfile::default();
-        let public =
-            imager_backend::setup::prepared_setup::PublicInstallProfile::from_draft(&profile)
-                .unwrap();
-        let prepared = PreparedMedia::prepare_for_install(
-            &identity,
-            None,
-            None,
-            zeroize::Zeroizing::new("a sufficiently long setup password".into()),
-            "guided-internal-binding".into(),
-            Some(public),
-        )
-        .unwrap();
-        profile.prepared_setup = Some(prepared.expectation().clone());
-        let artifact = prepared.staging_artifact().unwrap();
-        let ciphertext = std::fs::read(&artifact.source_path).unwrap();
-        let fakes = Fakes::new(Vec::new());
-        let mut install = probed(&fakes, true);
-        let reviewed = ReviewedFullOs {
-            facts: fakes.facts.clone(),
-            plan: install.plan().unwrap().as_ref().unwrap().clone(),
-            profile,
-            migration: None,
-            prepared: Some(prepared),
-            deferred: false,
-        };
-        let mut changed = reviewed.clone();
-        changed.profile.hostname = "different-device".into();
-        assert!(install.adopt_reviewed(changed, true).is_err());
-        let mut changed = reviewed.clone();
-        changed.plan.target_extent.first_lba += 1;
-        assert!(install.adopt_reviewed(changed, true).is_err());
-        let mut missing = reviewed.clone();
-        missing.prepared = None;
-        missing.profile.prepared_setup = None;
-        assert!(
-            install.adopt_reviewed(missing, true).is_err(),
-            "a non-deferred review without prepared ownership must be refused"
-        );
-        let mut deferred = reviewed.clone();
-        deferred.prepared = None;
-        deferred.deferred = true;
-        deferred.profile.prepared_setup = None;
-        let mut deferred_install = probed(&fakes, true);
-        deferred_install.adopt_reviewed(deferred, true).unwrap();
-        let mut guarded = InternalInstall::new(fakes.runtime(), false, HostOs::Linux);
-        assert!(guarded.adopt_reviewed(reviewed.clone(), true).is_err());
-        assert!(install.adopt_reviewed(reviewed.clone(), false).is_err());
-        install.adopt_reviewed(reviewed.clone(), true).unwrap();
-        assert_eq!(
-            install.reviewed_digest().unwrap().unwrap(),
-            reviewed.plan.digest().unwrap()
-        );
-        let digest = reviewed.plan.digest().unwrap();
-        install.begin_stage(&digest, true).unwrap();
-        let intent = install.link.lock().intent.take().unwrap();
-        assert!(intent.prepared_ownership.is_some());
-        let manifest = selected_sizes(
-            PROVISIONAL_STAGING_ESP_BYTES,
-            PROVISIONAL_STAGING_ROOT_BYTES,
-        );
-        let directory = tempfile::tempdir().unwrap();
-        let request = stage_request(
-            &install.link,
-            &manifest,
-            intent,
-            directory.path(),
-            &std::sync::atomic::AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(request.prepared_setup, Some(artifact.clone()));
-        assert_eq!(
-            request.profile["prepared_setup"],
-            serde_json::to_value(&artifact.expectation).unwrap()
-        );
-        assert!(
-            !serde_json::to_string(&request)
-                .unwrap()
-                .contains("a sufficiently long setup password")
-        );
-        assert_eq!(std::fs::read(&artifact.source_path).unwrap(), ciphertext);
-        assert_eq!(
-            std::fs::read(root.join("identity/primary.json")).unwrap(),
-            identity_bytes
-        );
-        assert!(fakes.launches.lock().unwrap().is_empty());
     }
 
     fn wait_state(install: &mut InternalInstall, done: impl Fn(&RunState) -> bool) {
@@ -1917,7 +1494,6 @@ pub(super) mod tests {
                     &manifest,
                     intent,
                     dir.path(),
-                    &std::sync::atomic::AtomicBool::new(false),
                 )
                 .unwrap();
                 assert_ne!(request.plan_sha256, digest);
@@ -1944,7 +1520,6 @@ pub(super) mod tests {
                     &selected(48 * GIB),
                     intent,
                     dir.path(),
-                    &std::sync::atomic::AtomicBool::new(false),
                 )
                 .unwrap_err();
                 assert_eq!(outcome.code.as_deref(), Some("plan-stale"));
@@ -2050,7 +1625,6 @@ pub(super) mod tests {
                 &manifest,
                 intent,
                 dir.path(),
-                &std::sync::atomic::AtomicBool::new(false),
             )
             .unwrap();
             assert_eq!(request.action, Action::Stage);

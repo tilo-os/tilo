@@ -23,51 +23,6 @@ pub fn default_purpose() -> String {
     "computer".into()
 }
 
-/// Public binding to an opaque encrypted setup package, never its contents.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields, try_from = "RawPreparedSetupExpectation")]
-pub struct PreparedSetupExpectation {
-    pub schema: u32,
-    pub sealed_bytes: u64,
-    pub ciphertext_sha256: String,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawPreparedSetupExpectation {
-    schema: u32,
-    sealed_bytes: u64,
-    ciphertext_sha256: String,
-}
-
-impl TryFrom<RawPreparedSetupExpectation> for PreparedSetupExpectation {
-    type Error = &'static str;
-    fn try_from(raw: RawPreparedSetupExpectation) -> Result<Self, Self::Error> {
-        let value = Self {
-            schema: raw.schema,
-            sealed_bytes: raw.sealed_bytes,
-            ciphertext_sha256: raw.ciphertext_sha256,
-        };
-        value
-            .valid()
-            .then_some(value)
-            .ok_or("invalid prepared setup expectation")
-    }
-}
-
-impl PreparedSetupExpectation {
-    #[must_use]
-    pub fn valid(&self) -> bool {
-        self.schema == 1
-            && (48..=32 * 1024 * 1024 + 16384).contains(&self.sealed_bytes)
-            && self.ciphertext_sha256.len() == 64
-            && self
-                .ciphertext_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    }
-}
-
 /// Empty means no friendly label; supplied labels are bounded UTF-8 text.
 #[must_use]
 pub fn valid_device_label(label: &str) -> bool {

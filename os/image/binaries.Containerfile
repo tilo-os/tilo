@@ -65,9 +65,7 @@ COPY --from=component-files /image/extension-files/ /
 # rebuilds no initramfs, cache or check. That is the same image as this file
 # builds only while nothing after this COPY reads or writes a desktop program:
 # the checks that run them are os-image-contracts's (t.toml), on the composed
-# image. The programs the image's consumer receipts certify (consumer-programs:
-# the prepared-setup helper and what its receipts hash) stay in the image layer,
-# whose rootfs publishes those receipts by running them.
+# image. The consumer-programs stay in the image layer.
 COPY --from=component-files /image/consumer-programs/ /
 COPY --from=component-files /image/desktop-files/ /
 COPY --from=component-files /image/desktop-binaries/ /

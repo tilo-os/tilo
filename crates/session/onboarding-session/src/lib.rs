@@ -1,9 +1,7 @@
 //! The session side of first use: everything setup does that the setup app
 //! (`tilo-onboarding`) only asks for. The identity ceremony and its storage,
-//! first-boot provisioning, adding this computer with a code, a setup prepared
-//! on another computer and the transfers it carries over (a portable home,
-//! its applications, browser data, the files of the system Tilo replaced),
-//! and the ownership of every secret those steps take.
+//! first-boot provisioning, adding this computer with a code, and the
+//! ownership of every secret those steps take.
 //!
 //! The session that runs setup lends what only it has through
 //! [`services::SessionServices`].
@@ -25,24 +23,3 @@ pub mod nearby;
 pub mod services;
 pub mod view;
 
-#[cfg(target_os = "linux")]
-pub mod browser;
-#[cfg(target_os = "linux")]
-pub mod continuation;
-#[cfg(target_os = "linux")]
-pub mod migration;
-#[cfg(target_os = "linux")]
-pub mod peer;
-#[cfg(target_os = "linux")]
-pub mod portable_applications;
-#[cfg(target_os = "linux")]
-pub mod portable_home;
-#[cfg(target_os = "linux")]
-pub mod prepared;
-#[cfg(target_os = "linux")]
-pub mod retained;
-
-#[cfg(not(target_os = "linux"))]
-mod elsewhere;
-#[cfg(not(target_os = "linux"))]
-pub use elsewhere::{browser, migration, portable_applications, portable_home, retained};

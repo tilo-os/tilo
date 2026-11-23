@@ -113,22 +113,6 @@ impl Imager {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "imager.write-plan")]
 pub enum ImagerEffect {
-    /// Prepare an explicitly selected original-source migration for this medium.
-    #[effect(kind = "outside")]
-    #[effect(job, cancellable, privileged)]
-    PrepareOfflineMigration {
-        #[param("Device path of the already reviewed external target drive")]
-        device: String,
-    },
-    /// Complete an authenticated pending migration from the explicitly selected medium.
-    #[effect(kind = "outside")]
-    #[effect(job, cancellable, privileged)]
-    CompleteOfflineMigration {
-        #[param("Device path of the explicitly selected Tilo installation medium")]
-        device: String,
-        #[param(secret, "Password chosen while preparing this Tilo installation")]
-        password: String,
-    },
     /// Erase drive and write image. Offered on each drive it may write,
     #[effect(kind = "outside")]
     #[effect(
@@ -199,28 +183,6 @@ pub enum ImagerEffect {
         #[param("Kernel name of a removable drive, e.g. sdb")]
         drive: String,
     },
-    /// Choose a mounted folder on the verified installer medium for prepared setup.
-    #[effect(kind = "outside")]
-    #[effect(attended, job)]
-    ChoosePreparedFilesystem,
-    /// Retry automatic delivery to the verified installer's EFI filesystem.
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    RetryPreparedDelivery,
-    /// Return to the preserved guided preparation and renew changed home contents.
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    ReviewChangedPreparedFiles,
-    /// Deliver authenticated prepared setup to the exact verified medium.
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    DeliverPreparedSetup {
-        #[param(secret, "Granted mounted root of the verified installer medium")]
-        mounted_root: String,
-    },
-    /// Cancel prepared setup delivery and wait for cleanup.
-    #[effect(kind = "outside")]
-    CancelPreparedDelivery,
 }
 
 impl ImagerEffect {
@@ -261,8 +223,6 @@ enum Flow {
     Wizard,
     #[cfg(feature = "installation")]
     Setup,
-    #[cfg(feature = "installation")]
-    Imports,
     #[cfg(feature = "destination")]
     Destination,
 }
@@ -272,8 +232,6 @@ impl Flow {
         match scenario {
             #[cfg(feature = "installation")]
             Some(name) if name.starts_with("installer-") => Self::Setup,
-            #[cfg(feature = "installation")]
-            Some(name) if name.starts_with("import-") => Self::Imports,
             #[cfg(feature = "destination")]
             Some(name) if name.starts_with("destination-") => Self::Destination,
             _ => Self::Wizard,
@@ -286,13 +244,8 @@ impl Flow {
             return Self::Destination;
         }
         #[cfg(feature = "installation")]
-        {
-            if cx.launch_flag("--setup") || cx.launch_flag("--demo") {
-                return Self::Setup;
-            }
-            if cx.launch_flag("--import-folders") {
-                return Self::Imports;
-            }
+        if cx.launch_flag("--setup") || cx.launch_flag("--demo") {
+            return Self::Setup;
         }
         #[cfg(not(feature = "installation"))]
         let _ = cx;
@@ -318,9 +271,7 @@ const WIZARD_SCENARIOS: &[&str] = &[
 static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
     let scenarios = WIZARD_SCENARIOS.iter();
     #[cfg(feature = "installation")]
-    let scenarios = scenarios
-        .chain(crate::setup::journey::SCENARIOS)
-        .chain(crate::setup::import_view::SCENARIOS);
+    let scenarios = scenarios.chain(crate::setup::journey::SCENARIOS);
     #[cfg(feature = "destination")]
     let scenarios = scenarios.chain(crate::setup::destination::SCENARIOS);
     scenarios.copied().collect()
@@ -358,10 +309,9 @@ impl ResourceApp for ImagerShell {
     const TITLE_KEY: &'static str = "installer-app-title";
     const ICON: Option<&'static str> = Some("imager");
     #[cfg(all(feature = "installation", feature = "destination"))]
-    const FLAGS: &'static [&'static str] =
-        &["--setup", "--import-folders", "--demo", "--destination"];
+    const FLAGS: &'static [&'static str] = &["--setup", "--demo", "--destination"];
     #[cfg(all(feature = "installation", not(feature = "destination")))]
-    const FLAGS: &'static [&'static str] = &["--setup", "--import-folders", "--demo"];
+    const FLAGS: &'static [&'static str] = &["--setup", "--demo"];
     #[cfg(all(not(feature = "installation"), feature = "destination"))]
     const FLAGS: &'static [&'static str] = &["--destination"];
     #[cfg(not(any(feature = "installation", feature = "destination")))]
@@ -416,8 +366,6 @@ impl ResourceApp for ImagerShell {
             Flow::Wizard => crate::app::wizard_view(cx, ImagerApp::new()),
             #[cfg(feature = "installation")]
             Flow::Setup => crate::setup::journey::view(cx),
-            #[cfg(feature = "installation")]
-            Flow::Imports => crate::setup::import_view::view(cx),
             #[cfg(feature = "destination")]
             Flow::Destination => crate::setup::destination::view(cx),
         }
@@ -1052,14 +1000,6 @@ mod tests {
             "the guided setup starts at its destination"
         );
         assert!(find(&setup.harness().resources(), "imager.job").is_none());
-        let mut imports =
-            ui::framework::testing::TestApp::<ImagerShell>::launched(&["--import-folders"])
-                .unwrap();
-        let resources = imports.harness().resources();
-        assert!(
-            find(&resources, "imager.import").is_some(),
-            "the folder imports"
-        );
     }
 
     #[test]

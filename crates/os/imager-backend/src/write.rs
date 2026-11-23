@@ -11,8 +11,6 @@ mod descriptor;
 pub mod handoff;
 pub mod helper;
 pub mod job;
-#[cfg(target_os = "linux")]
-pub mod pending;
 mod target;
 pub mod transaction;
 pub mod udisks;

@@ -58,7 +58,6 @@ pub struct AccountsForm {
     pub mail: LocalState<bool>,
     pub calendar: LocalState<bool>,
     collections: LocalState<Vec<(String, String, LocalState<bool>)>>,
-    pub(super) windows: super::accounts_hints::WindowsPrompt,
     status: LocalState<AccountsStatus>,
     notice: LocalState<String>,
     source: LocalState<Option<String>>,
@@ -79,7 +78,6 @@ impl Default for AccountsForm {
             mail: LocalState::new(false),
             calendar: LocalState::new(false),
             collections: LocalState::new(Vec::new()),
-            windows: super::accounts_hints::WindowsPrompt::default(),
             status: LocalState::new(AccountsStatus::Ready),
             notice: LocalState::new(String::new()),
             source: LocalState::new(None),
@@ -362,7 +360,6 @@ impl AccountsForm {
                 Text::new(&t("installer-online-title")).with_role(TextRole::Title),
             ))
             .push(Box::new(Text::new(&t("installer-online-private"))));
-        column = self.windows_view(column);
         column = self.saved_and_suggested(column, idle);
         column = column
             .push(Box::new(

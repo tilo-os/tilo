@@ -208,30 +208,6 @@ pub mod tests {
             );
         }
         {
-            // USB and older staged handoffs carry no sidecar and parse unchanged.
-            assert!(media_profile(&handoff()).unwrap().tpm_handoff.is_none());
-
-            let package = serde_json::json!({
-                "schema": 1, "sealed_bytes": 48, "ciphertext_sha256": "a".repeat(64)
-            });
-            let mut value = document();
-            value["profile"]["prepared_setup"] = package;
-            value["profile"]["tpm_handoff"] = "sealed sidecar".into();
-            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
-            assert_eq!(
-                media_profile(&handoff).unwrap().tpm_handoff.as_deref(),
-                Some("sealed sidecar")
-            );
-
-            // A sidecar without its prepared package is refused, and so is a value that is not a
-            // bounded string.
-            let mut value = document();
-            value["profile"]["tpm_handoff"] = "sealed sidecar".into();
-            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
-            assert!(media_profile(&handoff).is_err());
-            assert!(rejects(|v| v["profile"]["tpm_handoff"] = 1.into()).contains("tpm_handoff"));
-        }
-        {
             let dir = tempfile::tempdir().unwrap();
             assert_eq!(load_from(&dir.path().join("handoff.json")), Ok(None));
             std::fs::write(dir.path().join("handoff.json"), b"{").unwrap();

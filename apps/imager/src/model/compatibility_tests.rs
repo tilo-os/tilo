@@ -42,11 +42,6 @@ macro_rules! snapshot {
         configured.wifi_ssid = "Network".into();
         configured.device_label = "New device".into();
         configured.enroll_local_identity = true;
-        configured.prepared_setup = Some($model::PreparedSetupExpectation {
-            schema: 1,
-            sealed_bytes: 1024,
-            ciphertext_sha256: "b".repeat(64),
-        });
 
         let mut release = wire(&releases[0]);
         release["url"] = json!("https://example.org/tilo.img.zst");
@@ -112,7 +107,6 @@ macro_rules! snapshot {
                 "identity": $model::SourceIdentity::json_schema(),
                 "kind": $model::SourceKind::json_schema(),
                 "filesystem": $model::Filesystem::json_schema(),
-                "prepared_setup": $model::PreparedSetupExpectation::json_schema(),
             },
             "model_schema": {
                 "source": $model::Source::value_schema(),
@@ -141,7 +135,6 @@ macro_rules! snapshot {
                     "wifi_ssid": wire(&profile_paths.wifi_ssid.segments()),
                     "device_label": wire(&profile_paths.device_label.segments()),
                     "enroll_local_identity": wire(&profile_paths.enroll_local_identity.segments()),
-                    "prepared_setup": wire(&profile_paths.prepared_setup.segments()),
                     "user": {
                         "full_name": wire(&profile_paths.user.full_name.segments()),
                         "username": wire(&profile_paths.user.username.segments()),

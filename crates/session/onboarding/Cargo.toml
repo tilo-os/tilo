@@ -1,6 +1,6 @@
 [package]
 name = "tilo-onboarding"
-description = "First use as an app the shell hosts: creating or bringing back an identity, its backup, a prepared setup and the transfers it carries over, the media formats offer and the tour."
+description = "First use as an app the shell hosts: creating or bringing back an identity, its backup, the media formats offer and the tour."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true

@@ -38,14 +38,12 @@ payload=(
     /usr/bin/tilo-session
     /usr/bin/tilo
     /usr/bin/tilo-launcher
-    /usr/libexec/tilo-import-folders
     /usr/libexec/tilo-session
     /usr/libexec/tilo-session-runner
     /usr/libexec/tilo-session-report
     /usr/libexec/tilo-flight-recorder
     /usr/libexec/tilo-unlock-helper
     /etc/pam.d/tilo-unlock
-    /usr/share/applications/tilo-import-folders.desktop
     /usr/share/wayland-sessions/tilo.desktop
     /usr/share/xdg-desktop-portal/portals/tilo.portal
     /usr/share/xdg-desktop-portal/tilo-portals.conf

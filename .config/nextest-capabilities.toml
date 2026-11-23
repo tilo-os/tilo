@@ -43,12 +43,6 @@ checks = ["sandbox-host-ids"]
 filter = "package(env-tools) and test(/^build::/)"
 
 [[capabilities.UserNamespace.tests]]
-# A capability-free root runs the peer scenario in a user namespace.
-probe = "user-namespace"
-checks = ["imager-tests-{arch}/{shard}"]
-filter = "package(imager-backend) and test(/capture::original_caller::/)"
-
-[[capabilities.UserNamespace.tests]]
 # Fixtures and guests in a plain bubblewrap sandbox.
 probe = "bubblewrap"
 filter = """\
@@ -88,9 +82,7 @@ or (package(windows-vm) and test(=owner_status::tests::the_owner_status_summary_
 or (package(tilo-secrets) and test(=owner_migration::chromium::tests::owner_scope_refuses_files_and_elevation_without_contacting_a_keyring)) \
 or (package(runtime-portal) and test(=descriptors::tests::a_peer_that_cannot_be_traced_still_hands_over_its_descriptor)) \
 or (package(linux-vm) and test(=hosted::jail::tests::only_a_root_owned_configuration_is_read)) \
-or (package(tilo-identity) and test(=person_files::tests::a_symlinked_or_foreign_identity_directory_is_refused)) \
-or (package(launcher) and (test(=owned_service::capture::root_output::tests::original_output_admission_needs_held_native_ownership) \
-or test(=capture_service::signed_capture_worker_confines_source_and_output_and_reaps_on_cancel)))"""
+or (package(tilo-identity) and test(=person_files::tests::a_symlinked_or_foreign_identity_directory_is_refused))"""
 
 # The tests that observe what only root may do, for the same reason, in the same checks under
 # the guest's own root. A launcher test that enters a mount namespace of its own is root's too:
@@ -108,13 +100,4 @@ filter = """\
 or test(=enrolled_transport::fs::tests::enrollment_storage_authority) \
 or test(=person_files::tests::root_writes_into_a_persons_directory_only_as_the_person))) \
 or (package(tilo-files) and test(=native::atomic::directory::retained_foundation_tests::a_held_store_publishes_and_validates_through_the_directory_it_holds)) \
-or (package(launcher) and (test(=system_view::the_view_exposes_exactly_what_per_path_binds_did) \
-or test(=capture_service::signed_original_source_reader_drops_source_groups_only_after_namespace_confinement) \
-or test(=capture_service::mounted_source::signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs) \
-or test(=capture_service::openpgp_native::signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key)))"""
-# Publishing an enrolled system is root's alone (`installed_person::root`); the imager's
-# `imager-tests` shards run it as the micro-VM guest's root, and a job elsewhere leaves it out.
-[[capabilities.Root.tests]]
-probe = "root-identity"
-checks = ["imager-tests-{arch}/{shard}"]
-filter = "package(imager) and test(=setup::journey::prepared_media_native::tests::media_preparation_exports_actual_enrolled_device_without_root_backup_fallback)"
+or (package(launcher) and test(=system_view::the_view_exposes_exactly_what_per_path_binds_did))"""

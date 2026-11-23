@@ -328,8 +328,7 @@ echo "END"
 SETUP = "so.tilo.onboarding"
 ACKNOWLEDGE = {"acknowledge": {"checked": True}}
 FORWARD = (("finish", {}), ("skip", {}), ("continue", {}),
-           ("choose", {"option": "tour"}), ("choose", {"option": "install-codecs"}),
-           ("choose", {"option": "accept-incomplete"}))
+           ("choose", {"option": "tour"}), ("choose", {"option": "install-codecs"}))
 FIRST_USE_STEPS = 24
 
 

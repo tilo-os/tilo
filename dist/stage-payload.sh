@@ -18,7 +18,7 @@ stage=$2
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ ! -e $stage ]] || { echo "stage path already exists: $stage" >&2; exit 1; }
-bins=(tilo-session tilo tilo-runtime tilolang-process tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
+bins=(tilo-session tilo tilo-runtime tilolang-process tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report)
 (( ! primary_files )) || bins+=(fs)
 for bin in "${bins[@]}"; do
     [[ -x $bin_dir/$bin ]] || { echo "missing executable: $bin_dir/$bin" >&2; exit 1; }
@@ -30,7 +30,7 @@ if LC_ALL=C grep -q -a -F -e "$marker" "$bin_dir/tilo-session"; then
     exit 1
 fi
 
-mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,applications,portal,pipewire,systemd-user,license}
+mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,portal,pipewire,systemd-user,license}
 install -pm 0755 "$bin_dir/tilo-session"      "$stage/bin/tilo-session"
 # `tilo`: the desktop's apps and actions from any terminal (`tilo action list`,
 # `tilo do`, `tilo open`). Every host package ships it, as the OS image does.
@@ -57,8 +57,6 @@ install -pm 0644 "$repo_root/dist/session/tilo-app.desktop" "$stage/wayland-sess
 install -pm 0644 "$repo_root/dist/session/tilo-unlock.pam"   "$stage/pam/tilo-unlock"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
                  "$stage/systemd-user/tilo-graphical-session.target"
-install -pm 0755 "$bin_dir/imager" "$stage/bin/tilo-import-folders"
-install -pm 0644 "$repo_root/dist/session/tilo-import-folders.desktop" "$stage/applications/tilo-import-folders.desktop"
 
 portal_src=$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal
 install -pm 0644 "$portal_src" "$stage/portal/tilo.portal"

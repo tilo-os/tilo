@@ -1,16 +1,12 @@
 //! Native write lifecycle: reserve, prepare, copy, customize, finalize, release.
 #[cfg(test)]
 mod tests;
-#[cfg(target_os = "linux")]
-use super::attest_target_descriptor;
 use super::{
     JobResult, acquire_target_write_lock, finish_target,
     helper::{HelperPhase, HelperProgress, ReviewedSource, progress_fraction},
     prepare_target, revalidate_target, stream_copy_bound, verify_readback_bound,
 };
 use crate::imager_model::SourceIdentity;
-#[cfg(target_os = "linux")]
-use std::fs::OpenOptions;
 use std::{io, path::Path};
 
 pub struct SystemWriteRequest {
@@ -18,13 +14,10 @@ pub struct SystemWriteRequest {
     pub target: crate::imager_model::TargetDrive,
     pub expected_sha256: Option<String>,
     pub installable: bool,
-    pub provision_migration_data: bool,
 }
 
 /// Device identity and the lifecycle around these adapters stay in this module.
 pub trait WriteSetup {
-    fn output_preflight(&self) -> io::Result<()>;
-    fn validate_pending_source_disks(&self) -> io::Result<()>;
     fn write_descriptor(
         &self,
         device: &mut std::fs::File,
@@ -36,9 +29,6 @@ pub trait WriteSetup {
     fn write_profile(&self, destination: &Path, should_cancel: &dyn Fn() -> bool)
     -> io::Result<()>;
     fn apply_handoff(&self, destination: &Path) -> io::Result<()>;
-    /// Returns authorization, provisioning or validation errors, or `io::ErrorKind::Interrupted`
-    /// when cancelled.
-    fn provision_after_write(&self, should_cancel: &dyn Fn() -> bool) -> io::Result<()>;
     fn release_handoff(&self);
 }
 
@@ -107,9 +97,6 @@ pub fn run_udisks_job(
         verify_frac = progress.verify_frac;
         on_progress(progress);
     };
-    if let Err(error) = setup.validate_pending_source_disks() {
-        return JobResult::WriteFailed(error.to_string());
-    }
     let mut device = match super::udisks::open_udisks_device(target) {
         Ok(device) => device,
         Err(error) => {
@@ -184,10 +171,7 @@ pub fn run_system_job(
         verify_frac = progress.verify_frac;
         on_progress(progress);
     };
-    let output_preflight = setup.output_preflight();
-    let mut result = if output_preflight.is_err() {
-        JobResult::WriteFailed("Original migration requires authenticated helper ownership".into())
-    } else if should_cancel() {
+    let mut result = if should_cancel() {
         JobResult::Cancelled
     } else if let Err(error) = revalidate_target(&request.target) {
         JobResult::WriteFailed(format!(
@@ -197,45 +181,12 @@ pub fn run_system_job(
         target_lock = Some(lock);
     }) {
         JobResult::WriteFailed(format!("could not exclusively reserve the drive: {error}"))
-    } else if let Err(error) = setup.validate_pending_source_disks() {
-        JobResult::WriteFailed(error.to_string())
     } else if let Err(error) = prepare_target(&request.target) {
         JobResult::WriteFailed(format!(
             "the drive is still in use and could not be prepared: {error}"
         ))
     } else {
         prepared = true;
-        #[cfg(target_os = "linux")]
-        if request.provision_migration_data {
-            use std::os::unix::fs::OpenOptionsExt;
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .custom_flags(libc::O_EXCL | libc::O_SYNC | libc::O_NOFOLLOW)
-                .open(&dst)
-            {
-                Ok(mut device) => match attest_target_descriptor(&request.target, &device) {
-                    Ok(()) => {
-                        setup.write_descriptor(&mut device, should_cancel, &mut relay_progress)
-                    }
-                    Err(error) => JobResult::WriteFailed(format!(
-                        "the opened drive no longer matches review: {error}"
-                    )),
-                },
-                Err(error) => JobResult::WriteFailed(error.to_string()),
-            }
-        } else {
-            run_job_paths_bound(
-                src,
-                &dst,
-                request.source.size,
-                request.source.identity,
-                request.expected_sha256.as_deref(),
-                should_cancel,
-                &mut relay_progress,
-            )
-        }
-        #[cfg(not(target_os = "linux"))]
         run_job_paths_bound(
             src,
             &dst,
@@ -247,7 +198,7 @@ pub fn run_system_job(
         )
     };
     if prepared {
-        if result.is_success() && request.installable && !request.provision_migration_data {
+        if result.is_success() && request.installable {
             // The profile is written through a second open because the streaming verifier owns and
             // closes its descriptor. Revalidate immediately before that open, so a replug cannot put
             // the profile on a replacement device that reuses the path.
@@ -274,15 +225,6 @@ pub fn run_system_job(
         }
         if result.is_success() && should_cancel() {
             result = JobResult::Cancelled;
-        }
-        if result.is_success()
-            && let Err(error) = setup.provision_after_write(should_cancel)
-        {
-            result = if error.kind() == io::ErrorKind::Interrupted {
-                JobResult::Cancelled
-            } else {
-                JobResult::VerifyFailed("Protected migration output provisioning refused".into())
-            };
         }
         finish_target(&request.target, &result);
     }

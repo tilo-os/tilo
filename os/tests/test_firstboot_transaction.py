@@ -107,14 +107,6 @@ put "$r/expiry" "$2"''',
     'bin/chmod': 'locked; fail key-mode',
     'bin/chown': 'locked; fail chown',
     'bin/shred': r'''exec rm -- "${@: -1}"''',
-    'handoff': r'''if [ "${1?}" = required-user-id ]; then
-  [ ! -e "$r/shadow" ] || die 'retry repeated UID availability query'
-  echo 1000
-else
-  locked
-  fail plan
-fi''',
-    'etc/prepared-setup-transport': r'''locked; fail "${1?}"''',
 }
 
 
@@ -137,8 +129,6 @@ class TransactionTests(unittest.TestCase):
         self.full_name = r / 'etc/install-user-full-name'
         self.full_name.write_text('Fixture User\n')
         self.full_name.chmod(0o600)
-        for name in ['migration-plan.json', 'prepared-setup', 'prepared-home']:
-            (r / 'state' / name).write_text('fixture')
         # Every external tool is inert, but maintains shadow/account state across
         # separate real Bash invocations. A delivery observes actual mock shadow.
         values = {'files_binary': FILES_BINARY, 'real_stat': shutil.which('stat'),
@@ -203,7 +193,6 @@ fail('seeds-after')
             '/var/home': str(r / 'home'),
             '"/home/$user"': f'"{r}/home/$user"',
             'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"': f'FILES_HELPER="{r}/bin/files-helper"',
-            '/usr/libexec/tilo-staging-handoff': str(r / 'handoff'),
             'seed_helper=/usr/libexec/tilo-firstboot-home-seeds': f'seed_helper={r}/seeds.py',
         }.items():
             self.assertIn(old, s)
@@ -234,11 +223,6 @@ fail('seeds-after')
             (['bin/chmod', '0640', 'key'], '-1', lock, 'delivery ran unexpired'),
             (['bin/chown', '0:0', 'run'], None, lock, 'expiry'),
             (['bin/chown', '0:0', 'run'], '1970-01-02', None, 'shadow'),
-            (['handoff', 'deliver-user-plan'], '1970-01-02', lock, None),
-            (['handoff', 'deliver-user-plan'], '1970-01-02', HASH, 'delivery ran unlocked'),
-            (['handoff', 'required-user-id'], None, lock, 'retry repeated UID availability query'),
-            (['etc/prepared-setup-transport', 'deliver-user'], '1970-01-02', '', 'delivery ran unlocked'),
-            (['etc/prepared-setup-transport', 'deliver-home-user'], '', lock, 'delivery ran unexpired'),
             (['seeds.py', 'fixtureuser'], '1970-01-02', HASH, 'delivery ran unlocked'),
             (['seeds.py', 'fixtureuser'], '-1', lock, 'delivery ran unexpired'),
             (['bin/useradd'] + add, None, lock, 'existing account'),
@@ -277,7 +261,7 @@ fail('seeds-after')
         self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
 
     def test_every_failed_delivery_is_locked_and_retryable(self):
-        for stage in ['useradd', 'crash', 'seeds', 'seeds-after', 'key-repair', 'key-mode', 'plan', 'deliver-user', 'deliver-home-user', 'password', 'expiry-release']:
+        for stage in ['useradd', 'crash', 'seeds', 'seeds-after', 'key-repair', 'key-mode', 'password', 'expiry-release']:
             with self.subTest(stage=stage):
                 result = self.run_boot(stage)
                 self.assertNotEqual(result.returncode, 0)
@@ -308,8 +292,8 @@ fail('seeds-after')
                 self.full_name.write_text('Fixture User\n')
                 self.full_name.chmod(0o600)
 
-    def test_termination_during_large_delivery_never_unlocks(self):
-        result = self.run_boot('deliver-home-user', terminate=True)
+    def test_termination_during_seeding_never_unlocks(self):
+        result = self.run_boot('seeds', terminate=True)
         self.assertEqual(result.returncode, -15)
         self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
         self.assertTrue(self.credential.exists())
@@ -342,7 +326,7 @@ fail('seeds-after')
         # Model interruption after expiry release but before seed cleanup.
         (self.root / 'shadow').write_text(HASH)
         (self.root / 'expiry').write_text('-1')
-        result = self.run_boot('deliver-home-user')
+        result = self.run_boot('key-repair')
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
         self.assertTrue(self.credential.exists())
@@ -367,7 +351,7 @@ fail('seeds-after')
         result = self.run_boot()
         self.assertNotEqual(result.returncode, 0)
         # Refused as an account that was already there, before anything asks
-        # about it: the UID query's stand-in would refuse this boot too.
+        # about it.
         self.assertIn('refusing to modify pre-existing account', result.stderr)
         self.assertFalse((self.root / 'useradd').exists())
         self.assertTrue(self.credential.exists())

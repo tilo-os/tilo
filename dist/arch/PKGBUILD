@@ -33,7 +33,6 @@ build() {
   cargo build --release --locked -p tilo-cli --bin tilo
   cargo build --release --locked -p tilo-runtime --bin tilo-runtime --no-default-features
   cargo build --release --locked -p tilolang-process --bin tilolang-process
-  cargo build --release --locked -p imager --bin imager --features installation
   export TILO_UNLOCK_HELPER_PATH=/usr/lib/tilo/tilo-unlock-helper
   cargo build --release --locked -p tilo-session --bin tilo-session
   ./dist/stage-payload.sh target/release "$srcdir/payload"
@@ -49,7 +48,7 @@ package_tilo-session() {
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'greetd: display manager')
   cd "$srcdir/payload"
-  install -Dm755 bin/tilo-session bin/tilo bin/tilo-runtime bin/tilolang-process bin/tilo-import-folders -t "$pkgdir/usr/bin"
+  install -Dm755 bin/tilo-session bin/tilo bin/tilo-runtime bin/tilolang-process -t "$pkgdir/usr/bin"
   # The launcher's path is pinned where the session and its units start it, on
   # every distribution; the old name on PATH links to it.
   install -Dm755 bin/tilo-launcher -t "$pkgdir/usr/libexec/tilo"
@@ -71,7 +70,6 @@ package_tilo-session() {
   install -Dm644 pipewire/tilo-echo-cancel.conf -t "$pkgdir/usr/share/pipewire"
   install -Dm644 systemd-user/tilo-graphical-session.target -t "$pkgdir/usr/lib/systemd/user"
   install -Dm644 license/LICENSE "$pkgdir/usr/share/licenses/tilo-session/LICENSE"
-  install -Dm644 applications/tilo-import-folders.desktop "$pkgdir/usr/share/applications/tilo-import-folders.desktop"
 }
 
 package_tilo-session-devel() {

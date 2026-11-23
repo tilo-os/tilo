@@ -1,17 +1,14 @@
 [package]
 name = "tilo-onboarding-session"
-description = "The session side of first use: the identity ceremony and its storage, first-boot provisioning, adding this computer with a code, prepared setups and the transfers they carry over, and the ownership of their secrets."
+description = "The session side of first use: the identity ceremony and its storage, first-boot provisioning, adding this computer with a code, and the ownership of their secrets."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
 
 [features]
-# Prepared-setup, transfer and browser-projection fixtures for the tests of
-# the session that hosts setup.
+# Views the tests of the session that hosts setup build without a real login.
 test-support = []
-# Provisioning against the current Linux account requires a disposable root fixture.
-native-current-device-qualification = []
 
 [dependencies]
 anyhow.workspace = true
@@ -23,7 +20,6 @@ tilo-actions = { path = "../../core/actions" }
 # Adding this computer with a code calls this computer's daemon, as `tilo login` does.
 tilo-api = { path = "../../core/tilo-api" }
 tilo-desktop = { path = "../desktop" }
-tilo-app-state = { path = "../../system/app-state" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true
@@ -32,53 +28,34 @@ collab-types = { path = "../../core/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true
 hex.workspace = true
-launcher = { path = "../../core/launcher" }
 libc.workspace = true
 rand_core.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
-sha2.workspace = true
-staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 tempfile.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
-# The daemon's action is called from a thread of its own, inside a runtime.
-tokio = { workspace = true, features = ["rt-multi-thread"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
-tilo-handoff = { path = "../../os/tilo-handoff" }
 tilo-identity = { path = "../../core/tilo-identity" }
 tilo-identity-client = { path = "../../core/tilo-identity-client" }
 tilo-onboarding = { path = "../onboarding" }
 # An acknowledgement is a declared action of setup's document.
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-paths.workspace = true
-tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 # The `tracing` target the session log keeps whatever `RUST_LOG` says: every
 # certificate renewal a join depends on is reported under it.
 tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
 tracing.workspace = true
-uuid.workspace = true
 zeroize.workspace = true
 tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 
-[target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-browser-continuity = { path = "../../import/browser-continuity", features = ["native"] }
-prepared-setup-model = { path = "../prepared-setup-model" }
-
 [dev-dependencies]
-iroh.workspace = true
 tilo-api = { path = "../../core/tilo-api", features = ["test-support"] }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-imager-backend = { path = "../../os/imager-backend", features = ["test-support"] }
 
 [lints]
 workspace = true

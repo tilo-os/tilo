@@ -1,4 +1,4 @@
-//! Native installation actors, validated ownership owners and portable contracts.
+//! Native installation actors and portable contracts.
 //! Frontends retain presentation state and issue requests to these actors.
 
 #![allow(
@@ -49,7 +49,7 @@
     clippy::unwrap_used,
     clippy::used_underscore_binding,
     clippy::wildcard_imports,
-    reason = "the migration stack moved here from apps/imager with its lint debt, which stays scoped to the imager"
+    reason = "the Disk Imager's lint debt, which stays scoped to the imager"
 )]
 // Only the Disk Imager app links this crate, so its arithmetic runs in the
 // app's own process, as it did before the code moved out of apps/imager.
@@ -70,56 +70,16 @@
     )
 )]
 
-pub mod account_admission;
-pub mod account_checkpoint;
-pub mod account_dav_readiness;
-pub mod account_sources;
 pub mod account_store;
-pub mod account_transfer;
-pub mod applications_admission;
-pub mod browser_inventory;
-#[cfg(unix)]
-pub mod browser_profiles;
-#[cfg(not(unix))]
-#[path = "browser_profiles_unsupported.rs"]
-pub mod browser_profiles;
-pub mod browser_selection;
 pub mod cache;
-pub mod capture;
-pub mod folders;
-pub mod home_admission;
-pub mod home_transfer;
 pub mod imager_model;
-#[cfg(target_os = "linux")]
-pub mod inode_changes;
-#[cfg(target_os = "linux")]
-pub mod installed_consumers;
-pub mod journey_media;
-pub mod journey_promotion;
-pub mod journey_transfer;
-pub mod media_capacity;
-#[cfg(target_os = "linux")]
-pub mod media_layout;
 pub mod media_model;
-#[cfg(target_os = "linux")]
-mod native_root;
-pub mod original_admission;
-#[path = "setup/prepared_identity.rs"]
-pub mod prepared_identity;
-pub mod prepared_media;
-pub mod prepared_setup;
 pub mod probe;
 pub mod profile;
 pub mod record;
-pub mod recovery;
-pub mod retained_source;
 pub mod staging;
 pub mod startup_password;
 pub mod support_report;
-pub mod windows_accounts;
-pub mod windows_inventory;
-pub mod windows_media;
-pub mod windows_preparation;
 pub mod write;
 
 pub mod efi;
@@ -130,35 +90,12 @@ pub mod linux_parse;
 pub mod model;
 pub mod plan;
 pub mod platform;
-pub mod service_selection;
-/// The Outline, Linear and mail account sources live in `migration-sources`,
-/// so the `tilo` CLI can reach them without this crate's desktop stack.
-pub use tilo_migrate::service as service_sources;
-#[cfg(test)]
-mod service_source_tests;
-pub mod session;
 pub mod setup;
 
 #[cfg(all(feature = "destination", target_os = "linux"))]
 pub mod destination;
-pub use tilo_migrate::destination_security;
-pub mod migration;
-pub mod migration_directory;
-pub mod migration_durability;
-pub mod migration_entry;
-pub mod migration_journal;
-pub mod migration_journal_log;
-pub mod migration_native;
-pub mod migration_native_journal;
-pub mod migration_review;
-mod migration_source;
-pub mod migration_store;
-pub mod migration_worker;
-pub mod nofollow;
-pub mod portable_transfer;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-pub mod user_transfer;
 
 /// Every start and size is aligned to this many bytes.
 pub const ALIGN_BYTES: u64 = 1 << 20;

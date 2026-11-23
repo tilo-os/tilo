@@ -446,9 +446,6 @@ impl Ceremony {
     }
 
     fn escape_effect(&self) -> Option<OnboardingEffect> {
-        if self.page.migration.is_some() || self.page.prepared.is_some() {
-            return None;
-        }
         if self.page.tour_page.is_some() {
             return Some(OnboardingEffect::Skip);
         }
@@ -492,7 +489,7 @@ impl Widget for Ceremony {
         let accessibility_expanded =
             theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast");
         let page = &self.page;
-        let identity_page = page.tour_page.is_none() && page.migration.is_none();
+        let identity_page = page.tour_page.is_none();
         let panel_height = if accessibility_expanded {
             ACCESSIBLE_PANEL_HEIGHT
         } else if identity_page && page.screen == Screen::Intro {

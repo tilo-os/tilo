@@ -46,10 +46,6 @@ fn suite(script: &str, args: &[&str]) -> std::io::Result<()> {
         .arg(root.join(script))
         .args(args)
         .env(
-            "TILO_PREPARED_EXTRACT_BINARY",
-            tilo_test_env::package_binary!("staging-handoff-native-extractor"),
-        )
-        .env(
             "TILO_FIRSTBOOT_HOME_SEEDS_BINARY",
             tilo_test_env::package_binary!("tilo-firstboot-home-seeds"),
         )
@@ -82,11 +78,6 @@ fn credential_transport() -> std::io::Result<()> {
 #[test]
 fn installed_runtime() -> std::io::Result<()> {
     suite("os/tests/test_installer_firstboot_runtime.py", &[])
-}
-
-#[test]
-fn prepared_binding() -> std::io::Result<()> {
-    suite("os/tests/test_prepared_first_use_binding.py", &[])
 }
 
 #[test]

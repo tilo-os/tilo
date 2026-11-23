@@ -10,7 +10,6 @@
     )
 )]
 
-pub mod accounts_hints;
 pub mod accounts_view;
 pub mod action_button;
 pub mod control;

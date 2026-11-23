@@ -96,8 +96,6 @@ pub struct DesktopFlow {
     cancel: Option<Arc<AtomicBool>>,
     cancel_requested: bool,
     approved_selection: Option<(String, String, String)>,
-    account_protocol: Option<u32>,
-    service_session_protocol: Option<u32>,
     revision: u64,
     diagnostic_log: Option<PathBuf>,
 }
@@ -121,8 +119,6 @@ impl DesktopFlow {
             cancel: None,
             cancel_requested: false,
             approved_selection: None,
-            account_protocol: None,
-            service_session_protocol: None,
             revision: 0,
             diagnostic_log: None,
         }
@@ -198,24 +194,11 @@ impl DesktopFlow {
         Ok(())
     }
 
-    pub(super) fn require_account_protocol(&mut self, protocol: Option<u32>) {
-        self.account_protocol = protocol;
-    }
-
-    pub(super) fn require_service_session_protocol(&mut self, protocol: Option<u32>) {
-        self.service_session_protocol = protocol;
-    }
-
     pub fn start_install(&mut self) -> Result<(), String> {
         let DesktopFlowState::Ready(selection) = &self.state else {
             return Err("Desktop installation is not ready for authorization.".into());
         };
-        selection
-            .release
-            .require_account_protocol(self.account_protocol)?;
-        selection
-            .release
-            .require_service_session_protocol(self.service_session_protocol)?;
+        selection.release.validate_metadata()?;
         self.approved_selection = Some(selection_identity(selection));
         self.start_check()
     }
@@ -331,15 +314,7 @@ impl DesktopFlow {
     }
 
     fn begin_download(&mut self, selection: DesktopSelection) {
-        if let Err(error) = selection
-            .release
-            .require_account_protocol(self.account_protocol)
-            .and_then(|()| {
-                selection
-                    .release
-                    .require_service_session_protocol(self.service_session_protocol)
-            })
-        {
+        if let Err(error) = selection.release.validate_metadata() {
             self.fail(Some(selection), DesktopFailureKind::Readiness, error);
             return;
         }
@@ -569,7 +544,6 @@ mod tests {
             url: "https://code.tilo.so/tilo/releases/fixture.rpm".into(),
             byte_size: 7,
             sha256: sha256.clone(),
-            account_credentials: None,
             verified_runtime: Some(RuntimeEvidence {
                 schema: 1,
                 reference: "fixture evidence".into(),
@@ -649,64 +623,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn the_desktop_flow_rechecks_and_reports_what_really_happened;
-
-        phase desktop_protected_account_admission_uses_selected_package_and_rechecks_before_download;
-        {
-            let legacy = release("1.0-1");
-            let selection = |release| DesktopSelection {
-                host: "Fedora".into(),
-                release,
-                already_installed: false,
-            };
-            let mut flow = DesktopFlow::with_runtime_and_state(
-                runtime(),
-                DesktopFlowState::Ready(selection(legacy.clone())),
-            );
-            flow.require_account_protocol(Some(1));
-            assert!(flow.start_install().is_err());
-            assert!(!flow.has_pending_operation());
-            let proof = imager_backend::account_admission::ConsumerCapability {
-                schema: 1,
-                protected_grant_protocol: 1,
-                credential_helper_sha256: "1".repeat(64),
-                runtime_root_hash: "2".repeat(64),
-                runtime_probe_sha256: "3".repeat(64),
-                runtime_library_sha256: "4".repeat(64),
-                runtime_version: "test-1".into(),
-                runtime_library: "lib/libruntime_dylib.so".into(),
-                service_sessions: None,
-            };
-            let mut supported = legacy.clone();
-            supported.account_credentials = Some(proof);
-            flow.state = DesktopFlowState::Ready(selection(supported.clone()));
-            flow.start_install().unwrap();
-            assert!(flow.has_pending_operation());
-            flow.apply_probe(Ok(DesktopProbeSnapshot {
-                host: host(InstalledPackage::Absent),
-                releases: vec![legacy.clone()],
-            }));
-            assert!(matches!(
-                flow.state(),
-                DesktopFlowState::Failed {
-                    kind: DesktopFailureKind::Readiness,
-                    ..
-                }
-            ));
-            assert!(!flow.has_pending_operation());
-            flow.state = DesktopFlowState::Ready(selection(supported.clone()));
-            flow.start_install().unwrap();
-            flow.apply_probe(Ok(DesktopProbeSnapshot {
-                host: host(InstalledPackage::Absent),
-                releases: vec![supported],
-            }));
-            assert!(matches!(flow.state(), DesktopFlowState::Downloading(_)));
-            let mut fresh = DesktopFlow::with_runtime_and_state(
-                runtime(),
-                DesktopFlowState::Ready(selection(legacy)),
-            );
-            fresh.start_install().unwrap();
-            assert!(fresh.has_pending_operation());
-        }
 
         phase desktop_install_rechecks_downloads_and_reports_distinct_outcomes;
         {

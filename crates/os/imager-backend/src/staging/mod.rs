@@ -3,15 +3,11 @@
 //! Portable parsing and sequencing remain available on every host. Native
 //! entry points refuse unsupported hosts rather than acquiring authority there.
 
-pub mod browser;
-#[cfg(target_os = "linux")]
-pub mod browser_store;
 pub mod btrfs_resize;
 pub mod capacity_probe;
 pub mod fat;
 pub mod final_bootnext;
 pub mod layout;
-pub mod prepared_setup;
 pub mod process;
 pub mod protocol;
 pub mod record_io;

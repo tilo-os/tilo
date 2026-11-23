@@ -138,10 +138,6 @@ fn there_is_a_scenario_for_every_step() {
         "tour-organise",
         "tour-collaborate",
         "tour-start",
-        "prepared",
-        "migration-portable-home",
-        "migration-applications",
-        "migration-browser",
     ] {
         assert!(
             scenarios.iter().any(|name| name.starts_with(step)),

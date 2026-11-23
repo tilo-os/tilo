@@ -37,10 +37,6 @@ pub struct Request {
     pub plan_sha256: String,
     #[serde(default)]
     pub profile: serde_json::Map<String, serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub migration: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prepared_setup: Option<super::prepared_setup::PreparedArtifact>,
     /// The install plan a machine with every choice made installs without a
     /// person at its screen. Secret-free, like every plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,25 +237,11 @@ enum Which {
 struct Placeholders {
     handoff: Vec<Range>,
     record: Vec<Range>,
-    prepared: Vec<Range>,
-    receipt: Vec<Range>,
-    browser: Vec<Range>,
-    browser_receipt: Vec<Range>,
-    browser_selection: Vec<Range>,
 }
 
 impl Placeholders {
     fn all(&self) -> Vec<Range> {
-        self.handoff
-            .iter()
-            .chain(&self.record)
-            .chain(&self.prepared)
-            .chain(&self.receipt)
-            .chain(&self.browser)
-            .chain(&self.browser_receipt)
-            .chain(&self.browser_selection)
-            .copied()
-            .collect()
+        self.handoff.iter().chain(&self.record).copied().collect()
     }
 }
 
@@ -329,37 +311,6 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
             .any(|g| g.as_deref().is_some_and(|g| super::same_guid(g, &p.guid)))
     }) {
         return bad("a staging GUID names an existing partition");
-    }
-    if let Some(raw) = &request.migration {
-        #[cfg(target_os = "linux")]
-        {
-            let bytes = serde_json::to_vec(raw)
-                .map_err(|e| Refusal::new(codes::REQUEST_INVALID, e.to_string()))?;
-            let migration = imager_backend::setup::migration_handoff::Plan::parse(&bytes)
-                .map_err(|e| Refusal::new(codes::REQUEST_INVALID, e.to_string()))?;
-            if migration.operation_id != request.operation_id {
-                return bad("migration belongs to a different installation operation");
-            }
-            migration
-                .validate_for_install(&request.plan)
-                .map_err(|e| Refusal::new(codes::REQUEST_INVALID, e.to_string()))?;
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = raw;
-            return bad("Linux migration cannot be authorized on this host");
-        }
-    }
-    if let Some(prepared) = &request.prepared_setup {
-        if !prepared.valid() || request.plan.basis.host_os() != super::plan::HostOs::Linux {
-            return bad("Prepared setup requires bounded private Linux staging ownership");
-        }
-        if let Some(expected) = request.profile.get("prepared_setup") {
-            let claimed = serde_json::to_value(&prepared.expectation).map_err(io_refusal)?;
-            if expected != &claimed {
-                return bad("Prepared profile expectation differs from encrypted setup");
-            }
-        }
     }
     if let Some(dir) = &request.development_layers {
         if request.install_plan.is_none() {
@@ -586,13 +537,6 @@ fn same_linux_volume(
         && a.device_id == b.device_id
         && a.first_lba == b.first_lba
         && a.sector_bytes == b.sector_bytes
-}
-
-#[derive(Clone, Copy)]
-enum MigrationHandoffPurpose {
-    /// Reservation sizing only; prospective geometry is never delivered here.
-    Preflight,
-    Delivery,
 }
 
 struct JournaledBtrfsVolume<'a, 'b> {
@@ -836,26 +780,10 @@ impl Engine<'_> {
             .load(&self.request.operation_id)
             .map_err(|e| Refusal::new(codes::RECORD_FAILED, e))?;
         if let Some(r) = &record {
-            let mut requested = self.request.profile.clone();
-            requested.remove("tpm_handoff");
-            let mut recorded = r.profile.clone();
-            recorded.remove("tpm_handoff");
+            let requested = &self.request.profile;
             if r.plan_sha256 != self.request.plan_sha256
                 || r.release != self.request.release
-                || self
-                    .request
-                    .migration
-                    .as_ref()
-                    .is_some_and(|requested| Some(requested) != r.migration.as_ref())
-                || self
-                    .request
-                    .prepared_setup
-                    .as_ref()
-                    .is_some_and(|requested| {
-                        Some(&requested.expectation) != r.prepared_setup.as_ref()
-                            || requested.browser_expectation() != r.browser_expectation()
-                    })
-                || (!requested.is_empty() && requested != recorded)
+                || (!requested.is_empty() && requested != &r.profile)
             {
                 return Err(Refusal::new(
                     codes::REQUEST_INVALID,
@@ -1923,52 +1851,10 @@ impl Engine<'_> {
         .map_err(io_refusal)
     }
 
-    fn prepared_migration_handoff(
-        &mut self,
-        purpose: MigrationHandoffPurpose,
-    ) -> Result<Option<serde_json::Value>, Refusal> {
-        let Some(raw) = self.record().migration.clone() else {
-            return Ok(None);
-        };
-        #[cfg(target_os = "linux")]
-        {
-            if self.plan().shrink.is_some() {
-                if self.plan().basis.linux_btrfs_volume.is_none() {
-                    return Err(Refusal::new(
-                        codes::STAGING_CHANGED,
-                        "Migration resize lacks reviewed Btrfs binding",
-                    ));
-                }
-                if matches!(purpose, MigrationHandoffPurpose::Delivery)
-                    && (!self.record().is_done(Step::Shrink)
-                        || !matches!(self.check_linux_btrfs_resize(false)?, Actual::Done(_)))
-                {
-                    return Err(Refusal::new(
-                        codes::STAGING_CHANGED,
-                        "Migration geometry cannot be delivered before verified Btrfs shrink",
-                    ));
-                }
-                let original = imager_backend::setup::migration_handoff::Plan::parse(
-                    &serde_json::to_vec(&raw).map_err(io_refusal)?,
-                )
-                .map_err(io_refusal)?;
-                let completed = original
-                    .for_completed_staging(self.plan())
-                    .map_err(io_refusal)?;
-                return serde_json::to_value(completed)
-                    .map(Some)
-                    .map_err(io_refusal);
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = purpose;
-        Ok(Some(raw))
-    }
-
     fn handoff_bytes(&mut self, number: u16, len: u64) -> Result<Vec<u8>, Refusal> {
         let (_, esp) = self.require_staged(Which::Esp)?;
         let (_, root) = self.require_staged(Which::Root)?;
-        let mut handoff = handoff::for_plan(
+        let handoff = handoff::for_plan(
             &self.request.operation_id,
             self.plan(),
             &esp.guid,
@@ -1978,160 +1864,10 @@ impl Engine<'_> {
             self.request.install_plan.clone(),
             self.record().profile.clone(),
         );
-        handoff.migration = self
-            .prepared_migration_handoff(MigrationHandoffPurpose::Delivery)?
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(io_refusal)?;
-        if let Some(expected) = &self.record().prepared_setup {
-            handoff.profile.insert(
-                "prepared_setup".into(),
-                serde_json::to_value(expected).map_err(io_refusal)?,
-            );
-        }
         handoff.validate().map_err(io_refusal)?;
         handoff
             .to_padded(len)
             .map_err(|m| Refusal::new(codes::ESP_PLACEHOLDER, m))
-    }
-
-    fn retain_prepared_setup(&self) -> Result<(), Refusal> {
-        let Some(expected) = &self.record().prepared_setup else {
-            return Ok(());
-        };
-        let slots = self.placeholders.as_ref().ok_or_else(|| {
-            Refusal::new(codes::ESP_PLACEHOLDER, "Prepared setup slots unavailable")
-        })?;
-        let package_len = fat::ranges_len(&slots.prepared);
-        let receipt_len = fat::ranges_len(&slots.receipt);
-        if package_len < expected.sealed_bytes
-            || package_len > imager_backend::staging::prepared_setup::SLOT_BYTES
-            || receipt_len != imager_backend::staging::prepared_setup::RECEIPT_BYTES
-        {
-            return Err(Refusal::new(
-                codes::ESP_PLACEHOLDER,
-                "This installer bundle lacks bounded encrypted setup reservations; download a compatible installer",
-            ));
-        }
-        if let Some(artifact) = &self.request.prepared_setup {
-            let bytes = artifact
-                .read(imager_backend::staging::prepared_setup::caller_uid().map_err(io_refusal)?)
-                .map_err(io_refusal)?;
-            self.store
-                .retain_prepared(&self.request.operation_id, &bytes, expected)
-                .map_err(io_refusal)?;
-        } else {
-            self.store
-                .read_prepared(&self.request.operation_id, expected)
-                .map_err(io_refusal)?;
-        }
-        Ok(())
-    }
-
-    fn prepared_payloads(
-        &self,
-        slots: &Placeholders,
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Refusal> {
-        let Some(expected) = &self.record().prepared_setup else {
-            return Ok(None);
-        };
-        let mut bytes = self
-            .store
-            .read_prepared(&self.request.operation_id, expected)
-            .map_err(io_refusal)?;
-        let package_len = fat::ranges_len(&slots.prepared);
-        if package_len < expected.sealed_bytes
-            || package_len > imager_backend::staging::prepared_setup::SLOT_BYTES
-            || fat::ranges_len(&slots.receipt)
-                != imager_backend::staging::prepared_setup::RECEIPT_BYTES
-        {
-            return Err(Refusal::new(
-                codes::ESP_PLACEHOLDER,
-                "Prepared setup slot changed",
-            ));
-        }
-        bytes.resize(usize::try_from(package_len).map_err(io_refusal)?, b' ');
-        let receipt = handoff::pad_json(
-            &serde_json::to_vec(expected).map_err(io_refusal)?,
-            imager_backend::staging::prepared_setup::RECEIPT_BYTES,
-        )
-        .map_err(io_refusal)?;
-        Ok(Some((bytes, receipt)))
-    }
-
-    fn check_prepared_setup(&mut self, disk: &Disk, guid: &str) -> Result<bool, Refusal> {
-        let slots = self.placeholders(disk, guid)?;
-        #[cfg(target_os = "linux")]
-        if !self.check_browser(disk, guid, &slots)? {
-            return Ok(false);
-        }
-        let Some((bytes, receipt)) = self.prepared_payloads(&slots)? else {
-            return Ok(true);
-        };
-        Ok(self.read_ranges(disk, guid, &slots.prepared)? == bytes
-            && self.read_ranges(disk, guid, &slots.receipt)? == receipt)
-    }
-
-    fn deliver_prepared_setup(&mut self, disk: &Disk, guid: &str) -> Result<(), Refusal> {
-        let slots = self.placeholders(disk, guid)?;
-        let Some((bytes, receipt)) = self.prepared_payloads(&slots)? else {
-            return Ok(());
-        };
-        self.write_ranges(disk, guid, &slots.prepared, &bytes)?;
-        self.write_ranges(disk, guid, &slots.receipt, &receipt)?;
-        self.platform.sync_disk(disk).map_err(io_refusal)?;
-        if !self.check_prepared_setup(disk, guid)? {
-            return Err(Refusal::new(
-                codes::IO_FAILED,
-                "Prepared ciphertext failed target readback",
-            ));
-        }
-        Ok(())
-    }
-
-    fn preflight_migration_transport(&mut self) -> Result<(), Refusal> {
-        let placeholders = self.placeholders.as_ref().ok_or_else(|| {
-            Refusal::new(
-                codes::ESP_PLACEHOLDER,
-                "Verified ESP reservations are unavailable",
-            )
-        })?;
-        let len = placeholders
-            .handoff
-            .iter()
-            .try_fold(0u64, |total, range| total.checked_add(range.len))
-            .ok_or_else(|| {
-                Refusal::new(
-                    codes::ESP_PLACEHOLDER,
-                    "EFI system partition reservation length overflow",
-                )
-            })?;
-        let mut handoff = handoff::for_plan(
-            &self.request.operation_id,
-            self.plan(),
-            "00000000-0000-4000-8000-000000000001",
-            "00000000-0000-4000-8000-000000000002",
-            "FFFF",
-            self.record().original_firmware.boot_order.clone(),
-            None,
-            self.record().profile.clone(),
-        );
-        handoff.migration = self
-            .prepared_migration_handoff(MigrationHandoffPurpose::Preflight)?
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(io_refusal)?;
-        if let Some(expected) = &self.record().prepared_setup {
-            handoff.profile.insert(
-                "prepared_setup".into(),
-                serde_json::to_value(expected).map_err(io_refusal)?,
-            );
-        }
-        handoff.validate().map_err(io_refusal)?;
-        handoff
-            .to_padded(len)
-            .map_err(|message| Refusal::new(codes::ESP_PLACEHOLDER, message))?;
-        Ok(())
     }
 
     fn write_ranges(
@@ -2194,12 +1930,6 @@ impl Engine<'_> {
             return Ok(Actual::Absent);
         };
         let (disk, esp) = self.require_staged(Which::Esp)?;
-        if !self.check_prepared_setup(&disk, &esp.guid)? {
-            return Ok(Actual::Conflict(Refusal::new(
-                codes::STAGING_CHANGED,
-                "Prepared ciphertext delivery changed",
-            )));
-        }
         let ranges = self.placeholders(&disk, &esp.guid)?.handoff;
         let expected = self.handoff_bytes(number, fat::ranges_len(&ranges))?;
         if self.read_ranges(&disk, &esp.guid, &ranges)? != expected {
@@ -2235,9 +1965,6 @@ impl Engine<'_> {
     fn apply_handoff(&mut self) -> Result<(), Refusal> {
         let number = self.owned_number().expect("intent allocated the number");
         let (disk, esp) = self.require_staged(Which::Esp)?;
-        #[cfg(target_os = "linux")]
-        self.deliver_browser(&disk, &esp.guid)?;
-        self.deliver_prepared_setup(&disk, &esp.guid)?;
         let ranges = self.placeholders(&disk, &esp.guid)?.handoff;
         let bytes = self.handoff_bytes(number, fat::ranges_len(&ranges))?;
         self.write_ranges(&disk, &esp.guid, &ranges, &bytes)?;
@@ -2447,15 +2174,6 @@ impl Engine<'_> {
     fn stage(&mut self, authority: &dyn ReleaseAuthority) -> Result<(), Refusal> {
         self.resolve_release(authority)?;
         self.record = self.load_record()?;
-        if self.record.is_none()
-            && self.request.prepared_setup.is_none()
-            && self.request.profile.contains_key("prepared_setup")
-        {
-            return Err(Refusal::new(
-                codes::REQUEST_INVALID,
-                "Prepared profile requires actual encrypted setup ownership",
-            ));
-        }
         if self.record.is_none() {
             self.check_no_other_pending()?;
         }
@@ -2488,37 +2206,7 @@ impl Engine<'_> {
                 },
             )
             .map_err(|error| Refusal::new(codes::REQUEST_INVALID, error))?;
-            record.migration.clone_from(&self.request.migration);
             record.profile.clone_from(&self.request.profile);
-            if let Some(handoff) = self
-                .request
-                .prepared_setup
-                .as_ref()
-                .and_then(|artifact| artifact.tpm_handoff.as_ref())
-            {
-                let bytes = handoff.encode().map_err(io_refusal)?;
-                record.profile.insert(
-                    "tpm_handoff".into(),
-                    serde_json::Value::String(
-                        String::from_utf8(bytes)
-                            .map_err(|_| io_refusal("TPM handoff is not UTF-8"))?,
-                    ),
-                );
-            }
-            record.prepared_setup = self
-                .request
-                .prepared_setup
-                .as_ref()
-                .map(|artifact| artifact.expectation.clone());
-            #[cfg(target_os = "linux")]
-            {
-                record.prepared_browser = self
-                    .request
-                    .prepared_setup
-                    .as_ref()
-                    .and_then(|artifact| artifact.browser.as_ref())
-                    .map(|browser| browser.expectation.clone());
-            }
             self.record = Some(record);
             self.save()?;
         }
@@ -2539,10 +2227,6 @@ impl Engine<'_> {
             self.record_mut().bundle = Some(bundle);
             self.save()?;
         }
-        self.retain_prepared_setup()?;
-        #[cfg(target_os = "linux")]
-        self.retain_browser()?;
-        self.preflight_migration_transport()?;
         if self.record().state(Step::RemoveEsp).is_some()
             || self.record().state(Step::RemoveRoot).is_some()
         {
@@ -2627,30 +2311,7 @@ fn find_placeholders(
         .map_err(placeholder)?;
     let record = fat::file_ranges(read, size, &format!("{dir}/{}", super::ESP_RECORD_FILE))
         .map_err(placeholder)?;
-    let prepared = fat::file_ranges(
-        read,
-        size,
-        imager_backend::staging::prepared_setup::PACKAGE_PATH,
-    )
-    .unwrap_or_default();
-    let receipt = fat::file_ranges(
-        read,
-        size,
-        imager_backend::staging::prepared_setup::RECEIPT_PATH,
-    )
-    .unwrap_or_default();
-    Ok(Placeholders {
-        handoff,
-        record,
-        prepared,
-        receipt,
-        browser: fat::file_ranges(read, size, "/.tilo-installer/browser.sealed")
-            .unwrap_or_default(),
-        browser_receipt: fat::file_ranges(read, size, "/.tilo-installer/browser-receipt.json")
-            .unwrap_or_default(),
-        browser_selection: fat::file_ranges(read, size, "/.tilo-installer/browser-selection.json")
-            .unwrap_or_default(),
-    })
+    Ok(Placeholders { handoff, record })
 }
 
 pub use imager_backend::staging::process::{Poll, Running, helper_executable};
@@ -2845,5 +2506,3 @@ mod tests {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod browser;

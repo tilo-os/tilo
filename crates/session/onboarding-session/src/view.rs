@@ -2,8 +2,8 @@
 //! ([`tilo_onboarding`]).
 //!
 //! The shell keeps the ceremony: the decisions ([`crate::identity::Onboarding`]),
-//! the identity work, the crash journal, adding this computer with a code, the prepared setup
-//! and its transfers, the media codecs install and every secret's ownership.
+//! the identity work, the crash journal, adding this computer with a code, the
+//! media codecs install and every secret's ownership.
 //! The app shows the page this view projects ([`tilo_onboarding::Page`]) and
 //! asks through the state this view lends it; secrets are typed into buffers
 //! this view owns and zeroizes, never carried by what the app asks.
@@ -24,10 +24,6 @@
 mod codecs;
 mod journal;
 mod mounted;
-#[cfg(target_os = "linux")]
-mod prepared;
-#[cfg(not(target_os = "linux"))]
-mod prepared_elsewhere;
 mod recovery_key;
 mod session;
 mod snapshot;
@@ -104,7 +100,6 @@ pub const KEY_RECOVERY_KEY_CLOSE: &str = "onboarding.backup.recovery-key.close";
 pub const KEY_BACK: &str = "onboarding.back";
 pub const KEY_CONNECT_BROWSE: &str = "onboarding.connect.browse";
 pub const KEY_IMPORT: &str = "onboarding.import";
-pub const KEY_PREPARED_IMPORT: &str = "onboarding.prepared.import";
 pub const KEY_CONNECT_NEARBY: &str = "onboarding.connect.nearby";
 pub const KEY_CONNECT_CANCEL: &str = "onboarding.connect.cancel";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
@@ -377,23 +372,6 @@ pub struct OnboardingView {
     /// mode starts on restore and never exposes the create-new branch, while
     /// still allowing a keyring unlock retry.
     recovery_only: bool,
-    prepared_pending: bool,
-    migration: Option<crate::migration::Migration>,
-    portable_home: Option<crate::portable_home::Pending>,
-    portable_applications: Option<crate::portable_applications::Pending>,
-    browser: Option<crate::browser::Pending>,
-    #[cfg(target_os = "linux")]
-    prepared_worker: Option<crate::prepared::Worker>,
-    #[cfg(target_os = "linux")]
-    prepared_home_password: Option<([u8; 32], Zeroizing<Vec<u8>>)>,
-    #[cfg(target_os = "linux")]
-    prepared_review: Option<crate::prepared::Pending>,
-    #[cfg(target_os = "linux")]
-    peer: Option<crate::peer::Peer>,
-    #[cfg(target_os = "linux")]
-    peer_received: Option<crate::peer::Received>,
-    #[cfg(target_os = "linux")]
-    peer_attempted: bool,
     minter: Shared<Minter>,
     importer: Shared<Importer>,
     words_importer: Shared<WordsImporter>,
@@ -568,26 +546,6 @@ impl OnboardingView {
         )
     }
 
-    /// Whether something the person started bringing over (their home, apps,
-    /// browser or a migration) still waits to finish.
-    fn carries_pending_work(&self) -> bool {
-        self.portable_home
-            .as_ref()
-            .is_some_and(crate::portable_home::Pending::pending)
-            || self
-                .portable_applications
-                .as_ref()
-                .is_some_and(crate::portable_applications::Pending::pending)
-            || self
-                .browser
-                .as_ref()
-                .is_some_and(crate::browser::Pending::pending)
-            || self
-                .migration
-                .as_ref()
-                .is_some_and(crate::migration::Migration::pending)
-    }
-
     fn new_in_session(
         identity_dir: PathBuf,
         session: SessionPaths,
@@ -651,30 +609,8 @@ impl OnboardingView {
         if recovery_only && view.flow.screen() == Screen::Intro {
             view.flow.begin_existing();
         }
-        view.load_prepared_setup(&identity_dir);
-        #[cfg(target_os = "linux")]
-        if context == OnboardingContext::FullSystem {
-            view.migration = view
-                .session
-                .home
-                .clone()
-                .map(crate::migration::Migration::open);
-        }
         view.identity_dir = Some(identity_dir);
-        if !view.prepared_pending {
-            view.restore_pending_progress_from_disk();
-            if view.carries_pending_work()
-                && !view.recovery_only
-                && !view.flow.is_done()
-                && let Some(directory) = view.identity_dir.as_ref()
-            {
-                let active = tilo_identity::store::resolve_active_identity(directory)
-                    .unwrap_or_else(|| directory.join("primary.json"));
-                if let Ok(identity) = crate::identity::existing_identity_at(&active) {
-                    view.flow.resume_created(identity);
-                }
-            }
-        }
+        view.restore_pending_progress_from_disk();
         if view.flow.minted().is_some() && view.refresh_backup_capability().is_err() {
             view.error = Some(t("onboarding-connect-recovery-message"));
         }
@@ -731,23 +667,6 @@ impl OnboardingView {
             deferred_asks: Vec::new(),
             context,
             recovery_only: false,
-            prepared_pending: false,
-            migration: None,
-            portable_home: None,
-            portable_applications: None,
-            browser: None,
-            #[cfg(target_os = "linux")]
-            prepared_worker: None,
-            #[cfg(target_os = "linux")]
-            prepared_home_password: None,
-            #[cfg(target_os = "linux")]
-            prepared_review: None,
-            #[cfg(target_os = "linux")]
-            peer: None,
-            #[cfg(target_os = "linux")]
-            peer_received: None,
-            #[cfg(target_os = "linux")]
-            peer_attempted: false,
             minter: Arc::new(Mutex::new(minter)),
             importer: Arc::new(Mutex::new(importer)),
             words_importer: Arc::new(Mutex::new(Box::new(|_: &str| {
@@ -838,12 +757,7 @@ impl OnboardingView {
     /// a recovery key in.
     fn publish_first_use(&self) {
         let active = !self.finished.get()
-            && (self.prepared_setup_status().is_some()
-                || self.migration_status().is_some_and(|status| {
-                    status.get("deferred") != Some(&serde_json::Value::Bool(true))
-                })
-                || self.tour_page.is_some()
-                || self.flow.screen() != Screen::RecoveryKey);
+            && (self.tour_page.is_some() || self.flow.screen() != Screen::RecoveryKey);
         self.first_use.set(active);
     }
 
@@ -953,33 +867,6 @@ impl OnboardingView {
     /// person explicitly starts the tour.
     pub fn presents_desktop_context(&self) -> bool {
         self.tour_page.is_some()
-    }
-
-    /// Reopen an explicitly deferred, source-attested migration for the active identity.
-    ///
-    /// # Errors
-    ///
-    /// Refuses missing, changed or completed declarations and unusable identities.
-    pub fn new_for_migration_resume(identity_dir: PathBuf) -> Result<Self, String> {
-        let active = tilo_identity::store::resolve_active_identity(&identity_dir)
-            .ok_or_else(|| t("onboarding-portable-home-unavailable"))?;
-        let identity = crate::identity::existing_identity_at(&active)
-            .map_err(|_| t("onboarding-portable-home-unavailable"))?;
-        let mut view = Self::new_in_context(identity_dir, OnboardingContext::FullSystem, false);
-        if view.prepared_pending
-            || !view
-                .portable_home
-                .as_ref()
-                .is_some_and(crate::portable_home::Pending::deferred)
-        {
-            return Err(t("onboarding-migration-resume-unavailable"));
-        }
-        view.flow.resume_created(identity);
-        view.identity_ready_page = false;
-        view.tour_page = None;
-        view.invoke_migration("resume", None)
-            .map_err(|()| t("onboarding-portable-home-unavailable"))?;
-        Ok(view)
     }
 
     /// Reset this trusted view to the existing-identity backup step, the same
@@ -1590,92 +1477,11 @@ impl OnboardingView {
         self.nearby.is_some() || self.nearby_active_for_snapshot
     }
 
-    fn migration_active(&self) -> bool {
-        !self.prepared_pending
-            && !self.recovery_only
-            && !self.portable_backup_only
-            && self.flow.is_done()
-            && (self
-                .portable_home
-                .as_ref()
-                .is_some_and(crate::portable_home::Pending::pending)
-                || (self
-                    .portable_applications
-                    .as_ref()
-                    .is_some_and(crate::portable_applications::Pending::pending)
-                    && !self
-                        .portable_home
-                        .as_ref()
-                        .is_some_and(crate::portable_home::Pending::deferred))
-                || self
-                    .browser
-                    .as_ref()
-                    .is_some_and(crate::browser::Pending::pending)
-                || self
-                    .migration
-                    .as_ref()
-                    .is_some_and(crate::migration::Migration::pending))
-    }
-    pub fn migration_status(&self) -> Option<serde_json::Value> {
-        if !self.prepared_pending
-            && self.flow.is_done()
-            && let Some(portable) = self.portable_home.as_ref()
-            && portable.deferred()
-        {
-            return Some(portable.status());
-        }
-        if !self.prepared_pending
-            && self.flow.is_done()
-            && !self
-                .portable_home
-                .as_ref()
-                .is_some_and(|home| home.pending() || home.deferred())
-            && let Some(applications) = self
-                .portable_applications
-                .as_ref()
-                .filter(|pending| pending.deferred())
-        {
-            return Some(applications.status());
-        }
-        if !self.prepared_pending
-            && self.flow.is_done()
-            && !self.migration_active()
-            && let Some(browser) = self.browser.as_ref().filter(|pending| pending.deferred())
-        {
-            return Some(browser.status());
-        }
-        self.migration_active()
-            .then(|| {
-                if let Some(portable) = self
-                    .portable_home
-                    .as_ref()
-                    .filter(|pending| pending.pending())
-                {
-                    Some(portable.status())
-                } else if let Some(applications) = self
-                    .portable_applications
-                    .as_ref()
-                    .filter(|pending| pending.pending())
-                {
-                    Some(applications.status())
-                } else if let Some(browser) =
-                    self.browser.as_ref().filter(|pending| pending.pending())
-                {
-                    Some(browser.status())
-                } else {
-                    self.migration
-                        .as_ref()
-                        .map(crate::migration::Migration::status)
-                }
-            })
-            .flatten()
-    }
     fn refresh_backup_capability(&mut self) -> Result<(), ()> {
         let path = &self.flow.minted().ok_or(())?.path;
         self.backup_export_available = (self.backup_capability)(path).map_err(|_| ())?;
         if !self.backup_export_available && !self.identity_ready_page && self.tour_page.is_none() {
             // No recovery share is available here: omit the irrelevant form.
-            // Migration composition still takes precedence over this hand-off.
             self.identity_ready_page = true;
             self.codec_page = self.codec_step_offered;
             self.journal_then(
@@ -1751,9 +1557,7 @@ impl OnboardingView {
         Ok(())
     }
     pub fn backup_status(&self) -> Option<serde_json::Value> {
-        if self.prepared_pending
-            || self.migration_active()
-            || !self.flow.is_done()
+        if !self.flow.is_done()
             || self.identity_ready_page
             || self.tour_page.is_some()
             || self.finished.get()
@@ -1767,148 +1571,10 @@ impl OnboardingView {
                 && self.chooser.is_none() && self.error.is_none(),
         }))
     }
-    /// Resume the deferred migration `operation` names (or the first one
-    /// deferred): the portable home, then its applications, then the
-    /// browser. `None` when nothing deferred is waiting.
-    fn resume_deferred(&mut self, operation: Option<&str>) -> Option<Result<(), ()>> {
-        if !self.prepared_pending
-            && self.flow.is_done()
-            && let Some(portable) = self.portable_home.as_mut()
-        {
-            if operation.is_some_and(|selected| portable.operation() != selected) {
-                return Some(Err(()));
-            }
-            let result = portable.invoke("resume", b"").map_err(|_| ());
-            self.invalidation.both();
-            return Some(result);
-        }
-        if !self.prepared_pending
-            && self.flow.is_done()
-            && !self
-                .portable_home
-                .as_ref()
-                .is_some_and(|home| home.pending() || home.deferred())
-            && let Some(applications) = self
-                .portable_applications
-                .as_mut()
-                .filter(|pending| pending.deferred())
-        {
-            if operation.is_some_and(|selected| applications.operation() != selected) {
-                return Some(Err(()));
-            }
-            let result = applications.invoke("resume", b"").map_err(|_| ());
-            self.invalidation.both();
-            return Some(result);
-        }
-        if !self.prepared_pending
-            && self.flow.is_done()
-            && let Some(browser) = self.browser.as_mut().filter(|pending| pending.deferred())
-        {
-            if operation.is_some_and(|selected| browser.operation() != selected) {
-                return Some(Err(()));
-            }
-            let result = browser.invoke("resume", b"").map_err(|_| ());
-            self.invalidation.both();
-            return Some(result);
-        }
-        None
-    }
-    fn invoke_migration(&mut self, op: &str, operation: Option<&str>) -> Result<(), ()> {
-        if op == "resume"
-            && let Some(resumed) = self.resume_deferred(operation)
-        {
-            return resumed;
-        }
-        if !self.migration_active() {
-            return Err(());
-        }
-        if let Some(portable) = self
-            .portable_home
-            .as_mut()
-            .filter(|pending| pending.pending())
-        {
-            if operation.is_some_and(|selected| portable.operation() != selected) {
-                return Err(());
-            }
-            let op = if op == "next" {
-                portable.next_action()
-            } else {
-                op
-            };
-            let password = typed_passphrase(&self.connect_passphrase)?;
-            let result = portable.invoke(op, &password).map_err(|_| ());
-            clear_secret(&self.connect_passphrase);
-            self.error = result
-                .as_ref()
-                .err()
-                .map(|()| t("onboarding-portable-home-unavailable"));
-            self.invalidation.both();
-            return result;
-        }
-        if let Some(applications) = self
-            .portable_applications
-            .as_mut()
-            .filter(|pending| pending.pending())
-        {
-            if operation.is_some_and(|selected| applications.operation() != selected) {
-                return Err(());
-            }
-            let op = if op == "next" {
-                applications.next_action()
-            } else {
-                op
-            };
-            let password = typed_passphrase(&self.connect_passphrase)?;
-            let result = applications.invoke(op, &password).map_err(|_| ());
-            clear_secret(&self.connect_passphrase);
-            self.error = result
-                .as_ref()
-                .err()
-                .map(|()| t("onboarding-portable-applications-unavailable"));
-            self.invalidation.both();
-            return result;
-        }
-        if let Some(browser) = self.browser.as_mut().filter(|pending| pending.pending()) {
-            if operation.is_some_and(|selected| browser.operation() != selected) {
-                return Err(());
-            }
-            let op = if op == "next" {
-                browser.next_action()
-            } else {
-                op
-            };
-            let password = typed_passphrase(&self.connect_passphrase)?;
-            let result = browser.invoke(op, &password).map_err(|_| ());
-            crate::services::set_browser_continuity(
-                browser.verified_projection().map(Path::to_owned),
-            );
-            clear_secret(&self.connect_passphrase);
-            self.error = result
-                .as_ref()
-                .err()
-                .map(|()| t("onboarding-browser-unavailable"));
-            self.invalidation.both();
-            return result;
-        }
-        let migration = self.migration.as_mut().ok_or(())?;
-        let op = if op == "next" {
-            migration.next_action()
-        } else {
-            op
-        };
-        migration.invoke(op, operation).map_err(|_| ())?;
-        self.error = None;
-        self.invalidation.both();
-        Ok(())
-    }
-    pub fn take_original_copy_request(&mut self) -> Option<crate::migration::OriginalCopyRequest> {
-        self.migration.as_mut()?.take_original_copy_request()
-    }
-    /// The identity ceremony can be complete while migration remains visible.
-    /// This is readiness only; native admission still checks current durable keys.
+    /// Whether the identity ceremony still runs. This is readiness only;
+    /// native admission still checks current durable keys.
     pub fn identity_setup_active(&self) -> bool {
-        self.prepared_pending
-            || self.recovery_only
+        self.recovery_only
             || !self.flow.is_done()
             || self
                 .flow
@@ -1958,14 +1624,6 @@ fn read_nested_bool(state: &AutoCommit, root: &ObjId, map: &str, key: &str) -> b
         return false;
     };
     read_bool(state, &nested, key)
-}
-
-/// The passphrase typed into `buffer`, copied out to be cleared after its
-/// one use.
-fn typed_passphrase(buffer: &Arc<Mutex<String>>) -> Result<Zeroizing<Vec<u8>>, ()> {
-    Ok(Zeroizing::new(
-        buffer.lock().map_err(|_| ())?.as_bytes().to_vec(),
-    ))
 }
 
 fn clear_secret(buffer: &Arc<Mutex<String>>) {
@@ -2032,76 +1690,6 @@ impl Widget for OnboardingView {
         self.app.serve_api();
         self.app.update(state, root);
         self.take_app_asks();
-        if self.prepared_pending {
-            self.pressed
-                .0
-                .borrow_mut()
-                .retain(|key| *key == KEY_PREPARED_IMPORT);
-            self.sync_prepared();
-            self.publish_first_use();
-            self.show_page();
-            return;
-        }
-        if self.migration_active() {
-            let home_changed = self
-                .portable_home
-                .as_mut()
-                .is_some_and(crate::portable_home::Pending::continue_automatic);
-            let home_ready = !self
-                .portable_home
-                .as_ref()
-                .is_some_and(|home| home.pending() || home.deferred());
-            let apps_changed = home_ready
-                && self
-                    .portable_applications
-                    .as_mut()
-                    .is_some_and(crate::portable_applications::Pending::continue_automatic);
-            let browser_changed = self
-                .browser
-                .as_mut()
-                .is_some_and(crate::browser::Pending::continue_automatic);
-            if home_changed || apps_changed || browser_changed {
-                self.invalidation.both();
-            }
-            for (key, op) in [
-                ("onboarding.migration.next", "next"),
-                ("onboarding.migration.later", "later"),
-                ("onboarding.migration.cancel", "cancel"),
-                ("onboarding.migration.continue", "continue"),
-            ] {
-                if self.pressed.take(key) && self.invoke_migration(op, None).is_err() {
-                    self.error = Some(tilo_onboarding::t("onboarding-migration-failed"));
-                }
-            }
-            self.pressed.0.borrow_mut().clear();
-            if self
-                .portable_home
-                .as_mut()
-                .is_some_and(crate::portable_home::Pending::poll)
-                || self
-                    .portable_applications
-                    .as_mut()
-                    .is_some_and(crate::portable_applications::Pending::poll)
-                || self
-                    .browser
-                    .as_mut()
-                    .is_some_and(crate::browser::Pending::poll)
-                || self
-                    .migration
-                    .as_mut()
-                    .is_some_and(crate::migration::Migration::poll)
-            {
-                self.invalidation.both();
-            }
-            if self.browser.is_some() {
-                crate::services::set_browser_continuity(
-                    self.verified_browser_projection().map(Path::to_owned),
-                );
-            }
-            self.publish_first_use();
-            self.show_page();
-            return;
-        }
         let connect_source_selected = !self.connect_path.with(|path| path.trim().is_empty());
         if connect_source_selected != self.connect_source_selected {
             self.connect_source_selected = connect_source_selected;
@@ -2558,24 +2146,7 @@ impl Widget for OnboardingView {
         // The codecs worker and status watcher only raise `codec_changed`,
         // and a code being redeemed reports through its own thread; nothing
         // wakes the compositor for them, so look while they run.
-        let polling = self.prepared_working()
-            || self
-                .migration
-                .as_ref()
-                .is_some_and(crate::migration::Migration::busy)
-            || self
-                .portable_home
-                .as_ref()
-                .is_some_and(crate::portable_home::Pending::busy)
-            || self
-                .portable_applications
-                .as_ref()
-                .is_some_and(crate::portable_applications::Pending::busy)
-            || self
-                .browser
-                .as_ref()
-                .is_some_and(crate::browser::Pending::busy)
-            || self.codec_running.is_some()
+        let polling = self.codec_running.is_some()
             || self.codec_watching.is_some()
             || self.nearby.is_some()
             || !self.journal_idle()
@@ -2614,489 +2185,12 @@ impl Widget for OnboardingView {
 #[cfg(test)]
 mod tests {
     use tilo_test_env::SpawnUnderEnvLock as _;
-    #[cfg(all(target_os = "linux", feature = "native-current-device-qualification"))]
-    mod current_identity {
-        include!("view/current_identity_tests.rs");
-    }
     pub mod layout;
     mod person_made_elsewhere;
     mod ready_focus;
     mod tour_motion;
     mod viewport;
     use tilo_onboarding::OnboardingEffect;
-    /// A setup prepared on another computer waits at this login. None of the
-    /// ordinary identity routes may be taken while it does, and the
-    /// passphrase typed for it reaches its import rather than anything a frame
-    /// publishes.
-    #[test]
-    fn a_prepared_setup_is_reviewed_and_refuses_every_other_identity_route() {
-        let (home, _identity, _declaration) = crate::portable_home::fixtures::fixture();
-        // The installer leaves an activated receipt once it completes; without
-        // it the same prepared setup is still waiting to be reviewed.
-        std::fs::remove_file(
-            home.path()
-                .join(".local/state/tilo/prepared-setup/activated.json"),
-        )
-        .unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let observed = calls.clone();
-        let mut view = OnboardingView::with_minter(Box::new(move || {
-            observed.fetch_add(1, Ordering::SeqCst);
-            Err("must not mint".into())
-        }));
-        view.prepared_pending = true;
-        view.prepared_review = Some(crate::prepared::Pending::open(home.path()).unwrap());
-        assert!(!published(&mut view).is_empty());
-        assert_eq!(view.prepared_setup_status(), Some("ready"));
-
-        // Every other identity control is pressed with a frame after it, and
-        // none of them makes a key or leaves the prepared page.
-        let mut document = AutoCommit::new();
-        for key in [
-            KEY_BEGIN,
-            KEY_EXISTING,
-            KEY_CHOOSE_RESTORE,
-            KEY_CREATE,
-            KEY_CONNECT_RETRY,
-        ] {
-            press(&view, &mut document, key);
-            view.sync(&document, &automerge::ROOT);
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(view.prepared_pending);
-        assert_eq!(view.page().step(), tilo_onboarding::Step::Prepared);
-        assert!(!view.finished());
-
-        // The passphrase reaches the import and nowhere a frame publishes it.
-        assert!(act(
-            &mut view,
-            &OnboardingEffect::EnterSecret {
-                field: "prepared-password".into(),
-                value: "shortpass".into(),
-            }
-        ));
-        assert!(!format!("{:?}", published(&mut view)).contains("shortpass"));
-        view.pressed.press(KEY_PREPARED_IMPORT);
-        assert_eq!(
-            view.connect_passphrase.lock().unwrap().as_str(),
-            "shortpass"
-        );
-        assert!(act(&mut view, &OnboardingEffect::Continue));
-        assert_eq!(view.prepared_setup_status(), Some("busy"));
-        clear_secret(&view.connect_passphrase);
-    }
-
-    /// Browser profiles prepared on another computer: the first login resumes
-    /// the import, may defer it and resume it again; once the import has its
-    /// signed proof a later login reuses it without a password, and a
-    /// projection changed afterwards is refused.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one person's browser profiles across two logins"
-    )]
-    fn a_prepared_browser_continuation_is_resumed_reused_and_tamper_checked() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        let (home, directory, declaration) = crate::browser::fixtures::fixture();
-        env.set("HOME", home.path());
-        let before = std::fs::read(directory.join("primary.json")).unwrap();
-        assert!(crate::prepared::session_pending(&directory));
-        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        view.identity_dir = Some(directory.clone());
-        view.session.home = Some(home.path().into());
-        view.load_prepared_setup(&directory);
-        assert!(!view.prepared_pending);
-        assert!(view.browser.is_some());
-        assert!(view.portable_home.is_none());
-        assert!(view.portable_applications.is_none());
-        view.flow.resume_created(MintedIdentity {
-            fingerprint: "existing".into(),
-            path: directory.join("primary.json"),
-        });
-        assert!(setup_actions_pending(&view));
-        assert_eq!(view.migration_status().unwrap()["browser"], true);
-        assert!(!published(&mut view).is_empty());
-        assert!(
-            view.invoke_migration("review", Some("different-operation"))
-                .is_err()
-        );
-        assert!(act(&mut view, &OnboardingEffect::Skip));
-        assert!(!setup_actions_pending(&view));
-        assert!(view.verified_browser_projection().is_none());
-        assert!(
-            view.invoke_migration("resume", Some(&declaration.payload.operation))
-                .is_ok()
-        );
-        assert!(setup_actions_pending(&view));
-        assert_eq!(
-            std::fs::read(directory.join("primary.json")).unwrap(),
-            before
-        );
-        drop(view);
-
-        // On a later login the import has ended with its signed proof, and the
-        // verified completion is reused without asking for the password again.
-        let (home, directory, declaration) = crate::browser::fixtures::fixture();
-        env.set("HOME", home.path());
-        env.set("XDG_CONFIG_HOME", home.path().join(".config"));
-        env.set("TILO_IDENTITY_ROOT", home.path().join("system"));
-        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        let projection =
-            crate::browser::fixtures::certified_projection(home.path(), &directory, &declaration);
-        let original = std::fs::read(directory.join("primary.json")).unwrap();
-        assert!(!crate::prepared::session_pending(&directory));
-        assert!(crate::browser::validate_published_projection(&projection));
-        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        view.identity_dir = Some(directory.clone());
-        view.session.home = Some(home.path().into());
-        view.load_prepared_setup(&directory);
-        assert!(!view.prepared_pending);
-        assert_eq!(
-            view.verified_browser_projection(),
-            Some(projection.as_path())
-        );
-        view.flow.resume_created(MintedIdentity {
-            fingerprint: hex::encode(declaration.plan.identity_public_key),
-            path: directory.join("primary.json"),
-        });
-        assert!(!setup_actions_pending(&view));
-        assert!(!published(&mut view).is_empty());
-        assert!(
-            view.invoke_migration("review", Some(&declaration.payload.operation))
-                .is_err()
-        );
-        drop(view);
-        assert!(
-            !crate::prepared::session_pending(&directory),
-            "cold reopen must reuse independently verified completion without password"
-        );
-        let (_other_home, other_identity, _) = crate::browser::fixtures::fixture();
-        assert!(
-            crate::prepared::session_pending(&other_identity),
-            "completion belongs to the original canonical person"
-        );
-        let mut other_view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        other_view.identity_dir = Some(other_identity.clone());
-        other_view.session.home = Some(home.path().into());
-        other_view.load_prepared_setup(&other_identity);
-        assert!(other_view.prepared_pending);
-        assert!(other_view.verified_browser_projection().is_none());
-
-        // A profile changed after the proof was made is not the setup that was
-        // verified, and nothing is attached from it.
-        let bookmarks = projection
-            .join("profiles")
-            .join(&declaration.plan.profiles.first().unwrap().id)
-            .join("Bookmarks");
-        std::fs::write(&bookmarks, b"changed after completion").unwrap();
-        assert!(crate::prepared::session_pending(&directory));
-        assert!(!crate::browser::validate_published_projection(&projection));
-        assert!(
-            crate::browser::Pending::open(home.path().into(), directory.clone(), declaration)
-                .is_err()
-        );
-        assert_eq!(
-            std::fs::read(directory.join("primary.json")).unwrap(),
-            original
-        );
-    }
-
-    /// What another computer selected to bring along stays reachable until the
-    /// person finishes it: applications can be deferred and resumed, and a
-    /// deferred home comes back for the same identity, including from
-    /// Settings, while a changed declaration no longer opens.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one person's files and applications across several logins"
-    )]
-    fn portable_parts_from_another_computer_stay_deferred_and_resume() {
-        {
-            let (home, directory, declaration) = crate::portable_applications::fixtures::fixture();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("HOME", home.path());
-            let receipt = home
-                .path()
-                .join(".local/state/tilo/prepared-setup/activated.json");
-            assert!(
-                std::fs::metadata(&receipt).unwrap().len() > 1024,
-                "actual declaration must exercise prior too-small receipt bound"
-            );
-            let before = std::fs::read(directory.join("primary.json")).unwrap();
-            let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-            view.identity_dir = Some(directory.clone());
-            view.session.home = Some(home.path().into());
-            view.load_prepared_setup(&directory);
-            assert!(!view.prepared_pending);
-            assert!(
-                view.portable_home.is_none(),
-                "apps-only grants no document/home migration"
-            );
-            assert!(view.portable_applications.is_some());
-            view.flow.resume_created(MintedIdentity {
-                fingerprint: "existing".into(),
-                path: directory.join("primary.json"),
-            });
-            assert!(setup_actions_pending(&view));
-            assert_eq!(view.migration_status().unwrap()["requires_password"], true);
-            assert!(!published(&mut view).is_empty());
-            assert!(
-                view.invoke_migration("review", Some("different-operation"))
-                    .is_err()
-            );
-            assert!(view.portable_applications.as_ref().unwrap().pending());
-            assert!(act(&mut view, &OnboardingEffect::Skip));
-            assert!(!setup_actions_pending(&view));
-            assert_eq!(view.migration_status().unwrap()["deferred"], true);
-            assert!(
-                view.invoke_migration("resume", Some(&declaration.operation))
-                    .is_ok()
-            );
-            assert!(setup_actions_pending(&view));
-            assert_eq!(
-                std::fs::read(directory.join("primary.json")).unwrap(),
-                before
-            );
-            assert_eq!(view.migration_status().unwrap()["complete"], false);
-        }
-
-        // The documents route, opened again from Settings after being left for
-        // later, for the same identity only.
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        let (home, directory, declaration) = crate::portable_home::fixtures::fixture();
-        env.set("HOME", home.path());
-        let before = std::fs::read(directory.join("primary.json")).unwrap();
-        assert_eq!(
-            OnboardingView::new_for_migration_resume(directory.clone())
-                .err()
-                .unwrap(),
-            t("onboarding-migration-resume-unavailable"),
-        );
-        let signer = tilo_identity::store::load_from_path(directory.join("primary.json")).unwrap();
-        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        view.portable_home = Some(
-            crate::portable_home::Pending::open(home.path().into(), directory.clone(), declaration)
-                .unwrap(),
-        );
-        view.flow.resume_created(MintedIdentity {
-            fingerprint: hex::encode(signer.group_public_key()),
-            path: directory.join("primary.json"),
-        });
-        assert!(setup_actions_pending(&view));
-        view.invoke_migration("later", None).unwrap();
-        assert!(!setup_actions_pending(&view));
-        assert_eq!(view.migration_status().unwrap()["state"], "deferred");
-        assert!(
-            view.invoke_migration("resume", Some("wrong-operation"))
-                .is_err()
-        );
-        assert!(!published(&mut view).is_empty());
-        assert!(view.invoke_migration("resume", None).is_ok());
-        assert!(setup_actions_pending(&view));
-        assert_eq!(view.migration_status().unwrap()["state"], "pending");
-        assert_eq!(
-            tilo_identity::store::load_from_path(directory.join("primary.json"))
-                .unwrap()
-                .group_public_key(),
-            signer.group_public_key()
-        );
-        drop(view);
-        let mut reopened = OnboardingView::new_for_migration_resume(directory.clone()).unwrap();
-        assert!(setup_actions_pending(&reopened));
-        assert_eq!(reopened.migration_status().unwrap()["state"], "pending");
-        assert!(reopened.invoke_migration("review", None).is_err());
-        assert!(
-            setup_actions_pending(&reopened),
-            "missing archive must remain pending"
-        );
-        assert_eq!(
-            std::fs::read(directory.join("primary.json")).unwrap(),
-            before
-        );
-        let receipt = home
-            .path()
-            .join(".local/state/tilo/prepared-home/choice.json");
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
-        value["declaration"]["setup_binding"] = "other-setup".into();
-        std::fs::write(receipt, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(OnboardingView::new_for_migration_resume(directory).is_err());
-    }
-
-    /// A migration handoff from another computer: the first login can leave it
-    /// for later, saying so in its own acknowledged receipt and touching no
-    /// plan; the login that runs it copies, then offers the cleanup retry
-    /// while the read-write fence still stands.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one handoff walked through its deferral and its copy"
-    )]
-    fn a_migration_is_deferred_then_copied_with_its_cleanup_retried() {
-        use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
-        use std::os::unix::fs::PermissionsExt;
-        {
-            let home = tempfile::tempdir().unwrap();
-            let plans = home.path().join(".local/state/tilo/migration-handoff");
-            std::fs::create_dir_all(&plans).unwrap();
-            std::fs::set_permissions(&plans, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let plan = plans.join("setup.migration.json");
-            std::fs::write(&plan, b"{}").unwrap();
-            std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
-            let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-            view.migration = Some(crate::migration::Migration::open(home.path().into()));
-            view.flow.resume_created(MintedIdentity {
-                fingerprint: "existing".into(),
-                path: home.path().join("selected.json"),
-            });
-            assert!(setup_actions_pending(&view));
-            assert!(!published(&mut view).is_empty());
-            view.prepared_pending = true;
-            assert!(view.migration_status().is_none());
-            act(&mut view, &OnboardingEffect::Skip);
-            assert!(!plans.join("setup.acknowledged.json").exists());
-            view.prepared_pending = false;
-            assert!(act(&mut view, &OnboardingEffect::Skip));
-            assert!(!setup_actions_pending(&view));
-            let receipt: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(plans.join("setup.acknowledged.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(receipt["outcome"], "deferred");
-            assert_eq!(std::fs::read(&plan).unwrap(), b"{}");
-            assert!(!home.path().join(".local/state/tilo/migration").exists());
-        }
-
-        let mut env = tilo_test_env::ScopedEnv::new();
-        let home = tempfile::tempdir().unwrap();
-        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        env.set("XDG_CONFIG_HOME", home.path().join(".config"));
-        let identity = home.path().join(".config/tilo/identity");
-        std::fs::create_dir_all(&identity).unwrap();
-        for part in [".config", ".config/tilo", ".config/tilo/identity"] {
-            std::fs::set_permissions(
-                home.path().join(part),
-                std::fs::Permissions::from_mode(0o700),
-            )
-            .unwrap();
-        }
-        tilo_identity::provisioning::create_primary_identity(
-            &identity,
-            "Source owner",
-            [20, 30, 40],
-            tilo_identity::provisioning::IdentityStorage::Files,
-        )
-        .unwrap();
-        tilo_identity::store::set_active_identity(&identity, "primary").unwrap();
-        let source = uuid::Uuid::new_v4().to_string();
-        let stage = uuid::Uuid::new_v4().to_string();
-        let plans = home.path().join(".local/state/tilo/migration-handoff");
-        std::fs::create_dir_all(&plans).unwrap();
-        for part in [
-            ".local",
-            ".local/state",
-            ".local/state/tilo",
-            ".local/state/tilo/migration-handoff",
-        ] {
-            std::fs::set_permissions(
-                home.path().join(part),
-                std::fs::Permissions::from_mode(0o700),
-            )
-            .unwrap();
-        }
-        let person = tilo_identity::store::load_from_path(identity.join("primary.json"))
-            .unwrap()
-            .group_public_key();
-        let plan = serde_json::json!({"schema":1,"operation_id":source,
-            "categories":{"home":true,"flatpak":false,"accounts":false},"home":{},
-            "home_policy":"access-read-write","pending_computer_applications_scope":{
-                "schema":1,"source_operation":source,"applications_operation":uuid::Uuid::new_v4().to_string(),
-                "staging_operation":stage,"staging_plan_sha256":"a".repeat(64),
-                "setup_binding":"owned setup fixture","identity_public_key":person}});
-        let path = plans.join(format!("{source}.migration.json"));
-        std::fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        view.flow.resume_created(MintedIdentity {
-            fingerprint: "existing".into(),
-            path: identity.join("primary.json"),
-        });
-        let mut migration = crate::migration::Migration::open(home.path().into());
-        migration.invoke("review", Some(&source)).unwrap();
-        let copy = migration.take_original_copy_request().unwrap();
-        copy.events
-            .send(CopyOwnerEvent::Complete {
-                operation: stage.clone(),
-                home_cipher_sha256: None,
-                applications_cipher_sha256: Some("b".repeat(64)),
-            })
-            .unwrap();
-        assert!(migration.poll());
-        view.migration = Some(migration);
-        let running =
-            accessibility_for_id(laid_out(&mut view), "onboarding.migration.next.button").unwrap();
-        assert!(running.state.disabled);
-        copy.events
-            .send(CopyOwnerEvent::CleanupPending {
-                operation: stage.clone(),
-                message: "actual retirement pending".into(),
-                resumable: true,
-            })
-            .unwrap();
-        assert!(view.migration.as_mut().unwrap().poll());
-        let actions = laid_out(&mut view);
-        let retry = accessibility_for_id(actions, "onboarding.migration.next.button").unwrap();
-        assert!(!retry.state.disabled);
-        assert_eq!(
-            retry.name.as_deref(),
-            Some(tilo_onboarding::t("onboarding-migration-cleanup-resume").as_str())
-        );
-        assert!(!published(&mut view).is_empty());
-        let mut doc = AutoCommit::new();
-        press(&view, &mut doc, "onboarding.migration.next");
-        view.sync(&doc, &automerge::ROOT);
-        assert!(
-            matches!(copy.commands.try_recv().unwrap(),CopyOwnerCommand::ResumeCleanup{operation} if operation==stage)
-        );
-        assert_eq!(view.migration_status().unwrap()["cleanup_state"], "running");
-        assert!(
-            view.migration
-                .as_mut()
-                .unwrap()
-                .take_access_request()
-                .is_none()
-        );
-        assert!(
-            accessibility_for_id(laid_out(&mut view), "onboarding.migration.next.button")
-                .unwrap()
-                .state
-                .disabled
-        );
-        copy.events
-            .send(CopyOwnerEvent::CleanupPending {
-                operation: stage,
-                message: "nonresumable actual cleanup".into(),
-                resumable: false,
-            })
-            .unwrap();
-        assert!(view.migration.as_mut().unwrap().poll());
-        assert!(
-            accessibility_for_id(laid_out(&mut view), "onboarding.migration.next.button")
-                .unwrap()
-                .state
-                .disabled
-        );
-        assert!(
-            view.migration
-                .as_mut()
-                .unwrap()
-                .take_access_request()
-                .is_none()
-        );
-        // Events here exercise the production controller/UI, not actual source
-        // authority or observed native retirement, which the driver owns.
-    }
 
     use super::*;
     use crate::view::tests::layout::LaidOut;
@@ -3134,7 +2228,6 @@ mod tests {
         let (mut view, _) = view();
         view.identity_dir = Some(identity_dir.clone());
         view.session.identity = Some(session::SystemIdentity {
-            root: account.dir.path().to_path_buf(),
             paths: account.paths.clone(),
         });
         (view, identity_dir)
@@ -4638,14 +3731,6 @@ mod tests {
         }
     }
 
-    fn setup_actions_pending(view: &OnboardingView) -> bool {
-        !view.finished()
-            && (view.prepared_setup_status().is_some()
-                || view.migration_status().is_some_and(|status| {
-                    status.get("deferred") != Some(&serde_json::Value::Bool(true))
-                }))
-    }
-
     thread_local! {
         /// The document a test's frames settle into, as a host's would.
         static FRAMES: RefCell<AutoCommit> = RefCell::new(AutoCommit::new());
@@ -4867,7 +3952,6 @@ mod tests {
         .unwrap();
         let original = std::fs::read(directory.join("primary.json")).unwrap();
         let mut view = real_backup_view(&directory);
-        assert!(!setup_actions_pending(&view));
         assert!(
             first_use(&view),
             "first-use service survives identity activation"

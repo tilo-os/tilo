@@ -1510,9 +1510,6 @@ tilo_test_env::scenario! {
             app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
-                prepared_setup: None,
-                tpm_handoff: None,
-                windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
                 full_name: None,
@@ -2560,137 +2557,18 @@ fn count_focusable(widget: &dyn Widget) -> usize {
     n
 }
 
-fn prepared_profile_app() -> InstallerApp {
-    let mut app = InstallerApp::with_disks(Disk::samples());
-    let object = serde_json::json!({
-        "schema": 1, "purpose": "computer", "hostname": "travel", "username": "owner",
-        "full_name": "Owner", "locale": "en_US.UTF-8", "keyboard": "us",
-        "timezone": "UTC", "filesystem": "btrfs",
-        "prepared_setup": {
-            "schema": 1, "sealed_bytes": 4096, "ciphertext_sha256": "a".repeat(64)
-        }
-    });
-    app.apply_media_profile(
-        imager_backend::destination::media_profile::validate_object(object.as_object().unwrap())
-            .unwrap(),
-    );
-    app.tpm2 = false;
-    app.selected_disk = Some(0);
-    app
-}
-
 tilo_test_env::scenario! {
-    fn a_prepared_medium_revalidates_storage_and_routes_repairs;
-
-    phase prepared_storage_revalidation_reuses_supplied_credentials_but_keeps_review;
-    {
-        let mut app = prepared_profile_app();
-        app.go_next();
-        assert_eq!(
-            app.step,
-            Step::Account,
-            "ciphertext binding is not a credential"
-        );
-        *app.password.lock().unwrap() = "correct horse battery staple".into();
-        *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
-        app.go_next();
-        assert_eq!(app.step, Step::Media);
-        app.go_back();
-        app.go_back();
-        app.go_back();
-        assert_eq!(app.step, Step::Disk);
-        let expected = app.install_options().prepared_setup;
-        app.go_next();
-        assert_eq!(
-            app.step,
-            Step::Media,
-            "storage review must not reask the account"
-        );
-        assert!(!app.codecs, "media formats still require opt-in");
-        app.go_next();
-        assert_eq!(app.step, Step::Review);
-        app.go_next();
-        assert_eq!(app.step, Step::Review, "Next never authorizes installation");
-        app.begin_install();
-        assert_eq!(app.install_state, InstallState::Idle);
-        assert!(app.status.contains("Type /dev/sda exactly"));
-        app.erase_confirmation.set("/dev/sda".into());
-        app.begin_install();
-        assert_eq!(app.install_state, InstallState::Idle);
-        assert!(app.status.contains("save your recovery key"));
-        assert_eq!(app.install_options().prepared_setup, expected);
-        assert_eq!(local_text(&app.username), "owner");
-    }
-
-    phase prepared_storage_revalidation_requires_current_device_credentials;
-    {
-        for (password, confirmation, separate) in [
-            ("", "", ""),
-            ("correct horse battery staple", "mismatch", ""),
-            ("804927", "804927", ""),
-            (
-                "correct horse battery staple",
-                "correct horse battery staple",
-                "correct horse battery staple",
-            ),
-        ] {
-            let mut app = prepared_profile_app();
-            app.tpm2 = true;
-            app.secure_boot = true;
-            app.kernel_lockdown = true;
-            app.target_verified_boot = true;
-            *app.password.lock().unwrap() = password.into();
-            *app.password_confirmation.lock().unwrap() = confirmation.into();
-            *app.disk_password.lock().unwrap() = separate.into();
-            app.target_verified_boot = false;
-            app.go_next();
-            assert_eq!(app.step, Step::Account);
-            assert_eq!(app.install_state, InstallState::Idle);
-        }
-    }
-
-    phase prepared_storage_revalidation_still_routes_option_repairs;
-    {
-        for unsupported_filesystem in [false, true] {
-            let mut app = prepared_profile_app();
-            *app.password.lock().unwrap() = "correct horse battery staple".into();
-            *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
-            if unsupported_filesystem {
-                app.set_filesystem_support(Ok([false, true, true]));
-            } else {
-                app.profile_completion.as_mut().unwrap().locale = FieldCompletion::NeedsRepair;
-                app.locale.set(String::new());
-            }
-            app.go_next();
-            assert_eq!(app.step, Step::Options);
-            app.go_next();
-            if unsupported_filesystem {
-                assert_eq!(
-                    app.step,
-                    Step::Media,
-                    "supported replacement can be reviewed"
-                );
-            } else {
-                assert_eq!(app.step, Step::Options, "locale repair still validates");
-            }
-            assert_eq!(app.install_state, InstallState::Idle);
-        }
-    }
+    fn a_media_profile_skips_configured_screens;
 
     phase media_profile_skips_configured_screens_and_routes_repairs;
     {
         {
-            let expected = install_profile_model::PreparedSetupExpectation {
-                schema: 1,
-                sealed_bytes: 4096,
-                ciphertext_sha256: "a".repeat(64),
-            };
             let mut app = InstallerApp::with_disks(Disk::samples());
             let object = serde_json::json!({
                 "schema": 1, "purpose": "server", "device_label": "Travel computer",
                 "hostname": "travel", "username": "owner", "full_name": "Owner",
                 "locale": "en_US.UTF-8", "keyboard": "us", "timezone": "UTC",
-                "filesystem": "btrfs", "prepared_setup": expected,
+                "filesystem": "btrfs",
             });
             app.apply_media_profile(
                 imager_backend::destination::media_profile::validate_object(
@@ -2701,7 +2579,6 @@ tilo_test_env::scenario! {
             for selected in [Some(0), Some(1)] {
                 app.selected_disk = selected;
                 let options = app.install_options();
-                assert_eq!(options.prepared_setup.as_ref(), Some(&expected));
                 assert_eq!(options.device_label, "Travel computer");
                 assert_eq!(options.purpose, "server");
             }
@@ -2711,9 +2588,6 @@ tilo_test_env::scenario! {
             app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
-                prepared_setup: None,
-                tpm_handoff: None,
-                windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
                 full_name: Some("Ada Example".into()),
@@ -2766,9 +2640,6 @@ tilo_test_env::scenario! {
             app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
-                prepared_setup: None,
-                tpm_handoff: None,
-                windows_preparation: None,
                 hostname: None,
                 username: Some("ada".into()),
                 full_name: Some("Ada Example".into()),
@@ -2802,9 +2673,6 @@ tilo_test_env::scenario! {
             app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
-                prepared_setup: None,
-                tpm_handoff: None,
-                windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
                 full_name: Some("Ada Example".into()),
@@ -2837,9 +2705,6 @@ tilo_test_env::scenario! {
             app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
-                prepared_setup: None,
-                tpm_handoff: None,
-                windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
                 full_name: Some("Ada Example".into()),

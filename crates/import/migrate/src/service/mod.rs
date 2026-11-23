@@ -10,8 +10,7 @@
 //!
 //! What comes over lands in the app that owns it, as the Thunderbird address books and
 //! calendars do: Outline documents become Notes pages and issues from Linear and Forgejo become
-//! Tasks issues through each app's import inbox, which the app folds in through its own actions when it
-//! opens. A mail account is published into the account store Mail reads, with its password in
+//! Tasks issues, through the [`Landing`] the caller gives. A mail account is published into the account store Mail reads, with its password in
 //! the vault.
 
 #![allow(
@@ -53,7 +52,7 @@ use zeroize::Zeroizing;
 pub use http::IN_FLIGHT;
 pub use journal::{JournalState, ServiceJournal, valid_id};
 pub use landing::{
-    Delivered, InboxLanding, IncomingAuthor, IncomingComment, IncomingGroup, IncomingIssue,
+    Delivered, IncomingAuthor, IncomingComment, IncomingGroup, IncomingIssue,
     IncomingPage, IncomingRelation, Landing, RefusedItem,
 };
 

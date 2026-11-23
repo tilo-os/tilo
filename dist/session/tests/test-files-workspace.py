@@ -29,7 +29,6 @@ class FilesWorkspaceTest(unittest.TestCase):
                 "tilo-unlock-helper",
                 "tilo-flight-recorder",
                 "tilo-session-report",
-                "imager",
             ]:
                 path = binaries / name
                 path.write_text("#!/bin/sh\nexit 0\n")

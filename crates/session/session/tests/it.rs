@@ -117,8 +117,6 @@ mod hosted_browser;
 mod hosted_windows;
 #[path = "idle_notes.rs"]
 mod idle_notes;
-#[path = "import_readiness.rs"]
-mod import_readiness;
 #[path = "input_method.rs"]
 mod input_method;
 #[path = "invitations.rs"]

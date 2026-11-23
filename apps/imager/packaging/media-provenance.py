@@ -25,63 +25,16 @@ from hardware_profile import (  # noqa: E402
 FIELDS = {"schema_version", "source_image_id", "architecture", "hardware_profile",
           "profile_json", "profile_sha256", "definition", "qcow2_sha256", "qcow2_size"}
 CONTAINER_READ = """
-import json, os, subprocess, sys
+import json, sys
 from pathlib import Path
 sys.path.insert(0, '/run/tilo-media-validation')
 from hardware_profile import read_profile, read_definition, trusted_path, PROFILE_PATH, DEFINITION_PATH
 profile = read_profile(Path('/'))
-exporter = Path('/usr/libexec/tilo-prepared-setup')
-# Images without the prepared setup helper carry no consumer facts; an
-# installed helper's catalog export must succeed.
-facts = None
-if os.path.lexists(exporter):
-    trusted_path(Path('/'), exporter.relative_to('/'), regular=True)
-    result = subprocess.run([str(exporter), '--data-consumer-catalog-facts'], check=True,
-                            capture_output=True, timeout=140,
-                            env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
-    if len(result.stdout) > 16384 or len(result.stderr) > 4096:
-        raise ValueError('installed consumer facts exceed bound')
-    facts = json.loads(result.stdout)
 print(json.dumps({
-    'data_consumers': facts,
     'profile_json': (Path('/') / PROFILE_PATH).read_bytes().decode('utf-8') if profile is not None else None,
     'definition': read_definition(trusted_path(Path('/'), DEFINITION_PATH, regular=True)) if profile is not None else None,
 }))
 """
-
-
-# The closed receipts the prepared setup helper's consumer checks export
-# (crates/os/imager-backend/src/installed_consumers/data.rs).
-HOME_KEYS = {"schema", "archive_protocol", "seed_protocol", "firstboot_user_sha256",
-             "seed_helper_sha256", "prepared_helper_sha256", "tar_sha256"}
-APPS_KEYS = {"schema", "subset_protocol", "prepared_helper_sha256",
-             "qualification_script_sha256", "native_qualification_sha256"}
-
-
-def consumer_shape(value, keys, protocols):
-    if type(value) is not dict or set(value) != keys:
-        raise ValueError("unknown or missing consumer fields")
-    for key, expected in protocols.items():
-        if type(value[key]) is not int or value[key] != expected:
-            raise ValueError("unsupported consumer protocol")
-    for key in keys:
-        if key.endswith("_sha256") and not (type(value[key]) is str
-                                            and re.fullmatch("[0-9a-f]{64}", value[key])):
-            raise ValueError("invalid consumer digest")
-    return value
-
-
-def validate_consumers(value):
-    if not isinstance(value, dict) or set(value) not in ({'home_archive'}, {'home_archive', 'applications', 'original_source'}):
-        raise ValueError('unknown or incomplete installed consumer facts')
-    consumer_shape(value['home_archive'], HOME_KEYS,
-                   {'schema': 1, 'archive_protocol': 2, 'seed_protocol': 1})
-    if 'applications' in value:
-        consumer_shape(value['applications'], APPS_KEYS, {'schema': 1, 'subset_protocol': 2})
-        original = value['original_source']
-        if not isinstance(original, dict) or type(original.get('original_source_protocol')) is not int or original['original_source_protocol'] != 6:
-            raise ValueError('application facts lack the qualified source6 consumer')
-    return value
 
 
 def digest(path):
@@ -144,8 +97,6 @@ def create(image, qcow):
         "definition": snapshot["definition"],
         "qcow2_sha256": digest(qcow), "qcow2_size": qcow.stat().st_size,
     }
-    if snapshot.get("data_consumers") is not None:
-        record["data_consumers"] = validate_consumers(snapshot["data_consumers"])
     sidecar = Path(str(qcow) + ".hardware.json")
     if sidecar.is_symlink():
         raise ValueError("media provenance destination must not be a symlink")
@@ -165,10 +116,8 @@ def validate(qcow, architecture, name):
     if not sidecar.is_file() or sidecar.stat().st_size > 131072:
         raise ValueError("media requires a bounded regular .hardware.json provenance sidecar")
     record = json.loads(sidecar.read_text())
-    if not isinstance(record, dict) or set(record) not in (FIELDS, FIELDS | {"data_consumers"}) or type(record["schema_version"]) is not int or record["schema_version"] != 1:
+    if not isinstance(record, dict) or set(record) != FIELDS or type(record["schema_version"]) is not int or record["schema_version"] != 1:
         raise ValueError("invalid media provenance schema")
-    if 'data_consumers' in record:
-        validate_consumers(record['data_consumers'])
     actual_name, profile_hash, origin = snapshot_profile(record, architecture)
     if record["architecture"] != architecture or record["hardware_profile"] != name or actual_name != name:
         raise ValueError("packaging profile does not match the final installer image")
@@ -194,19 +143,10 @@ def main():
     check.add_argument("qcow", type=Path)
     check.add_argument("architecture")
     check.add_argument("profile")
-    facts = sub.add_parser("consumer-facts")
-    facts.add_argument("qcow", type=Path)
-    facts.add_argument("architecture")
-    facts.add_argument("profile")
     args = parser.parse_args()
     try:
         if args.command == "create":
             print(create(args.image, args.qcow))
-        elif args.command == "consumer-facts":
-            validate(args.qcow, args.architecture, args.profile)
-            sidecar = Path(str(args.qcow) + ".hardware.json")
-            record = json.loads(sidecar.read_text()) if sidecar.exists() else {}
-            print(json.dumps(record.get("data_consumers", {})))
         else:
             print(json.dumps(validate(args.qcow, args.architecture, args.profile)))
     except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as error:

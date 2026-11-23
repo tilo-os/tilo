@@ -63,7 +63,6 @@ fn setup_fixture_in(
             desktop_session: true,
             internal_dual_boot: false,
         },
-        connected_folders: false,
     };
     let runtime = runtime.unwrap_or_else(|| fakes.runtime());
     let install = InternalInstall::new(runtime, true, host);
@@ -799,90 +798,4 @@ fn queued_runtime(
             as Box<dyn install_flow::HelperRun>)
     });
     runtime
-}
-
-/// A guided Desktop session whose delivery already failed once, as a person
-/// sees it on the desktop-preparation row.
-#[cfg(target_os = "linux")]
-#[test]
-fn journey_a_failed_guided_desktop_delivery_is_retried_from_its_row() {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-    let root = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let home = root.path().join("home");
-    std::fs::create_dir(&home).unwrap();
-    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let identity = imager_backend::prepared_identity::PreparedIdentity::create(
-        &root.path().join("identity"),
-        "Chosen person",
-        [20, 80, 140],
-        tilo_identity::provisioning::IdentityStorage::for_session(),
-    )
-    .unwrap();
-    let prepared = crate::setup::journey::prepared_media::PreparedMedia::prepare(
-        &identity,
-        None,
-        zeroize::Zeroizing::new("chosen preparation password".into()),
-        "desktop-session".into(),
-    )
-    .unwrap();
-    let artifact = prepared.staging_artifact().unwrap();
-    let mut setup = SetupApp::from_guided_desktop(prepared, home.clone()).unwrap();
-    // The packages are already installed: mounting must not replace this
-    // computer's check with a live one that finds no release here.
-    setup.starts_when_live = false;
-    setup.desktop_flow = DesktopFlow::from_fixture_state(DesktopFlowState::Installed {
-        selection: fixture_desktop_selection(true),
-        result: crate::setup::desktop_install::InstalledDesktop {
-            version: "0.1.9-1.fc44".into(),
-            session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
-        },
-    });
-    // A delivery whose thread stopped: the person is told it failed and
-    // offered the retry.
-    let (sender, receiver) = mpsc::channel();
-    drop(sender);
-    setup.guided_desktop.as_mut().unwrap().pending = Some(receiver);
-    let mut app = launch(setup);
-    app.settle();
-    app.harness()
-        .expect(
-            &SemanticExpectation::named("setup.retry-desktop").within(tilo_test_env::hang_bound()),
-        )
-        .expect("the failed delivery offers its retry");
-
-    app.effect_on(
-        "imager.setup.desktop-preparation",
-        &SetupEffect::RetryDesktop,
-    )
-    .expect("the retry starts the delivery again");
-    tilo_test_env::wait_until("the delivery's result", || {
-        app.settle();
-        app.with_widget::<SetupApp, _>(|setup| {
-            setup.guided_desktop.as_ref().unwrap().pending.is_none()
-        })
-        .unwrap()
-    });
-    let (failed, status) = app
-        .with_widget::<SetupApp, _>(|setup| {
-            (
-                setup.guided_desktop.as_ref().unwrap().failed,
-                setup.status.clone(),
-            )
-        })
-        .unwrap();
-    assert!(!failed, "the delivery failed: {status}");
-    app.harness()
-        .expect(
-            &SemanticExpectation::named("setup.desktop.status")
-                .name_contains(crate::setup::strings::t("installer-desktop-ready")),
-        )
-        .unwrap();
-    let target = home.join(".local/state/tilo/prepared-setup");
-    assert_eq!(
-        std::fs::read(target.join("prepared-setup.sealed")).unwrap(),
-        std::fs::read(&artifact.source_path).unwrap()
-    );
 }

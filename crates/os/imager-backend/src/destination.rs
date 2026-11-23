@@ -15,7 +15,6 @@
 //! * [`probes`]: what this computer proves about its boot chain.
 //! * [`private_io`]: the unattended recipe and recovery key's private files.
 //! * [`layouts`], [`timezones`]: keyboard layouts and time zones on offer.
-//! * [`windows_hint_source`]: hints read from the medium's Windows block.
 
 pub mod backend;
 pub mod disks;
@@ -29,7 +28,6 @@ pub mod power_readiness;
 pub mod private_io;
 pub mod probes;
 pub mod timezones;
-pub mod windows_hint_source;
 
 /// The installer's console: action frames on the live medium's private socket
 /// and virtio port.

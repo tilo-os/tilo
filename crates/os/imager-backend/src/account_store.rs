@@ -1,49 +1,13 @@
-//! Recording an account in a home's accounts, its secret in the vault.
-//!
-//! The accounts are the workspace's `tilo.accounts` record ([`AccountList`]) as a home stages
-//! it before its workspace exists: code here keeps the staged record beside the destination and
-//! lands each edit into it, so a reader of the home and the workspace's record agree. A secret
-//! is sealed in the vault under the same root before the account that names it is landed, so a
-//! crash leaves a sealed orphan, never an account without its secret.
+//! A home's accounts: the workspace's `tilo.accounts` record ([`AccountList`]) as a home stages it
+//! before its workspace exists. Code here keeps the staged record beside the destination and lands
+//! each edit into it, so a reader of the home and the workspace's record agree.
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use accounts::person::{self, AccountList};
-use accounts::{Account, AccountId, Secret, SecretVault};
+use accounts::{Account, AccountId};
 use tilo_migrate::vault::VaultError;
-use tilo_resource::{Invoke, Replica};
-
-pub use tilo_migrate::vault::PrivateSecret;
-
-/// `config_root`'s accounts as the record it stages, or none where it keeps none.
-#[must_use]
-pub fn accounts_in(config_root: &Path) -> AccountList {
-    Accounts::read(config_root)
-        .ok()
-        .and_then(|accounts| accounts.state().ok())
-        .unwrap_or_default()
-}
-
-/// Read `config_root`'s staged record as a replica a caller can land edits into and write back,
-/// for a step the installer runs before the workspace's session starts. Not shared between
-/// threads.
-///
-/// # Errors
-/// The staged record does not read.
-pub fn replica_in(config_root: &Path) -> Result<Replica<AccountList>, ConnectionError> {
-    person::staged_in(config_root).map_err(|_| ConnectionError::StorageUnavailable)
-}
-
-/// Write `record`'s accounts as `config_root`'s staged record.
-///
-/// # Errors
-/// The staged record does not write.
-pub fn write_staged(
-    config_root: &Path,
-    record: &mut Replica<AccountList>,
-) -> Result<(), ConnectionError> {
-    person::keep_staged_in(config_root, record).map_err(|_| ConnectionError::StorageUnavailable)
-}
+use tilo_resource::Replica;
 
 /// Details deliberately omit credentials and provider response bodies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -96,9 +60,11 @@ impl Accounts {
     /// # Errors
     /// The staged record does not read, or its path leaves `boundary`.
     pub fn read_within(boundary: &Path, config_root: &Path) -> Result<Self, ConnectionError> {
-        let bytes =
-            crate::account_sources::metadata_bytes(boundary, &person::staged_path_in(config_root))
-                .map_err(|()| ConnectionError::StorageUnavailable)?;
+        let bytes = tilo_migrate::engine::accounts::metadata_bytes(
+            boundary,
+            &person::staged_path_in(config_root),
+        )
+        .map_err(|()| ConnectionError::StorageUnavailable)?;
         let Some(bytes) = bytes else {
             return Ok(Self::empty());
         };
@@ -177,68 +143,4 @@ impl Accounts {
             .stage_in(config_root)
             .map_err(|_| ConnectionError::StorageUnavailable)
     }
-}
-
-/// Publish an imported grant, or verify that an existing grant is identical. The caller supplies
-/// the record as it stands, and lands the edits it answers into it.
-///
-/// # Errors
-/// An account of the same id is already there with other details or another secret, or the vault
-/// could not be written.
-pub fn persist_import(
-    root: &Path,
-    record: &AccountList,
-    account: Account,
-    secret: Secret,
-) -> Result<Vec<Invoke<AccountList>>, ConnectionError> {
-    let secret = PrivateSecret(secret);
-    if let Some(existing) = record.account(account.id.as_str()) {
-        if existing != account {
-            return Err(ConnectionError::AlreadyPresent);
-        }
-        let vault = SecretVault::open_in(root);
-        if vault.recovery_error().is_some() {
-            return Err(ConnectionError::StorageUnavailable);
-        }
-        let stored = PrivateSecret(
-            vault
-                .get(&account.id)
-                .ok_or(ConnectionError::CredentialUnavailable)?,
-        );
-        if stored.0 != secret.0 && !account_credentials::copied_source_matches(&stored.0, &secret.0)
-        {
-            return Err(ConnectionError::AlreadyPresent);
-        }
-        return Ok(vec![AccountList::saving(&account)]);
-    }
-    seal_and_edit(root, &account, &secret.0)
-}
-
-/// Seal a grant's secret in the vault before making its account visible in the record. The caller
-/// lands the edits it answers.
-///
-/// # Errors
-/// The vault could not be read or written.
-pub fn persist(
-    root: &Path,
-    record: &AccountList,
-    account: Account,
-    secret: Secret,
-) -> Result<Vec<Invoke<AccountList>>, ConnectionError> {
-    if record.account(account.id.as_str()).is_some() {
-        return Err(ConnectionError::AlreadyPresent);
-    }
-    let secret = PrivateSecret(secret);
-    seal_and_edit(root, &account, &secret.0)
-}
-
-fn seal_and_edit(
-    root: &Path,
-    account: &Account,
-    secret: &Secret,
-) -> Result<Vec<Invoke<AccountList>>, ConnectionError> {
-    // The vault write must succeed before the account is landed. A crash between the two leaves
-    // a sealed orphan, never a plaintext credential or an account without its grant.
-    tilo_migrate::vault::seal(root, &account.id, secret)?;
-    Ok(vec![AccountList::saving(account)])
 }

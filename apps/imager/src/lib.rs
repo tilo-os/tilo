@@ -43,7 +43,7 @@
     clippy::unwrap_used,
     clippy::used_underscore_binding,
     clippy::wildcard_imports,
-    reason = "migration stack lint debt is scoped to this target"
+    reason = "installer lint debt is scoped to this target"
 )]
 
 //! Disk Imager: writing an OS image to a drive, and installing Tilo.
@@ -52,8 +52,8 @@
 //! the write and its read-back. Writing is guarded twice: the host's typed
 //! confirmation, then the platform authenticating a short-lived helper.
 //!
-//! [`ImagerShell`] is the app: this wizard plus the guided setup (`--setup`) and
-//! the folder imports (`--import-folders`), over one resource.
+//! [`ImagerShell`] is the app: this wizard plus the guided setup (`--setup`),
+//! over one resource.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -79,8 +79,6 @@ pub mod customize_image;
 pub mod handoff;
 mod helpers;
 mod host;
-#[cfg(target_os = "linux")]
-pub mod media_layout;
 pub mod model;
 mod page;
 pub mod release;
@@ -98,35 +96,3 @@ pub use model::{
 pub use resource::{Imager, ImagerShell};
 
 pub mod export_dialog;
-
-#[cfg(target_os = "linux")]
-pub use setup::media_setup;
-
-#[doc(hidden)]
-#[cfg(all(target_os = "linux", feature = "capture-worker"))]
-pub fn run_home_export_service() -> std::io::Result<()> {
-    imager_backend::setup::home_capture::run_provider()
-}
-#[doc(hidden)]
-#[cfg(all(target_os = "linux", feature = "capture-worker"))]
-pub fn home_export_worker_protocol() -> u32 {
-    imager_backend::setup::home_capture::worker_protocol()
-}
-
-#[doc(hidden)]
-#[cfg(all(target_os = "linux", feature = "capture-worker"))]
-pub fn run_retained_source_io_service() -> std::io::Result<()> {
-    imager_backend::retained_source::run(false)
-}
-
-#[doc(hidden)]
-#[cfg(all(target_os = "linux", feature = "capture-worker"))]
-pub fn run_retained_home_io_service() -> std::io::Result<()> {
-    imager_backend::retained_source::run(true)
-}
-
-#[doc(hidden)]
-#[cfg(all(target_os = "linux", feature = "capture-worker"))]
-pub fn run_retained_target_projection_service() -> std::io::Result<()> {
-    imager_backend::retained_source::run_target_projection()
-}

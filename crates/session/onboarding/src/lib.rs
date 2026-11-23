@@ -1,11 +1,8 @@
 //! First use as an ordinary app the shell hosts: what an identity is, the
 //! ways to create one or bring an existing one here (a code another of your
 //! devices prints, a recovery key, a backup file), the fact that nobody can
-//! recover it, its
-//! backup, a setup prepared on another computer and the transfers it carries
-//! over (a portable home, its applications, browser data, the old system's
-//! files), the offer of more media formats, the hand-off into the desktop and
-//! the tour.
+//! recover it, its backup, the offer of more media formats, the hand-off into
+//! the desktop and the tour.
 //!
 //! The app shows setup and asks; the shell decides. The shell keeps the
 //! identity work, the crash journal, the helpers and every secret's ownership,
@@ -33,9 +30,8 @@ pub use app::{
 };
 pub use effect::{CHOICES, FIELDS, OnboardingEffect, SECRET_FIELDS};
 pub use page::{
-    Chooser, ChooserPurpose, Codecs, IdentityProblem, JoinedDevice, KeyCopy, Migration, Nearby,
-    OnboardingContext, PackState, Page, Prepared, Screen, SecretText, Step, TourPage, Transfer,
-    WordsCheck,
+    Chooser, ChooserPurpose, Codecs, IdentityProblem, JoinedDevice, KeyCopy, Nearby,
+    OnboardingContext, PackState, Page, Screen, SecretText, Step, TourPage, WordsCheck,
 };
 pub use state::{OnboardingState, SecretBuffer, Secrets, WordMistakes};
 

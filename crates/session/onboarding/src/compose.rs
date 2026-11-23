@@ -21,7 +21,7 @@ use crate::copy::{
     no_recovery_title,
 };
 use crate::effect::OnboardingEffect;
-use crate::page::{KeyCopy, OnboardingContext, Screen, TourPage, Transfer, WordsCheck};
+use crate::page::{KeyCopy, OnboardingContext, Screen, TourPage, WordsCheck};
 use crate::state::SecretBuffer;
 use crate::{t, t_args};
 
@@ -113,9 +113,6 @@ impl Ceremony {
         reason = "a declarative page composition covering every onboarding screen"
     )]
     pub(crate) fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
-        if self.page.migration.is_some() {
-            return self.migration_composition(theme);
-        }
         if let Some(page) = self.page.tour_page {
             return self.build_tour_composition(theme, panel_height, page);
         }
@@ -126,7 +123,7 @@ impl Ceremony {
         let total = self.page.total_steps;
         let (step, stage) = if self.page.recovery_only && self.page.screen == Screen::Existing {
             (1, t("onboarding-stage-choose"))
-        } else if self.page.recovery_only || self.page.prepared.is_some() {
+        } else if self.page.recovery_only {
             (2, t("onboarding-stage-restore"))
         } else {
             match self.page.screen {
@@ -144,22 +141,18 @@ impl Ceremony {
             }
         };
         let region_label = stage.clone(); // names the page's scroll region
-        let body: Box<dyn Widget> = if self.page.prepared.is_some() {
-            self.prepared_body(theme)
-        } else {
-            match self.page.screen {
-                Screen::Intro => self.intro(theme),
-                Screen::Existing => self.existing(theme),
-                Screen::Nearby => self.nearby(theme),
-                Screen::Restore => self.restore(theme),
-                Screen::RecoveryKey => self.recovery_key(theme),
-                Screen::NoRecovery => self.no_recovery(theme),
-                Screen::Done if self.page.identity_ready_page && self.page.codec_page => {
-                    self.codecs(theme)
-                }
-                Screen::Done if self.page.identity_ready_page => self.done(theme, compact_ready),
-                Screen::Done => self.backup(theme),
+        let body: Box<dyn Widget> = match self.page.screen {
+            Screen::Intro => self.intro(theme),
+            Screen::Existing => self.existing(theme),
+            Screen::Nearby => self.nearby(theme),
+            Screen::Restore => self.restore(theme),
+            Screen::RecoveryKey => self.recovery_key(theme),
+            Screen::NoRecovery => self.no_recovery(theme),
+            Screen::Done if self.page.identity_ready_page && self.page.codec_page => {
+                self.codecs(theme)
             }
+            Screen::Done if self.page.identity_ready_page => self.done(theme, compact_ready),
+            Screen::Done => self.backup(theme),
         };
         let spacing = &theme.tokens.spacing;
         let progress_value = f32::from(step) / f32::from(total);
@@ -393,9 +386,6 @@ impl Ceremony {
 
     /// The ways forward from a choice screen, one row per flow.
     fn choices(&self) -> Option<Vec<Choice>> {
-        if self.page.prepared.is_some() {
-            return None;
-        }
         match self.page.screen {
             Screen::Intro => Some(vec![
                 Choice {
@@ -524,23 +514,6 @@ impl Ceremony {
         reason = "a declarative footer builder with one arm per onboarding screen"
     )]
     fn identity_actions(&self) -> Box<dyn Widget> {
-        if self.page.prepared.is_some() {
-            return footer_actions(vec![Box::new(
-                self.button(
-                    "onboarding.prepared.import.button",
-                    &t("onboarding-continue"),
-                    OnboardingEffect::Continue,
-                )
-                .role(ui::widget::ButtonRole::Primary)
-                .with_enabled(
-                    !self
-                        .page
-                        .prepared
-                        .as_ref()
-                        .is_some_and(|prepared| prepared.working),
-                ),
-            )]);
-        }
         match self.page.screen {
             Screen::Intro => footer_actions(Vec::new()),
             Screen::Existing if self.page.recovery_only => footer_actions(vec![Box::new(
@@ -1022,235 +995,6 @@ impl Ceremony {
     }
 
     /// Restore the identity from an encrypted backup file.
-    fn prepared_body(&self, theme: &Theme) -> Box<dyn Widget> {
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s4)
-            .push(heading(&t("onboarding-prepared-title"), theme))
-            .push(paragraph(&t("onboarding-prepared-body"), theme));
-        if let Some(error) = &self.page.error {
-            body = body.push(spaced_banner(
-                Banner::error(t("onboarding-prepared-failed")).with_message(error.clone()),
-                theme,
-            ));
-        }
-        if self
-            .page
-            .prepared
-            .as_ref()
-            .is_some_and(|prepared| prepared.working)
-        {
-            body = body.push(paragraph(&t("onboarding-prepared-working"), theme));
-            return Box::new(body);
-        }
-        if let Some(peer) = self
-            .page
-            .prepared
-            .as_ref()
-            .and_then(|prepared| prepared.peer.as_ref())
-        {
-            // The package arrives over the peer transport, so there is no
-            // password to type. Show the same code the preparing computer
-            // shows; a person compares them before approving this computer
-            // there. A code appears only once this receiver has bound its own
-            // endpoint and key.
-            if let Some(code) = peer.clone() {
-                body = body.push(paragraph(
-                    &t_args("onboarding-prepared-peer-code", &[("code", code.into())]),
-                    theme,
-                ));
-            } else {
-                body = body.push(paragraph(&t("onboarding-prepared-peer-waiting"), theme));
-            }
-            return Box::new(body);
-        }
-        body = body.push(Box::new(secret_input(
-            "onboarding.prepared.password",
-            &self.secrets.connect_passphrase,
-            &t("onboarding-prepared-password"),
-            &t("onboarding-prepared-password"),
-        )));
-        Box::new(body)
-    }
-
-    /// What the migration page is titled: the step in hand.
-    fn migration_title_key(&self) -> &'static str {
-        match self
-            .page
-            .migration
-            .as_ref()
-            .map(|migration| migration.transfer)
-        {
-            Some(Transfer::PortableHome) => "onboarding-portable-home-title",
-            Some(Transfer::PortableApplications) => "onboarding-portable-applications-title",
-            Some(Transfer::Browser) => "onboarding-browser-title",
-            Some(Transfer::Migration) | None => "onboarding-migration-title",
-        }
-    }
-
-    fn migration_composition(&self, theme: &Theme) -> Box<dyn Widget> {
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s4)
-            .push(heading(&t(self.migration_title_key()), theme));
-        let status = self.page.migration_status().unwrap_or_default();
-        let state = status
-            .get("state")
-            .and_then(ui::serde_json::Value::as_str)
-            .unwrap_or("unavailable");
-        let retained = status
-            .get("retained_access")
-            .and_then(ui::serde_json::Value::as_bool)
-            == Some(true);
-        let text = migration_body_key(&status, state, retained);
-        body = body.push(paragraph(&t(text), theme));
-        if self
-            .page
-            .migration
-            .as_ref()
-            .is_some_and(|migration| migration.needs_password)
-        {
-            body = body.push(Box::new(secret_input(
-                "onboarding.portable-home.password",
-                &self.secrets.connect_passphrase,
-                &t("onboarding-prepared-password"),
-                &t("onboarding-prepared-password"),
-            )));
-        }
-        if let Some(files) = status
-            .get("result")
-            .and_then(|result| result.get("verified_files"))
-            .and_then(ui::serde_json::Value::as_u64)
-        {
-            body = body.push(paragraph(
-                &t_args(
-                    "onboarding-migration-progress",
-                    &[("files", files.to_string().into())],
-                ),
-                theme,
-            ));
-        }
-
-        if let Some(error) = &self.page.error {
-            body = body.push(spaced_banner(
-                Banner::error(t("onboarding-migration-failed")).with_message(error.clone()),
-                theme,
-            ));
-        }
-        body = body.push(self.migration_actions(state));
-        Box::new(
-            Scrollable::new_vertical()
-                .without_sequential_focus()
-                .with_child(Box::new(body)),
-        )
-    }
-
-    /// What the migration's main button says in `state`.
-    fn migration_next_label(&self, state: &str, cleanup_pending: bool) -> &'static str {
-        match state {
-            _ if cleanup_pending => "onboarding-migration-cleanup-resume",
-            "pending" | "unavailable" | "failed" | "cancelled" => "onboarding-migration-review",
-            "reviewed"
-                if self.page.migration_status().and_then(|value| {
-                    value
-                        .get("retained_access")
-                        .and_then(ui::serde_json::Value::as_bool)
-                }) == Some(true) =>
-            {
-                "onboarding-existing-files-prepare-apps"
-            }
-            "reviewed"
-                if self
-                    .page
-                    .migration_status()
-                    .is_some_and(|value| json_flag(&value, "portable_applications")) =>
-            {
-                "onboarding-portable-applications-start"
-            }
-            "reviewed"
-                if self
-                    .page
-                    .migration_status()
-                    .is_some_and(|value| json_flag(&value, "browser")) =>
-            {
-                "onboarding-browser-start"
-            }
-            "reviewed" => "onboarding-migration-start",
-            "ready-to-adopt" => "onboarding-migration-adopt",
-            "complete" | "existing-files-available" => "onboarding-continue",
-            "incomplete" => "onboarding-migration-retry",
-            _ => "onboarding-migration-working",
-        }
-    }
-
-    /// Whether the migration under way in `state` can still be cancelled.
-    fn migration_cancellable(&self) -> bool {
-        self.page
-            .migration
-            .as_ref()
-            .is_some_and(|migration| migration.cancellable)
-    }
-
-    fn migration_actions(&self, state: &str) -> Box<dyn Widget> {
-        let cleanup = self.page.migration_status().unwrap_or_default();
-        let cleanup_pending = json_flag(&cleanup, "transfer_complete")
-            && json_text(&cleanup, "cleanup_state") == Some("pending");
-        let cleanup_blocked = json_flag(&cleanup, "transfer_complete")
-            && json_text(&cleanup, "cleanup_state") != Some("finished");
-        let busy = !cleanup_pending
-            && [
-                "copying",
-                "verifying",
-                "retirement-pending",
-                "restoring-applications",
-                "adopting",
-                "reviewing",
-                "cancelling",
-                "releasing-applications",
-                "activating-browser",
-            ]
-            .contains(&state);
-        let label = self.migration_next_label(state, cleanup_pending);
-        let mut actions: Vec<Box<dyn Widget>> = vec![Box::new(
-            self.button(
-                "onboarding.migration.next.button",
-                &t(label),
-                OnboardingEffect::Continue,
-            )
-            .role(ui::widget::ButtonRole::Primary)
-            .with_enabled(!busy && (!cleanup_blocked || cleanup_pending)),
-        )];
-        if busy {
-            actions.push(Box::new(
-                self.button(
-                    "onboarding.migration.cancel.button",
-                    &t("onboarding-migration-cancel"),
-                    OnboardingEffect::Cancel,
-                )
-                .with_enabled(self.migration_cancellable()),
-            ));
-        } else if !cleanup_blocked {
-            actions.push(Box::new(
-                self.button(
-                    "onboarding.migration.later.button",
-                    &t("onboarding-migration-later"),
-                    OnboardingEffect::Skip,
-                )
-                .with_enabled(state != "unavailable"),
-            ));
-            if state == "incomplete" {
-                actions.push(Box::new(self.button(
-                    "onboarding.migration.continue.button",
-                    &t("onboarding-continue"),
-                    OnboardingEffect::choose("accept-incomplete"),
-                )));
-            }
-        }
-        footer_actions(actions)
-    }
-
     fn restore(&self, theme: &Theme) -> Box<dyn Widget> {
         let compact = self.page.compact;
         let spacing = &theme.tokens.spacing;
@@ -2025,76 +1769,6 @@ fn choice_row_height(theme: &Theme) -> f32 {
     (text + 2.0 * spacing.s2)
         .max(theme.tokens.metrics.min_pointer_target + spacing.s2)
         .ceil()
-}
-
-/// What the migration page says for its `status` in `state`; `retained`
-/// when this device keeps the old computer's files where they are.
-fn migration_body_key(status: &ui::serde_json::Value, state: &str, retained: bool) -> &'static str {
-    let apps = status
-        .get("applications_only")
-        .and_then(ui::serde_json::Value::as_bool)
-        == Some(true)
-        || retained && matches!(state, "reviewed" | "ready-to-adopt");
-    if json_flag(status, "browser") {
-        "onboarding-browser-body"
-    } else if status
-        .get("portable_applications")
-        .and_then(ui::serde_json::Value::as_bool)
-        == Some(true)
-        && matches!(state, "pending" | "failed" | "unavailable" | "cancelled")
-    {
-        "onboarding-portable-applications-body"
-    } else if retained && state == "pending" {
-        "onboarding-existing-files-body"
-    } else if apps && state == "reviewed" {
-        "onboarding-existing-files-apps-reviewed"
-    } else if apps && state == "ready-to-adopt" {
-        "onboarding-existing-files-apps-adopt"
-    } else if status
-        .get("portable_home")
-        .and_then(ui::serde_json::Value::as_bool)
-        == Some(true)
-        && matches!(state, "pending" | "failed" | "unavailable")
-    {
-        "onboarding-portable-home-body"
-    } else {
-        match state {
-            "pending" => "onboarding-migration-body",
-            "reviewed" => "onboarding-migration-reviewed",
-            "ready-to-adopt" => "onboarding-migration-adopt-body",
-            _ if json_flag(status, "transfer_complete")
-                && json_text(status, "cleanup_state") == Some("running") =>
-            {
-                "onboarding-migration-cleanup-running"
-            }
-            _ if json_flag(status, "transfer_complete")
-                && json_text(status, "cleanup_state") == Some("pending") =>
-            {
-                "onboarding-migration-cleanup-pending"
-            }
-            _ if json_flag(status, "transfer_complete")
-                && json_text(status, "cleanup_state") == Some("unavailable") =>
-            {
-                "onboarding-migration-cleanup-unavailable"
-            }
-            "complete" => "onboarding-migration-complete",
-            "existing-files-available" => "onboarding-existing-files-available",
-            "incomplete" => "onboarding-migration-incomplete",
-            "failed" | "unavailable" => "onboarding-migration-failed",
-            "cancelled" => "onboarding-migration-cancelled",
-            _ => "onboarding-migration-working",
-        }
-    }
-}
-
-/// Whether `value`'s `key` is `true`.
-fn json_flag(value: &ui::serde_json::Value, key: &str) -> bool {
-    value.get(key).and_then(ui::serde_json::Value::as_bool) == Some(true)
-}
-
-/// `value`'s `key` as text.
-fn json_text<'a>(value: &'a ui::serde_json::Value, key: &str) -> Option<&'a str> {
-    value.get(key).and_then(ui::serde_json::Value::as_str)
 }
 
 /// The keyboard and gesture route a navigation card teaches, shown under

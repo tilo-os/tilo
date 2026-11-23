@@ -5,7 +5,6 @@
 //! app's, through its API; what setup needs of the session it reads through
 //! [`tilo_onboarding_session::services::SessionServices`].
 
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 use std::task::Waker;
@@ -27,13 +26,11 @@ use crate::clock_wait::{ClockWait, ClockWaitStep};
 struct Lent {
     waker: Mutex<Option<Waker>>,
     person: Mutex<String>,
-    browser: Mutex<Option<PathBuf>>,
 }
 
 static LENT: Lent = Lent {
     waker: Mutex::new(None),
     person: Mutex::new(String::new()),
-    browser: Mutex::new(None),
 };
 
 impl tilo_onboarding_session::services::SessionServices for Lent {
@@ -43,10 +40,6 @@ impl tilo_onboarding_session::services::SessionServices for Lent {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .unwrap_or_else(|| Waker::noop().clone())
-    }
-
-    fn browser_continuity(&self, projection: Option<PathBuf>) {
-        *self.browser.lock().unwrap_or_else(PoisonError::into_inner) = projection;
     }
 
     fn wake(&self) {
@@ -66,14 +59,6 @@ pub(crate) fn lend(waker: Waker, person: &str) {
     *LENT.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(waker);
     person.clone_into(&mut LENT.person.lock().unwrap_or_else(PoisonError::into_inner));
     tilo_onboarding_session::services::install(&LENT);
-}
-
-/// The verified browser projection a carried-over setup brought, which the browser starts with.
-pub(crate) fn browser_continuity() -> Option<PathBuf> {
-    LENT.browser
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
 }
 
 /// What this session shows before its session is used.

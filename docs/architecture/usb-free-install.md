@@ -156,15 +156,13 @@ on Linux, `Start-Process -Verb RunAs` on Windows. The helper holds no UI.
 }
 ```
 
-The native Full Tilo review remains distinct from prepared Linux setup. A
-legacy native request may omit `profile` (the helper defaults it to an empty
-map), `prepared_setup` and `migration`. The staged live installer then collects
-and confirms account and startup choices itself; first-boot account creation
-does not require a prepared bundle. This path does not promise migrated files,
-accounts or an enrolled identity. Those require their separately verified
-handoffs. A claimed prepared profile still requires actual encrypted ownership;
-it must never be fabricated to enter the native Windows route. The current
-prepared-setup staging artifact is Linux-only.
+The native Full Tilo request carries no accounts, files or identity. It may
+omit `profile` (the helper defaults it to an empty map). The staged live
+installer collects and confirms account and startup choices itself. What the
+person brings over moves before the install, while the old system still runs:
+the installer signs in as a device of their workspace with a ticket from
+`tilo device add` and opens the migration app (`so.tilo.migrate`), which lands
+the chosen things in the workspace through its ordinary actions.
 
 Opening this review records intent, not installability: the native host probe,
 architecture-specific internal release catalog and product release check must

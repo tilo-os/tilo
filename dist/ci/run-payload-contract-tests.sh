@@ -67,14 +67,13 @@ if grep -Fq -- "-name 'tilo-session*.rpm'" "$overlay_helper"; then
 fi
 
 fhs=$work/fhs
-mkdir -p "$fhs"/{usr/bin,usr/libexec/tilo,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
+mkdir -p "$fhs"/{usr/bin,usr/libexec/tilo,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
 for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/bin/tilo-runtime" \
               "$fhs/usr/bin/tilolang-process" "$fhs/usr/libexec/tilo/tilo-launcher" \
-              "$fhs/usr/bin/tilo-import-folders" "$fhs/usr/libexec/tilo-unlock-helper" \
+              "$fhs/usr/libexec/tilo-unlock-helper" \
               "$fhs/usr/libexec/tilo-flight-recorder" "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
 done
-install -m644 "$repo_root/dist/session/tilo-import-folders.desktop" "$fhs/usr/share/applications/tilo-import-folders.desktop"
 install -m755 "$repo_root/dist/session/tilo-session" "$fhs/usr/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/tilo-session-runner"
 install -m755 "$repo_root/dist/session/tilo-session-dev" "$fhs/usr/libexec/tilo-session-dev"
@@ -148,7 +147,7 @@ for link_mode in -static -static-pie; do
     cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
     for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/bin/tilo-runtime" \
                   "$fhs/usr/bin/tilolang-process" "$fhs/usr/libexec/tilo/tilo-launcher" \
-                  "$fhs/usr/bin/tilo-import-folders" "$fhs/usr/libexec/tilo-unlock-helper" \
+                  "$fhs/usr/libexec/tilo-unlock-helper" \
                   "$fhs/usr/libexec/tilo-flight-recorder" "$fhs/usr/libexec/tilo-session-report"; do
         install -m755 "$work/static" "$target"
     done
@@ -184,7 +183,7 @@ for object_mode in -shared -c; do
 done
 for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/bin/tilo-runtime" \
               "$fhs/usr/bin/tilolang-process" "$fhs/usr/libexec/tilo/tilo-launcher" \
-              "$fhs/usr/bin/tilo-import-folders" "$fhs/usr/libexec/tilo-unlock-helper" \
+              "$fhs/usr/libexec/tilo-unlock-helper" \
               "$fhs/usr/libexec/tilo-flight-recorder" "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
 done
@@ -227,17 +226,6 @@ if "$repo_root/dist/verify-cli-shims.sh" "$apps_bin" >/dev/null 2>&1; then
     echo "shim verifier accepted a sidecar without its command shim" >&2; exit 1
 fi
 rm -r "$fhs/usr/lib/tilo-apps"
-mv "$fhs/usr/bin/tilo-import-folders" "$work/import-held"
-if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
-    echo "payload verifier accepted missing import executable" >&2; exit 1
-fi
-mv "$work/import-held" "$fhs/usr/bin/tilo-import-folders"
-sed -i 's#^Exec=.*#Exec=/missing --import-folders#' "$fhs/usr/share/applications/tilo-import-folders.desktop"
-if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
-    echo "payload verifier accepted wrong import entry" >&2; exit 1
-fi
-install -m644 "$repo_root/dist/session/tilo-import-folders.desktop" "$fhs/usr/share/applications/tilo-import-folders.desktop"
-
 sed -i 's#^TryExec=.*#TryExec=/wrong#' "$fhs/usr/share/wayland-sessions/tilo-app.desktop"
 if "$repo_root/dist/verify-devel-payload.sh" "$fhs" >/dev/null 2>&1; then
     echo "developer payload verifier accepted a wrong TryExec" >&2
@@ -245,14 +233,13 @@ if "$repo_root/dist/verify-devel-payload.sh" "$fhs" >/dev/null 2>&1; then
 fi
 
 nix=$work/nix-result
-mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/pipewire,share/licenses/tilo-session}
+mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/xdg-desktop-portal/portals,share/pipewire,share/licenses/tilo-session}
 for target in "$nix/bin/tilo-session" "$nix/bin/tilo" "$nix/bin/tilo-runtime" \
               "$nix/bin/tilolang-process" "$nix/bin/tilo-launcher" \
-              "$nix/bin/tilo-import-folders" "$nix/libexec/tilo-unlock-helper" \
+              "$nix/libexec/tilo-unlock-helper" \
               "$nix/libexec/tilo-flight-recorder" "$nix/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
 done
-sed "s#/usr/bin/tilo-import-folders#$nix/bin/tilo-import-folders#g" "$repo_root/dist/session/tilo-import-folders.desktop" > "$nix/share/applications/tilo-import-folders.desktop"
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$nix/share/wayland-sessions/tilo.desktop"

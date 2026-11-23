@@ -546,11 +546,6 @@ enum = "EvictionRequestState"
 reason = "the eviction queue's schema version moves to 3 in the same change: a file written by an older build is dropped at open rather than read, and no other bytes carry this state"
 
 [[break]]
-file = "crates/core/launcher/src/owned_service/target_projection.rs"
-enum = "TargetProjectionMode"
-reason = "the removed variant was the last one, so the two kept modes keep their positions; a projection record naming it was refused already and now fails to read"
-
-[[break]]
 file = "crates/core/runtime-collab/src/committed_document.rs"
 enum = "Reply"
 reason = "an app and its device's broker speak it over the runtime interface, whose version moves to 34 with this change: both ends are the same build, and nothing keeps its bytes"

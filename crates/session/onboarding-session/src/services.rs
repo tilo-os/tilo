@@ -2,10 +2,8 @@
 //!
 //! The session installs one [`SessionServices`] at startup. Until it does (in a
 //! test, a screenshot run, a tool), every call here does what a session
-//! without that part would: nothing is woken and no app is told about a
-//! browser projection.
+//! without that part would: nothing is woken.
 
-use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::task::Waker;
 
@@ -15,12 +13,6 @@ pub trait SessionServices: Send + Sync {
     /// that loop look at setup again. Made on the loop's thread.
     fn loop_waker(&self) -> Waker {
         Waker::noop().clone()
-    }
-
-    /// The verified browser projection a carried-over setup brought, which
-    /// the browser is started with from now on; `None` withdraws it.
-    fn browser_continuity(&self, projection: Option<PathBuf>) {
-        let _ = projection;
     }
 
     /// Wake the session loop from any thread: the setup app has something
@@ -53,11 +45,6 @@ fn services() -> &'static dyn SessionServices {
 #[must_use]
 pub fn loop_waker() -> Waker {
     services().loop_waker()
-}
-
-/// See [`SessionServices::browser_continuity`].
-pub fn set_browser_continuity(projection: Option<PathBuf>) {
-    services().browser_continuity(projection);
 }
 
 /// See [`SessionServices::wake`].

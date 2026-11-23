@@ -18,8 +18,8 @@ WITH_RUNTIMES=" ${WITH_RUNTIMES:-} "
 # the same packages and features, find these units fresh.
 BUILD_RUNTIME_ONLY="${BUILD_RUNTIME_ONLY:-}"
 case "$BUILD_RUNTIME_ONLY" in ""|1) ;; *) echo "BUILD_RUNTIME_ONLY must be 1 or unset" >&2; exit 1 ;; esac
-if [ "$BUILD_RUNTIME_ONLY" = 1 ] && { [ "$BUILD_PACKAGES" != "  " ] || [ "${BUILD_ROLE:-apps}" != apps ]; }; then
-    echo "BUILD_RUNTIME_ONLY builds no app: it takes no BUILD_PACKAGES and only the apps role" >&2
+if [ "$BUILD_RUNTIME_ONLY" = 1 ] && [ "$BUILD_PACKAGES" != "  " ]; then
+    echo "BUILD_RUNTIME_ONLY builds no app: it takes no BUILD_PACKAGES" >&2
     exit 1
 fi
 APP_FEATURES="${APP_FEATURES:-}"
@@ -30,16 +30,8 @@ PROFILE="${PROFILE:-thin-app}"
 # rustc-thin-app-wrapper.sh). Every other profile builds apps as they ship.
 optimize=size
 [ "$PROFILE" = thin-dev ] && optimize=speed
-BUILD_ROLE="${BUILD_ROLE:-apps}"
 BUILD_PHASE="${BUILD_PHASE:-all}"
 case "$BUILD_PHASE" in all|build|verify) ;; *) echo "invalid thin build phase" >&2; exit 1 ;; esac
-case "$BUILD_ROLE" in apps|home-capture) ;; *) echo "invalid thin build role" >&2; exit 1 ;; esac
-if [ "$BUILD_ROLE" = home-capture ]; then
-    case "$BUILD_PACKAGES" in
-        " imager "|" imager file-explorer word-processor "|" imager file-explorer word-processor browser ") ;;
-        *) echo "home capture selects the Imager worker and optional ordinary Files/Writer/Browser" >&2; exit 1 ;;
-    esac
-fi
 TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
 THIN_APP_WRAPPER=/proc/self/cwd/tools/ci/rustc-thin-app-wrapper.sh
 
@@ -60,19 +52,11 @@ app_profiles=()
 # which every tilolang app's entrypoint executes) joins the graph only when
 # BUILD_PACKAGES or WITH_RUNTIMES names it (the nested session, `tilolang dev`,
 # an image that ships tilolang packages).
-# The installer is not an app, so it has no tilo-app.toml: the home-capture
-# role names its worker crate directly, and builds its tilo-home-export below.
-capture_worker=()
-[ "$BUILD_ROLE" = home-capture ] && capture_worker=("$REPO/apps/imager/Cargo.toml")
-for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/crates/lang/*/tilo-runtime.toml ${capture_worker[@]+"${capture_worker[@]}"}; do
+for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/crates/lang/*/tilo-runtime.toml; do
     [ -f "$manifest" ] || continue
     dir="$(dirname "$manifest")"
     package="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$dir/Cargo.toml" | head -1)"
-    if [ "${manifest##*/}" = Cargo.toml ]; then
-        binary=tilo-home-export
-    else
-        binary="$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)"
-    fi
+    binary="$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)"
     [ -n "$package" ] && [ -n "$binary" ] \
         || { echo "could not read package/binary from $dir" >&2; exit 1; }
     case "$EXCLUDE_PACKAGES" in
@@ -117,10 +101,6 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/crates/lang/*/tilo-runtime.
         done
     fi
     features+=("$package/thin")
-    if [ "$BUILD_ROLE" = home-capture ] && [ "$package" = imager ]; then
-        binary=tilo-home-export
-        features+=(imager/capture-worker)
-    fi
     binary_crates+=("${binary//-/_}")
     if [ "$BUILD_RUNTIME_ONLY" != 1 ] && { [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; }; then
         binaries+=("$binary")
@@ -319,7 +299,7 @@ if [ "$BUILD_PHASE" = build ]; then
         exec 1>&3 3>&-
         wait "$sdk_compiler_stream_pid"
     fi
-    printf 'thin graph compiled; native verification still required (%s)\n' "$BUILD_ROLE"
+    printf 'thin graph compiled; native verification still required\n'
     exit 0
 fi
 
@@ -391,7 +371,6 @@ for index in "${!binaries[@]}"; do
     }
     no_copy_relocations "$TARGET_DIR/$PROFILE/$binary"
     loader_arguments=(--help)
-    [ "$binary" != tilo-home-export ] || loader_arguments=(--protocol)
     set +e
     # Every symbol bound at exec, whatever the app was linked with: the
     # runtime keeps only what something exported reaches, so a missing one

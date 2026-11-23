@@ -14,9 +14,9 @@ fn preview() -> InstallerPreview {
         linux: true,
         ..Default::default()
     };
-    // These phases model the Linux route; a Windows host runs the Windows
-    // preparation route, whose own tests cover it.
-    preview.windows.enabled = false;
+    // These phases model the Linux route; a Windows host takes the native
+    // Full Tilo setup straight from its destination.
+    preview.full_os_host = false;
     preview.capabilities.prepared_installation = true;
     preview.journey.destination = Some(Destination::Another);
     preview
@@ -98,16 +98,15 @@ fn supported_graphics() -> ComponentSupport {
 }
 
 tilo_test_env::scenario! {
-    fn another_computers_compatibility_is_decided_before_identity_and_media;
+    fn another_computers_compatibility_is_decided_before_media;
 
-    phase another_destination_checks_compatibility_before_identity_and_media;
+    phase another_destination_checks_compatibility_before_media;
     {
         let mut preview = preview();
         preview
             .apply(InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert_eq!(preview.journey.page, Page::Target);
-        assert!(preview.journey.identity.is_none());
         assert!(preview.journey.password.is_empty());
         assert!(preview.storage.facts.is_none());
         assert!(!preview.compatibility.pending);
@@ -128,12 +127,11 @@ tilo_test_env::scenario! {
         preview
             .apply(InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        assert_eq!(preview.journey.page, Page::Migration);
+        assert_eq!(preview.journey.page, Page::Migrate);
         assert_eq!(
             preview.journey.history,
             vec![Page::Destination, Page::Target]
         );
-        assert!(preview.journey.identity.is_none());
         assert!(preview.journey.password.is_empty());
     }
 
@@ -397,7 +395,6 @@ tilo_test_env::scenario! {
             Err("installer-preview-target-blocking")
         );
         assert_eq!(preview.journey.page, Page::Target);
-        assert!(preview.journey.identity.is_none());
     }
 
     phase recheck_stays_on_the_target_and_never_probes_this_computer;
@@ -445,7 +442,6 @@ tilo_test_env::scenario! {
             Err("installer-preview-target-incomplete")
         );
         assert_eq!(preview.journey.page, Page::Target);
-        assert!(preview.journey.identity.is_none());
         assert_eq!(
             preview.target.first_invalid_focus().as_deref(),
             Some("installer.target.manufacturer")
@@ -553,102 +549,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_saved_target_choice_restores_the_same_model_and_report_without_a_path;
-    {
-        let mut preview = preview();
-        preview
-            .apply(InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        for (field, value) in [
-            ("manufacturer", "Prepared Vendor"),
-            ("model", "Prepared Laptop 14"),
-            ("variant", "PREPARED-BOARD"),
-        ] {
-            preview
-                .apply(InstallerPreviewEffect::SetTargetIdentityField {
-                    field: field.into(),
-                    value: value.into(),
-                })
-                .unwrap();
-        }
-        let host = std::env::consts::ARCH;
-        let other = if host == "aarch64" {
-            "x86_64"
-        } else {
-            "aarch64"
-        };
-        let bytes = report(Some(other), vec![supported_graphics()])
-            .to_json()
-            .unwrap();
-        preview
-            .target
-            .import_bytes(Some("private-destination.json".into()), &bytes)
-            .unwrap();
-        let draft = preview.target.draft_choices();
-        let encoded = serde_json::to_vec(&draft).unwrap();
-        assert!(!String::from_utf8_lossy(&encoded).contains("private-destination"));
-        assert!(!String::from_utf8_lossy(&encoded).contains("Prepared Setup"));
-        let restored_draft: super::draft::TargetDraft = serde_json::from_slice(&encoded).unwrap();
-        let mut restored = super::target::Target::default();
-        restored.restore(Some(&restored_draft));
-        assert_eq!(restored.architecture(), other);
-        let projection = restored.projection();
-        assert_eq!(projection["source"], "imported");
-        assert_eq!(projection["ready"], true);
-        assert_eq!(projection["architecture"], other);
-        assert_eq!(
-            projection["report"]["model"],
-            serde_json::json!("Prepared Laptop 14")
-        );
-        assert_eq!(projection["destination_check_required"], true);
-        assert!(
-            !serde_json::to_string(&projection)
-                .unwrap()
-                .contains("private-destination"),
-            "the public status carries no file hint"
-        );
-    }
-
-    phase a_declared_model_keeps_the_selected_architecture_across_a_restart;
-    {
-        let mut preview = preview();
-        preview
-            .apply(InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        for (field, value) in [
-            ("manufacturer", "Prepared Vendor"),
-            ("model", "Prepared Laptop 14"),
-            ("board", "PREPARED-BOARD"),
-        ] {
-            preview
-                .apply(InstallerPreviewEffect::SetTargetIdentityField {
-                    field: field.into(),
-                    value: value.into(),
-                })
-                .unwrap();
-        }
-        let host = std::env::consts::ARCH;
-        let other = if host == "aarch64" {
-            "x86_64"
-        } else {
-            "aarch64"
-        };
-        preview
-            .apply(InstallerPreviewEffect::SetTargetArchitecture {
-                architecture: other.into(),
-            })
-            .unwrap();
-        let draft = preview.target.draft_choices();
-        let restored_draft: super::draft::TargetDraft =
-            serde_json::from_slice(&serde_json::to_vec(&draft).unwrap()).unwrap();
-        let mut restored = super::target::Target::default();
-        restored.restore(Some(&restored_draft));
-        assert_eq!(restored.architecture(), other);
-        let projection = restored.projection();
-        assert_eq!(projection["source"], "declared-model");
-        assert_eq!(projection["ready"], true);
-        assert_eq!(projection["report"]["components"], serde_json::json!([]));
-    }
 }
 
 #[cfg(unix)]
@@ -662,7 +562,6 @@ fn production_surface_paints_the_target_page_and_routes_its_semantic_effects() {
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = true;
         preview.capabilities.prepared_installation = true;
-        preview.restart = super::restart_controller::Restart::default();
         preview.journey.destination = Some(Destination::Another);
         preview.journey.page = Page::Target;
         preview.dirty = true;

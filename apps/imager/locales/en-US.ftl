@@ -1,73 +1,3 @@
-# Windows preparation never enrolls identities or signs into accounts.
-installer-windows-heading = Prepare on Windows
-installer-windows-intro = Choose the folders you want to keep. Local files are selected for a verified backup by default, including unknown game folders and mods. Originals stay unchanged; cloud copies are not verified.
-installer-windows-find = Suggest locations
-installer-windows-source-title = Select one exact source folder
-installer-windows-grant = Review this folder
-installer-windows-choose-known-folder = Choose a personal folder
-installer-windows-choose-outlook = Choose Outlook archives or local stores
-installer-windows-choose-steam = Choose Steam data
-installer-windows-choose-steam-library = Choose another Steam library
-installer-windows-choose-other = Choose another folder
-installer-windows-budget-copy = Copy
-installer-windows-budget-retain = Retained at source
-installer-windows-budget-excluded = Excluded
-installer-windows-budget-unavailable = Unavailable locally
-installer-windows-incomplete = This inventory is incomplete. Unavailable, unsupported or unreadable data remains at source. Do not replace Windows based on this export.
-installer-windows-grant-library = Review the referenced library: { $path }
-installer-windows-empty = No files were found in this selected folder.
-installer-windows-category-entries = { $count ->
-    [one] 1 entry
-   *[other] { $count } entries
-}
-installer-windows-category-unknown-sizes = { $count ->
-    [one] 1 size unknown
-   *[other] { $count } sizes unknown
-}
-installer-windows-category-unavailable = { $count ->
-    [one] 1 unavailable
-   *[other] { $count } unavailable
-}
-installer-windows-open-source = Open source folder
-installer-windows-open-pending = A source folder is already opening.
-installer-windows-open-failed = The source folder could not be opened. Check that it is still available and try again.
-installer-windows-gaps = { $count } parts could not be fully checked. Keep the originals.
-installer-windows-show-paths = Review source paths
-installer-windows-hide-paths = Hide source paths
-installer-windows-size-unknown = size unknown
-installer-windows-availability-local = available locally
-installer-windows-availability-placeholder = online-only; not copied
-installer-windows-availability-unsupported = cannot safely copy; keep the original
-installer-windows-gap-path = Not fully checked: { $path }
-installer-windows-plan-copy = Copy available local files under { $destination } in the chosen backup, keeping their folder layout. Unavailable files stay at source.
-installer-windows-backup-plan = Choose a backup destination next. This preserves files; it does not import them into apps or authorize replacing Windows. Keep the backup on a different drive from the USB image target.
-installer-windows-plan-retain-original = No backup copy: keep these files at the source. Do not erase that drive.
-installer-windows-plan-exclude = Not included in the backup by your explicit choice. Originals remain unchanged.
-installer-windows-exclude = Exclude with the stated reason
-installer-windows-exclusion-reason = Reason for excluding data
-installer-windows-hints-unavailable = Account suggestions could not be checked. Local folder review is unaffected; sign in manually in the live system.
-installer-windows-copy = Copy
-installer-windows-retain-original = Retain at source
-installer-windows-password = Password for private sign-in suggestions
-installer-windows-password-required = Use at least eight characters to encrypt suggestions for the live session.
-installer-windows-export-title = Select a backup destination, separate from the image target
-installer-windows-export = Export reviewed preparation
-installer-windows-checking = Checking only the independently selected locations…
-installer-windows-exporting = Copying and verifying selected local files…
-installer-windows-exported = Verified local copies and encrypted suggestions were exported. Keep this backup separate from the drive you erase in the image writer. Source data is unchanged; sign in later from live Tilo.
-installer-windows-export-failed = Export is incomplete. Verified output is retained. Keep the originals; this is not a replacement authorization.
-installer-windows-source-failed = This exact source could not be reviewed. Select it again.
-installer-windows-decision-failed = Review the source decision. Exclusion requires an explicit reason.
-installer-windows-media = Open the verified USB image writer
-installer-windows-category-personal-files = Documents and personal files
-installer-windows-category-sync-data = Sync folder data (sync unverified)
-installer-windows-category-mail-archive = Mail archives
-installer-windows-category-mail-cache-or-drafts = Local mail stores and drafts
-installer-windows-category-steam-userdata = Steam saves and user data (cloud copy unverified)
-installer-windows-category-game-save = Game saves
-installer-windows-category-game-mod = Mods and workshop data
-installer-windows-category-game-installation = Game installations (may contain local changes)
-installer-windows-category-potentially-unique = Other potentially unique data
 
 # Image write review. The remaining image contents are written unchanged.
 imager-review-setup-hostname = Written with hostname { $hostname }, then verified
@@ -81,23 +11,6 @@ imager-setup-action-cancel-download = Cancel download
 imager-setup-action-discard-download = Discard unfinished download data
 imager-setup-action-release-download = Keep download for later
 
-imager-setup-error-no-experience = No setup experience is available on this computer
-imager-setup-error-unknown-experience = Unknown setup experience: { $value }
-imager-setup-error-unknown-mode = Unknown folder mode: { $value }
-imager-setup-error-invalid-operation = Invalid setup operation: { $error }
-imager-setup-error-folder-choices-closed = Folder choices are not open on the current setup page
-imager-setup-error-folder-selection-stale = The folder selection is no longer available
-imager-setup-error-connected-unavailable = Connected folders are not available on this computer
-imager-setup-error-wait-for-scans = Wait for the selected folders to finish scanning
-imager-setup-error-suggestion-unavailable = That suggested folder is unavailable on this computer
-imager-setup-error-picker-unavailable = The folder picker is already open or folder choices are not available
-imager-setup-error-picker-open = The folder picker is already open
-imager-setup-error-help-not-on-page = Folder help is available on the folder page
-imager-setup-error-cannot-continue = Complete the current setup choice before continuing
-imager-setup-error-at-start = Setup is already on its first page
-imager-setup-error-desktop-install-unavailable = Desktop installation is not available in the current setup state
-imager-setup-error-desktop-download-not-active = The Desktop package download is not active
-imager-setup-error-desktop-retry-unavailable = The Desktop host check cannot be retried in the current setup state
 imager-setup-error-download-start-unavailable = A Full Tilo download cannot start in its current state.
 imager-setup-error-download-unavailable = Full Tilo download is unavailable.
 imager-setup-error-download-review-only = Start the download from the Full Tilo review.
@@ -121,136 +34,11 @@ imager-setup-error-staging-not-built-retained = Protected staging is not part of
 imager-setup-resource-root = Guided Tilo setup
 imager-setup-badge-review = Review
 
-# Folder import semantic resource and action labels.
-imager-import-resource-root = Folder imports
-imager-import-resource-operation = Folder import
-imager-import-resource-folder = Saved folder { $number }
-imager-import-badge-root = Imports
-imager-import-badge-operation = Copy
-imager-import-badge-folder = Saved folder
-imager-import-action-choose-source = Choose source folder
-imager-import-action-read-status = Read current import status
-imager-import-action-choose-destination = Choose destination folder
-imager-import-action-clear-selection = Clear folder selection
-imager-import-action-prepare-review = Prepare copy review
-imager-import-action-check-identity = Check identity setup
-imager-import-action-start-reviewed-folders = Copy reviewed folders
-imager-import-action-later-all = Decide later for all folders
-imager-import-action-start = Start copy
-imager-import-action-retry = Continue copy
-imager-import-action-cancel = Stop copy
-imager-import-action-toggle-details = Show or hide copy details
-imager-import-action-next-issues = Load next issue page
-imager-import-action-first-issues = Return to first issue page
-imager-import-action-review-destination = Review destination
-imager-import-action-choose-folder-destination = Choose another destination
-imager-import-action-folder-mode = Choose how a folder comes over
-imager-import-action-connect-service = Connect Outline, Linear or a mail account
-imager-import-action-review-service = Review what a source holds
-imager-import-action-choose-service-group = Bring a group over or leave it out
-imager-import-action-start-service = Bring the chosen items over
-imager-import-action-stop-service = Stop bringing items over
-imager-services-heading = From Outline, Linear, Forgejo or mail
-imager-services-body = Outline documents become Notes pages, issues from Linear and Forgejo become Tasks issues, and a mail account is set up in Mail. You choose what comes over.
-imager-services-outline = Outline
-imager-services-linear = Linear
-imager-services-forgejo = Forgejo
-imager-services-forgejo-address = Repository address
-imager-services-access-token = Access token
-imager-services-mail = Mail account
-imager-services-outline-address = Outline address
-imager-services-api-key = API key
-imager-services-mail-address = Email address
-imager-services-mail-password = Password
-imager-services-mail-server = Incoming mail server (optional)
-imager-services-key-note = Kept in your vault on this computer. It never goes into a note, an issue or an action.
-imager-services-connect = Connect
-imager-services-cancel = Cancel
-imager-services-review = Review
-imager-services-review-again = Review again
-imager-services-start = Bring over
-imager-services-continue = Continue
-imager-services-stop = Stop
-imager-services-leave-out = Leave out
-imager-services-bring = Bring over
-imager-services-chosen = { $chosen } of { $count } chosen, { $landed } brought over
-imager-services-group = { $title } ({ $count })
-imager-services-more = , and { $count } more
-imager-services-report = { $landed } brought over, { $already } already here{ $new ->
-    [0] {""}
-   *[other] , { $new } new since the review: review again to bring them
-}
-imager-services-reviewed = { $count } items to review
-imager-services-connecting = Checking the key…
-imager-services-connected = Connected
-imager-services-reviewing = Reading what the source holds…
-imager-services-bringing = Bringing the chosen items over…
-imager-services-stopped = Stopped. Continue picks up where it stopped.
-imager-services-busy = Wait until the current step finishes
-imager-services-unavailable = Sources can't be connected in this window
-imager-services-unknown = Choose Outline, Linear, Forgejo or mail
-imager-services-unknown-source = That source is not connected or reviewed here
-imager-services-nothing-running = Nothing is being brought over
-imager-services-nothing-chosen = Choose at least one group to bring over
-imager-services-invalid = Check the address and the key
-imager-services-refused = The service refused the key or password
-imager-services-already-there = That mail account is already set up in Mail
-imager-services-too-large = That source holds more than one review can list
-imager-services-failed = It didn't work: { $reason }
-imager-import-param-folder-mode = Copy it once now, or decide later
-imager-import-set-folder-mode-mode = Copy it once now, or decide later
-imager-import-error-picker-unavailable = A folder chooser is already open or unavailable
-imager-import-error-selection-empty = No folder selection is available to clear
-imager-import-error-review-unavailable = Choose a source and destination before preparing a review
-imager-import-error-identity-check-unavailable = Identity setup is already ready or being checked
-imager-import-error-batch-unavailable = No reviewed Copy folder is ready to start
-imager-import-error-later-all-unavailable = Saved folder choices cannot change while a copy is running
-imager-import-error-start-unavailable = This copy is not ready to start
-imager-import-error-retry-unavailable = This copy cannot be continued in its current state
-imager-import-error-cancel-unavailable = This copy is not currently running
-imager-import-error-details-unavailable = This copy has no details to show
-imager-import-error-next-issues-unavailable = Another issue page is not available
-imager-import-error-first-issues-unavailable = The first issue page is not available
-imager-import-error-folder-review-unavailable = This saved folder cannot be reviewed in its current state
-imager-import-error-folder-mode-unavailable = Saved folder choices cannot change while a copy is running
-imager-import-error-connected-unavailable = Connected folders are not available on this computer
-imager-import-error-folder-mode-unknown = Choose Copy or Later for this folder
-imager-import-error-stale-operation = That folder import is no longer available
-imager-import-error-stale-folder = That saved folder choice is no longer available
-imager-import-error-command-refused = Folder import could not continue. Read the import status for details.
-imager-import-detail-root = { $operations ->
-        [one] One copy
-       *[other] { $operations } copies
-    }
-imager-import-detail-operation = { $state ->
-        [awaiting_review] Waiting for review
-        [ready] Ready to start
-        [running] Copying
-        [interrupted] Interrupted
-        [cancelled] Stopped
-        [incomplete] Needs attention
-        [failed] Could not start
-       *[complete] Complete
-    }, { $files ->
-        [one] one file checked
-       *[other] { $files } files checked
-    }
-imager-import-detail-folder = { $mode ->
-        [later] Decide later
-        [connected] Connected
-       *[copy] Copy
-    }{ $reviewed ->
-        [true] , destination reviewed
-       *[false] {""}
-    }
-
 # Full Tilo installed alongside the current system, without a USB drive.
 imager-setup-resource-internal = Full Tilo installation
 imager-setup-badge-internal = Full Tilo
 imager-setup-detail-internal = { $readiness }
 imager-setup-action-internal-set-target-size = Set Tilo size
-imager-setup-param-internal-target-gib = Tilo size in GiB
-imager-setup-set-internal-target-size-gib = Tilo size in GiB
 imager-setup-action-internal-install = Install Tilo alongside the current system
 imager-setup-action-internal-restart = Restart into the Tilo installer
 imager-setup-action-internal-restart-later = Restart later
@@ -394,37 +182,7 @@ imager-setup-desktop-cancel = Cancel download
 imager-setup-desktop-recheck = Check again
 imager-setup-desktop-command-unavailable = This operation is unavailable in the current setup state.
 
-imager-journey-heading = Make Tilo yours
-imager-journey-body = Bring files now or decide later. Connect accounts explicitly and choose apps in Store after identity setup.
-imager-journey-accounts = Connect accounts
-imager-journey-store = Choose apps in Store
-imager-journey-identity-required = Complete identity setup in the trusted Tilo session first.
-imager-journey-navigation-pending = Asking the session to open your choice…
-imager-journey-navigation-opened = Your choice opened.
-imager-journey-navigation-lost = The session did not return an opening result. Try again.
-
-## History: what changed in the imager's document
-imager-select-source = Chose the image to write
-imager-clear-source = Cleared the image to write
-imager-install-profile-hostname = Changed the hostname
-imager-install-profile-locale = Changed the locale
-imager-install-profile-keyboard = Changed the keyboard layout
-imager-install-profile-timezone = Changed the time zone
-imager-install-profile-filesystem = Set the filesystem to { $new ->
-    [btrfs] Btrfs
-    [ext4] Ext4
-   *[xfs] XFS
-}
-imager-install-profile-wifi-ssid = Changed the Wi-Fi network
-imager-install-profile-device-label = Changed the new device's name
-imager-install-profile-enroll-local-identity = { $new ->
-    [true] Chose to enroll the new device
-   *[false] Chose not to enroll the new device
-}
-imager-user-account-full-name = Changed the first user's full name
-imager-user-account-username = Changed the first user's username
-
-# Guided installer and explicit local migration.
+# Guided installer.
 installer-preview-destination-heading = Welcome to Tilo
 
 installer-preview-destination-intro = Where would you like to install it?
@@ -439,6 +197,30 @@ installer-native-full-os-body = Install alongside Windows without a USB drive. Y
 installer-preview-another-title = On another computer
 
 installer-preview-another-body = Make an install plan and carry it to that computer. Nothing is written on that computer unless you approve it there or on your devices.
+
+installer-preview-migrate-heading = Bring your things over
+
+installer-preview-migrate-intro = Sign in with a ticket from one of your devices, then open Migrations to choose what comes over. You can also do this after setup.
+
+installer-preview-ticket-label = Ticket
+
+installer-migrate-sign-in = Sign in
+
+installer-migrate-open = Open migrations
+
+installer-migrate-signing-in = Signing in…
+
+installer-migrate-signed-in = Signed in.
+
+installer-migrate-sign-in-failed = Couldn’t sign in.
+
+installer-migrate-sign-in-refused = Sign-in refused: { $reason }
+
+installer-migrate-open-failed = Couldn’t open Migrations.
+
+installer-migrate-busy = Wait until sign-in finishes.
+
+installer-migrate-ticket-required = Enter the ticket from your device.
 
 installer-preview-target-heading = Which computer will run Tilo?
 
@@ -461,8 +243,6 @@ installer-preview-target-architecture-label = Architecture
 installer-preview-target-report-architecture-fixed = That report was made on another architecture. Import a report for the architecture you want to prepare, or name the model instead.
 
 installer-preview-target-payload-missing = No verified Tilo image is published for that computer’s architecture, so this computer cannot write a medium that starts there.
-
-installer-preview-target-report-too-large-to-resume = The imported report is too large to keep with this saved setup. Import it again before preparing the medium.
 
 installer-preview-target-required = Enter this to identify the other computer.
 
@@ -726,37 +506,15 @@ installer-preview-desktop-title = As a desktop
 
 installer-preview-desktop-body = Use the Tilo desktop with your existing Linux system.
 
-installer-preview-migration-heading = Bring your things, or start fresh?
-
-installer-preview-migration-intro = First we’ll set up your name and identity. Then you can choose what to bring and approve access. Nothing is installed at this step.
-
-installer-preview-migrate-portable-body = Bring selected files, supported apps and accounts to the other computer. Your originals stay here. For large files, you may need to restart this computer from the USB drive to copy them before taking it away.
-
-installer-preview-migration-server-intro = The server becomes one of your devices either way. Nothing is installed at this step.
-
-installer-preview-migrate-server-title = Copy files from this computer
-
-installer-preview-migrate-server-body = Choose folders to copy, such as a photo library. Your originals stay here.
-
-installer-preview-fresh-server-body = Start without copying anything. You can send files from any of your devices later.
-
 installer-preview-migrate-title = Migrate from this computer
 
 installer-preview-migrate-body = Make your documents, supported apps and accounts accessible in Tilo. Your originals stay unchanged.
-
-installer-preview-fresh-title = Start fresh
-
-installer-preview-fresh-body = Start without importing your documents, apps or accounts. Your existing things stay unchanged.
 
 installer-preview-identity-heading = Have you used Tilo before?
 
 installer-preview-new-title = This is my first time
 
 installer-preview-new-body = Create your Tilo identity. Welcome!
-
-installer-preview-existing-title = I already use Tilo
-
-installer-preview-existing-body = Connect this device to your existing Tilo identity.
 
 installer-preview-profile-heading = Your profile
 
@@ -773,12 +531,6 @@ installer-preview-password-label = Setup password
 installer-preview-confirmation-label = Confirm setup password
 
 installer-preview-password-hint = Use at least 15 characters, ideally several unrelated words.
-
-installer-preview-connect-heading = Bring your Tilo identity
-
-installer-preview-backup-title = Restore an identity backup
-
-installer-preview-backup-body = Use your encrypted backup and its passphrase.
 
 installer-preview-purpose-heading = How will this device be used?
 installer-preview-purpose-intro = The same Tilo OS, with defaults for the job it will do.
@@ -799,222 +551,15 @@ installer-preview-devices-another-heading = Name that computer
 
 installer-preview-devices-another-intro = This name identifies that computer on your Tilo devices.
 
-installer-preview-existing-avatar = Your existing Tilo identity
-
-installer-preview-belongings-heading = Your data
-
-installer-preview-belongings-intro = Choose what comes over. Your originals stay unchanged.
-
-installer-your-data-heading = From this computer
-
-installer-your-data-all = All your data ({ $selected } of { $total } selected)
-
-installer-your-data-selected-count = { $selected } of { $total } selected
-
-installer-your-data-files = Files and storage
-
-installer-your-data-apps = Apps
-
-installer-your-data-no-apps = No installed apps were found
-
-installer-your-data-app-detail = Installed app
-
-installer-your-data-app-with-home = Comes with your home folder
-
-installer-your-data-app-here = Already in Tilo
-
-installer-your-data-browser-note = Saved bookmarks and history from every browser profile. Website sign-ins are listed under each profile. Saved passwords stay in the old browser, so you sign in again in Tilo.
-
-installer-your-data-browser-profiles = { $count } browser profiles
-
-installer-your-data-bookmarks = Bookmarks
-
-installer-your-data-history = History
-
-installer-your-data-browser-saved-signins = Saved sign-ins
-
-installer-your-data-browser-one-signin = 1 saved sign-in
-
-installer-your-data-browser-signins = { $count } saved sign-ins
-
-installer-your-data-browser-passwords-note = Saved passwords can’t be moved yet. Sign in again in Tilo.
-
-installer-your-data-signin-slack = Slack sign-in
-
-installer-your-data-signin-discord = Discord sign-in
-
-installer-your-data-signin-saved = Saved sign-in
-
-installer-your-data-signin-origin = Saved Discord sign-in
-
-installer-your-data-signin-needs-access = Needs signing in again
-
-installer-your-data-accounts-note = Your saved accounts and the services they turn on. You may need to sign in again in Tilo.
-
-installer-your-data-no-accounts = No saved connections were found
-
-installer-your-data-account-count = { $count } accounts
-installer-your-data-account-one = 1 account
-
-installer-your-data-online-accounts = GNOME Online Accounts
-
-installer-your-data-source-rclone = rclone
-
-installer-your-data-service-one = 1 service
-
-installer-your-data-services = { $count } services
-
-installer-your-data-service-files = Files
-
-installer-your-data-service-mail = Mail
-
-installer-your-data-service-calendar = Calendar
-
-installer-your-data-service-contacts = Contacts
-
-installer-your-data-account-sign-in = Sign in again in Tilo after setup.
-
-installer-your-data-account-tilo = Saved in Tilo
-
-installer-your-data-provider-tilo = Saved in Tilo
-
-installer-your-data-provider-nextcloud = Nextcloud
-
-installer-your-data-mail = Thunderbird
-
-installer-your-data-steam = Steam
-
-installer-your-data-steam-note = Game files come with your apps. No Steam folder was found, so saves can’t be listed.
-
-installer-your-data-folder-documents = Documents
-
-installer-your-data-folder-desktop = Desktop
-
-installer-your-data-folder-downloads = Downloads
-
-installer-your-data-folder-pictures = Pictures
-
-installer-your-data-folder-music = Music
-
-installer-your-data-folder-videos = Videos
-
-installer-your-data-folder-saved-games = Saved games
-
-installer-your-data-folder-appdata = AppData
-
-installer-your-data-folder-outlook-files = Outlook files
-
-installer-your-data-folder-steam = Steam
-
-installer-your-data-folder-onedrive = OneDrive
-
-installer-your-data-folder-nextcloud = Nextcloud
-
-installer-your-data-folder-dropbox = Dropbox
-
-installer-your-data-folder-google-drive = Google Drive
-
-installer-your-data-folder-owncloud = OwnCloud
-
-installer-your-data-folder-other = Folder
-
-installer-your-data-files-leaf = Files
-
-installer-your-data-steam-library = Steam library
-
-installer-your-data-steam-userdata = Steam user data
-
-installer-your-data-proton-prefix = Windows compatibility folder
-
-installer-your-data-proton-prefix-note = Runs through a Windows compatibility folder.
-
-installer-your-data-game = Game
-
-installer-your-data-game-assets = Game files
-
-installer-your-data-game-saves = Game saves
-
-installer-your-data-no-files = No files were found in your home folder.
-
-installer-your-data-files-unreadable = Your folders couldn’t be read. Your files can still come over from your home folder.
-
-installer-your-data-counts-unknown = Some counts couldn’t be read.
-
-installer-your-data-online-only-note = Files that exist only online stay where they are.
-
-installer-your-data-unknown-size-note = Some files couldn’t be measured, so this size may be larger.
-
-installer-your-data-incomplete-note = Part of this folder couldn’t be read.
-
-installer-your-data-needs-grant-note = This location needs its own permission.
-
-installer-your-data-not-copyable-note = Some items here can’t be copied.
-
-installer-your-data-download-note = Files kept only online would need downloading first.
-
-installer-your-data-provider-unavailable-note = This provider has no connection yet.
-
-installer-your-data-game-assets-note = Game files can be installed again.
-
-installer-your-data-saves-note = Game saves can’t be recreated.
-
-installer-your-data-save-location-unknown-note = Where this game saves isn’t known.
-
-installer-your-data-steam-cloud-note = Steam Cloud doesn’t prove a save is complete.
-
-installer-your-data-external-save-note = This game saves outside its Steam folder.
-
-installer-your-data-remote-coverage-note = Files the provider keeps online can’t be seen from here.
-
-installer-your-data-browser-one-profile = 1 browser profile
-
-installer-your-data-browser-one-saved = 1 saved item
-
-installer-your-data-browser-saved = { $count } saved items
-
-installer-your-data-browser-profile-not-exportable = This profile has no bookmarks or history to take.
-
-installer-your-data-browser-incomplete = Some browser data couldn’t be read.
-
-installer-your-data-mail-local = Your mail is also in your home folder. Chosen accounts are set up in Mail.
-
-installer-your-data-mail-no-profile = No Thunderbird profile was found. Mail in your home folder still comes with your files.
-
-installer-your-data-mail-account = Mail account
-
-installer-your-data-mail-one-account = 1 mail account
-
-installer-your-data-mail-accounts = { $count } mail accounts
-
-installer-your-data-mail-one-folder = 1 folder
-
-installer-your-data-mail-folders = { $count } folders
-
-installer-your-data-mail-folder = Mail folder
-
-installer-your-data-mail-reconnect = Sign in again in Thunderbird to use this account.
-
-installer-your-data-mail-needs-account = Choose a mail account to take this.
-
 installer-preview-files-title = Files and settings
 
 installer-preview-files-body = Your entire home folder, including hidden files, browser profiles, saved credentials, Flatpak apps and settings.
-
-installer-preview-files-server-title = Files and folders
-
-installer-preview-files-server-body = Your home folder: documents, photos and other files. Apps and settings stay on this computer.
 
 installer-preview-accounts-title = Connect services in Tilo
 
 installer-preview-accounts-body = Choose saved connections or sign in on the next step.
 
-installer-preview-choose-belongings = Choose what comes over
-
 installer-preview-hide-details = Hide details
-
-installer-preview-bring-things = Bring my data
-
-installer-preview-bring-selected = Bring selected data
 
 installer-preview-storage-heading = Choose space for Tilo
 
@@ -1188,10 +733,6 @@ installer-preview-review-heading = Review your setup
 
 installer-preview-review-intro = Select an item to change it.
 
-installer-preview-review-migrate = Bring the selected data from this computer. Your originals stay unchanged.
-
-installer-preview-review-fresh = Nothing is imported from this computer.
-
 installer-preview-ready-heading = Your setup choices are ready
 
 installer-preview-ready-intro = Nothing has been installed.
@@ -1205,8 +746,6 @@ installer-preview-finish = Finish preview
 installer-preview-restart = Try another path
 
 installer-preview-choose-first = Choose an option to continue.
-
-installer-preview-name-required = Enter the name you'd like to use in Tilo.
 
 installer-preview-device-required = Give this device a name.
 
@@ -1228,36 +767,7 @@ installer-preview-deferred-handoff = Your identity, sign-ins and files finish on
 
 installer-preview-deferred-handoff-server = Your identity and sign-ins finish on the server after it installs. A server has no login password.
 
-installer-source-handoff-waiting = Keep this computer on. It will send your data to the other computer after you approve that computer here.
-installer-source-handoff-requested = { $name } asks for your data. Compare the code { $code } shown on that computer, then approve it.
-installer-source-handoff-join-requested = { $name } is new and asks to join your identity before receiving your data. Compare the code { $code } shown on that computer, then approve it.
-installer-source-handoff-joining = { $name } joined your identity. Prepare this computer to keep sending your data.
-installer-source-handoff-sending = Sending your data to { $name }: { $done } of { $total }. Keep this computer on until it finishes.
-installer-source-handoff-receipt = Waiting for { $name } to confirm it imported your data. Keep this computer on.
-installer-source-handoff-complete = { $name } confirmed it imported your prepared data. Apps and Home can still be finishing there; your originals on this computer are unchanged.
-installer-source-handoff-rejected = { $name } could not receive your data. Prepare the drive again.
-installer-source-handoff-cancelled = This transfer was stopped. Prepare the drive again to send your data.
-installer-source-handoff-expired = This transfer expired. Prepare the drive again to send your data.
-installer-source-handoff-unavailable = This transfer is no longer available. Prepare the drive again.
-installer-preview-deferred-handoff-unavailable = The other computer cannot be reached to keep this transfer available. Check the network and prepare the drive again.
-installer-preview-tpm-handoff-unavailable = The signed target boot policy could not be checked, so identity and sign-ins must be finished on the destination after its first login.
-installer-source-handoff-approve = Approve this computer
-
 installer-preview-identity-busy = Wait for preparation to finish.
-
-installer-preview-identity-preparing = Preparing your identity…
-
-installer-preview-identity-prepare-failed = Your identity couldn't be prepared. Your existing account hasn't changed.
-
-installer-preview-accounts-not-prepared = Connect the accounts you'd like to bring first.
-
-installer-preview-identity-already-prepared = Your identity is already prepared. You can update its name and picture.
-
-installer-preview-identity-not-prepared = Prepare your identity first.
-
-installer-preview-identity-unavailable = Identity preparation isn't available on this system yet.
-
-installer-preview-identity-invalid-color = Choose a valid avatar color.
 
 installer-preview-invalid-choice = That choice isn't available on this page.
 
@@ -1270,18 +780,6 @@ installer-preview-at-start = You're at the beginning of setup.
 
 installer-preview-finished = The preview is complete. You can try another path.
 
-installer-preview-avatar-change = Change picture…
-
-installer-preview-avatar-picker = Choose your Tilo picture
-
-installer-preview-avatar-choose = Choose picture
-
-installer-preview-avatar-filter = Pictures
-
-installer-preview-avatar-failed = That picture couldn’t be used. Choose another picture or keep your initials.
-
-installer-preview-avatar-capture = Picture selection is available in the interactive preview.
-
 installer-preview-storage-checking = Checking this computer’s storage…
 
 installer-preview-storage-capacity = { $capacity } disk
@@ -1292,8 +790,6 @@ installer-review-unallocated = Uses unallocated space; your current system’s p
 installer-review-resize = Your current system’s partition will shrink from { $before } to { $after }. Its files stay in place.
 installer-review-not-ready = Finish your setup choices before reviewing installation.
 installer-review-context-pending = Installation is not ready in this window. Reopen setup to continue.
-installer-review-preparation-pending = Wait for preparation to finish before reviewing installation.
-installer-review-identity-pending = Finish setting up your identity before reviewing installation.
 installer-review-storage-pending = Storage is not ready. Edit Space for Tilo and check capacity again.
 installer-review-storage-shortfall = Tilo needs { $needed }; { $available } is available. Edit Space for Tilo to review capacity.
 
@@ -1310,26 +806,6 @@ installer-preview-storage-shrink = Your current system’s partition will be res
 installer-preview-storage-shortfall = This installation needs { $needed }; { $available } is available. Choose a smaller Tilo size, or install from USB onto another disk. If you move files to other storage first, check the copy before freeing space. Nothing has been changed.
 
 installer-preview-storage-unreadable = This disk cannot be prepared from your current system. You can use a USB installer instead.
-installer-recovery-heading = Copy to a recovery folder
-installer-recovery-native-unavailable = Verified resumable recovery copying is unavailable on this host: native directory-entry durability has not been qualified. Keep the original and use the ordinary installation media path; no backup or cloud recovery is assumed.
-installer-recovery-retain-source = The original remains authoritative. Remote and cloud placeholders are unverified. A verified copy does not authorize replacing Windows or freeing source space.
-installer-recovery-choose-directory = Choose recovery folder
-installer-recovery-copy = Copy and verify
-installer-recovery-retry = Retry and reverify
-installer-recovery-cancel = Stop copying
-installer-recovery-not-independent = This folder is not proven to be on independent physical storage. Another partition on the same disk is not an independent backup.
-installer-recovery-state-not-selected = Choose an explicit destination folder to review its capacity and durability.
-installer-recovery-state-reviewed = Destination reviewed. No data has been copied yet.
-installer-recovery-state-copying = Copying and verifying. Keep both storage devices connected.
-installer-recovery-state-verified = Local copy verified. Keep the original until installation and recovery requirements are satisfied.
-installer-recovery-state-cancelled = Copy stopped. Verified partial output is retained for retry.
-installer-recovery-state-incomplete = Some data could not be verified. The original must remain.
-installer-recovery-state-interrupted = Copy interrupted. Retry to recheck source identity and verified receipts.
-installer-recovery-source-required = Select an exact Windows source folder first.
-installer-recovery-review-failed = Recovery destination could not be reviewed. Select a writable private folder with sufficient space and supported durable storage.
-installer-recovery-copy-failed = Recovery could not start. Review the destination or retry the interrupted copy.
-installer-recovery-copy-required = Finish and verify the selected recovery copy before continuing.
-installer-recovery-write-guard = Recovery data cannot be proven outside the installation write ranges. Keep the original and choose another destination.
 
 installer-preview-storage-release-blocked = Direct installation is not available in this build. You can install from USB instead.
 
@@ -1343,295 +819,9 @@ installer-preview-save = Save changes
 
 installer-preview-cancel = Cancel
 
-installer-preview-folders-checking = Looking for your folders…
-
-installer-preview-import-unavailable = Not available in this build.
-
-installer-preview-flatpak-title = Flatpak apps
-
-installer-preview-flatpak-body = Your installed apps, their data and settings.
-
-installer-preview-flatpak-found = { $count } installed apps, with their data and settings.
-
-installer-preview-flatpak-unavailable = Could not read installed Flatpak apps. Try again before transferring.
-
-installer-preview-home-unavailable = Could not locate your home folder.
-
-installer-preview-accounts-none = No supported accounts found.
-
-installer-preview-account-importable = Saved connection can be brought over.
-
-installer-preview-account-tilo = Saved Tilo connection
-
-installer-preview-account-reconnect = Sign in again to connect this service in Tilo.
-
-installer-preview-belongings-check-failed = Could not finish checking your data. Try again.
-
-installer-preview-transfer-busy = A transfer is already being reviewed or running.
-
-installer-preview-transfer-needs-review = Review the transfer destination first.
-
-installer-preview-transfer-start-failed = Could not start the reviewed transfer.
-
-installer-preview-transfer-not-running = No transfer is running.
-
-installer-preview-account-action-failed = Could not connect this account. Check the account and destination, then try again.
-
-installer-preview-flatpak-system-title = System Flatpak apps
-
-installer-preview-flatpak-system-found = { $count } system-installed apps. Your user apps and app data are already included with your home folder.
-
-installer-preview-flatpak-system-body = Restore apps installed for all users. Your user apps and their data come with your home folder.
-
-installer-accounts-heading = Connect your accounts
-
-installer-accounts-source-label = { $service }: { $account }
-
-installer-accounts-source-identity = { $account } ({ $identity })
-
-installer-accounts-intro = Connect the services you want in Tilo. This is optional; you can connect them after setup in Settings, under Accounts.
-
-installer-accounts-spotify = Spotify
-
-installer-accounts-add = Connect an account
-
-installer-accounts-saved = Saved connection
-
-installer-accounts-left-out = Left out
-
-installer-accounts-sign-in = Sign in to connect
-
-installer-accounts-import-heading = Bring this connection with you
-
-installer-accounts-import-intro = Use the saved connection in Tilo. Your existing account stays unchanged.
-
-installer-accounts-connect-heading = Connect { $service }
-
-installer-accounts-spotify-intro = Find your Spotify library in Tilo.
-
-installer-accounts-spotify-permission = Allow Tilo to read your saved music.
-
-installer-accounts-import = Bring connection
-
 installer-accounts-connect = Connect
 
-installer-accounts-importing-heading = Bringing your connection over
-
-installer-accounts-waiting-heading = Finish signing in
-
-installer-accounts-waiting-intro = Approve access in your browser. This page updates when you're done.
-
-installer-accounts-open-again = Open sign-in again
-
 installer-accounts-cancel = Cancel sign-in
-
-installer-accounts-cancelling-heading = Closing sign-in
-
-installer-accounts-cancelling-intro = Your account won't be added.
-
-installer-accounts-done-heading = Account connected
-
-installer-accounts-done-intro = { $service } is ready for Tilo.
-
-installer-accounts-another = Connect another account
-
-installer-accounts-failed-heading = Couldn't connect this account
-
-installer-accounts-retry = Try again
-
-installer-accounts-skip = Skip for now
-
-installer-accounts-browser-failed = Your browser didn't open. Open sign-in again to continue.
-
-installer-accounts-unavailable = This connection is currently unavailable.
-
-installer-accounts-connect-failed = Sign-in didn't finish. Try again or connect this account later.
-
-installer-accounts-import-failed = This saved connection couldn't be used. Connect the account again later.
-
-installer-accounts-save-failed = Your connection couldn't be saved. Try again.
-
-installer-accounts-remove-failed = Couldn't close this connection. Try again before continuing.
-
-installer-accounts-conflict = This connection already has different settings. Your saved connection wasn't replaced.
-
-installer-accounts-sources-changed = Your account settings changed. Check your data again.
-
-installer-accounts-invalid-action = Choose an account to continue.
-
-installer-accounts-profile-only = This app's profile comes with your other data. Connect it after starting Tilo.
-
-installer-accounts-busy = Finish or cancel this sign-in first.
-
-installer-accounts-continue = Continue
-
-installer-preview-account-handoff-unavailable = Your selected account connections could not be read. Return to accounts and try again.
-
-installer-accounts-nextcloud = Nextcloud
-
-installer-accounts-webdav = WebDAV
-
-installer-accounts-app-password-needed = Add with an app password
-
-installer-accounts-dav-server-heading = Where are your files?
-
-installer-accounts-dav-server-intro = Enter the server address for this account.
-
-installer-accounts-dav-server-label = Server address
-
-installer-accounts-dav-login-heading = Your account on this server
-
-installer-accounts-dav-login-intro = Enter the login name you use for your files.
-
-installer-accounts-dav-login-label = Login name
-
-installer-accounts-dav-password-heading = Add your app password
-
-installer-accounts-dav-password-intro = Use an app password for this service. Your existing account stays unchanged.
-
-installer-accounts-dav-password-label = App password
-
-installer-accounts-dav-save = Save connection
-
-installer-accounts-dav-required = Fill in this detail to continue.
-
-installer-accounts-dav-server-invalid = Enter a valid HTTPS server address.
-
-installer-accounts-dav-saved-heading = Your connection is saved
-
-installer-accounts-dav-saved-intro = These account details are used when you open your files.
-
-imager-setup-action-use-migration-intent = Use reviewed migration
-
-imager-setup-param-migration-intent = Private directory containing the reviewed migration
-imager-setup-use-migration-intent-directory = Private directory containing the reviewed migration
-
-imager-setup-error-migration-intent-unavailable = A reviewed migration can be attached on the Full Tilo review before installation starts.
-
-imager-setup-error-migration-intent-invalid = That migration could not be verified. Review your data again.
-
-installer-accounts-nextcloud-method-heading = Connect your Nextcloud account
-
-installer-accounts-nextcloud-method-intro = Sign in with your browser or use an app password you already have.
-
-installer-accounts-nextcloud-browser = Sign in with browser
-
-installer-accounts-nextcloud-app-password = Use an app password
-
-installer-accounts-nextcloud-add = Sign in to bring your files
-
-installer-accounts-starting-heading = Preparing your sign-in
-
-installer-accounts-starting-intro = Contacting your server. You can go back or cancel.
-
-installer-migration-home-picker = Allow access to your home folder: { $home }
-
-installer-migration-home-allow = Allow access
-
-installer-migration-prepare-failed = Your data couldn’t be prepared for this installation. Your original files have not changed.
-
-installer-migration-preparing = Preparing your belongings…
-
-installer-existing-picker = Choose your identity backup
-
-installer-existing-choose = Choose backup…
-
-installer-existing-file-body = Choose the identity backup you saved from Tilo.
-
-installer-existing-password-label = Backup passphrase
-
-installer-existing-password-required = Enter the passphrase for this backup.
-
-installer-existing-file-required = Choose your identity backup first.
-
-installer-existing-busy = Your identity is being restored.
-
-installer-existing-restoring = Restoring your identity…
-
-installer-existing-connected = Your Tilo identity is ready for this computer.
-
-installer-existing-failed = We couldn’t restore this backup. Check its passphrase or choose another backup.
-
-installer-media-prepare-failed = Your setup couldn’t be prepared for the USB installer. Your identity and connected accounts are still saved here. Try again.
-
-installer-media-deliver-heading = Take your setup with you
-
-installer-media-deliver-body = The installer image is verified. Your encrypted setup and the data you selected still need to be added.
-
-installer-media-delivering = Adding your encrypted setup and selected data to the USB…
-
-installer-media-delivery-failed = Your setup couldn’t be added. Keep the USB connected and try again.
-
-installer-media-choose-filesystem = Choose the USB folder
-
-installer-media-filesystem-picker = Allow access to the verified USB installer
-
-installer-media-filesystem-allow = Add my setup
-
-installer-media-delivery-busy = Your setup is being added. Wait for it to finish or cancel.
-
-installer-media-not-prepared = Prepare your identity and accounts first.
-
-installer-media-not-written = Write and verify the installer medium first.
-
-installer-media-already-delivered = Your setup is already on this medium.
-
-installer-media-delivery-not-running = No setup delivery is running.
-
-installer-media-official-required = Choose a Tilo installer image to carry your prepared setup.
-
-installer-media-cancel = Cancel transfer
-installer-media-cancel-preparation = Stop preparation
-
-installer-media-retry = Try again
-
-installer-media-ready = Your installer and setup are verified. Eject the USB before removing it.
-
-installer-accounts-remove-heading = Leave { $service } out of this setup?
-
-installer-accounts-remove-intro = This connection will be removed from your Tilo setup. Your original account and files stay unchanged.
-
-installer-accounts-remove-confirm = Leave it out
-
-installer-accounts-remove-keep = Keep this connection
-
-installer-accounts-included = Included in this setup
-
-installer-accounts-import-done-heading = Your saved connection is ready
-
-installer-accounts-import-done-intro = This saved connection is included in your Tilo setup.
-
-installer-portable-source-busy = Your data is being reviewed.
-
-installer-portable-source-failed = Your home folder could not be checked. Your files and setup choices are kept. Try checking again.
-
-installer-portable-permission-failed = Access to this home folder was not available. Allow access to the home folder you reviewed, then try again.
-
-installer-portable-metadata-unsupported = Some file permissions or metadata cannot be transferred safely yet. Nothing has been left out or copied. Your setup choices are kept.
-
-installer-portable-mounted-source-unsupported = Your home includes mounted files or folders. Bringing the whole home across these locations is not supported yet. Nothing has been copied, and your setup choices are kept. Use “Choose what comes over” to change your selection. Continuing without Home will not transfer your full home.
-
-installer-mounted-home-locations = Mounted locations in your home
-
-installer-mounted-home-location-unavailable = This location cannot be transferred as part of your full home yet.
-
-installer-portable-applications-review-failed = Your selected apps and their data could not be checked. Check your data again before continuing.
-
-installer-preview-belongings-shared-intro = Choose what to use in Tilo. Your files stay where they are.
-
-installer-preview-files-shared-title = Your files
-
-installer-preview-files-shared-body = Use the same files in both systems. Edits appear in both.
-
-installer-preview-migrate-shared-body = Use the same files in both systems; edits appear in both. Keep the disk partition holding your originals. Sharing is not a backup, and apps and setup still need extra space.
-
-installer-preview-review-shared = Use your existing files in both systems. Edits appear in both. Bring the apps and accounts you selected.
-
-installer-preview-account-profile-only = App or browser profile found. This installer cannot connect its existing login to Tilo.
-
-imager-setup-internal-error-prepared-setup = Your prepared identity and accounts could not be read. Return to setup and try again.
-
-installer-preview-storage-app-estimate = Estimated space for your apps and their data: { $size }. Includes room for installation and updates.
 
 installer-preview-prepare-direct = Review installation
 
@@ -1641,111 +831,7 @@ installer-preview-direct-review-unavailable = Installation could not be prepared
 
 installer-preview-device-invalid = Choose a shorter device name using a single line.
 
-installer-accounts-code-heading = Enter the code from Dropbox
-
-installer-accounts-code-intro = Finish signing in in your browser, then paste the code Dropbox gives you here.
-
-installer-accounts-code-label = Sign-in code
-
-installer-accounts-code-submit = Connect Dropbox
-
-installer-accounts-code-invalid = Paste the code from Dropbox before continuing.
-
-installer-accounts-tilo-import-intro = Bring this saved Tilo connection into your new setup. If it cannot be unlocked here, you can connect the service again.
-
-installer-accounts-tilo-reconnect = This saved connection could not be unlocked. Choose a service to connect again; your original connection stays unchanged.
-
-installer-accounts-tilo-changed = This saved connection has changed since you reviewed it. Check your belongings again before bringing it over.
-
-installer-accounts-already-included = This connection is already included in your setup.
-
-installer-restart-heading = Welcome back
-
-installer-restart-intro = Your unfinished preparation is still here. Would you like to continue?
-
-installer-restart-checking = Checking your saved preparation…
-
-installer-restart-incomplete = Your previous preparation did not finish. Continue to check whether its identity can be recovered, or start again.
-
-installer-restart-unavailable = We couldn't verify your saved preparation. Your saved identity files have been kept. Retry to check again.
-
-installer-restart-resuming = Checking your identity…
-
-installer-restart-retiring = Keeping your previous identity files and starting again…
-
-installer-restart-resume = Continue preparation
-
-installer-restart-new = Start again
-
-installer-restart-retry = Retry
-
-installer-restart-busy = Your saved preparation is being checked. Please wait.
-
-installer-restart-unlock-heading = Unlock your preparation
-
-installer-restart-unlock-intro = Enter the password you chose earlier to recover your prepared accounts.
-
-installer-restart-password-required = Enter the password you chose earlier.
-
-installer-restart-changed = Review the latest saved choices and accounts before continuing.
-
-installer-restart-changed-heading = Your setup has changed
-
-installer-restart-review-latest = Review latest setup
-
-installer-accounts-checkpoint-unlock-failed = Couldn’t unlock your saved connections. Check your password and try again.
-
-installer-accounts-provider-heading = Which account would you like to connect?
-
-installer-accounts-spotify-done-heading = Your Spotify library is connected
-
-installer-accounts-spotify-done-intro = Your saved music is ready for Tilo.
-
-installer-preview-files-location = Your home folder: { $path }
-
-installer-preview-belongings-incomplete = Some data couldn’t be checked. You can check again, or continue with the available choices.
-
-installer-preview-storage-shared-files = Your documents stay on your current system’s partition and are shared with Tilo. This space is for Tilo, its updates, and separate copies of your apps’ data and settings.
-
-installer-preview-profiles-title = App and browser profiles
-
-installer-preview-profiles-body = Profile files stay with your other files. Connecting services in Tilo is a separate choice.
-
 installer-preview-storage-show-details = Disk details
-
-installer-accounts-spotify-library = Spotify library
-
-installer-accounts-spotify-playback = Spotify playback
-
-installer-accounts-spotify-playback-intro = Connect Spotify to play your music in Tilo.
-
-installer-accounts-spotify-playback-permission = Allow Tilo to stream music with your Spotify account. Playback requires Spotify Premium.
-
-installer-accounts-spotify-playback-done-heading = Spotify playback is connected
-
-installer-accounts-spotify-playback-done-intro = You can play Spotify music after starting Tilo.
-
-installer-accounts-spotify-purpose-heading = What would you like to connect?
-
-installer-accounts-spotify-library-choice = Your saved music
-
-installer-accounts-spotify-library-choice-intro = Find your Spotify library in Tilo.
-
-installer-accounts-spotify-playback-choice = Listen to music
-
-installer-accounts-spotify-playback-choice-intro = Play Spotify music in Tilo. Requires Spotify Premium.
-
-installer-browser-title = Your browsing
-
-installer-browser-bookmarks = Bookmarks
-
-installer-browser-history = Browsing history
-
-installer-browser-body = Bring your bookmarks and browsing history into Tilo’s browser.
-
-installer-browser-bookmarks-body = Bring your bookmarks into Tilo’s browser.
-
-installer-browser-history-body = Bring your browsing history into Tilo’s browser.
 
 installer-desktop-prepare = Set up Tilo Desktop
 
@@ -1754,53 +840,7 @@ installer-desktop-password-intro = Choose a password to protect your prepared Ti
 installer-desktop-keep-existing = Your files, applications and Linux account stay unchanged. Your current desktop remains the default session.
 installer-desktop-unavailable = Tilo Desktop setup is unavailable on this computer.
 
-installer-desktop-delivering = Preparing your first Tilo session…
-
-installer-desktop-delivery-failed = Your Tilo session could not be prepared. Try again before signing in to Tilo.
-
-installer-desktop-ready = Tilo Desktop is ready. Sign out when you’re ready, then choose Tilo at login.
-
 installer-desktop-retry = Try again
-
-installer-desktop-resource = Tilo Desktop installation
-
-installer-accounts-nextcloud-source-reconnect = Your saved Nextcloud sign-in could not be accessed. Connect this account again to bring it into Tilo.
-
-installer-accounts-reconnect = Connect again
-
-installer-accounts-import-saved = Bring my saved connections
-
-installer-accounts-review-saved = Choose what comes over
-
-installer-accounts-review-saved-heading = Your saved connections
-
-installer-accounts-review-saved-intro = Bring these connections into Tilo. Uncheck any you would rather leave out. Your existing sign-ins stay unchanged.
-
-installer-accounts-saved-summary =
-    { $count ->
-        [one] One saved connection found.
-       *[other] { $count } saved connections found.
-    }
-
-installer-accounts-saved-attention = Not included yet. Review how to connect this account.
-
-installer-accounts-skip-saved = Leave saved connections out
-
-installer-accounts-continue-without = Continue without accounts
-
-installer-accounts-continue-included = Continue with included accounts
-
-installer-accounts-saved-limit = Choose up to 64 connections to bring over.
-
-installer-accounts-bulk-heading = Bringing your saved connections
-
-installer-accounts-bulk-intro = Your existing sign-ins stay unchanged. You can leave out any connections that need attention.
-
-installer-accounts-bulk-working = Preparing the next connection…
-
-installer-source-changed = Your files changed while you were preparing Tilo. Review them again to include the latest version. Your identity and connected accounts are kept.
-
-installer-source-review = Review changed files
 
 installer-media-capacity-checking = Checking the image size before choosing a drive.
 
@@ -1818,108 +858,6 @@ installer-media-ejected = { $drive } was ejected. You can take it out now.
 
 installer-media-eject-failed = The drive was written, but it could not be ejected: { $reason } Close everything using it and try again, or shut down before you remove it.
 
-installer-media-source-checking = Checking your selected files before writing the drive.
-
-installer-media-source-failed = Your selected files could not be verified. The drive has not been written. Try again or return to your preparation.
-
-installer-media-plan-changed = Your image or drive selection changed during review. Review the plan again before writing.
-
-imager-setup-account-consumer-unavailable = This Tilo release cannot use your saved connections. Choose a newer release, or go back and leave these connections out.
-
-installer-source-unavailable = Your prepared files are no longer available. Review them again to prepare the latest version. Your identity and connected accounts are kept.
-
-installer-source-refresh = Review files again
-
-installer-belongings-files-unchecked = Your home folder couldn’t be found. Check again to include your files, or continue without them.
-
-installer-belongings-apps-unchecked = Your installed Flatpak apps couldn’t be checked. Check again to include them, or continue without them.
-
-installer-belongings-browser-unchecked = Your browser bookmarks and history couldn’t be checked. Check again to include them, or continue without them.
-
-installer-belongings-accounts-unchecked = Some saved connections couldn’t be read. Check again, or continue and connect those accounts later.
-
-installer-belongings-connections-found = Found { $count } saved { $provider } { $count ->
-    [one] connection
-   *[other] connections
-}
-installer-belongings-provider-firefox = Firefox
-installer-belongings-provider-chromium = Chromium
-installer-belongings-provider-other = service
-
-imager-setup-home-consumer-unavailable = This Tilo release cannot bring your files and app data over. Choose a newer release before continuing.
-
-installer-service-sessions-title = Website sign-ins
-installer-logins-source-body = Slack and Discord sign-ins only. You may still be asked to sign in again.
-installer-logins-group-count = { $selected } of { $total } selected
-installer-logins-group-selectable-count = { $selected } of { $total } available sign-ins selected
-installer-logins-group-unselectable = No sign-ins can be selected
-
-installer-service-sessions-body = Bring your Slack or Discord sign-ins from a browser you use. You may still need to sign in again.
-
-installer-review-service-session-body = You may need to sign in again.
-
-installer-service-source-slack = Slack sign-in from { $source }
-
-installer-service-source-discord = Discord sign-in from { $source }
-
-installer-service-source-changed = This browser source changed. Choose it again.
-
-installer-service-sources-unavailable = Browser sign-ins couldn’t be checked. You can connect to Slack or Discord after setting up Tilo.
-
-installer-service-session-reconnect = This browser sign-in couldn’t be brought over. Choose another browser source, or connect after setting up Tilo.
-
-installer-service-source-discord-origin = Discord app sign-in from { $source }
-
-installer-media-not-preparing = Preparation is not running.
-
-installer-media-preparation-cancelled = Preparation stopped. Your choices are kept; you can try again.
-
-installer-media-phase-review = Checking your selected files
-
-installer-media-phase-filesystem = Preparing the drive for your files
-
-installer-media-phase-applications = Preparing your applications and their data
-
-installer-media-phase-browser = Preparing your browsing data
-
-installer-media-phase-identity = Preparing your identity
-
-installer-media-phase-accounts = Preparing your selected accounts
-
-installer-media-phase-setup = Encrypting your setup
-
-installer-media-phase-verify = Verifying your encrypted setup
-
-installer-media-phase-home = Encrypting and verifying your home files
-
-installer-media-phase-publish = Saving and verifying your setup on the drive
-
-installer-media-phase-cancelling = Stopping safely…
-
-installer-media-phase-archive = Encrypting your files
-
-installer-media-phase-archive-verify = Checking the encrypted files
-
-installer-media-phase-source-verify = Checking the original files
-
-installer-media-phase-ciphertext = Delivering the encrypted files
-
-installer-media-progress-bytes = { $size } processed
-
-installer-media-progress-bytes-total = { $size } of { $total } processed
-
-installer-migration-grant-failed = Allow access to the home folder shown in the request, then try again. Your setup choices are kept.
-
-installer-migration-source-replaced = The home folder you approved is no longer the same folder. Check your data and approve the recognized folder again. Your setup choices are kept.
-
-installer-migration-source-unsupported = This source disk or filesystem cannot be shared safely yet. Your files and setup choices are kept; nothing has been installed.
-
-installer-migration-state-unavailable = Your setup could not be saved privately on this computer. Your original files have not changed.
-
-installer-migration-state-full = There is not enough space to save your setup on this computer. Free some space, then try again. Your original files have not changed.
-
-# Writer ownership and safe-close lifecycle.
-
 imager-write-stopping = Stopping safely… Keep the drive connected until cancellation finishes.
 
 imager-write-exit-unowned = The image writer's exit cannot be verified.
@@ -1929,73 +867,9 @@ imager-write-worker-stopped = Writing to the drive stopped unexpectedly. Reconne
 imager-write-worker-start-failed = Could not start the image writer: { $error }
 imager-write-cancelled = Stopped before finishing. The drive may be incomplete; review and retry before using it.
 
-installer-media-worker-stopped = Your setup transfer stopped unexpectedly.
-
-installer-media-cleanup-failed = Your setup transfer has not finished closing.
-
-installer-service-source-needs-access = Encrypted website data in { $source }. Reading it needs the keychain of this computer; you may need to sign in again in Tilo.
-
-installer-service-slack-label = Slack
-
-installer-service-discord-label = Discord
-
-installer-service-sessions-overview = Selected: { $services }.
-
-installer-service-sessions-none-selected = No website sign-ins selected.
-
-installer-service-sessions-selected-needs-access = Permission is needed to read selected browser data for { $services }.
-
-installer-service-sessions-accounts-excluded = Website data is not included because Accounts is off. Turn Accounts on to restore your choices.
-
 installer-review-setup = Your setup
 
-installer-review-person-body = Your Tilo identity
-
 installer-review-device-body = This device in Tilo
-
-installer-review-device-enrolled = Approved on your existing Tilo device
-
-installer-review-belongings-heading = Your data
-
-installer-original-grant-required = Review the files you want to bring from this computer first.
-
-installer-original-permission-progress = Preparing access to your original files
-
-installer-original-prepare-failed = Your files could not be prepared. Nothing was written to the installation drive. Review your choices and try again.
-
-installer-original-preparing = Preparing…
-
-installer-original-retry = Try again
-
-installer-original-preparing-heading = Getting your files ready
-
-installer-original-preparing-body = Your files stay on this computer. We’re preparing the installation drive to receive them when you restart.
-
-installer-original-not-prepared = Your files are not ready for this installation drive yet. Try preparing them again.
-
-installer-original-boot-heading = Restart this computer from the Tilo drive
-
-installer-original-boot-body = Your setup is saved on the drive. Your files are still on this computer.
-
-installer-original-boot-step = Keep { $drive } connected. Restart this computer and choose it in the boot menu. Your selected files are copied before you take the drive to your other computer.
-
-installer-original-boot-drive = the Tilo installation drive
-
-installer-original-ready-heading = Prepare your files for this drive
-
-installer-original-ready-body = We’ll prepare the installation drive to receive your files when you restart. Your files stay on this computer.
-
-installer-original-failed-heading = Your files aren’t ready yet
-
-installer-original-failed-body = Your files are still on this computer.
-
-installer-original-prepare-button = Prepare files
-
-installer-original-complete-progress = Bringing your files into Tilo
-
-installer-original-complete-failed = Your migration could not be completed. Your original files are unchanged.
-
-installer-identity-route-unavailable = This way of connecting your Tilo identity isn’t available for this installation.
 
 installer-review-usb-fallback = Direct installation isn’t enabled in this build. Make a USB installer, then restart this computer from it.
 
@@ -2003,126 +877,20 @@ installer-review-usb-choice-required = Choose Make a USB installer to continue o
 
 installer-review-installation-unavailable = Installation is unavailable here. Your setup choices are kept.
 
-installer-flatpak-settings-note = These apps have custom access settings. You may need to set them again after moving.
-
-installer-flatpak-settings-unchecked = Custom app access settings couldn’t be checked.
-
-installer-flatpak-settings-folders = Folders
-
-installer-flatpak-settings-network = Connections
-
-installer-flatpak-settings-devices = Devices, sound and display
-
-installer-flatpak-settings-services = System services
-
-installer-flatpak-settings-environment = App settings
-
-installer-flatpak-settings-other = Other access settings
-
-installer-flatpak-settings-title = Custom app access
-
 installer-storage-check-capacity = Check available space…
 
 installer-storage-btrfs-resize = Your current system will keep { $after } of its { $before }. We keep at least { $reserve } above the filesystem’s required space. Your files stay in place.
 
-installer-files-source-home = From your home folder
-
-installer-files-show-location = Show location
-
-installer-files-hide-location = Hide location
-
-installer-mounted-home-grant-intro = Some files and folders in your home need separate permission. Allow access to each item shown here.
-
-installer-mounted-home-picker-title = Allow access to the file or folder shown in setup
-
-installer-mounted-home-grant = Allow access
-
-installer-mounted-home-needs-grant = Needs permission
-
-installer-mounted-home-grants-required = Allow access to every listed item before continuing.
-
-installer-mounted-home-review = Continue
-
-installer-mounted-home-cancel = Cancel
-
-installer-mounted-home-restart = Review these files and folders again
-
-installer-mounted-home-all-granted = Access is allowed for all listed files and folders. Continue with your setup.
-
-installer-mounted-home-permission-heading = Allow access
-
-installer-original-image-unavailable = This installer image cannot bring your data over. Choose a newer Tilo installer.
-
-installer-flatpak-apps-heading = Your apps
-
-installer-flatpak-app-with-home = Included with your home folder
-
-installer-flatpak-apps-existing-heading = Your installed apps
-
-installer-flatpak-app-existing = Already on this computer
-
 installer-guided-host-unavailable = Prepare Tilo from a Linux computer. Installation setup isn’t available on this computer yet.
-
-installer-flatpak-app-needs-home = Bring your home folder to include this user-installed app and its settings.
-
-installer-flatpak-app-transfer-unavailable = This user-installed app is not transferred by this installation. Your original app and its settings stay in place.
-
-imager-setup-applications-consumer-unavailable = This Tilo release cannot bring your selected apps and their settings over. Choose a newer release before continuing.
 
 installer-preview-current-title = Use this computer’s identity
 
 installer-preview-current-body = Continue with the Tilo identity already used on this computer.
 
-installer-current-identity-unavailable = This computer’s identity is unavailable. Choose another way to connect.
-
-installer-current-device-name-locked = Keep this computer’s existing device name.
-
-installer-device-name-set-by-identity = This name came with your identity and cannot be changed here.
-
-installer-review-device-current = This computer’s existing name
-
-installer-desktop-belongings-intro = Your files and apps stay on this computer. Choose browser data and connections to use in Tilo.
-
-installer-desktop-files-in-place = Your files stay where they are.
-
-installer-desktop-apps-in-place = Your installed apps and their settings stay in place.
-
-installer-desktop-belongings-in-place = Your files and apps stay in place for Tilo Desktop. Choose browser data or account connections instead.
-
-installer-desktop-review-migrate = Keep your existing files and apps in place. Bring the browser data and connections you selected.
-
-installer-service-sessions-found-attention = Found sign-in data for { $services }.
-
-installer-service-source-reconnect-required = Encrypted sign-in data was found in { $source }. It cannot be copied yet. Sign in to Slack again in Tilo.
-
-installer-service-reconnect-required = This encrypted Slack sign-in cannot be copied yet. Sign in to Slack again in Tilo.
-
-installer-accounts-spotify-source-sign-in = Sign in to connect your Spotify library or playback.
-
-installer-accounts-spotify-source-reconnect = Sign in to use Spotify in Tilo. Your existing Spotify session won’t be moved.
-
-installer-accounts-dav-auth-refused = The server rejected these sign-in details.
-
-installer-accounts-dav-endpoint-unavailable = Couldn’t reach the server. Try again.
-
-installer-accounts-dav-files-unavailable = The server didn’t provide access to this files folder.
-
 # Folder review and copy-time eligibility share these explanations.
 imager-folder-cloud-unavailable = Windows marks this item as online only, so it is not counted or copied and not downloaded. Make it available in Windows, then review again; this may need more disk space.
 imager-folder-reparse-unsupported = This item is a Windows reparse point, such as a link, junction or cloud-managed item. This copier does not support it, even if its contents are local. Its contents are not counted or copied.
 
-# Same-computer app state is copied separately from shared original documents.
-
-installer-preview-flatpak-computer-found = { $count } apps available to copy, with their selected data and settings.
-
-installer-preview-flatpak-computer-body = Copy selected apps, their data and settings into Tilo. Later app changes stay in Tilo; edits to shared files appear in both systems.
-
-# Native Linux Nextcloud discovery reads account identity, not client sync status.
-installer-accounts-nextcloud-linux-summary = Found a Linux Nextcloud account, not a verified backup. Review local changes before erasing Linux.
-installer-accounts-nextcloud-linux-files = Your existing Linux sync folders stay unchanged. Tilo accesses files on the Nextcloud server on demand; it does not turn your Linux sync folder into a cloud mount.
-installer-accounts-nextcloud-linux-local-changes = Account discovery does not check pending uploads, folder mappings, exclusions or conflicts. Local-only changes may not be on the server. Before erasing Linux, let the Nextcloud client finish syncing and resolve conflicts, or copy local-only changes somewhere safe.
-installer-accounts-nextcloud-linux-dual-boot = Keeping Linux? Edits and deletions that sync to the Nextcloud server affect the files you access from both systems. Choose separately which local folders to copy or share with Tilo.
-installer-accounts-nextcloud-linux-calendar = Connecting Nextcloud files does not configure Calendar. After setup, use Connect calendars for this account in Settings to choose calendars.
 installer-hardware-reason-starts-here = This computer starts Tilo built for { $architecture }.
 installer-hardware-reason-starts-board = It was built for the { $board } board.
 installer-hardware-reason-starts-devicetree = It starts from its own device tree, { $devicetree }.
@@ -2157,8 +925,6 @@ installer-media-install = Install
 installer-media-skip = Not now
 installer-media-chosen = Chosen: installed once the new system is online
 installer-media-undo = Undo
-installer-media-next = Next
-installer-media-back = Back
 
 installer-storage-windows-preparation = Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. Tilo cannot make these Windows changes and will not resize NTFS.
 installer-storage-linux-ready = Keep Linux: the unallocated space holds Tilo, and existing partitions stay unchanged.
@@ -2184,12 +950,6 @@ installer-online-mail = Mail (Google and Microsoft only)
 installer-online-calendar = Calendars (Google and Nextcloud): read, create, change and delete events in the calendars you select
 installer-online-calendar-review = Select the calendars Tilo may read and write. No calendar is connected until you confirm.
 installer-online-calendar-confirm = Connect selected calendars
-installer-windows-offered = Prepared account suggestions are available from this installation medium. Unlock them locally to review; this does not sign in or grant access.
-installer-windows-unlock = Unlock prepared setup
-installer-windows-unlocking = Unlocking private suggestions…
-installer-windows-failed = Could not unlock with that password. Try again or skip; your Windows data will not be changed.
-installer-windows-unavailable = Prepared suggestions are unavailable or could not be verified on this medium. You can enter account details manually or skip without changing Windows data.
-installer-windows-skip = Skip prepared suggestions (keep Windows data)
 installer-online-ready = Choose a provider and review the services before signing in.
 installer-online-pending = Waiting for account sign-in or cancellation…
 installer-online-failed = Sign-in did not finish. Check your connection and try again, or continue without accounts.
@@ -2218,7 +978,6 @@ installer-online-skip-note = You can finish setup offline. Continuing cancels an
 # messages for the same report.
 installer-hardware-unavailable = This computer does not say enough about its model for the compatibility report, so nothing on it was checked.
 installer-hardware-blocks-install = A part the desktop cannot start without is unsupported on this computer, so the installation stops at this step. Nothing has been changed.
-destination-windows-password = Password used to prepare this medium
 installer-keyboard-layout = Select a keyboard layout
 installer-language-locale = Choose a language and locale
 installer-time-zone = Select a time zone
@@ -2271,9 +1030,6 @@ installer-network-privileged = For safety, the privileged live installer does no
 installer-wifi-password = Wi-Fi password
 installer-network-optional = Optional. Tilo installs from this medium and needs no internet access.
 installer-network-connect = Connect to a network
-installer-import-review-note-identity = Finish setting up your Tilo identity, then review where each folder goes. Your originals stay unchanged.
-installer-import-review-note = Review where each folder goes, then copy. Your originals stay unchanged.
-installer-import-copy-note = Tilo copies the folder once and checks every file. Your originals stay where they are.
 
 ## Facts, property labels and section titles
 imager-selected-image = Selected image: { $name }
@@ -2308,19 +1064,6 @@ installer-install-alongside = Installed alongside { $host } in the space Tilo Im
 installer-wifi-unavailable = Wi-Fi controls unavailable: { $error }
 installer-network-signin-unavailable = A sign-in page was detected but cannot be opened: { $error }
 installer-network-signin-address = Network sign-in address: { $uri }
-imager-import-section-copies = Copies
-imager-import-section-unavailable = Folders can't be copied right now
-imager-import-section-desktop = From your Desktop setup
-imager-import-attention = Needs attention
-imager-import-copying = Now copying
-imager-import-checked = Checked
-imager-import-to = To
-imager-import-from = From
-imager-import-section-copy = Copy a folder
-imager-import-copy-to = Copy to
-imager-import-folder = Folder
-imager-import-hide-details = Hide details
-imager-import-loading = Loading…
 imager-section-before-installing = Before installing
 imager-section-full-download = Full Tilo download
 imager-section-desktop = Tilo Desktop
@@ -2398,7 +1141,6 @@ imager-page-choose-drive = Choose a drive
 imager-page-prepare-setup = Prepare the setup
 imager-page-review-install = Review and install
 imager-page-review-write = Review and write
-imager-import-page = Add folders to Tilo
 imager-drive-unnamed = this drive
 imager-confirm-system-disk = This is your system disk
 imager-confirm-internal-disk = Everything on the internal disk { $device } is erased
@@ -2416,7 +1158,6 @@ imager-drop-message = Drop an ISO, IMG or RAW file here
 imager-empty-drives = Insert a USB drive or SD card
 imager-no-releases = No Tilo releases are stored on this computer.
 imager-plain-body = Setup options are only available for Tilo images. This image is written unchanged.
-imager-import-not-chosen = Not chosen yet
 imager-setup-internal-download-title = Full Tilo download
 imager-download-title-downloading = Downloading Tilo
 imager-download-title-ready = Download ready
@@ -2438,11 +1179,6 @@ imager-installer-complete = Installation complete. Remove the installer medium, 
 imager-installer-refresh-none = Disk list refreshed; no installable disks were found.
 imager-installer-refresh-review = Disk list refreshed. Review the destination before continuing.
 imager-installer-refresh-select = Disk list refreshed. Select a destination again.
-imager-destination-not-reviewed = Destination not reviewed yet
-imager-copies-to = Copies to { $path }
-imager-choice-later = Decide later. It stays in Add folders.
-imager-connected-folders-unavailable = Connected folders are not available. Nothing was synced or copied.
-imager-folder-itself = The folder itself
 imager-desktop-checking = Checking this computer and the signed Tilo Desktop catalog…
 imager-desktop-unavailable = Tilo Desktop isn't available for { $host } yet.
 imager-desktop-already-installed = Tilo Desktop { $version } is already installed on { $host }. Continue to check the Tilo session; approve the check when asked.
@@ -2480,14 +1216,6 @@ installer-encrypt-no-tpm = Tilo always encrypts the disk with LUKS2. This comput
 installer-filesystem-cannot-boot = { $filesystem } cannot boot this image; choose a supported filesystem.
 installer-image-official = Official Tilo release, verified
 installer-image-local = Local image, written unchanged
-installer-copy-awaiting-review = Waiting for your review before anything is copied.
-installer-copy-ready = Reviewed and ready to start.
-installer-copy-running = Copying and checking files
-installer-copy-interrupted = The copy was interrupted. Check the folders, then continue when ready.
-installer-copy-stopped = Copy stopped. Checked files were kept.
-installer-copy-incomplete = Some items need review before the copy can finish.
-installer-copy-failed = The copy could not start. Open Details before trying again.
-installer-copy-complete = Copy checked and complete.
 
 ## The wizard's reasons, items and stations, and the writer's progress
 installer-security-key-off = No security key
@@ -2545,7 +1273,7 @@ imager-step-confirm = Review
 imager-step-write = Write
 imager-step-done = Done
 
-## What the setup and the folder copy say while they work
+## What the setup says while it works
 imager-setup-status-choose-experience = Choose how to set up Tilo to begin.
 imager-setup-status-rechecking-before-download = Checking this computer again before the download…
 imager-setup-status-review-last = The review is the last setup step.
@@ -2553,11 +1281,6 @@ imager-setup-status-cancelling-package = Cancelling the download…
 imager-setup-status-rechecking-before-retry = Checking this computer again before the retry…
 imager-setup-error-download-not-offered = No Tilo download is offered right now.
 imager-setup-error-download-multiple = More than one Tilo download is offered for this computer.
-imager-setup-error-download-state = This download cannot start in its current state.
-imager-setup-error-download-resume = This saved download cannot be resumed yet.
-imager-setup-error-download-idle = No download is running right now.
-imager-setup-error-download-nothing-to-discard = There is no unfinished download to remove.
-imager-setup-error-download-nothing-to-keep = There is no verified download to keep for later.
 imager-setup-error-download-catalog = The download list could not be read.
 imager-setup-status-downloading = Downloading Tilo…
 imager-setup-status-pausing-download = Pausing the download…
@@ -2570,46 +1293,6 @@ imager-setup-status-keeping-download = Keeping the download for later…
 imager-setup-status-staging-unavailable = Nothing was installed yet. Protected staging is not available on this computer.
 imager-desktop-installed-sign-out = Tilo Desktop is installed and verified. Sign out when you are ready.
 imager-desktop-cannot-download = Tilo cannot be downloaded on this computer, so nothing was installed.
-imager-import-status-unavailable = Folder imports are unavailable: { $error }
-imager-import-status-choose-paths = Choose a source folder and a destination to prepare a one-time copy.
-imager-import-status-reopened = Previous copies are open again. Interrupted work needs an explicit retry.
-imager-import-status-copying = Copying and checking files…
-imager-import-status-continuing = Continuing the copy from the checked progress…
-imager-import-status-review-copy = Review the source, the destination and the one-time copy.
-imager-import-status-reviewing = Comparing the source with the destination…
-imager-import-status-review-stopped = The review stopped before it was saved.
-imager-import-status-review-both = Review both paths below. The copy starts only when you choose Copy.
-imager-import-status-checking-identity = Checking whether Tilo identity setup is complete…
-imager-import-status-continuing-after-check = Continuing after checking the saved progress…
-imager-import-status-stopping = Stopping at the next safe point…
-imager-import-status-checks-finished = The file checks are finished; waiting for the final result.
-imager-import-status-state-unsaved = The copy state could not be saved: { $error }
-imager-import-status-state-writer-stopped = The copy state writer stopped before it confirmed the checkpoint.
-imager-import-error-details-load-failed = The copy details could not be loaded.
-imager-import-error-session-check-stopped = The session check stopped.
-imager-import-error-dialog-stopped = The folder dialog stopped before it answered.
-imager-import-status-folder-selected = Folder chosen. Both locations must be reviewed before the copy starts.
-imager-import-status-no-folder = No folder was chosen.
-imager-import-status-dialog-failed = The folder dialog could not open: { $error }
-imager-import-status-wait-review = Wait for the review to finish saving.
-imager-import-status-identity-complete = Your identity is set up. Review the folder destinations to continue.
-imager-import-status-choose-source = Choose the folder to copy.
-imager-import-status-choose-destination = Choose where Tilo should create the copied folder.
-imager-import-status-cleared = Selection cleared.
-imager-import-status-review-unsaved = The review could not be saved: { $error }
-imager-import-status-verified-file = Verified { $size } in { $count } file.
-imager-import-status-verified-files = Verified { $size } in { $count } files.
-imager-import-state-awaiting-review = Needs review
-imager-import-state-ready = Ready
-imager-import-state-running = Copying
-imager-import-state-interrupted = Interrupted
-imager-import-state-cancelled = Stopped
-imager-import-state-incomplete = Incomplete
-imager-import-state-failed = Could not start
-imager-import-state-complete = Complete
-imager-import-scope-copy = Copy
-imager-import-scope-later = Decide later
-imager-import-error-copy-cannot-continue = The copy could not continue: { $failure }
 imager-setup-internal-download-cancelled-detail = The download was cancelled before it finished.
 
 ## What the download card says under its heading
@@ -2677,151 +1360,7 @@ installer-connectivity-unknown = Connectivity not checked
 
 ## Actions
 
-imager-write-plan-prepare-offline-migration = Prepare an offline migration
-imager-write-plan-complete-offline-migration = Complete the offline migration
-imager-write-plan-write = Erase drive and write image
-imager-write-plan-status = Show image-write status
-imager-write-plan-export-config = Export headless configuration
-imager-write-plan-set-wifi-psk = Set Wi-Fi password
-imager-write-plan-set-ssh-key = Set the SSH key for the next write
-imager-write-plan-customize-image = Customize a raw image
-imager-write-plan-cancel-download = Cancel the installer download
-imager-write-plan-choose-drive = Choose target drive
-imager-write-plan-choose-prepared-filesystem = Choose a folder on the installer medium
-imager-write-plan-retry-prepared-delivery = Retry delivering prepared setup
-imager-write-plan-review-changed-prepared-files = Review changed prepared files
-imager-write-plan-deliver-prepared-setup = Deliver prepared setup
-imager-write-plan-cancel-prepared-delivery = Cancel prepared setup delivery
-imager-sources = Image sources
-imager-sources-select-source = Review an image to write
-imager-sources-clear-source = Clear the reviewed image
-imager-setup-read-setup-status = Read setup status
-imager-setup-read-desktop-status = Read Desktop status
-imager-setup-retry-desktop = Retry Desktop setup
-imager-setup-cancel-desktop-download = Cancel the Desktop download
-imager-setup-recheck-desktop = Check Desktop availability again
-imager-setup-use-migration-intent = Use a migration intent
-imager-destination-status = Installer status
-imager-destination-next = Next
-imager-destination-back = Back
-imager-destination-return-to-host = Return to the existing system
-imager-destination-set-layout = Choose keyboard layout
-imager-destination-select-network = Choose Wi-Fi network
-imager-destination-connect-network = Connect to the chosen Wi-Fi network
-imager-destination-add-account = Sign in
-imager-destination-retry-account = Retry signing in
-imager-destination-set-method = Choose install method
-imager-destination-select-disk = Use this disk
-imager-destination-select-region = Use this region
-imager-destination-set-identity = Set username and name
-imager-destination-set-passphrase = Set the startup secret
-imager-destination-set-disk-passphrase = Set a separate disk unlock secret
-imager-destination-set-password-hash = Set a pre-hashed password
-imager-destination-set-filesystem = Choose filesystem
-imager-destination-set-security-key = Enroll a security key
 imager-destination-set-media-codecs = Install media codecs
-imager-destination-set-hostname = Set hostname
-imager-destination-set-locale = Choose language and locale
-imager-destination-set-timezone = Choose time zone
-imager-destination-begin = Begin installation
-imager-import-open-accounts = Open Accounts
-imager-import-open-store = Open Store
-imager-installer-preview-read-preview = Read the preview
-imager-installer-preview-find-windows-roots = Find Windows folders
-imager-installer-preview-choose-windows-root = Choose a Windows folder
-imager-installer-preview-select-windows-root = Grant a Windows folder
-imager-installer-preview-open-windows-source = Open the source folder
-imager-installer-preview-show-windows-category = Show paths of a category
-imager-installer-preview-review-windows-root = Review a Windows folder
-imager-installer-preview-review-windows-category = Review a category
-imager-installer-preview-set-windows-exclusion-reason = Set an exclusion reason
-imager-installer-preview-set-windows-preparation-password = Set the preparation password
-imager-installer-preview-choose-windows-export = Choose the backup destination
-imager-installer-preview-export-windows-preparation = Export the preparation
-imager-installer-preview-resume-installer-preparation = Continue a preparation
-imager-installer-preview-start-new-installer-preparation = Start a new preparation
-imager-installer-preview-retry-installer-preparation = Check the preparation again
-imager-installer-preview-choose-preview-avatar = Choose your avatar
-imager-installer-preview-select-preview-avatar = Use a granted avatar file
-imager-installer-preview-choose-existing-identity-backup = Choose an identity backup
-imager-installer-preview-select-existing-identity-backup = Use a granted backup file
-imager-installer-preview-set-existing-identity-password = Enter the backup passphrase
-imager-installer-preview-choose-preview = Choose an option
-imager-installer-preview-choose-and-continue-preview = Choose and continue
-imager-installer-preview-set-preview-name = Set your display name
-imager-installer-preview-set-target-identity-field = Name an identifying field
-imager-installer-preview-set-target-architecture = Choose the target architecture
-imager-installer-preview-import-target-hardware-report = Import a hardware report
-imager-installer-preview-clear-target-hardware-report = Clear the hardware report
-imager-installer-preview-recheck-target-hardware = Check the other computer again
-imager-installer-preview-set-preview-device-name = Set the device name
-imager-installer-preview-set-preview-password = Enter the unlock password
-imager-installer-preview-set-preview-confirmation = Confirm the unlock password
-imager-installer-preview-create-prepared-identity = Create the identity
-imager-installer-preview-update-prepared-identity = Update the identity profile
-imager-installer-preview-export-prepared-identity = Export the identity
-imager-installer-preview-export-prepared-accounts = Export the chosen accounts
-imager-installer-preview-export-prepared-setup = Export the prepared setup
-imager-installer-preview-export-prepared-belongings = Export the preparation
-imager-installer-preview-set-preview-category = Include a category
-imager-installer-preview-set-preview-flatpak-app = Include an application
-imager-installer-preview-set-preview-service-session = Include a website sign-in
-imager-installer-preview-review-service-sessions = Review website sign-ins
-imager-installer-preview-set-preview-service-session-group = Include a source group
-imager-installer-preview-expand-service-session-group = Show or hide a source group
-imager-installer-preview-set-your-data-all = Select all of Your data
-imager-installer-preview-set-your-data-source = Select a source in Your data
-imager-installer-preview-set-your-data-group = Select a group in Your data
-imager-installer-preview-set-your-data-item = Select an item in Your data
-imager-installer-preview-expand-your-data-source = Show or hide a source's items
-imager-installer-preview-toggle-preview-details = Show or hide migration details
-imager-installer-preview-toggle-migration-source-location = Show or hide a file's location
-imager-installer-preview-toggle-flatpak-access-details = Show or hide app access details
-imager-installer-preview-set-account-field = Fill in an account field
-imager-installer-preview-import-account = Import a connection
-imager-installer-preview-connect-account = Sign in to a provider
-imager-installer-preview-complete-account-connection = Finish connecting an account
-imager-installer-preview-cancel-account-connection = Cancel connecting an account
-imager-installer-preview-review-user-transfer = Review the transfer
-imager-installer-preview-select-migration-home = Grant the home folder
-imager-installer-preview-grant-mounted-home-location = Grant a mounted home folder
-imager-installer-preview-continue-mounted-home-review = Continue the home review
-imager-installer-preview-cancel-mounted-home-permission = Cancel choosing a home folder
-imager-installer-preview-restart-mounted-home-review = Restart the home review
-imager-installer-preview-save-migration-plan = Save the migration plan
-imager-installer-preview-review-installed-transfer = Review the installed transfer
-imager-installer-preview-start-user-transfer = Start the transfer
-imager-installer-preview-retry-user-transfer = Retry the transfer
-imager-installer-preview-review-home-promotion = Review adopting the copy
-imager-installer-preview-start-home-promotion = Adopt the copy
-imager-installer-preview-retry-home-promotion = Retry adopting the copy
-imager-installer-preview-read-home-promotion-results = Read the adoption results
-imager-installer-preview-cancel-home-promotion = Stop adopting the copy
-imager-installer-preview-cancel-user-transfer = Stop the transfer
-imager-installer-preview-check-belongings = Check belongings again
-imager-installer-preview-choose-recovery-destination = Choose a recovery folder
-imager-installer-preview-select-recovery-directory = Use a granted recovery folder
-imager-installer-preview-review-recovery-destination = Review the recovery folder
-imager-installer-preview-review-existing-recovery-copy = Resume a recovery copy
-imager-installer-preview-start-recovery-copy = Start the recovery copy
-imager-installer-preview-retry-recovery-copy = Retry the recovery copy
-imager-installer-preview-cancel-recovery-copy = Stop the recovery copy
-imager-installer-preview-check-storage = Check storage
-imager-installer-preview-toggle-storage-details = Show or hide storage details
-imager-installer-preview-set-storage-size = Set the space for Tilo
-imager-installer-preview-prepare-usb = Write to a USB drive
-imager-installer-preview-review-changed-files = Review the changed files
-imager-installer-preview-cancel-media-preparation = Cancel media preparation
-imager-installer-preview-approve-source-handoff = Approve the handoff
-imager-installer-preview-cancel-source-handoff = Stop the handoff
-imager-installer-preview-prepare-belongings = Prepare belongings
-imager-installer-preview-review-prepared-belongings = Review prepared belongings
-imager-installer-preview-prepare-direct-installation = Prepare the installation
-imager-installer-preview-prepare-desktop-installation = Prepare Tilo Desktop
-imager-installer-preview-edit-preview = Change the setup
-imager-installer-preview-continue-preview = Continue
-imager-installer-preview-back-in-preview = Back
-imager-installer-preview-restart-preview = Start the preview again
 imager-setup-action-install-desktop = Install Tilo Desktop
 
 ## What the app is called in a window and in the launcher

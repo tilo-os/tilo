@@ -5,16 +5,8 @@ use ui::framework::Helper;
 
 #[cfg(feature = "installation")]
 pub(crate) const HELPERS: &[Helper] = &[
-    Helper { run: native_copy },
     Helper {
         run: |args| crate::setup::staging::capacity_probe::maybe_run(args),
-    },
-    Helper {
-        run: read_selected_media,
-    },
-    Helper { run: home_capture },
-    Helper {
-        run: home_capture_host,
     },
     Helper {
         run: |args| crate::setup::desktop_worker::maybe_run_desktop_helper(args),
@@ -58,36 +50,6 @@ fn customize_image(args: &[String]) -> Result<Option<i32>, String> {
     crate::customize_image::maybe_run(args).map_err(|error| error.to_string())
 }
 
-#[cfg(all(target_os = "linux", feature = "installation"))]
-fn home_capture(args: &[String]) -> Result<Option<i32>, String> {
-    imager_backend::setup::home_capture_helper::maybe_run(args)
-}
-
-#[cfg(all(not(target_os = "linux"), feature = "installation"))]
-fn home_capture(_args: &[String]) -> Result<Option<i32>, String> {
-    Ok(None)
-}
-
-#[cfg(all(target_os = "linux", feature = "installation"))]
-fn home_capture_host(args: &[String]) -> Result<Option<i32>, String> {
-    imager_backend::setup::home_capture::maybe_run_host(args)
-}
-
-#[cfg(all(not(target_os = "linux"), feature = "installation"))]
-fn home_capture_host(_args: &[String]) -> Result<Option<i32>, String> {
-    Ok(None)
-}
-
-#[cfg(all(target_os = "linux", feature = "installation"))]
-fn native_copy(args: &[String]) -> Result<Option<i32>, String> {
-    imager_backend::migration_native::maybe_run_command(args).map_err(|error| error.to_string())
-}
-
-#[cfg(all(not(target_os = "linux"), feature = "installation"))]
-fn native_copy(_args: &[String]) -> Result<Option<i32>, String> {
-    Ok(None)
-}
-
 fn package_smoke(args: &[String]) -> Result<Option<i32>, String> {
     Ok(args
         .iter()
@@ -110,15 +72,6 @@ fn flatpak_probe_smoke(args: &[String]) -> Result<Option<i32>, String> {
         return Err("the Flatpak returned an empty drive inventory".into());
     }
     Ok(Some(0))
-}
-
-#[cfg(all(target_os = "linux", feature = "installation"))]
-fn read_selected_media(args: &[String]) -> Result<Option<i32>, String> {
-    crate::setup::read_media::maybe_run(args)
-}
-#[cfg(all(not(target_os = "linux"), feature = "installation"))]
-fn read_selected_media(_args: &[String]) -> Result<Option<i32>, String> {
-    Ok(None)
 }
 
 #[cfg(test)]
@@ -155,16 +108,7 @@ mod tests {
             Some(1),
             "an incomplete customization is refused before GUI startup"
         );
-        #[cfg(all(target_os = "linux", feature = "installation"))]
-        assert_eq!(
-            ui::framework::run_helper::<ImagerShell>(&args(&[
-                "--tilo-home-capture-host",
-                "unexpected",
-            ])),
-            Some(1),
-            "a malformed capture host command must exit before starting the app"
-        );
-        for app in [&[][..], &["--setup"], &["--import-folders"]] {
+        for app in [&[][..], &["--setup"]] {
             assert_eq!(
                 ui::framework::run_helper::<ImagerShell>(&args(app)),
                 None,

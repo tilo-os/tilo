@@ -177,38 +177,6 @@ pub struct Codecs {
     pub last_error: String,
 }
 
-/// Which transfer a migration page is about.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Transfer {
-    PortableHome,
-    PortableApplications,
-    Browser,
-    #[default]
-    Migration,
-}
-
-/// A transfer a prepared setup carried over that the person still has to
-/// finish.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Migration {
-    pub transfer: Transfer,
-    /// The transfer's public status (never a secret).
-    pub status: ui::serde_json::Value,
-    /// The transfer needs the prepared setup's password again.
-    pub needs_password: bool,
-    /// The work under way may still be cancelled.
-    pub cancellable: bool,
-}
-
-/// A prepared setup waiting to be imported.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Prepared {
-    /// The import runs.
-    pub working: bool,
-    /// The package arrives from a peer: its verification code, once known.
-    pub peer: Option<Option<String>>,
-}
-
 /// What a file chooser is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChooserPurpose {
@@ -245,10 +213,6 @@ pub struct Page {
     /// Recovery of an identity this computer already belongs to: no way to
     /// create a new one.
     pub recovery_only: bool,
-    /// A prepared setup is waiting.
-    pub prepared: Option<Prepared>,
-    /// A carried-over transfer is waiting.
-    pub migration: Option<Migration>,
     /// Settings reopened only the backup step.
     pub portable_backup_only: bool,
     /// The backup step was handled: the hand-off shows.
@@ -292,25 +256,11 @@ pub struct Page {
 }
 
 impl Page {
-    /// The transfer's status, when a migration page shows.
-    #[must_use]
-    pub fn migration_status(&self) -> Option<ui::serde_json::Value> {
-        self.migration
-            .as_ref()
-            .map(|migration| migration.status.clone())
-    }
-
     /// The step a person would name: what is on screen.
     #[must_use]
     pub fn step(&self) -> Step {
-        if self.migration.is_some() {
-            return Step::Migration;
-        }
         if let Some(page) = self.tour_page {
             return Step::Tour(page);
-        }
-        if self.prepared.is_some() {
-            return Step::Prepared;
         }
         match self.screen {
             Screen::Intro => Step::Intro,
@@ -341,6 +291,4 @@ pub enum Step {
     Codecs,
     Ready,
     Tour(TourPage),
-    Prepared,
-    Migration,
 }

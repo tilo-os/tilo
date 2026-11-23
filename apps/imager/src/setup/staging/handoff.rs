@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 pub use staging_handoff_model::{HANDOFF_FILE, pad_json};
-use staging_handoff_model::{HostOs, StagedIdentity};
+use staging_handoff_model::StagedIdentity;
 
 use super::plan::Plan;
 
@@ -27,7 +27,7 @@ impl std::ops::DerefMut for Handoff {
     }
 }
 
-const PROFILE_KEYS: [&str; 12] = [
+const PROFILE_KEYS: [&str; 10] = [
     "schema",
     "purpose",
     "hostname",
@@ -38,8 +38,6 @@ const PROFILE_KEYS: [&str; 12] = [
     "keyboard",
     "timezone",
     "filesystem",
-    "prepared_setup",
-    "tpm_handoff",
 ];
 
 fn validate_profile_with(
@@ -66,13 +64,6 @@ fn validate_profile_with(
                         && label.len() <= 64
                         && !label.chars().any(char::is_control))
             }),
-            "prepared_setup" => {
-                serde_json::from_value::<crate::model::PreparedSetupExpectation>(value.clone())
-                    .is_ok_and(|receipt| receipt.valid())
-            }
-            "tpm_handoff" => value
-                .as_str()
-                .is_some_and(|handoff| handoff.len() <= 64 * 1024),
             _ => value.as_str().is_some_and(|s| s.len() <= 256),
         };
         if !ok {
@@ -129,46 +120,6 @@ impl Handoff {
     pub fn validate(&self) -> Result<(), String> {
         self.staging.validate()?;
         validate_profile(&self.profile)?;
-        if let Some(raw) = &self.migration {
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = raw;
-                return Err("Linux migration cannot be resumed on this host".into());
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let plan = imager_backend::setup::migration_handoff::Plan::parse(
-                    &serde_json::to_vec(raw).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-                let source = &plan.home.volume;
-                if self.host_os != HostOs::Linux
-                    || plan.operation_id != self.operation_id
-                    || !source.disk_guid.eq_ignore_ascii_case(&self.disk_guid)
-                    || source.disk_bytes != self.disk_size_bytes
-                    || source
-                        .partition_guid
-                        .eq_ignore_ascii_case(&self.staging_esp.partuuid)
-                    || source
-                        .partition_guid
-                        .eq_ignore_ascii_case(&self.staging_root.partuuid)
-                {
-                    return Err(
-                        "migration source does not belong to this retained Linux installation"
-                            .into(),
-                    );
-                }
-                for (first, last) in [
-                    (self.target_extent.first_lba, self.target_extent.last_lba),
-                    (self.staging_esp.first_lba, self.staging_esp.last_lba),
-                    (self.staging_root.first_lba, self.staging_root.last_lba),
-                ] {
-                    if first <= source.last_lba && last >= source.first_lba {
-                        return Err("migration source overlaps installation space".into());
-                    }
-                }
-            }
-        }
         Ok(())
     }
 }
@@ -205,7 +156,6 @@ pub fn for_plan(
             original_boot_order,
             profile,
             plan: install_plan,
-            migration: None,
         },
     }
 }
@@ -257,134 +207,11 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn migration_round_trips_through_shared_and_live_consumers_and_fails_closed() {
-        let mut handoff = sample();
-        let migration = serde_json::json!({
-            "schema": 1,
-            "operation_id": handoff.operation_id,
-            "categories": {"home": true, "flatpak": false, "accounts": true},
-            "home_policy": "access-read-only",
-            "home": {
-                "volume": {
-                    "disk_guid": handoff.disk_guid,
-                    "disk_bytes": handoff.disk_size_bytes,
-                    "sector_bytes": 512,
-                    "partition_guid": "22222222-2222-4222-8222-222222222222",
-                    "first_lba": 2048, "last_lba": 1048575,
-                    "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
-                    "filesystem": "ext4"
-                },
-                "relative": {"platform": "Unix", "units": b"home/person"},
-                "inode": 1234, "original_uid": 1000, "subvolume": null
-            }
-        });
-        handoff.migration = Some(serde_json::from_value(migration.clone()).unwrap());
-        let bytes = handoff.to_padded(16384).unwrap();
+    fn read_back_consumers_drop_an_invalid_hostname_the_imager_refuses() {
+        let bytes = sample().to_padded(16384).unwrap();
         let shared = staging_handoff_model::Handoff::parse(&bytes).unwrap();
-        assert_eq!(shared, handoff.staging);
-        assert_eq!(Handoff::parse(&bytes).unwrap(), handoff);
         let decoded = serde_json::to_value(&shared).unwrap();
-        assert_eq!(
-            decoded["migration"], migration,
-            "retain all source and consent data"
-        );
-        imager_backend::setup::migration_handoff::Plan::parse(
-            &serde_json::to_vec(&decoded["migration"]).unwrap(),
-        )
-        .unwrap();
-
         assert_eq!(parse_live(&bytes).unwrap(), decoded);
-
-        // A plan carrying both home_exclusions and pending_computer_applications_scope
-        // crosses Plan, staging_handoff_model, Handoff, and parse_live without field loss.
-        let mut rich = handoff.clone();
-        let mut rich_migration = migration;
-        rich_migration["home_policy"] = serde_json::json!("access-read-write");
-        rich_migration["home_exclusions"] = serde_json::json!([
-            {"platform": "Unix", "units": b"Documents/Private"}
-        ]);
-        rich_migration["pending_computer_applications_scope"] = serde_json::json!({
-            "schema": 1,
-            "source_operation": handoff.operation_id,
-            "applications_operation": "44444444-4444-4444-8444-444444444444",
-            "staging_operation": "55555555-5555-4555-8555-555555555555",
-            "staging_plan_sha256": "a".repeat(64),
-            "setup_binding": "owned setup fixture",
-            "identity_public_key": vec![7u8; 32]
-        });
-        let rich_plan = imager_backend::setup::migration_handoff::Plan::parse(
-            &serde_json::to_vec(&rich_migration).unwrap(),
-        )
-        .unwrap();
-        rich.migration = Some(rich_plan.clone().into());
-        let rich_bytes = rich.to_padded(16384).unwrap();
-        let rich_shared = staging_handoff_model::Handoff::parse(&rich_bytes).unwrap();
-        assert_eq!(rich_shared, rich.staging);
-        assert_eq!(Handoff::parse(&rich_bytes).unwrap(), rich);
-        let rich_decoded = serde_json::to_value(&rich_shared).unwrap();
-        assert_eq!(rich_decoded["migration"], rich_migration);
-        assert_eq!(parse_live(&rich_bytes).unwrap(), rich_decoded);
-        assert_eq!(
-            imager_backend::setup::migration_handoff::Plan::parse(
-                &serde_json::to_vec(&rich_decoded["migration"]).unwrap()
-            )
-            .unwrap(),
-            rich_plan
-        );
-
-        for pointer in [
-            "/unexpected",
-            "/migration/unexpected",
-            "/migration/home/unexpected",
-            "/migration/home/volume/unexpected",
-            "/migration/home/relative/unexpected",
-        ] {
-            let mut invalid = decoded.clone();
-            let (parent, key) = pointer.rsplit_once('/').unwrap();
-            invalid
-                .pointer_mut(parent)
-                .unwrap()
-                .as_object_mut()
-                .unwrap()
-                .insert(key.into(), true.into());
-            let invalid = serde_json::to_vec(&invalid).unwrap();
-            assert!(Handoff::parse(&invalid).is_err(), "{pointer}");
-            assert!(
-                staging_handoff_model::Handoff::parse(&invalid).is_err(),
-                "{pointer}"
-            );
-            assert!(parse_live(&invalid).is_err(), "{pointer}");
-        }
-        for (pointer, value) in [
-            ("/host_os", serde_json::json!("windows")),
-            (
-                "/migration/operation_id",
-                serde_json::json!("different-operation"),
-            ),
-            ("/migration/home/volume/disk_bytes", serde_json::json!(1)),
-            (
-                "/migration/home/volume/last_lba",
-                serde_json::json!(handoff.target_extent.first_lba),
-            ),
-            (
-                "/migration/home/volume/partition_guid",
-                serde_json::json!(handoff.staging_esp.partuuid),
-            ),
-            (
-                "/migration/home/relative/units",
-                serde_json::json!(b"home/../person"),
-            ),
-        ] {
-            let mut invalid = decoded.clone();
-            *invalid.pointer_mut(pointer).unwrap() = value;
-            let invalid = serde_json::to_vec(&invalid).unwrap();
-            assert!(Handoff::parse(&invalid).is_err(), "{pointer}");
-            assert!(
-                staging_handoff_model::Handoff::parse(&invalid).is_err(),
-                "{pointer}"
-            );
-            assert!(parse_live(&invalid).is_err(), "{pointer}");
-        }
 
         // Imager refuses an invalid hostname when building/validating, while read-back
         // consumers (shared model and live helper) accept the handoff and drop the bad hostname.

@@ -68,30 +68,6 @@ impl Default for UserAccount {
     }
 }
 
-/// Public expectation for an opaque, password-encrypted preparation package.
-/// Its zero default is invalid and grants no prepared setup authority.
-#[cfg_attr(
-    feature = "model",
-    derive(tilo_resource::Model, tilo_resource::JsonSchema)
-)]
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MediaPreparedSetup {
-    pub schema: u32,
-    pub sealed_bytes: u64,
-    pub ciphertext_sha256: String,
-}
-impl MediaPreparedSetup {
-    pub fn valid(&self) -> bool {
-        crate::PreparedSetupExpectation {
-            schema: self.schema,
-            sealed_bytes: self.sealed_bytes,
-            ciphertext_sha256: self.ciphertext_sha256.clone(),
-        }
-        .valid()
-    }
-}
-
 /// The complete host-side customization draft. [`InstallProfile::to_media_profile_json`]
 /// emits only its validated, non-secret preferences; target selection,
 /// destructive consent, credentials, and recovery acknowledgement stay local
@@ -132,11 +108,6 @@ pub struct InstallProfile {
     /// stays on the setup machine.
     #[serde(default)]
     pub enroll_local_identity: bool,
-    /// Public ciphertext binding carried by the reviewed setup profile.
-    /// The writer independently requires the held matching package; this
-    /// descriptive value grants no identity or source access.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prepared_setup: Option<MediaPreparedSetup>,
 }
 
 /// The hostname a profile starts with. A profile that still carries it has not
@@ -157,7 +128,6 @@ impl Default for InstallProfile {
             wifi_ssid: String::new(),
             device_label: String::new(),
             enroll_local_identity: false,
-            prepared_setup: None,
         }
     }
 }
@@ -200,13 +170,6 @@ impl InstallProfile {
         if !rules::valid_timezone_name(self.timezone.trim()) {
             return Err("Time zone must be a safe IANA name such as Europe/Berlin.".into());
         }
-        if self
-            .prepared_setup
-            .as_ref()
-            .is_some_and(|receipt| !receipt.valid())
-        {
-            return Err("Prepared setup expectation is invalid.".into());
-        }
         Ok(())
     }
 
@@ -235,8 +198,6 @@ impl InstallProfile {
             keyboard: &'a str,
             timezone: &'a str,
             filesystem: &'static str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            prepared_setup: &'a Option<MediaPreparedSetup>,
         }
 
         serde_json::to_vec(&MediaProfile {
@@ -250,7 +211,6 @@ impl InstallProfile {
             keyboard: self.keyboard.trim(),
             timezone: self.timezone.trim(),
             filesystem: self.filesystem.key(),
-            prepared_setup: &self.prepared_setup,
         })
     }
 
@@ -272,7 +232,6 @@ impl InstallProfile {
             wifi_ssid: String::new(),
             device_label: String::new(),
             enroll_local_identity: false,
-            prepared_setup: None,
         }
     }
 

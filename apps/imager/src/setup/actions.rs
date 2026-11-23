@@ -32,15 +32,6 @@ pub(crate) struct Hardware;
 #[row(kind = "imager.setup.hardware.component", label = "Hardware component")]
 pub(crate) struct HardwareComponent;
 
-/// The guided session's Desktop preparation delivery.
-#[derive(tilo_resource::Row)]
-#[row(
-    kind = "imager.setup.desktop-preparation",
-    label = "Desktop preparation",
-    effects = SetupEffect
-)]
-pub(crate) struct DesktopPreparation;
-
 /// Guided setup's effects. Each answers with the setup's path-free status
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "imager.setup")]
@@ -55,10 +46,6 @@ pub enum SetupEffect {
     #[effect(returns)]
     #[effect(label = "imager-setup-action-install-desktop", on = super::desktop_journey::DesktopJourney)]
     InstallDesktop,
-    /// Retry unfinished guided session preparation after verified package installation.
-    #[effect(kind = "outside")]
-    #[effect(returns, on = DesktopPreparation)]
-    RetryDesktop,
     /// Cancel the current package download; no native transaction is cancelled.
     #[effect(kind = "outside")]
     #[effect(returns, on = super::desktop_journey::DesktopJourney)]
@@ -99,16 +86,6 @@ pub enum SetupEffect {
     SetInternalTargetSize {
         #[param("Tilo size in GiB")]
         gib: i64,
-    },
-    /// Attach an explicitly granted private migration intent to the next installation.
-    #[effect(kind = "outside")]
-    #[effect(returns, privileged, on = InternalSetup)]
-    UseMigrationIntent {
-        #[param(
-            secret,
-            "Private migration intent directory; never returned or replicated"
-        )]
-        directory: String,
     },
     #[effect(kind = "outside")]
     #[effect(returns)]
@@ -326,20 +303,10 @@ fn review_check(state: &InternalProjection) -> (&'static str, &'static str) {
 
 fn internal_commands(
     state: &InternalProjection,
-) -> [(&'static str, &'static str, bool, &'static str, &'static str); 16] {
+) -> [(&'static str, &'static str, bool, &'static str, &'static str); 15] {
     let a = state.availability;
     let (review_code, review_reason) = review_check(state);
     [
-        (
-            SetupEffect::USE_MIGRATION_INTENT.id,
-            "imager-setup-action-use-migration-intent",
-            cfg!(target_os = "linux")
-                && state.on_review
-                && state.run == "idle"
-                && state.pending_operation.is_none(),
-            "migration_intent_unavailable",
-            "imager-setup-error-migration-intent-unavailable",
-        ),
         (
             SetupEffect::START_INTERNAL_DOWNLOAD.id,
             "imager-setup-action-start-download",
@@ -567,10 +534,6 @@ fn internal_row(state: &InternalProjection) -> LiveRow {
         &internal_bindings(state),
     )
     .prefilled(
-        SetupEffect::USE_MIGRATION_INTENT,
-        [("directory", serde_json::Value::from(""))],
-    )
-    .prefilled(
         SetupEffect::SET_INTERNAL_TARGET_SIZE,
         [("gib", serde_json::Value::from(-1))],
     )
@@ -667,103 +630,10 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     root
 }
 
-pub(super) fn desktop_preparation_row() -> LiveRow {
-    let bindings = RowBindings::new().offer(SetupEffect::RETRY_DESKTOP);
-    LiveRow::typed_with::<DesktopPreparation>(
-        "imager.setup.desktop-preparation",
-        super::strings::t("installer-desktop-resource"),
-        &bindings,
-    )
-    .labelled(
-        SetupEffect::RETRY_DESKTOP,
-        super::strings::t("installer-desktop-retry"),
-    )
-}
-
-/// What the Desktop preparation's retry cannot do until a verified
-/// preparation waits, with the reason a person reads.
-pub(super) fn desktop_preparation_row_status(retry: bool) -> Vec<EffectStatus> {
-    if retry {
-        Vec::new()
-    } else {
-        vec![EffectStatus::unavailable(
-            SetupEffect::RETRY_DESKTOP,
-            "desktop_preparation_unavailable",
-            super::strings::t("installer-desktop-unavailable"),
-        )]
-    }
-}
-
-pub(super) fn desktop_preparation_status(retry: bool) -> EffectStatus {
-    if retry {
-        EffectStatus::labelled(
-            SetupEffect::RETRY_DESKTOP,
-            super::strings::t("installer-desktop-retry"),
-        )
-    } else {
-        EffectStatus::unavailable(
-            SetupEffect::RETRY_DESKTOP,
-            "desktop_preparation_unavailable",
-            super::strings::t("installer-desktop-unavailable"),
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn migration_intent_is_private_and_available_only_before_full_os_staging() {
-        let mut state = InternalProjection {
-            on_review: true,
-            run: "idle",
-            ..InternalProjection::default()
-        };
-        let actions = internal_actions(&projection(state.clone()));
-        let action = actions
-            .iter()
-            .find(|action| action.id == SetupEffect::USE_MIGRATION_INTENT.id)
-            .unwrap();
-        assert_eq!(action.params()[0].ty, ParamType::Secret);
-        assert_eq!(
-            action.contract.availability.is_available(),
-            cfg!(target_os = "linux")
-        );
-        let encoded = decoded(
-            action,
-            &serde_json::Map::from_iter([(
-                "directory".into(),
-                serde_json::Value::String("/private/reviewed-intent".into()),
-            )]),
-        );
-        assert_eq!(
-            encoded,
-            SetupEffect::UseMigrationIntent {
-                directory: "/private/reviewed-intent".into()
-            }
-        );
-        for (review, run, pending) in [
-            (false, "idle", None),
-            (true, "running", None),
-            (true, "idle", Some("staged".into())),
-        ] {
-            state.on_review = review;
-            state.run = run;
-            state.pending_operation = pending;
-            let actions = internal_actions(&projection(state.clone()));
-            assert!(
-                !actions
-                    .iter()
-                    .find(|action| action.id == SetupEffect::USE_MIGRATION_INTENT.id)
-                    .unwrap()
-                    .contract
-                    .availability
-                    .is_available()
-            );
-        }
-    }
-
     use super::*;
-    use tilo_actions::{ActionSpec, OperationKind, ParamType};
+    use tilo_actions::{ActionSpec, OperationKind};
 
     fn projection(internal: InternalProjection) -> SetupProjection {
         SetupProjection {

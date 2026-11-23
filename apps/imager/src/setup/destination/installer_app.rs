@@ -457,7 +457,6 @@ pub struct InstallerApp {
     accounts_form: crate::setup::destination::accounts_view::AccountsForm,
     accounts_controller: Option<imager_backend::destination::online_accounts::AccountsController>,
     accounts_initialized: bool,
-    windows_hints: crate::setup::destination::accounts_hints::WindowsReview,
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
     selected_guided_extent: Option<usize>,
@@ -510,8 +509,6 @@ pub struct InstallerApp {
     /// A complete plan stands in for the person's confirmation.
     install_plan: bool,
     device_label: String,
-    prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
-    tpm_handoff: Option<String>,
     locale: ui::LocalState<String>,
     timezone: ui::LocalState<String>,
     keymap: ui::LocalState<String>,
@@ -683,7 +680,6 @@ impl InstallerApp {
             accounts_form: crate::setup::destination::accounts_view::AccountsForm::new(),
             accounts_controller: None,
             accounts_initialized: false,
-            windows_hints: crate::setup::destination::accounts_hints::WindowsReview::default(),
             hostname: ui::LocalState::new(DEFAULT_HOSTNAME.to_string()),
             locale: ui::LocalState::new("en_US.UTF-8".to_string()),
             timezone: ui::LocalState::new(DEFAULT_TIMEZONE.to_string()),
@@ -692,8 +688,6 @@ impl InstallerApp {
             network_static: None,
             install_plan: false,
             device_label: String::new(),
-            prepared_setup: None,
-            tpm_handoff: None,
             keymap: ui::LocalState::new(DEFAULT_KEYMAP_NAME.to_string()),
             erase_confirmation: ui::LocalState::new(String::new()),
             erase_confirmation_seen: String::new(),
@@ -860,10 +854,6 @@ impl InstallerApp {
     ) {
         self.purpose.clone_from(&profile.purpose);
         self.device_label.clone_from(&profile.device_label);
-        self.prepared_setup.clone_from(&profile.prepared_setup);
-        self.tpm_handoff.clone_from(&profile.tpm_handoff);
-        self.windows_hints
-            .set_profile(profile.windows_preparation.clone(), &self.accounts_form);
         let status = profile.repair_summary();
         let keyboard_display = profile.keyboard_display_name().map(str::to_string);
         let completion = ProfileCompletion {
@@ -1037,9 +1027,6 @@ impl InstallerApp {
         self.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
             purpose: install_profile_model::default_purpose(),
             device_label: String::new(),
-            prepared_setup: None,
-            tpm_handoff: None,
-            windows_preparation: None,
             hostname: Some("studio".into()),
             username: Some("ada".into()),
             full_name: Some("Ada Example".into()),
@@ -1348,8 +1335,6 @@ impl InstallerApp {
             hostname: local_text(&self.hostname).trim().to_string(),
             purpose: self.purpose.clone(),
             device_label: self.device_label.clone(),
-            prepared_setup: self.prepared_setup.clone(),
-            tpm_handoff: self.tpm_handoff.clone(),
             full_name: local_text(&self.full_name).trim().to_string(),
             locale: self.locale().trim().to_string(),
             timezone: self.timezone().trim().to_string(),
@@ -1465,7 +1450,6 @@ impl InstallerApp {
             return;
         }
         self.accounts_form.drain_commands();
-        self.windows_hints.cancel(&self.accounts_form);
         if let Some(controller) = self.accounts_controller.as_mut() {
             let _ = controller.command(AccountsCommand::Cancel);
         }
@@ -1480,7 +1464,6 @@ impl InstallerApp {
             return;
         }
         self.enter_accounts();
-        self.windows_hints.sync(&self.accounts_form);
         for command in self.accounts_form.drain_commands() {
             let skip = matches!(command, AccountsCommand::SkipOffline);
             let escape = matches!(
@@ -3795,11 +3778,10 @@ impl Widget for InstallerApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.step == Step::Accounts
-            && (self.windows_hints.is_pending()
-                || self.accounts_controller.as_ref().is_some_and(|controller| {
-                    controller.status()
-                        == crate::setup::destination::accounts_view::AccountsStatus::SigningIn
-                }))
+            && self.accounts_controller.as_ref().is_some_and(|controller| {
+                controller.status()
+                    == crate::setup::destination::accounts_view::AccountsStatus::SigningIn
+            })
     }
 
     fn take_focus_reset(&mut self) -> bool {

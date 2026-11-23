@@ -58,7 +58,6 @@ fn journey_install(
 }
 fn journey_fixture() -> SetupApp {
     let mut setup = supported_fixture();
-    setup.desktop_offer = || {};
     setup.desktop_flow = DesktopFlow::with_runtime_and_state(
         super::super::desktop_flow::DesktopRuntime {
             launch_probe: journey_probe,

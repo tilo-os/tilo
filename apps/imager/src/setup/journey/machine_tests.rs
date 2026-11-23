@@ -26,7 +26,7 @@ fn server() -> machine::Choices {
 
 #[test]
 fn the_other_computer_chooses_its_os_and_defaults_to_tilo_os() {
-    let mut journey = Journey::new("Ada".into());
+    let mut journey = Journey::new();
     journey.destination = Some(Destination::Another);
     assert_eq!(journey.plan.os(), machine::Os::TiloOs);
     journey.next().unwrap();
@@ -39,7 +39,7 @@ fn the_other_computer_chooses_its_os_and_defaults_to_tilo_os() {
 
 #[test]
 fn the_server_is_a_destination_and_an_os_plan_never_asks_for_workspaces() {
-    let mut journey = Journey::new("Ada".into());
+    let mut journey = Journey::new();
     journey.destination = Some(Destination::Another);
     journey.choose("os", true).unwrap();
     assert!(journey.plan.open().is_empty(), "{:?}", journey.plan.open());
@@ -97,7 +97,7 @@ fn a_server_answers_workspaces_and_no_purpose_question_is_asked() {
 
 #[test]
 fn the_delivery_choice_is_the_persons_and_does_not_continue() {
-    let mut journey = Journey::new("Ada".into());
+    let mut journey = Journey::new();
     journey.destination = Some(Destination::Another);
     journey.plan.os = Some(machine::Os::TiloServer);
     journey.page = Page::Method;
@@ -111,21 +111,6 @@ fn the_delivery_choice_is_the_persons_and_does_not_continue() {
     assert!(journey.plan.network.is_none());
     journey.next().unwrap();
     assert_eq!(journey.page, Page::Review);
-}
-
-#[test]
-fn a_draft_keeps_what_the_plan_decides_and_what_it_asks() {
-    let choices = machine::Choices {
-        os: Some(machine::Os::TiloServer),
-        name_open: true,
-        disk: None,
-        delivery: machine::Delivery::Alongside,
-        hosting: Some(machine::Hosting::HoldsNone),
-        ..machine::Choices::default()
-    };
-    let draft = draft::PlanDraft::from(&choices);
-    draft.validate().unwrap();
-    assert_eq!(draft.choices(), choices);
 }
 
 #[test]
@@ -219,25 +204,6 @@ tilo_test_env::scenario! {
                 model.name.as_deref(),
                 Some(spoken.as_str()),
                 "the model row says what it is and that its hardware is checked when it installs: {model:?}"
-            );
-            assert_eq!(
-                preview.journey.categories,
-                [true, false, false],
-                "a server takes files, never this desktop's apps or sign-ins"
-            );
-            assert!(
-                visual_tests::control(preview, "installer.review.flatpak").is_none(),
-                "a server's review never offers this desktop's apps"
-            );
-            let migration = visual_tests::control(preview, "installer.review.migration")
-                .expect("the review shows the data choice")
-                .accessibility()
-                .expect("the data row is readable");
-            let name = migration.name.as_deref().unwrap_or_default();
-            let title = format!("{}, ", t("installer-preview-migrate-server-title"));
-            assert!(
-                name.starts_with(&title),
-                "the data row is titled with its choice: {migration:?}"
             );
         })
         .unwrap();

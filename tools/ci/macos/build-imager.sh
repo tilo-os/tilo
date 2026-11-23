@@ -37,9 +37,7 @@ cp "$built" "$out/imager"
 chmod +x "$out/imager"
 (cd "$out" && shasum -a 256 imager > imager.sha256)
 
-# The library's tests are not run here: their prepared-media and prepared-setup
-# material is the Linux pipeline's, behind that platform's gates in the backend,
-# so the test target does not compile on a Mac. They run on the Linux nodes
+# The library's tests are not run here: they run on the Linux nodes
 # (imager-tests-{arch}); what a Mac proves is that this executable builds and
 # that the packaged app starts.
 

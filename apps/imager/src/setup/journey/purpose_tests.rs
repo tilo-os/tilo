@@ -7,9 +7,8 @@ tilo_test_env::scenario! {
 
     phase purpose_is_not_asked_and_the_safe_default_is_retained;
     {
-        let mut journey = model::Journey::new("Ada".into());
+        let mut journey = model::Journey::new();
         journey.destination = Some(Destination::Computer);
-        journey.migrate = Some(false);
         journey.device_name = "Home device".into();
         journey.page = Page::Devices;
         journey.next().unwrap();
@@ -26,34 +25,14 @@ tilo_test_env::scenario! {
             ..Default::default()
         };
         preview.journey.page = Page::Review;
-        let profile = preview.public_install_profile().unwrap();
+        let profile = preview.install_profile().unwrap();
         assert_eq!(profile.purpose, install_profile_model::default_purpose());
-    }
-
-    phase migration_still_follows_the_device_name_without_a_purpose_stop;
-    {
-        let mut journey = model::Journey::new("Ada".into());
-        journey.destination = Some(Destination::Computer);
-        journey.migrate = Some(true);
-        journey.device_name = "Ada's computer".into();
-        journey.page = Page::Devices;
-        journey.next().unwrap();
-        assert_eq!(journey.page, Page::Belongings);
-        journey.categories = [true, true, false];
-        journey.next().unwrap();
-        assert_eq!(journey.page, Page::Storage);
-        assert_eq!(
-            journey.purpose,
-            install_profile_model::default_purpose(),
-            "the review and installed profile keep the same safe default"
-        );
     }
 
     phase desktop_has_no_os_purpose_page;
     {
-        let mut journey = model::Journey::new("Ada".into());
+        let mut journey = model::Journey::new();
         journey.destination = Some(Destination::Desktop);
-        journey.migrate = Some(false);
         journey.device_name = "Existing Linux".into();
         journey.page = Page::Destination;
         journey.next().unwrap();
@@ -66,19 +45,9 @@ tilo_test_env::scenario! {
     {
         let mut preview = InstallerPreview::default();
         preview.journey.purpose = "server".into();
-        preview.journey.name = "Ada".into();
-        let profile = preview.public_install_profile().unwrap();
-        let encoded = serde_json::to_vec(&profile).unwrap();
-        let decoded: imager_backend::setup::prepared_setup::PublicInstallProfile =
-            serde_json::from_slice(&encoded).unwrap();
-        let draft = decoded.to_draft().unwrap();
+        let draft = preview.install_profile().unwrap();
         assert_eq!(draft.purpose, "server");
         let media = crate::setup::staging::handoff::profile_from_install(&draft).unwrap();
         assert_eq!(media["purpose"], "server");
-        let choices = preview.journey.draft_choices();
-        let choices = serde_json::from_slice(&serde_json::to_vec(&choices).unwrap()).unwrap();
-        let mut restored = model::Journey::new(String::new());
-        restored.restore_draft(&choices, draft::IdentityKind::New, "Ada".into());
-        assert_eq!(restored.purpose, "server");
     }
 }

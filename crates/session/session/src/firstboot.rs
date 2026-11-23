@@ -54,14 +54,13 @@ pub fn run_setup(host_desktop: bool) -> Result<(), Box<dyn Error>> {
 }
 
 /// Whether this device has setup to do before its desktop is used: it has no identity yet, the last
-/// startup found its identity unusable, or the person began setting it up and has not finished —
-/// the ceremony's journal, or a prepared setup neither consumed nor declined. A finished setup
-/// leaves none of these behind, so a restart goes straight to the person's session.
+/// startup found its identity unusable, or the person began setting it up and has not finished
+/// (the ceremony's journal). A finished setup leaves none of these behind, so a restart goes
+/// straight to the person's session.
 pub fn setup_due(identity_missing: bool, recovery: bool, identity_dir: &std::path::Path) -> bool {
     recovery
         || identity_missing
         || tilo_onboarding_session::view::has_pending_progress(identity_dir)
-        || tilo_onboarding_session::prepared::session_pending(identity_dir)
 }
 
 #[cfg(test)]
@@ -89,7 +88,7 @@ mod tests {
         );
     }
 
-    /// This machine's home for one test, so the prepared setup the device may hold there is this
+    /// This machine's home for one test, so whatever setup state the device holds there is this
     /// test's own.
     #[cfg(target_os = "linux")]
     fn home() -> (tilo_test_env::ScopedEnv, tempfile::TempDir) {
@@ -161,18 +160,6 @@ mod tests {
                 setup_due(false, false, &dir),
                 "setup under way is opened again"
             );
-        }
-
-        phase a_prepared_setup_waits_for_its_owner;
-        {
-            let (home, dir, _) = tilo_onboarding_session::browser::fixtures::fixture();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("HOME", home.path());
-            assert!(
-                tilo_onboarding_session::prepared::session_pending(&dir),
-                "the fixture leaves a prepared setup"
-            );
-            assert!(setup_due(false, false, &dir));
         }
     }
 }

@@ -80,7 +80,6 @@ rustPlatform.buildRustPackage rec {
     "-p" "tilo-unlock-helper"
     "-p" "tilo-flight-log"
     "-p" "tilo-session"
-    "-p" "imager"
     "-p" "tilo-cli"
     "-p" "tilolang-process"
     "-p" "tilo-runtime"
@@ -92,7 +91,6 @@ rustPlatform.buildRustPackage rec {
     "--bin" "tilo-flight-recorder"
     "--bin" "tilo-session-report"
     "--bin" "tilo-session"
-    "--bin" "imager"
     "--no-default-features"
   ];
   cargoTestFlags = cargoBuildFlags;
@@ -150,9 +148,6 @@ rustPlatform.buildRustPackage rec {
     install -Dm644 "$p/pipewire/tilo-echo-cancel.conf" "$out/share/pipewire/tilo-echo-cancel.conf"
     install -Dm644 "$p/systemd-user/tilo-graphical-session.target" "$out/share/systemd/user/tilo-graphical-session.target"
     install -Dm644 "$p/license/LICENSE" "$out/share/licenses/tilo-session/LICENSE"
-    install -Dm755 "$p/bin/tilo-import-folders" "$out/bin/tilo-import-folders"
-    install -Dm644 "$p/applications/tilo-import-folders.desktop" "$out/share/applications/tilo-import-folders.desktop"
-    substituteInPlace "$out/share/applications/tilo-import-folders.desktop" --replace-fail "/usr/bin/tilo-import-folders" "$out/bin/tilo-import-folders"
 
     # Store paths replace FHS paths in the wrapper and session entry.
     substituteInPlace "$out/libexec/tilo-session" \

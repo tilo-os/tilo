@@ -181,9 +181,6 @@ ENGINES = {
                                "(libtilo_spreadsheet_engine.so)",
     "ironcalc_base": "the spreadsheet formula engine, which Sheets loads from "
                      "libtilo_spreadsheet_engine.so",
-    "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
-    "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
-                       "worker loads from libtilo_fuse_engine.so",
 }
 
 # C-library crates (a `-sys` name or Cargo's `links` key) the runtime may

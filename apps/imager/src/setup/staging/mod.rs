@@ -2,8 +2,6 @@
 //! plans, and only the elevated helper mutates disks or firmware, revalidating the plan
 //! against a fresh probe first.
 
-#[cfg(target_os = "linux")]
-pub mod browser;
 pub mod bundle;
 #[cfg(feature = "installation")]
 pub(crate) mod capacity_probe;
@@ -11,7 +9,6 @@ pub mod cli;
 pub mod handoff;
 pub mod helper;
 pub mod plan;
-pub mod prepared_setup;
 pub mod probe;
 pub mod record;
 

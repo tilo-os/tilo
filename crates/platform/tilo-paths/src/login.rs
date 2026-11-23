@@ -35,13 +35,6 @@ pub const DESKTOP_READY_FILE: &str = "desktop-ready";
 /// never became usable, for the restart to be asked again: whoever asked reads that the desktop
 /// did not come back without waiting for it.
 pub const DESKTOP_RESTART_FAILED_FILE: &str = "desktop-restart-failed";
-/// Prefix of the socket in [`SESSION_DIR`] on which this session says whether
-/// its first use is over: the installed folder importer asks before it
-/// continues a saved import, so nothing it carries lands under an identity
-/// ceremony still under way.
-pub const IMPORT_READINESS_SOCKET_PREFIX: &str = "import-readiness";
-pub const IMPORTER_DIR: &str = "tilo-imager";
-pub const IMPORTER_CONTINUATION_FILE: &str = "desktop-continuation.json";
 
 const SESSION_SOCKETS: [&str; 2] = [AGENT_SOCKET_FILE, ADMIN_CONTROL_SOCKET_FILE];
 
@@ -51,48 +44,6 @@ pub fn session_dir(runtime_dir: Option<OsString>) -> Option<PathBuf> {
     runtime_dir
         .is_absolute()
         .then(|| runtime_dir.join(SESSION_DIR))
-}
-
-#[cfg(unix)]
-#[must_use]
-pub fn import_readiness_socket(
-    runtime_dir: Option<OsString>,
-    display: &OsStr,
-    wayland: u64,
-) -> Option<PathBuf> {
-    Some(session_dir(runtime_dir)?.join(import_readiness_socket_file(display, wayland)?))
-}
-
-#[cfg(unix)]
-#[must_use]
-pub fn import_readiness_socket_file(display: &OsStr, wayland: u64) -> Option<String> {
-    use std::fmt::Write as _;
-    use std::os::unix::ffi::OsStrExt as _;
-    let bytes = display.as_bytes();
-    if bytes.is_empty() || bytes.len() > 32 || bytes.contains(&b'/') {
-        return None;
-    }
-    let mut key = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        let _ = write!(key, "{byte:02x}");
-    }
-    Some(format!(
-        "{IMPORT_READINESS_SOCKET_PREFIX}-{key}-{wayland}.sock"
-    ))
-}
-
-#[must_use]
-pub fn importer_migrations_dir() -> Option<PathBuf> {
-    Some(
-        crate::data_local_dir()?
-            .join(IMPORTER_DIR)
-            .join("migrations"),
-    )
-}
-
-#[must_use]
-pub fn importer_continuation() -> Option<PathBuf> {
-    Some(importer_migrations_dir()?.join(IMPORTER_CONTINUATION_FILE))
 }
 
 /// Whether an `XDG_CURRENT_DESKTOP` value names a Tilo login. The value is a
@@ -253,29 +204,6 @@ mod tests {
         assert_eq!(session_dir(Some("run/user".into())), None);
         assert_eq!(session_dir(Some(OsString::new())), None);
         assert_eq!(session_dir(None), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_import_readiness_socket_names_the_session_by_its_display() {
-        assert_eq!(
-            import_readiness_socket(Some("/run/user/1000".into()), OsStr::new("wayland-1"), 42),
-            Some(PathBuf::from(
-                "/run/user/1000/tilo-session/import-readiness-7761796c616e642d31-42.sock"
-            ))
-        );
-        assert_eq!(
-            import_readiness_socket(None, OsStr::new("wayland-1"), 42),
-            None
-        );
-        let too_long = "n".repeat(33);
-        for impossible in ["", "../escape", "wayland-1/other", too_long.as_str()] {
-            assert_eq!(
-                import_readiness_socket(Some("/run/user/1000".into()), OsStr::new(impossible), 1),
-                None,
-                "{impossible:?}"
-            );
-        }
     }
 
     #[cfg(unix)]

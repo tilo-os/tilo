@@ -34,8 +34,7 @@ if [ "$require_signing" = 1 ]; then
       ;;
   esac
 fi
-if [ "$host" = Linux ] && [ "$require_signing" = 1 ]; then export TILO_REQUIRE_CAPTURE=1; fi
-source "$(dirname "${BASH_SOURCE[0]}")/build-capture-host.sh" --features host-media-writer
+"${CARGO:-cargo}" build --locked --release -p imager --bin imager --features host-media-writer
 # What the build above wrote: Cargo's target directory is the job's own on t.
 binary="${TILO_IMAGER_BINARY:-${CARGO_TARGET_DIR:-target}/release/imager}"
 mkdir -p "$out"
@@ -164,24 +163,15 @@ case "$host" in
     chmod +x "$bundle/tilo-imager" "$bundle/tilo-imager-bin"
     cp apps/imager/packaging/linux/tilo-imager.desktop "$bundle/"
     cp docs/installer-walkthrough.md "$bundle/README.md"
-    apps/imager/packaging/stage-capture-sidecar.sh "$binary" "$bundle" "$bundle/tilo-imager-bin"
     tar -C "$out" -czf "$out/$artifact_base.tar.gz" "$artifact_base"
     write_digest "$out/$artifact_base.tar.gz"
     sign_linux_artifact "$out/$artifact_base.tar.gz"
-    if [ -n "${TILO_CAPTURE_PINS:-}" ]; then
-      platform="$out/$artifact_base-platform.tar.gz"
-      python3 apps/imager/packaging/package-capture-platform.py \
-        --host "$binary" --output "$platform"
-      write_digest "$platform"
-      sign_linux_artifact "$platform"
-    fi
 
     appdir="$out/Tilo_Imager.AppDir"
     mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" \
       "$appdir/usr/share/metainfo" \
       "$appdir/usr/share/icons/hicolor/scalable/apps"
     cp "$binary" "$appdir/usr/bin/tilo-imager-bin"
-    apps/imager/packaging/stage-capture-sidecar.sh "$binary" "$appdir/usr" "$appdir/usr/bin/tilo-imager-bin"
     cp apps/imager/packaging/linux/tilo-imager "$appdir/usr/bin/tilo-imager"
     cp apps/imager/packaging/linux/tilo-imager.desktop \
       "$appdir/usr/share/applications/org.tilo.Imager.desktop"

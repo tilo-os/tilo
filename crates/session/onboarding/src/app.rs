@@ -9,8 +9,8 @@ use zeroize::Zeroizing;
 use crate::ceremony::Ceremony;
 use crate::effect::OnboardingEffect;
 use crate::page::{
-    Codecs, IdentityProblem, KeyCopy, Migration, Nearby, OnboardingContext, PackState, Page,
-    Prepared, Screen, SecretText, TourPage, Transfer, WordsCheck,
+    Codecs, IdentityProblem, KeyCopy, Nearby, OnboardingContext, PackState, Page, Screen,
+    SecretText, TourPage, WordsCheck,
 };
 use crate::state::OnboardingState;
 
@@ -155,13 +155,6 @@ const SCENARIOS: &[&str] = &[
     "tour-organise",
     "tour-collaborate",
     "tour-start",
-    "prepared",
-    "prepared-working",
-    "prepared-peer",
-    "migration-portable-home",
-    "migration-applications",
-    "migration-browser",
-    "migration-running",
 ];
 
 const FINGERPRINT: &str = "3f8a21c94b07de5512aa90c3e4f61d28b97c0e3a5f4d12b6c8e09a7d3b1f5c24";
@@ -226,16 +219,6 @@ fn scenario(name: &str) -> Page {
         screen: Screen::RecoveryKey,
         recovery_check: check,
         ..recovery.clone()
-    };
-    let migration = |transfer: Transfer, status: ui::serde_json::Value| Page {
-        identity_ready_page: true,
-        migration: Some(Migration {
-            transfer,
-            status,
-            needs_password: transfer != Transfer::Migration,
-            cancellable: true,
-        }),
-        ..identity()
     };
     match name {
         "intro-host" => Page {
@@ -351,30 +334,6 @@ fn scenario(name: &str) -> Page {
         "tour-organise" => tour(TourPage::Organise),
         "tour-collaborate" => tour(TourPage::Collaborate),
         "tour-start" => tour(TourPage::Start),
-        "prepared" | "prepared-working" | "prepared-peer" => Page {
-            prepared: Some(Prepared {
-                working: name == "prepared-working",
-                peer: (name == "prepared-peer").then(|| Some("731 204".to_owned())),
-            }),
-            total_steps: 4,
-            ..base
-        },
-        "migration-portable-home" => migration(
-            Transfer::PortableHome,
-            ui::serde_json::json!({"state":"pending","portable_home":true}),
-        ),
-        "migration-applications" => migration(
-            Transfer::PortableApplications,
-            ui::serde_json::json!({"state":"pending","portable_applications":true,"applications_only":true}),
-        ),
-        "migration-browser" => migration(
-            Transfer::Browser,
-            ui::serde_json::json!({"state":"pending","browser":true}),
-        ),
-        "migration-running" => migration(
-            Transfer::Migration,
-            ui::serde_json::json!({"state":"copying","result":{"verified_files":1204}}),
-        ),
         _ => base,
     }
 }

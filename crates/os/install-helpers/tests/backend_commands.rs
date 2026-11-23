@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 fn helper(args: &[&str], stdin: &[u8]) -> Output {
     let mut child = Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
@@ -52,46 +52,6 @@ fn source(relative: &str) -> String {
             .join(relative),
     )
     .unwrap()
-}
-
-const CHOICES: [&str; 20] = [
-    "--username",
-    "ada",
-    "--full-name",
-    "Ada Lovelace",
-    "--device-label",
-    "Tower",
-    "--purpose",
-    "computer",
-    "--hostname",
-    "tower",
-    "--locale",
-    "en_GB.UTF-8",
-    "--timezone",
-    "Europe/London",
-    "--filesystem",
-    "btrfs",
-    "--keymap",
-    "us",
-    "--keyvariant",
-    "dvorak",
-];
-
-fn profile() -> Value {
-    json!({"username": "ada", "full_name": "Ada Lovelace", "device_label": "Tower",
-           "purpose": "computer", "hostname": "tower", "locale": "en_GB.UTF-8",
-           "timezone": "Europe/London", "filesystem": "btrfs", "keyboard": "dvorak"})
-}
-
-fn check_choices(profile: &Value, choices: &[&str]) -> Output {
-    let mut args = vec!["check-prepared-choices"];
-    args.extend_from_slice(choices);
-    helper(
-        &args,
-        json!({"schema": 1, "install_profile": profile})
-            .to_string()
-            .as_bytes(),
-    )
 }
 
 const GIB: u64 = 1 << 30;
@@ -200,50 +160,6 @@ fn the_backends_helper_commands() {
         assert_eq!(
             fs::read_to_string(&target).unwrap(),
             "PRETTY_HOSTNAME=\"Kept\"\n"
-        );
-    }
-
-    {
-        stdout(&check_choices(&profile(), &CHOICES));
-        stdout(&check_choices(&Value::Null, &CHOICES));
-
-        let mut defaults = profile();
-        let map = defaults.as_object_mut().unwrap();
-        map.remove("device_label");
-        let mut choices = CHOICES;
-        choices[5] = "";
-        stdout(&check_choices(&defaults, &choices));
-
-        let mut plain = profile();
-        plain["keyboard"] = json!("de");
-        let mut choices = CHOICES;
-        (choices[17], choices[19]) = ("de", "");
-        stdout(&check_choices(&plain, &choices));
-
-        for (index, value, message) in [
-            (1, "eve", "prepared account differs"),
-            (3, "Ada", "prepared account differs"),
-            (5, "Laptop", "prepared device label differs"),
-            (7, "server", "prepared purpose differs"),
-            (17, "dvorak", "prepared keyboard differs"),
-        ] {
-            let mut choices = CHOICES;
-            choices[index] = value;
-            let error = refused(&check_choices(&profile(), &choices));
-            assert!(error.contains(message), "{index}: {error}");
-        }
-        let mut missing = profile();
-        missing.as_object_mut().unwrap().remove("timezone");
-        assert!(refused(&check_choices(&missing, &CHOICES)).contains("preferences differ"));
-        assert!(
-            refused(&check_choices(&profile(), &CHOICES[..18])).contains("missing --keyvariant")
-        );
-        assert!(
-            refused(&helper(
-                &[&["check-prepared-choices"], &CHOICES[..]].concat(),
-                br#"{"schema":2,"install_profile":null}"#
-            ))
-            .contains("fields differ")
         );
     }
 
@@ -393,7 +309,6 @@ fn the_backends_helper_commands() {
             "\"$staging_handoff\" unpack-setup-handoff \"$payload\" \"$unpack\" || continue"
         ));
         assert!(backend.contains("\"$STAGING_HANDOFF\" check-device-label \"$DEVICE_LABEL\""));
-        assert!(backend.contains("| \"$STAGING_HANDOFF\" check-prepared-choices \\\n"));
         assert!(backend.contains(
             "\"$STAGING_HANDOFF\" write-machine-info \"$DEPLOY_ETC/machine-info\" \"$DEVICE_LABEL\""
         ));
@@ -460,9 +375,7 @@ fn the_backends_helper_commands() {
 
 fn tilo_install_fixture(dir: &Path) -> (std::path::PathBuf, String) {
     let bin_dir = dir.join("bin");
-    let gen_dir = dir.join("generation");
     fs::create_dir(&bin_dir).unwrap();
-    fs::create_dir(&gen_dir).unwrap();
 
     let write_stub = |path: &Path, body: &str| {
         fs::write(path, body).unwrap();
@@ -477,19 +390,10 @@ fn tilo_install_fixture(dir: &Path) -> (std::path::PathBuf, String) {
         &board_stub,
         "#!/bin/sh\nprintf 'ostree-image-signed:docker://ghcr.io/tilo/tilo:latest\\n'\n",
     );
-    let extract_stub = dir.join("tilo-installer-prepared-setup-extract");
-    write_stub(
-        &extract_stub,
-        &format!(
-            "#!/bin/sh\nif [ \"${{1:-}}\" = selected-generation ]; then printf '%s\\n' '{}'; fi\nexit 0\n",
-            gen_dir.display()
-        ),
-    );
 
     let raw = source("os/usr/libexec/tilo-install");
     for expected in [
         "/usr/libexec/tilo-board-successor",
-        "/usr/libexec/tilo-installer-prepared-setup-extract",
         "/usr/libexec/tilo-staging-handoff",
     ] {
         assert!(raw.contains(expected), "missing {expected} in tilo-install");
@@ -498,10 +402,6 @@ fn tilo_install_fixture(dir: &Path) -> (std::path::PathBuf, String) {
         .replace(
             "/usr/libexec/tilo-board-successor",
             board_stub.to_str().unwrap(),
-        )
-        .replace(
-            "/usr/libexec/tilo-installer-prepared-setup-extract",
-            extract_stub.to_str().unwrap(),
         )
         .replace(
             "/usr/libexec/tilo-staging-handoff",
