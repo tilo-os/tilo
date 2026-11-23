@@ -1344,8 +1344,10 @@ impl Device {
             self.endpoint.connect(self.addr.clone(), ACTIONS_ALPN),
         )
         .await
-        .map_err(|_| unavailable("the device did not answer"))?
-        .map_err(|error| unavailable(&error.to_string()))?;
+        .map_err(|_| {
+            tilo_actions::remote::ActionCallError::unavailable("the device did not answer")
+        })?
+        .map_err(|error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()))?;
         *self.connection.lock_recover() = Some(connection.clone());
         Ok(connection)
     }
@@ -1368,13 +1370,14 @@ impl Device {
             now_ns(),
             self.key.as_ref(),
         )
-        .map_err(|error| unavailable(&error.to_string()))?;
-        let bytes = postcard::to_allocvec(&ActionServiceFrame::Action(Box::new(signed)))
-            .map_err(|error| unavailable(&error.to_string()))?;
+        .map_err(|error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()))?;
+        let bytes = postcard::to_allocvec(&ActionServiceFrame::Action(Box::new(signed))).map_err(
+            |error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()),
+        )?;
         let answer = self.exchange(&bytes).await?;
         RemoteActionFrame::decode(&answer)
             .map(|frame| frame.message)
-            .map_err(|error| unavailable(&error.to_string()))
+            .map_err(|error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()))
     }
 
     /// Write `bytes` on a stream of this device's own, and read the one
@@ -1384,31 +1387,30 @@ impl Device {
         bytes: &[u8],
     ) -> Result<Vec<u8>, tilo_actions::remote::ActionCallError> {
         let connection = self.connection().await?;
-        let (mut send, mut recv) = connection
-            .open_bi()
-            .await
-            .map_err(|error| unavailable(&error.to_string()))?;
+        let (mut send, mut recv) = connection.open_bi().await.map_err(|error| {
+            tilo_actions::remote::ActionCallError::unavailable(error.to_string())
+        })?;
         write_frame(&mut send, bytes)
             .await
-            .map_err(|error| unavailable(&error))?;
-        send.finish()
-            .map_err(|error| unavailable(&error.to_string()))?;
+            .map_err(tilo_actions::remote::ActionCallError::unavailable)?;
+        send.finish().map_err(|error| {
+            tilo_actions::remote::ActionCallError::unavailable(error.to_string())
+        })?;
         read_frame(&mut recv)
             .await
-            .map_err(|error| unavailable(&error))?
-            .ok_or_else(|| unavailable("the device closed without answering"))
-    }
-}
-
-/// What a peer did not answer, as the caller reads it.
-fn unavailable(reason: &str) -> tilo_actions::remote::ActionCallError {
-    tilo_actions::remote::ActionCallError::Unavailable {
-        reason: reason.to_owned(),
+            .map_err(tilo_actions::remote::ActionCallError::unavailable)?
+            .ok_or_else(|| {
+                tilo_actions::remote::ActionCallError::unavailable(
+                    "the device closed without answering",
+                )
+            })
     }
 }
 
 fn unexpected() -> tilo_actions::remote::ActionCallError {
-    unavailable("the device answered with an unexpected message")
+    tilo_actions::remote::ActionCallError::unavailable(
+        "the device answered with an unexpected message",
+    )
 }
 
 const fn unanswered() -> tilo_actions::remote::ActionCallError {
@@ -1459,7 +1461,7 @@ fn follow(
     >,
 ) {
     if budget.rounds == 0 || tilo_clock::now() >= budget.until {
-        done.complete(Err(unavailable(
+        done.complete(Err(tilo_actions::remote::ActionCallError::unavailable(
             "the device did not finish the action in time",
         )));
         return;

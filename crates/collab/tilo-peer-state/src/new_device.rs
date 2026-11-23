@@ -65,13 +65,6 @@ impl std::fmt::Debug for ServedTicket {
     }
 }
 
-/// A call refused before anything ran, said as the computer is told it.
-fn refused(reason: impl Into<String>) -> ActionCallError {
-    ActionCallError::Refused {
-        reason: reason.into(),
-    }
-}
-
 impl ServedTicket {
     /// Serve `ticket`, issued now and live for `lifetime_ns`, for a computer to become a member
     /// device of `user_public_key`, entering at `enter`, once `approver` approves it. A
@@ -174,30 +167,34 @@ impl ServedTicket {
             };
         }
         let InvokeArgument::Json(argument) = &request.argument else {
-            return Err(refused(
+            return Err(ActionCallError::refused(
                 "a computer asks with its key, its agent and the ticket's secret",
             ));
         };
         let input: CertifyInput =
             serde_json::from_value(serde_json::Value::Object(argument.clone())).map_err(|_| {
-                refused("a computer asks with its key, its agent and the ticket's secret")
+                ActionCallError::refused(
+                    "a computer asks with its key, its agent and the ticket's secret",
+                )
             })?;
         let mut key = [0; 32];
         if hex::decode_to_slice(&input.device_public_key, &mut key).is_err() || key != device {
-            return Err(refused(
+            return Err(ActionCallError::refused(
                 "a computer asks to be certified for the key it connects with",
             ));
         }
         let agent = input.agent.trim();
         if agent.is_empty() {
-            return Err(refused("a computer names the agent that runs on it"));
+            return Err(ActionCallError::refused(
+                "a computer names the agent that runs on it",
+            ));
         }
         let label = fitted(input.label.as_deref().map_or(agent, str::trim));
         let now = tilo_clock::unix_now_ns();
         self.0
             .secret
             .spend(&input.secret, now)
-            .map_err(|why| refused(why.to_string()))?;
+            .map_err(|why| ActionCallError::refused(why.to_string()))?;
         let asked = asked(
             self.0.user_public_key,
             device,
@@ -207,7 +204,7 @@ impl ServedTicket {
             &self.0.ticket.secret,
             now,
         )
-        .map_err(|error| refused(error.to_string()))?;
+        .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let invocation = request.invocation;
         let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
         let receipt = accepted.receipt();
@@ -332,7 +329,9 @@ impl ActionProvider for ServedTickets {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         match self.for_request(&request) {
             Some(served) => served.invoke(caller, request),
-            None => Pending::ready(Err(refused("no ticket is served here any more"))),
+            None => Pending::ready(Err(ActionCallError::refused(
+                "no ticket is served here any more",
+            ))),
         }
     }
 
