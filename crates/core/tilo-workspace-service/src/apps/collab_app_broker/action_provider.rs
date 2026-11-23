@@ -173,13 +173,6 @@ impl tilo_actions::remote::ActionProvider for ConnectionActionProvider {
         self.state.action_cancel(caller, id)
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
-        self.state.request_approval(caller, None, request)
-    }
 }
 
 /// The broker's own api, as the [`ActionProvider`](tilo_actions::remote::ActionProvider)
@@ -231,6 +224,19 @@ impl BrokerApi {
     }
 }
 
+#[cfg(test)]
+impl BrokerApi {
+    /// Ask the session's person about `request` on the broker's own sheet: the app's ask,
+    /// driven directly by the tests that walk the sheet's answers.
+    pub(super) fn ask_on_sheet(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
+        self.state.request_approval(caller, None, request)
+    }
+}
+
 impl tilo_actions::remote::ActionProvider for BrokerApi {
     fn query(
         &self,
@@ -272,13 +278,6 @@ impl tilo_actions::remote::ActionProvider for BrokerApi {
         self.state.action_cancel(caller, id)
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
-        self.state.request_approval(caller, None, request)
-    }
 }
 
 /// The provider runs the action wherever its app lives; a published surface
@@ -680,9 +679,6 @@ impl AppBrokerState {
             // Questions travel between a person's own devices; an
             // application neither asks nor answers them.
             | RemoteActionMessage::ConfirmationRequest { .. }
-            // A confirmation is asked for on the API that puts questions to
-            // the person, never by an application.
-            | RemoteActionMessage::Confirm { .. }
             // A retired verb: nothing asks for a reading this way, and
             // nothing is answered.
             // An application puts content through its own store, not into or out of another
@@ -702,7 +698,6 @@ impl AppBrokerState {
             | RemoteActionMessage::ResourceReading { .. }
             | RemoteActionMessage::RetiredFeedbackResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
-            | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::ContentLinkResponse { .. }

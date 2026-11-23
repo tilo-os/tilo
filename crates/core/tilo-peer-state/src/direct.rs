@@ -372,6 +372,17 @@ impl LinkAdmit {
     /// channel's commit only from a device admitted for its keys
     /// ([`Self::key_access`]).
     fn permits(&self, own: [u8; 32], remote: [u8; 32], authored: &Authored) -> bool {
+        // A device the host confined to one record writes that record and no
+        // other: what it sends of another is refused here, as the same scope
+        // refuses to send it another's frames. A hosted environment's device is
+        // the one a host admits this way, and its own record is all it has.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(only) = self.scope.reads
+            && matches!(&authored.message, NeighbourMsg::AppDocument { .. })
+            && record_of(&authored.message).is_some_and(|record| record != only)
+        {
+            return false;
+        }
         if self.records_only && !records_frame(&authored.message) {
             return false;
         }

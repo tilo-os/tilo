@@ -156,7 +156,7 @@ use crate::params::ARGUMENTS_JSON_PREFIX;
 ///
 /// Additive changes keep the version; a change an older peer would misread
 /// bumps it, and [`RemoteActionFrame::decode`] refuses a version it does not know.
-pub const REMOTE_ACTIONS_VERSION: u16 = 4;
+pub const REMOTE_ACTIONS_VERSION: u16 = 5;
 
 /// Upper bound on one encoded frame: a provider pages its catalogue rather than raise this.
 pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
@@ -1526,22 +1526,6 @@ pub trait ActionProvider {
     /// does not own, or [`ActionCallError::NotCancellable`].
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>>;
 
-    /// Ask the person `caller` acts for to confirm `request` on their own
-    /// device, as the provider shows it to them. The answer carries a
-    /// [`Confirmation::Approved`] that `caller` invokes `request` again
-    /// with, and the arguments as the person changed them, if they did
-    /// ([`ConfirmedInvocation::apply`]); a caller never confirms by its own
-    /// word. A provider with nobody to ask answers
-    /// [`ActionCallError::ConfirmationRequired`].
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        let _ = (caller, request);
-        Pending::ready(Err(ActionCallError::confirmation_required()))
-    }
-
     /// Where this provider's callers put content into their workspace's content
     /// store ([`ContentPuts`]); `None` for a provider without one.
     fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
@@ -1778,20 +1762,6 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<ContentGetAnswer, ActionCallError>,
     },
-    /// Ask the provider to put `request` to the person the caller acts for and
-    /// answer with their confirmation of that one invocation
-    /// ([`ActionProvider::confirm`]): where they are asked is the provider's, and a
-    /// provider with nobody to ask answers
-    /// [`ActionCallError::ConfirmationRequired`].
-    Confirm {
-        correlation: u64,
-        request: Box<InvokeRequest>,
-    },
-    /// Answer to [`Self::Confirm`], same correlation.
-    ConfirmResponse {
-        correlation: u64,
-        result: Result<Box<ConfirmedInvocation>, ActionCallError>,
-    },
     /// Read a record of the workspace `read` names through the one record API
     /// ([`ResourceReads`]), decided there as every reader of it is; continuing
     /// `on_behalf_of`, an invocation the provider delivered to the caller, it is
@@ -1905,8 +1875,7 @@ impl RemoteActionMessage {
             } | Self::Invoke(InvokeRequest {
                 wait_ms: Some(_),
                 ..
-            }) | Self::Confirm { .. }
-                | Self::ChangedRequest { .. }
+            }) | Self::ChangedRequest { .. }
         )
     }
 
@@ -1926,28 +1895,11 @@ impl RemoteActionMessage {
                 | Self::ContentPutRequest { .. }
                 | Self::ContentGetRequest { .. }
                 | Self::ContentLinkRequest { .. }
-                | Self::Confirm { .. }
                 | Self::ChangesRequest { .. }
                 | Self::ChangedRequest { .. }
                 | Self::SurfaceRequest { .. }
         )
     }
-}
-
-/// `request` put to the person `caller` acts for, answered for
-/// `correlation` ([`ActionProvider::confirm`]).
-fn confirmed<H: ActionProvider>(
-    provider: &H,
-    caller: &Caller,
-    correlation: u64,
-    request: &InvokeRequest,
-) -> Pending<RemoteActionMessage> {
-    provider
-        .confirm(caller, request)
-        .map(move |result| RemoteActionMessage::ConfirmResponse {
-            correlation,
-            result: result.map(Box::new),
-        })
 }
 
 /// The refusal of a request [`serve`] keeps nothing for: a retired feedback
@@ -2132,10 +2084,6 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
             confirmation::unanswered(correlation, ActionCallError::confirmation_required()),
         ),
-        RemoteActionMessage::Confirm {
-            correlation,
-            request,
-        } => confirmed(provider, caller, correlation, &request),
         RemoteActionMessage::ChangesRequest { correlation, after } => {
             changed(provider, caller, correlation, after.as_deref())
         }
@@ -2155,7 +2103,6 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::ContentLinkResponse { .. }
-        | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedResponse { .. }
         | RemoteActionMessage::SurfaceResponse { .. }
@@ -2248,10 +2195,6 @@ pub fn refuse(
                 result: Err(error),
             }
         }
-        RemoteActionMessage::Confirm { correlation, .. } => RemoteActionMessage::ConfirmResponse {
-            correlation: *correlation,
-            result: Err(error),
-        },
         RemoteActionMessage::ChangesRequest { correlation, .. } => {
             RemoteActionMessage::ChangesResponse {
                 correlation: *correlation,

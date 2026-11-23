@@ -51,7 +51,7 @@ use tilo_actions::policy::{Answer, Asker, Invoked};
 use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, ConfirmedInvocation, InvocationReceipt, InvocationState,
+    CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, WatchScope, pending,
     person_models,
 };
@@ -2028,16 +2028,6 @@ impl ActionProvider for Joined {
         }
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        match &self.actions {
-            Some(actions) if !Self::is_account(&request.target) => actions.confirm(caller, request),
-            _ => Pending::ready(Err(ActionCallError::confirmation_required())),
-        }
-    }
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.actions.as_ref()?.content_puts()

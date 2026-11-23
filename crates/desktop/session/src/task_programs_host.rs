@@ -238,15 +238,6 @@ impl ActionProvider for Stopped {
         self.api.cancel(caller, id)
     }
 
-    fn confirm(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        request: &tilo_actions::remote::InvokeRequest,
-    ) -> Pending<
-        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>,
-    > {
-        self.api.confirm(caller, request)
-    }
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.api.content_puts()
@@ -458,15 +449,6 @@ impl ActionProvider for Current {
         self.provider().cancel(caller, id)
     }
 
-    fn confirm(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        request: &tilo_actions::remote::InvokeRequest,
-    ) -> Pending<
-        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>,
-    > {
-        self.provider().confirm(caller, request)
-    }
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.provider().content_puts()

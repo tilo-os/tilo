@@ -32,8 +32,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
@@ -684,19 +683,6 @@ impl ActionProvider for OnHost {
         }
     }
 
-    /// The person's answer to `request`, asked of the workspace's host: the
-    /// host is the one that reaches their approving devices, so a request a
-    /// page needs their word for is put to them there and answered here with
-    /// the confirmation it runs with.
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        let caller = caller.clone();
-        let request = request.clone();
-        self.asking(move |actions| actions.confirm(&caller, &request))
-    }
 }
 
 #[cfg(test)]

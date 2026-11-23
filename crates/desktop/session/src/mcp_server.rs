@@ -41,7 +41,7 @@ use tilo_action_policy::Lifetime;
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
-    ConfirmedInvocation, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_compositor::ReadableWatch;
 use tilo_lock::MutexRecover as _;
@@ -2217,18 +2217,6 @@ impl ActionProvider for Host {
         }
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        // An admitted agent's step is asked about on this shell's sheet, where its person answers
-        // ([`crate::step_questions`]).
-        match &self.state {
-            Some(state) => state.request_approval(caller, None, request),
-            None => Pending::ready(Err(ActionCallError::confirmation_required())),
-        }
-    }
 
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
         self.state

@@ -22,8 +22,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use ed25519_dalek::SigningKey;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
@@ -504,16 +503,6 @@ impl<P: ActionProvider> ActionProvider for Signed<P> {
         self.provider.cancel(caller, id)
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        match self.signed(request.clone()) {
-            Ok(request) => self.provider.confirm(caller, &request),
-            Err(error) => Pending::ready(Err(error)),
-        }
-    }
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.provider.content_puts()

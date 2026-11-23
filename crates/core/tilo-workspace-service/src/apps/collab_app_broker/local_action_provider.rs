@@ -607,19 +607,6 @@ impl ActionProvider for CertifiedLocalActionProvider {
         }
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
-        if let Err(error) = self.check(caller) {
-            return Pending::ready(Err(error));
-        }
-        if !certified_target(&request.target.provider, &request.target.address) {
-            return Pending::ready(Err(ActionCallError::UnknownAction));
-        }
-        self.state.request_approval(&self.effective, None, request)
-    }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         self.check(caller).ok()?;

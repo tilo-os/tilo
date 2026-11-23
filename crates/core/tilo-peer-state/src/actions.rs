@@ -795,8 +795,11 @@ impl ActionService {
         let request = &action.message;
         // A person's approve of an asked record is set only by the dispatch their resolve hands
         // the call back to: a request carrying one nobody resolved is refused whole, whether it
-        // is for this device or for a device it reaches.
-        if let RemoteActionMessage::Invoke(invoke) = request
+        // is for this device or for a device it reaches. A link that names no device of its own
+        // carries a frame the device it dialled admitted or re-admitted, so the answer it
+        // carries is that device's to vouch for, not this one's to check.
+        if remote.is_some()
+            && let RemoteActionMessage::Invoke(invoke) = request
             && let Err(error) =
                 tilo_actions::remote::asked::admit_frame(self.0.asked.get().map(Arc::as_ref), invoke)
         {

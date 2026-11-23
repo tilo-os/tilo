@@ -1,8 +1,7 @@
 //! A shared provider is the provider ([`ActionProvider`] for `Arc<H>`).
 
 use super::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    ContentGets, ContentPuts, InvocationId, InvocationReceipt, InvocationState, InvokeRequest,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentGets, ContentPuts, InvocationId, InvocationReceipt, InvocationState, InvokeRequest,
     Pending, ResourceChanges, ResourceReads,
 };
 
@@ -65,13 +64,6 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).cancel(caller, id)
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        (**self).confirm(caller, request)
-    }
 
     fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
         (**self).content_puts()

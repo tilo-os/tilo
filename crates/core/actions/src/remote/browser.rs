@@ -88,7 +88,13 @@ pub fn departure_facts(context: Option<&crate::ActionContext>) -> Vec<(String, S
 /// ([`stated_facts`]): each by the name it is stated under.
 #[must_use]
 pub fn departure_asked(facts: Vec<(String, String)>) -> super::asked::AskedFacts {
+    // The page it leaves from is what the question is about, as the resource a call names.
+    let on = facts
+        .iter()
+        .find(|(name, _)| name == "page")
+        .map(|(_, value)| value.clone());
     super::asked::AskedFacts {
+        on,
         facts: facts
             .into_iter()
             .map(|(label, value)| super::asked::Fact { label, value })

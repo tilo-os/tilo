@@ -45,8 +45,8 @@ pub fn argument_digest(argument: Option<&str>) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-/// The person's answer to [`ActionProvider::confirm`](super::ActionProvider::confirm):
-/// the confirmation to invoke again with, and the arguments to invoke with.
+/// The person's answer to a call an app's own consent asks them about: the
+/// confirmation to invoke again with, and the arguments to invoke with.
 ///
 /// Where the person changed the draft they were shown
 /// ([`Draft::apply_edits`](crate::Draft::apply_edits)), `arguments` holds

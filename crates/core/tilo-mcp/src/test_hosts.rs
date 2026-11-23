@@ -196,17 +196,6 @@ impl ActionProvider for StubHost {
         .receipt()))
     }
 
-    /// The person answers on their own device: the host hands the agent
-    /// the token naming that answer.
-    fn confirm(
-        &self,
-        _caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
-        Pending::ready(Ok(tilo_actions::remote::ConfirmedInvocation::unchanged(
-            approved(request),
-        )))
-    }
 
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         let started = self
@@ -470,13 +459,6 @@ impl ActionProvider for HeldHost {
         unanswered
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
-        self.stub.confirm(caller, request)
-    }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         self.observes.fetch_add(1, Ordering::SeqCst);

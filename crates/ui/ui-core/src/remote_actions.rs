@@ -943,8 +943,6 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::RetiredFeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationRequest { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
-        | RemoteActionMessage::Confirm { .. }
-        | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::ContentPutRequest { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetRequest { .. }

@@ -2341,20 +2341,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             target,
             argument: InvokeArgument::Json(arguments),
             context: self.context(),
-            // The MCP client's own allow/deny policy confirms nothing here:
-            // an action that asks is confirmed by the person on their
-            // device (see `start_confirmed`).
+            // The MCP client's own allow/deny policy confirms nothing here: an action that
+            // asks is kept as its asked invocation record, which the person answers wherever
+            // they are, and the agent follows it like any other call.
             confirmation: None,
             revision,
             wait_ms: None,
             appearance: None,
             signed: None,
         };
-        let mut edited = None;
         let admitting = timing_start();
-        let mut started = self
-            .start_confirmed(&mut request, wait, record, &mut edited)
-            .await;
+        let mut started = self.start(request.clone(), wait, record).await;
         timing_done("call.admit", admitting);
         if current
             && matches!(
@@ -2368,9 +2365,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // moved revision, and an action asking for confirmation needs
             // the revision it is confirmed at: name the one it is at now.
             request.revision = Some(self.current_revision(&request.target.provider).await?);
-            started = self
-                .start_confirmed(&mut request, wait, record, &mut edited)
-                .await;
+            started = self.start(request.clone(), wait, record).await;
         }
         let settling = timing_start();
         let mut value = match started? {
@@ -2385,11 +2380,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Admission::Answered(_) => self.settled(invocation, wait).await?,
         };
         timing_done("call.settle", settling);
-        // The person changed what would run before allowing it: the agent
-        // is told what ran, not left believing its own arguments did.
-        if let (Some(arguments), Some(answer)) = (edited, value.as_object_mut()) {
-            answer.insert(confirm::EDITED_BY_PERSON.into(), Value::Object(arguments));
-        }
         Ok(value)
     }
     /// Open `path` in instance `peer` through the app's own action, so the
@@ -2937,9 +2927,6 @@ const HELD_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
 /// more than this is several turns.
 const MAX_CALLS: usize = 32;
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
-/// How long an invocation waits for the person to confirm it on their
-/// device.
-const CONFIRMATION_PATIENCE: std::time::Duration = std::time::Duration::from_secs(300);
 /// What `instances` asks: no provider and no rows, which a host answers with
 /// its publishers alone instead of assembling every row it offers.
 /// What an invocation this caller may not observe answers.

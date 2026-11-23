@@ -671,6 +671,11 @@ enum = "RemoteActionMessage"
 reason = "the search request and answer went: a workspace's search is the `tilo.search` provider's `search#find` action, asked and answered as an invocation. The frame is JSON, named by variant, and the remote-action envelope version is bumped from 2 to 3 with the removal, so a peer at the old version is refused as undeliverable instead of sending a search no one reads"
 
 [[break]]
+file = "crates/core/actions/src/remote.rs"
+enum = "RemoteActionMessage"
+reason = "the confirmation frame went: a call that waits for its person is the call's own asked invocation record, and the person answers it with `tilo.invocations#resolve`. The frame is JSON, named by variant, and the remote-action version is bumped from 4 to 5 with the removal, so a peer at the old version is refused as undeliverable instead of sending a question nothing answers"
+
+[[break]]
 file = "crates/core/action-policy/src/workspace.rs"
 enum = "Change"
 reason = "`SetMemberRoles` went and came back as `RetiredSetMemberRoles` in its place. It held that place from the first build with custom roles, so every workspace those builds kept numbers `SetMemberCustomRole` and `TransferOwnership` after it; while it was gone a kept ownership transfer did not read, the workspace replayed to the owner it was handed away from, and its state no longer opened. Only operations written in the hours it was gone read differently now"

@@ -16,7 +16,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_actions::offload::ActionOffload;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
-    ConfirmationQuestion, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest,
+    ConfirmationQuestion, InvocationReceipt, InvocationState, InvokeRequest,
     Pending, own_device, pending,
 };
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
@@ -393,14 +393,6 @@ impl ActionProvider for DeviceDispatch {
         self.through(caller, move |host, caller| host.cancel(caller, &id))
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        let request = request.clone();
-        self.through(caller, move |host, caller| host.confirm(caller, &request))
-    }
 }
 
 /// The workspaces this device holds, as the action service reads them: this session's own store, asked when

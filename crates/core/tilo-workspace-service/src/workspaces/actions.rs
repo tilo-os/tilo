@@ -4003,6 +4003,11 @@ impl GovernedServer {
             }
             RemoteActionMessage::Invoke(request) => {
                 PROVIDERS.contains(&request.target.provider.as_str())
+                    // The calls that wait for a person's yes: listed as `tilo.asking`, and
+                    // answered as `<record>#resolve` on the invocations provider.
+                    || request.target.provider
+                        == tilo_actions::remote::workspace_invocations::PROVIDER
+                    || tilo_actions::remote::asked::is_resolve(&request.target)
                     || self.governance.answers_own_account(&request.target)
             }
             RemoteActionMessage::Observe { invocation, .. }
@@ -4083,6 +4088,9 @@ impl GovernedServer {
         // apps place elsewhere (a Browser window on a VM host) is theirs.
         if let RemoteActionMessage::Invoke(request) = message
             && (PROVIDERS.contains(&request.target.provider.as_str())
+                || request.target.provider
+                    == tilo_actions::remote::workspace_invocations::PROVIDER
+                || tilo_actions::remote::asked::is_resolve(&request.target)
                 || self.governance.answers_own_account(&request.target))
         {
             return None;

@@ -13,7 +13,7 @@ use super::frame_line;
 use crate::outcome::InvocationId;
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
-    ConfirmedInvocation, ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer,
+    ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer,
     ContentPutStep, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest,
     MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
     MAX_REMOTE_ACTION_FRAME_BYTES, MAX_REMOTE_WAIT, Pending, RemoteActionFrame,
@@ -306,7 +306,6 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
         RemoteActionMessage::CatalogueResponse { correlation, .. }
         | RemoteActionMessage::ContentPutResponse { correlation, .. }
         | RemoteActionMessage::ContentGetResponse { correlation, .. }
-        | RemoteActionMessage::ConfirmResponse { correlation, .. }
         | RemoteActionMessage::Update {
             correlation: Some(correlation),
             ..
@@ -433,26 +432,6 @@ impl ActionProvider for LineClient {
         })
     }
 
-    fn confirm(
-        &self,
-        _caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Answered<ConfirmedInvocation>> {
-        let correlation = self.correlation();
-        self.ask(
-            Key::Correlation(correlation),
-            RemoteActionMessage::Confirm {
-                correlation,
-                request: Box::new(request.clone()),
-            },
-        )
-        .map(|answer| match answer? {
-            RemoteActionMessage::ConfirmResponse { result, .. } => {
-                result.map(|confirmed| *confirmed)
-            }
-            other => Err(unexpected(&other)),
-        })
-    }
 
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
         Some(Arc::new(self.clone()))

@@ -80,6 +80,7 @@ use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
 use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refusal};
+use tilo_actions::remote::asked::{AskedDispatch, AskedRecords, AskedStore, RecordRef};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, Completer,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
@@ -415,6 +416,9 @@ enum Stage {
     /// With the window, which answers the caller itself — as it answers a
     /// caller asking after it.
     Running,
+    /// It waits for its person, as its asked record: their approve admits the
+    /// same call again, and their decline ends it.
+    Asked(RecordRef),
     /// It is over: the update a caller asking after it is answered with.
     Over(InvocationUpdate),
 }
@@ -425,8 +429,56 @@ impl Stage {
     fn state(&self, invocation: tilo_actions::InvocationId) -> InvocationUpdate {
         match self {
             Self::Running => InvocationUpdate::Accepted { invocation },
+            Self::Asked(record) => record.waiting(invocation),
             Self::Over(update) => update.clone(),
         }
+    }
+}
+
+/// The name this host's dispatch keeps the asked records it writes by, across its restarts.
+const ASKED_BY: &str = "browser";
+
+/// The dispatch a window's page action comes back to, when it waits for its person: this
+/// host, referred to weakly so the store keeps nothing of it alive.
+struct BrowsersAsks(std::sync::Weak<HostedBrowsers>);
+
+impl AskedDispatch for BrowsersAsks {
+    fn context(&self, invocation: tilo_actions::InvocationId) -> serde_json::Value {
+        self.0
+            .upgrade()
+            .map_or(serde_json::Value::Null, |browsers| {
+                browsers.ask_context(invocation)
+            })
+    }
+
+    fn readmit(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        context: &serde_json::Value,
+    ) -> Result<(), ActionCallError> {
+        self.0
+            .upgrade()
+            .ok_or_else(not_waiting)?
+            .readmit(caller, request, context)
+    }
+
+    fn declined(
+        &self,
+        _caller: &Caller,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<(), ActionCallError> {
+        self.0
+            .upgrade()
+            .ok_or_else(not_waiting)?
+            .declined_by_person(invocation)
+    }
+}
+
+/// What a host that no longer holds the call answers: it waits no more.
+fn not_waiting() -> ActionCallError {
+    ActionCallError::Refused {
+        reason: "the call no longer waits for this answer".to_owned(),
     }
 }
 
@@ -452,6 +504,13 @@ pub struct HostedBrowsers {
     /// The page actions handed to a window and not yet answered, by
     /// invocation: what a count is owed for once it ran.
     handed: Arc<Mutex<HashMap<tilo_actions::InvocationId, Handed>>>,
+    /// Where a page action that waits for its person is kept, once the host named the store
+    /// ([`Self::keep_asked_in`]): the call's own asked record, answered with
+    /// `<record>#resolve`.
+    asked: Mutex<Option<Arc<dyn AskedRecords>>>,
+    /// The dispatch a person's answer to one of those records comes back to, kept while the
+    /// host runs.
+    asked_dispatch: Mutex<Option<Arc<dyn AskedDispatch>>>,
     /// The page actions this server handed to windows for the turns it carries out itself
     /// ([`turn_pages`]).
     turn_pages: turn_pages::TurnPages,
@@ -486,6 +545,8 @@ impl HostedBrowsers {
             apps: Mutex::default(),
             authority: Mutex::default(),
             handed: Arc::default(),
+            asked: Mutex::default(),
+            asked_dispatch: Mutex::default(),
             turn_pages: turn_pages::TurnPages::default(),
             next_waiter: AtomicU64::new(0),
             reconnect: RECONNECT,
@@ -717,15 +778,28 @@ impl HostedBrowsers {
         let RemoteActionMessage::Invoke(request) = message else {
             return self.answered_or_asked_after(workspace_id, caller, message);
         };
-        let (provider, window) = {
+        let (provider, window, window_device) = {
             let open = self.open.lock_recover();
             let up = open.get(&workspace_id)?;
-            (up.window.provider.clone(), up.window.device)
+            (
+                up.window.provider.clone(),
+                up.window.device,
+                up.device.device_public_key,
+            )
         };
         if !page_action(&request.target, &provider) {
             return None;
         }
         let device = *caller.device_public_key()?;
+        // The request a window holds is its own session's to release or drop: another device
+        // answering for its page would be answered as though it were the window.
+        if matches!(
+            request.target.address.action.as_str(),
+            tilo_actions::remote::browser::SEND_HELD | tilo_actions::remote::browser::KEEP_HELD
+        ) && device != window_device
+        {
+            return answered_with(message, ActionCallError::NotPermitted);
+        }
         let permitted = match &request.confirmation {
             None => true,
             Some(Confirmation::Approved(token)) => {
@@ -797,6 +871,102 @@ impl HostedBrowsers {
         }
     }
 
+    /// Keep every page action a window of this host holds for its person as its own asked
+    /// record in `store`, answered through this host: their approve hands the same call to the
+    /// window again carrying their answer, and their decline keeps the page as it was.
+    pub fn keep_asked_in(self: &Arc<Self>, store: &Arc<AskedStore>) {
+        let dispatch: Arc<dyn AskedDispatch> = Arc::new(BrowsersAsks(Arc::downgrade(self)));
+        let records = store.for_dispatch(ASKED_BY, Arc::downgrade(&dispatch));
+        *self.asked.lock_recover() = Some(records);
+        *self.asked_dispatch.lock_recover() = Some(dispatch);
+    }
+
+    /// What admitting an asked call again needs, kept with its record: the workspace whose
+    /// window holds it.
+    fn ask_context(&self, invocation: tilo_actions::InvocationId) -> serde_json::Value {
+        let handed = self.handed.lock_recover();
+        handed.get(&invocation).map_or(serde_json::Value::Null, |entry| {
+            serde_json::json!({ "workspace": entry.workspace })
+        })
+    }
+
+    /// Admit the call `caller` asked for again on their approve of its record, carrying their
+    /// answer: the window it was handed to runs it once, as it runs a page action the host
+    /// answered for the person.
+    fn readmit(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        context: &serde_json::Value,
+    ) -> Result<(), ActionCallError> {
+        let workspace_id = context
+            .get("workspace")
+            .and_then(serde_json::Value::as_str)
+            .and_then(WorkspaceId::parse)
+            .ok_or_else(not_waiting)?;
+        let device = *caller
+            .device_public_key()
+            .ok_or(ActionCallError::NotPermitted)?;
+        let window = self
+            .open
+            .lock_recover()
+            .get(&workspace_id)
+            .map(|up| up.window.device)
+            .ok_or_else(not_waiting)?;
+        let hand = self.hand().ok_or_else(|| ActionCallError::Unavailable {
+            reason: "this host reaches no window".to_owned(),
+        })?;
+        {
+            let mut handed = self.handed.lock_recover();
+            let Some(entry) = handed.get_mut(&request.invocation) else {
+                return Err(not_waiting());
+            };
+            if entry.window != window {
+                return Err(not_waiting());
+            }
+            entry.request = request.clone();
+            entry.stage = Stage::Running;
+            let accepted = InvocationUpdate::Accepted {
+                invocation: request.invocation,
+            };
+            for (_, waiter) in entry.waiting.drain(..) {
+                waiter.complete(state_message(
+                    request.invocation,
+                    accepted.clone(),
+                    None,
+                ));
+            }
+        }
+        hand.hand(
+            workspace_id,
+            (
+                device,
+                caller.user_public_key().copied().unwrap_or([0; 32]),
+            ),
+            window,
+            RemoteActionMessage::Invoke(request),
+        );
+        Ok(())
+    }
+
+    /// End `invocation`, which waits in its asked record, as declined by the person: the page
+    /// stays as it was, and a caller following it reads that.
+    fn declined_by_person(
+        &self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<(), ActionCallError> {
+        let mut handed = self.handed.lock_recover();
+        let Some(entry) = handed.get_mut(&invocation) else {
+            return Err(not_waiting());
+        };
+        let update = InvocationUpdate::Cancelled {
+            invocation,
+            message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
+        };
+        over(entry, update);
+        Ok(())
+    }
+
     /// The window's answer to a page action this host handed it: it ran
     /// (`Completed`), so it is counted — once, when it ran — and its caller is
     /// answered with the page's receipt; the window asks the person first
@@ -824,26 +994,57 @@ impl HostedBrowsers {
         match &receipt.status {
             ReceiptStatus::Completed { .. } => {
                 // The action ran where the window says it did, and nowhere
-                // else: a count is owed once.
+                // else: a count is owed once. Releasing or dropping a request the
+                // page already holds is no page action of the person's allowance.
                 let entry = handed.get_mut(&receipt.invocation)?;
                 let ran = matches!(entry.stage, Stage::Running);
+                let counted = !matches!(
+                    entry.request.target.address.action.as_str(),
+                    tilo_actions::remote::browser::SEND_HELD
+                        | tilo_actions::remote::browser::KEEP_HELD
+                );
                 let workspace = entry.workspace.clone();
                 answered(entry, &receipt.status);
                 drop(handed);
-                if ran {
+                if ran && counted {
                     self.counted(&workspace);
                 }
                 None
             }
-            // It waits for the person: the call it names is handed back as the
-            // record it is kept as, and runs again — this time for them — once
-            // they approve it. The window's own answer to that run is counted
-            // like any other.
+            // It waits for the person: the call is kept as its own asked record, which they
+            // answer with `<record>#resolve`. Their approve admits the same call again, and the
+            // window's own answer to that run is counted like any other.
             ReceiptStatus::Rejected {
-                error: ActionCallError::ConfirmationRequired(_),
+                error: ActionCallError::ConfirmationRequired(facts),
             } => {
-                handed.remove(&receipt.invocation);
-                None
+                let entry = handed.get(&receipt.invocation)?;
+                let (workspace, caller, request) = (
+                    entry.workspace.clone(),
+                    entry.caller.clone(),
+                    entry.request.clone(),
+                );
+                let records = self.asked.lock_recover().clone();
+                drop(handed);
+                let Some(records) = records else {
+                    // No store here keeps it: the caller is answered the refusal it always was.
+                    self.handed.lock_recover().remove(&receipt.invocation);
+                    return None;
+                };
+                let Ok(record) = records.write_asked(&workspace, &caller, &request, &facts) else {
+                    self.handed.lock_recover().remove(&receipt.invocation);
+                    return None;
+                };
+                let mut handed = self.handed.lock_recover();
+                let entry = handed.get_mut(&receipt.invocation)?;
+                entry.stage = Stage::Asked(record.clone());
+                let waiting = InvocationState::new(
+                    receipt.invocation,
+                    record.waiting(receipt.invocation),
+                );
+                for (_, waiter) in entry.waiting.drain(..) {
+                    waiter.complete(state_message(receipt.invocation, waiting.update.clone(), None));
+                }
+                Some(RemoteActionMessage::Receipt(waiting.receipt()))
             }
             // Running, or to be followed: the answer is still to come, and
             // what it settles is counted then.
@@ -905,6 +1106,8 @@ impl HostedBrowsers {
             Stage::Over(update) => {
                 return Some(state_routing(invocation, update.clone(), correlation));
             }
+            // It waits for its person: the state it is answered with, and a wait for it.
+            Stage::Asked(_) => {}
         }
         let wait = Duration::from_millis(u64::from(wait_ms.unwrap_or_default()));
         if wait.is_zero() {
@@ -957,6 +1160,10 @@ impl HostedBrowsers {
             }
             Stage::Over(_) => Err(ActionCallError::NotCancellable {
                 reason: "it is over".to_owned(),
+            }),
+            // The person answers it, in its record: the call has not reached the window.
+            Stage::Asked(_) => Err(ActionCallError::NotCancellable {
+                reason: "it waits for its person's answer".to_owned(),
             }),
         };
         if stopped.is_ok() {

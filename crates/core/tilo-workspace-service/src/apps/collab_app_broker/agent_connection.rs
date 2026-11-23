@@ -337,33 +337,4 @@ impl ActionProvider for AgentConnection {
         self.0.provider.cancel(&self.0.caller, id)
     }
 
-    /// Ask the session's person to confirm `request` on the host's sheet.
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        if let Err(error) = self.check(caller) {
-            return Pending::ready(Err(error));
-        }
-        let runtime = match super::launchable::delivery_runtime() {
-            Ok(runtime) => runtime,
-            Err(reason) => return Pending::ready(Err(ActionCallError::Unavailable { reason })),
-        };
-        let connection = self.clone();
-        let request = request.clone();
-        let (complete, answer) = pending();
-        runtime.spawn(async move {
-            // A caller that stops waiting withdraws the question: the asking is dropped, and
-            // with it the sheet.
-            let asked = tokio::select! {
-                asked = connection.ask_person(&request) => Some(asked),
-                () = complete.abandoned() => None,
-            };
-            if let Some(asked) = asked {
-                complete.complete(asked);
-            }
-        });
-        answer
-    }
 }

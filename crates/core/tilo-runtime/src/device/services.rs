@@ -3012,26 +3012,6 @@ impl ActionProvider for RuntimeActionProvider {
             .action_next_change_after_now(&on_this_device(caller), id)
     }
 
-    /// The person this run's agent acts for confirms `request` on this
-    /// device, as the broker asks them; the agent never confirms by its own
-    /// word. A person acting themselves confirms on their own screen, so
-    /// nothing answers for them here.
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
-        let Some(session) = &self.session else {
-            return Pending::ready(Err(ActionCallError::confirmation_required()));
-        };
-        if session.agent.is_none() {
-            return Pending::ready(Err(ActionCallError::confirmation_required()));
-        }
-        if let Err(refusal) = session.check(caller, &self.workspaces) {
-            return Pending::ready(Err(refusal.into()));
-        }
-        session.provider.confirm(session.acting(), request)
-    }
 
     fn cancel(
         &self,

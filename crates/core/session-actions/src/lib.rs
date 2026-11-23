@@ -17,7 +17,7 @@ use tilo_server_protocol::refusal::Refusal;
 use collab_types::WorkspaceId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangePage, Completer,
-    ConfirmedInvocation, ContentGetAnswer, ContentLink, ContentLinkAsk, ContentPutAnswer,
+    ContentGetAnswer, ContentLink, ContentLinkAsk, ContentPutAnswer,
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, UpdateMark, WatchScope, pending, serve,
 };
@@ -216,7 +216,6 @@ struct Waiting {
     puts: HashMap<u64, Asked<Answered<ContentPutAnswer>>>,
     gets: HashMap<u64, Asked<Answered<ContentGetAnswer>>>,
     links: HashMap<u64, Asked<Answered<ContentLink>>>,
-    confirms: HashMap<u64, Asked<Answered<ConfirmedInvocation>>>,
     changes: HashMap<u64, Asked<Answered<ChangePage>>>,
     /// The waits for what a watch follows to change, by correlation.
     watched: HashMap<u64, Asked<Answered<()>>>,
@@ -295,9 +294,6 @@ impl Waiting {
         for (_, asked) in self.links.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
-        for (_, asked) in self.confirms.drain() {
-            give.push(giving(asked, Err(error.clone())));
-        }
         for (_, asked) in self.changes.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
@@ -334,9 +330,6 @@ impl Waiting {
             give.push(giving(asked, Err(late())));
         }
         for asked in expired(&mut self.links, now) {
-            give.push(giving(asked, Err(late())));
-        }
-        for asked in expired(&mut self.confirms, now) {
             give.push(giving(asked, Err(late())));
         }
         for asked in expired(&mut self.changes, now) {
@@ -393,7 +386,6 @@ impl Waiting {
             && self.puts.is_empty()
             && self.gets.is_empty()
             && self.links.is_empty()
-            && self.confirms.is_empty()
             && self.changes.is_empty()
             && self.watched.is_empty()
             && self.surfaces.is_empty()
@@ -408,7 +400,6 @@ impl Waiting {
         again.extend(self.puts.values().map(|asked| asked.again.clone()));
         again.extend(self.gets.values().map(|asked| asked.again.clone()));
         again.extend(self.links.values().map(|asked| asked.again.clone()));
-        again.extend(self.confirms.values().map(|asked| asked.again.clone()));
         again.extend(self.changes.values().map(|asked| asked.again.clone()));
         again.extend(self.watched.values().map(|asked| asked.again.clone()));
         again.extend(self.surfaces.values().map(|asked| asked.again.clone()));
@@ -487,14 +478,6 @@ impl Waiting {
             } => {
                 if let Some(asked) = self.links.remove(&correlation) {
                     give.push(giving(asked, result));
-                }
-            }
-            RemoteActionMessage::ConfirmResponse {
-                correlation,
-                result,
-            } => {
-                if let Some(asked) = self.confirms.remove(&correlation) {
-                    give.push(giving(asked, result.map(|confirmed| *confirmed)));
                 }
             }
             RemoteActionMessage::ChangesResponse {
@@ -1358,32 +1341,6 @@ impl ActionProvider for SessionActions {
         answered
     }
 
-    /// The person's confirmation for `request`, asked of the host the device is with: where they
-    /// are put to them is the host's to say.
-    fn confirm(
-        &self,
-        _caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Answered<ConfirmedInvocation>> {
-        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
-        let (answer, answered) = pending();
-        let message = RemoteActionMessage::Confirm {
-            correlation,
-            request: Box::new(request.clone()),
-        };
-        self.0
-            .waiting
-            .lock_recover()
-            .confirms
-            .insert(correlation, Asked::new(answer, message.clone()));
-        self.0.ask(message, |error| {
-            let asked = self.0.waiting.lock_recover().confirms.remove(&correlation);
-            if let Some(asked) = asked {
-                asked.answer.complete(Err(error));
-            }
-        });
-        answered
-    }
 }
 
 #[cfg(test)]

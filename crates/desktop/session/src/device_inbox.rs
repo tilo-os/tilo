@@ -80,15 +80,6 @@ impl ActionProvider for Shared {
         self.0.cancel(caller, id)
     }
 
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &tilo_actions::remote::InvokeRequest,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>,
-    > {
-        self.0.confirm(caller, request)
-    }
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.0.content_puts()
