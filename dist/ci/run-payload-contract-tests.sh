@@ -47,28 +47,11 @@ python3 "$repo_root/dist/rpm/test-rpmlint-config.py"
 "$repo_root/dist/rpm/test-app-collection.sh"
 "$repo_root/dist/rpm/test-rpmbuild-route.sh"
 
-# A production import entry must name an installed native executable. This
-# fails before the import payload is added, and must remain in every builder.
+# Every host-package builder must compile every executable dist/stage-payload.sh
+# requires (including the RPM's --primary-files additions), resolved against the
+# workspace Cargo manifests rather than a second hand-written list.
 python3 "$repo_root/tools/tests/test_rpm_build_graph.py"
-for builder in dist/build-binaries.sh dist/arch/PKGBUILD; do
-    grep -Eq 'cargo build .*-p imager.*--bin imager' "$repo_root/$builder" || {
-        echo "$builder does not build the delivered folder import UI" >&2
-        exit 1
-    }
-done
-
-# Every host package ships `tilo`, the terminal's way to the desktop's apps and
-# actions; a builder that stops compiling it leaves the payload without one.
-for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; do
-    grep -Eq -- '-p tilo-cli' "$repo_root/$builder" || {
-        echo "$builder does not build the tilo command" >&2
-        exit 1
-    }
-done
-grep -Fq '"--bin" "tilo"' "$repo_root/dist/nix/package.nix" || {
-    echo "dist/nix/package.nix does not build the tilo command" >&2
-    exit 1
-}
+python3 "$repo_root/dist/ci/tests/test_payload_builders.py"
 
 # A local Atomic trial must install only the runtime RPM unless the developer
 # entry is explicitly requested; a broad tilo-session*.rpm glob regresses that
@@ -86,9 +69,9 @@ fi
 fhs=$work/fhs
 mkdir -p "$fhs"/{usr/bin,usr/libexec/tilo,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
 for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/bin/tilo-runtime" \
-              "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
-              "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
-              "$fhs/usr/libexec/tilo-session-report"; do
+              "$fhs/usr/bin/tilolang-process" "$fhs/usr/libexec/tilo/tilo-launcher" \
+              "$fhs/usr/bin/tilo-import-folders" "$fhs/usr/libexec/tilo-unlock-helper" \
+              "$fhs/usr/libexec/tilo-flight-recorder" "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
 done
 install -m644 "$repo_root/dist/session/tilo-import-folders.desktop" "$fhs/usr/share/applications/tilo-import-folders.desktop"
@@ -164,9 +147,9 @@ EOF
 for link_mode in -static -static-pie; do
     cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
     for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/bin/tilo-runtime" \
-              "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
-                  "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
-                  "$fhs/usr/libexec/tilo-session-report"; do
+                  "$fhs/usr/bin/tilolang-process" "$fhs/usr/libexec/tilo/tilo-launcher" \
+                  "$fhs/usr/bin/tilo-import-folders" "$fhs/usr/libexec/tilo-unlock-helper" \
+                  "$fhs/usr/libexec/tilo-flight-recorder" "$fhs/usr/libexec/tilo-session-report"; do
         install -m755 "$work/static" "$target"
     done
     PATH="$work/verifier-bin:$PATH" TILO_TEST_LDD_MODE=error \
@@ -200,9 +183,9 @@ for object_mode in -shared -c; do
     fi
 done
 for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/bin/tilo-runtime" \
-              "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
-              "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
-              "$fhs/usr/libexec/tilo-session-report"; do
+              "$fhs/usr/bin/tilolang-process" "$fhs/usr/libexec/tilo/tilo-launcher" \
+              "$fhs/usr/bin/tilo-import-folders" "$fhs/usr/libexec/tilo-unlock-helper" \
+              "$fhs/usr/libexec/tilo-flight-recorder" "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
 done
 "$repo_root/dist/verify-devel-payload.sh" "$fhs"
@@ -217,11 +200,13 @@ printf '#!/bin/sh\necho "libmissing.so => not found"\n' > "$work/fake-tools/ldd"
 if PATH="$work/fake-tools:$PATH" TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
     echo "payload verifier accepted a missing shared library" >&2; exit 1
 fi
-mv "$fhs/usr/bin/tilo" "$work/tilo-held"
-if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
-    echo "payload verifier accepted a package without the tilo command" >&2; exit 1
-fi
-mv "$work/tilo-held" "$fhs/usr/bin/tilo"
+for required_cmd in tilo tilolang-process; do
+    mv "$fhs/usr/bin/$required_cmd" "$work/$required_cmd-held"
+    if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+        echo "payload verifier accepted a package without $required_cmd" >&2; exit 1
+    fi
+    mv "$work/$required_cmd-held" "$fhs/usr/bin/$required_cmd"
+done
 # A packaged app command needs its sidecar: without one, typing the command
 # only reports the sidecar unreadable. Orphaned sidecars fail too.
 apps_bin=$fhs/usr/lib/tilo-apps/bin
@@ -262,9 +247,9 @@ fi
 nix=$work/nix-result
 mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/pipewire,share/licenses/tilo-session}
 for target in "$nix/bin/tilo-session" "$nix/bin/tilo" "$nix/bin/tilo-runtime" \
-              "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
-              "$nix/libexec/tilo-unlock-helper" "$nix/libexec/tilo-flight-recorder" \
-              "$nix/libexec/tilo-session-report"; do
+              "$nix/bin/tilolang-process" "$nix/bin/tilo-launcher" \
+              "$nix/bin/tilo-import-folders" "$nix/libexec/tilo-unlock-helper" \
+              "$nix/libexec/tilo-flight-recorder" "$nix/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
 done
 sed "s#/usr/bin/tilo-import-folders#$nix/bin/tilo-import-folders#g" "$repo_root/dist/session/tilo-import-folders.desktop" > "$nix/share/applications/tilo-import-folders.desktop"
@@ -300,6 +285,12 @@ if "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$other_arch" >/dev/null 2>&
     echo "Nix verifier accepted the other architecture's native binaries" >&2
     exit 1
 fi
+mv "$nix/bin/tilolang-process" "$work/nix-tilolang-process-held"
+if "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$package_arch" >/dev/null 2>&1; then
+    echo "Nix verifier accepted a result without tilolang-process" >&2
+    exit 1
+fi
+mv "$work/nix-tilolang-process-held" "$nix/bin/tilolang-process"
 
 # The OS hand-off is deterministic and contains only the native desktop binaries
 # produced by the distro package job.
