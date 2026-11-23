@@ -724,4 +724,27 @@ mod tests {
             assert!(note.contains("passphrase"), "{note}");
         }
     }
+
+    #[test]
+    fn human_size_formats_table() {
+        let cases = [
+            (0, "0 kB"),
+            (1, "0 kB"),
+            (999, "0 kB"),
+            (1_000, "1 kB"),
+            (1_023, "1 kB"),
+            (1_024, "1 kB"),
+            (1_500, "1 kB"),
+            (999_999, "999 kB"),
+            (1_000_000, "1 MB"),
+            (1_048_576, "1 MB"),
+            (1_500_000, "1 MB"),
+            (1_073_741_824, "1.0 GB"),
+            (5_000_000_000, "5.0 GB"),
+            (u64::MAX, "18446744073.7 GB"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(human_size(input), expected, "input={input}");
+        }
+    }
 }

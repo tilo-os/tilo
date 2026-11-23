@@ -1386,4 +1386,27 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn human_bytes_formats_table() {
+        let cases = [
+            (0, "0 B"),
+            (1, "1 B"),
+            (999, "999 B"),
+            (1_000, "1000 B"),
+            (1_023, "1023 B"),
+            (1_024, "1.0 KiB"),
+            (1_500, "1.4 KiB"),
+            (999_999, "976.5 KiB"),
+            (1_000_000, "976.5 KiB"),
+            (1_048_576, "1.0 MiB"),
+            (1_500_000, "1.4 MiB"),
+            (1_073_741_824, "1.0 GiB"),
+            (5_000_000_000, "4.6 GiB"),
+            (u64::MAX, "17179869183.9 GiB"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(human_bytes(input), expected, "input={input}");
+        }
+    }
 }

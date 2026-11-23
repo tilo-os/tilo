@@ -236,4 +236,27 @@ mod tests {
             assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
         }
     }
+
+    #[test]
+    fn human_bytes_formats_table() {
+        let cases = [
+            (0, "0 B"),
+            (1, "1 B"),
+            (999, "999 B"),
+            (1_000, "1.0 kB"),
+            (1_023, "1.0 kB"),
+            (1_024, "1.0 kB"),
+            (1_500, "1.5 kB"),
+            (999_999, "1000.0 kB"),
+            (1_000_000, "1.0 MB"),
+            (1_048_576, "1.0 MB"),
+            (1_500_000, "1.5 MB"),
+            (1_073_741_824, "1.1 GB"),
+            (5_000_000_000, "5.0 GB"),
+            (u64::MAX, "18446744073.7 GB"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(human_bytes(input), expected, "input={input}");
+        }
+    }
 }

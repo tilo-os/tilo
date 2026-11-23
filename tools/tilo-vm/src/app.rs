@@ -7378,4 +7378,27 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn human_bytes_formats_table() {
+        let cases = [
+            (0, "0 MB"),
+            (1, "0 MB"),
+            (999, "0 MB"),
+            (1_000, "0 MB"),
+            (1_023, "0 MB"),
+            (1_024, "0 MB"),
+            (1_500, "0 MB"),
+            (999_999, "0 MB"),
+            (1_000_000, "0 MB"),
+            (1_048_576, "1 MB"),
+            (1_500_000, "1 MB"),
+            (1_073_741_824, "1.0 GB"),
+            (5_000_000_000, "4.6 GB"),
+            (u64::MAX, "1717986918.3 GB"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(human_bytes(input), expected, "input={input}");
+        }
+    }
 }
