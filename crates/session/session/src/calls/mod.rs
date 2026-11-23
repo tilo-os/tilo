@@ -18,7 +18,7 @@ use collab_types::caps::DeviceCap;
 use media::realtime::InputFormat;
 use media::realtime::capture::{CaptureConfig, VideoCapture};
 use runtime_collab::native_media::{
-    Input, Issue, Picture, PictureLayer, PictureSource, Roster, Shown, State,
+    BridgedPerson, Input, Issue, Picture, PictureLayer, PictureSource, Roster, Shown, State,
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::live::Track;
@@ -40,6 +40,9 @@ const PUMP: Duration = Duration::from_millis(10);
 /// Voice objects one workspace's live session may have heard before a call plays them: a call that starts
 /// late plays the newest of them, never a backlog.
 const HEARD: usize = 256;
+/// How long a person the call heard counts as speaking after their last frame:
+/// what a speaking ring fades from, as the page's own hold.
+const SPEAKING_HOLD: Duration = Duration::from_millis(300);
 /// Bytes of pictures one workspace's live session may have heard before its calls draw them: a call that
 /// stops taking them drops streams whole, which start over at their next keyframe.
 const CARRIED_PICTURES: usize = 8 * 1024 * 1024;
@@ -297,6 +300,17 @@ impl Calls {
         self.rosters.lock_recover().clone()
     }
 
+    /// Whether `speaker`, a bridged person, is a member of `channel`'s call the
+    /// call lets speak: the only bridged voice a call plays.
+    fn bridged_may_speak(&self, channel: &str, speaker: &[u8; 32]) -> bool {
+        let id = hex(speaker);
+        self.rosters.lock_recover().iter().any(|roster| {
+            roster.channel_id == channel
+                && roster.bridged.iter().any(|person| person.person == id)
+                && !roster.muted.contains(&id)
+        })
+    }
+
     /// The devices the workspace says are in `channel` 's call, this one among them: whose objects
     /// the call plays and draws.
     fn callers(&self, channel: &str) -> Vec<[u8; 32]> {
@@ -359,6 +373,17 @@ fn roster_of(channel: &tilo_live::calls::Channel) -> Roster {
         muted: channel.muted(),
         deafened: channel.deafened(),
         bridges: channel.bridges(),
+        bridged: channel
+            .bridged()
+            .into_iter()
+            .map(|person| BridgedPerson {
+                person: person.person,
+                service: person.service,
+                account: person.account,
+                name: person.name,
+                avatar: person.avatar,
+            })
+            .collect(),
     }
 }
 
@@ -598,6 +623,7 @@ async fn open(
         closed: AtomicBool::new(false),
         deafened: AtomicBool::new(false),
         issue: Mutex::new(None),
+        speaking: Mutex::new(BTreeMap::new()),
         #[cfg(test)]
         played: sources.played.clone(),
     });
@@ -723,6 +749,10 @@ impl MediaSession for Call {
         self.shared.set_screen(on)
     }
 
+    fn speaking(&self) -> Vec<String> {
+        self.shared.speaking()
+    }
+
     fn pictures(&mut self, after: u64) -> (Vec<Picture>, u64) {
         self.shared.pictures(after)
     }
@@ -814,6 +844,9 @@ struct Shared {
     deafened: AtomicBool,
     /// Why the call ended, once it did.
     issue: Mutex<Option<Issue>>,
+    /// When each person's voice was last heard in this call, by speaker id: who
+    /// the speaking rings follow.
+    speaking: Mutex<BTreeMap<[u8; 32], Instant>>,
     /// Where a test reads the samples the call played.
     #[cfg(test)]
     played: Option<Arc<Mutex<Vec<f32>>>>,
@@ -1039,6 +1072,21 @@ impl Shared {
         false
     }
 
+    /// Who the call heard talking lately, each once and sorted: a bridged
+    /// person among them by the id every call view knows them as.
+    fn speaking(&self) -> Vec<String> {
+        let now = Instant::now();
+        let mut speaking: Vec<String> = self
+            .speaking
+            .lock_recover()
+            .iter()
+            .filter(|(_, heard)| now.saturating_duration_since(**heard) < SPEAKING_HOLD)
+            .map(|(speaker, _)| hex(speaker))
+            .collect();
+        speaking.sort();
+        speaking
+    }
+
     /// The pictures that arrived here for the app, oldest first, named by the person whose device
     /// sent them.
     fn pictures(&self, after: u64) -> (Vec<Picture>, u64) {
@@ -1118,6 +1166,7 @@ impl Shared {
         } else {
             self.presence.took(&self.workspace)
         };
+        let mut speaking: Vec<[u8; 32]> = Vec::new();
         if !heard.is_empty() {
             let callers: BTreeSet<[u8; 32]> =
                 self.presence.callers(&self.call).into_iter().collect();
@@ -1130,6 +1179,13 @@ impl Shared {
                 let Ok(object) = VoiceObject::decode(&heard.body) else {
                     continue;
                 };
+                // A bridge carries the voice of the people it brings into the
+                // call: the frame names whose it is, and only a bridged person
+                // the call lets speak is played.
+                let speaker = object.speaker.unwrap_or(sender);
+                if speaker != sender && !self.presence.bridged_may_speak(&self.call, &speaker) {
+                    continue;
+                }
                 // A stream that starts over — the device left the call and
                 // came back, or its page reloaded — is a new stream: what was
                 // heard from it before says nothing about this frame's place,
@@ -1138,18 +1194,18 @@ impl Shared {
                 let restarted = {
                     let mut streams = self.streams.lock_recover();
                     let restarted = streams
-                        .get(&sender)
+                        .get(&speaker)
                         .is_some_and(|last| object.timestamp < *last);
-                    streams.insert(sender, object.timestamp);
+                    streams.insert(speaker, object.timestamp);
                     restarted
                 };
                 if restarted {
-                    side.voice.forget(sender);
+                    side.voice.forget(speaker);
                 }
                 if side
                     .voice
                     .receive(
-                        sender,
+                        speaker,
                         object.sequence,
                         object.timestamp,
                         object.payload,
@@ -1159,7 +1215,13 @@ impl Shared {
                 {
                     break;
                 }
+                speaking.push(speaker);
             }
+            drop(side);
+        }
+        if !speaking.is_empty() {
+            let mut held = self.speaking.lock_recover();
+            held.extend(speaking.into_iter().map(|speaker| (speaker, now)));
         }
         let mut side = self.side.lock_recover();
         let captured = match side.voice.pump(now).map_err(voice_issue) {
@@ -1180,6 +1242,7 @@ impl Shared {
                     sequence: u64::from(sequence),
                     timestamp: frame.timestamp_48k,
                     duration: voice::FRAME_SAMPLES,
+                    speaker: None,
                     payload: frame.payload,
                 })
                 .encode() else {

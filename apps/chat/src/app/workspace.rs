@@ -192,6 +192,8 @@ mod tests {
         let row = "in-call:c_standup/u_dana";
         let mut dana = crate::model::VoiceMember {
             user: MemberId::person("u_dana"),
+            name: None,
+            service: None,
             talking: false,
             muted: false,
             deafened: false,

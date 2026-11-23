@@ -122,7 +122,7 @@ struct Entry {
 }
 
 /// What a watcher of a call sees change between ticks.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "one independent flag per change"
@@ -134,10 +134,16 @@ struct Seen {
     capturing: bool,
     camera: bool,
     screen: bool,
+    /// Who the call heard talking, so a speaking ring moves on its own.
+    speaking: Vec<String>,
 }
 
 impl Seen {
     fn of(entry: &Entry) -> Self {
+        let speaking = entry
+            .backend
+            .as_ref()
+            .map_or_else(Vec::new, |backend| backend.lock_recover().speaking());
         Self {
             state: entry.snapshot.state,
             issue: entry.snapshot.issue,
@@ -145,6 +151,7 @@ impl Seen {
             capturing: entry.snapshot.capture_active,
             camera: entry.snapshot.camera,
             screen: entry.snapshot.screen,
+            speaking,
         }
     }
 }
@@ -873,6 +880,7 @@ impl Shared {
             let inventory = {
                 let backend = backend.lock_recover();
                 snapshot.inputs = backend.inputs();
+                snapshot.speaking = backend.speaking();
                 backend.inventory()
             };
             if !inventory.valid() {

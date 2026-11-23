@@ -115,6 +115,7 @@ pub fn decode_peer(
         | PeerPresencePayload::Following { .. }
         | PeerPresencePayload::Person { .. }
         | PeerPresencePayload::Profile { .. }
+        | PeerPresencePayload::Bridged(_)
         | PeerPresencePayload::Shell(_) => return Ok(None),
     };
     Ok(Some((key, payload)))

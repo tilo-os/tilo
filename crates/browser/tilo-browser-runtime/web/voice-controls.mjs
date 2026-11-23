@@ -78,8 +78,8 @@ export function rostersOf(calls) {
     .map(call => {
       const out = {channel_id: call.channel, people: call.people};
       // Written only when someone shows something, as the native service
-      // does.
-      for (const field of ['cameras', 'screens', 'muted', 'deafened']) if (call[field]?.length) out[field] = call[field];
+      // does; a bridged call names its service and the people it brings in.
+      for (const field of ['cameras', 'screens', 'muted', 'deafened', 'bridges', 'bridged']) if (call[field]?.length) out[field] = call[field];
       return out;
     });
 }

@@ -82,6 +82,18 @@ impl ChatApp {
             .filter(|name| !name.is_empty())
     }
 
+    /// The service a bridged person in a call is reached through (`discord`),
+    /// as its label; `None` for a person of the workspace.
+    pub(crate) fn voice_service(&self, id: &MemberId) -> Option<String> {
+        self.voice_members
+            .values()
+            .flatten()
+            .find(|member| member.user == *id)
+            .and_then(|member| member.service.as_deref())
+            .map(ui::author::service_label)
+            .filter(|label| !label.is_empty())
+    }
+
     /// What to call `id` on screen: this session's own member by their
     /// name like anyone else, and an honest placeholder for someone the workspace
     /// has not named yet — nobody is ever shown their raw routing id.
@@ -112,6 +124,19 @@ impl ChatApp {
             .any(|u| u.id == *id && u.name.trim() == named.trim());
         if (named != id.id() || stored) && !named.trim().is_empty() {
             return crate::identity::shared_name_label(id, &named);
+        }
+        // A bridged person no member is is called what they are called on the
+        // service the call reaches them through.
+        if let Some(name) = self
+            .voice_members
+            .values()
+            .flatten()
+            .find(|member| member.user == *id)
+            .and_then(|member| member.name.as_deref())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            return name.to_owned();
         }
         crate::identity::unnamed_label(id)
     }

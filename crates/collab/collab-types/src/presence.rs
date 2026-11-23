@@ -5,6 +5,7 @@
 //! `ui::collaboration`), so apps name them where they always have, and the
 //! session's services use them without linking a renderer.
 
+mod bridged;
 mod call;
 mod hue;
 mod key;
@@ -15,6 +16,7 @@ mod shown;
 mod status;
 
 pub use crate::member::{Member, Person, joined_at_from_packed};
+pub use bridged::{Bridged, MAX_ACCOUNT_CHARS, MAX_BRIDGED_NAME_CHARS};
 pub use call::CallPresence;
 pub use hue::{
     PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PresenceHue, agent_client, agent_identity,

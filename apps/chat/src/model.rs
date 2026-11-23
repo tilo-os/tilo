@@ -121,6 +121,12 @@ pub struct Channel {
 )]
 pub struct VoiceMember {
     pub user: MemberId,
+    /// The name a bridged person is shown by on the other service; `None` for
+    /// a person of the workspace, whose own name everyone knows.
+    pub name: Option<String>,
+    /// The service a bridged person is reached through (`discord`); `None` for
+    /// a person of the workspace.
+    pub service: Option<String>,
     /// True while this person's mic is transmitting above the speaking
     /// threshold — drives the speaking ring in both surfaces.
     pub talking: bool,

@@ -13,6 +13,14 @@ pub(super) struct JsCaller {
     device: String,
     /// The person, empty while nobody named them.
     user: String,
+    /// The name a bridged person is shown by; empty for a person of the
+    /// workspace, whose name the page knows.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    name: String,
+    /// The service a bridged person is reached through (`discord`); empty for a
+    /// person of the workspace.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    service: String,
     /// The call lets this device's person speak in it.
     publishes: bool,
     camera: bool,
@@ -22,6 +30,17 @@ pub(super) struct JsCaller {
     muted: bool,
     /// It hears nothing of the call.
     deafened: bool,
+}
+
+/// One person a bridge carries into a call, as the page's roster reads them.
+#[derive(Serialize)]
+pub(super) struct JsBridgedPerson {
+    person: String,
+    service: String,
+    account: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avatar: Option<String>,
 }
 
 /// A voice channel's call, as `web/voice-peer.mjs` lists it: its devices, and the roster the
@@ -36,6 +55,12 @@ pub(super) struct JsChannel {
     screens: Vec<String>,
     muted: Vec<String>,
     deafened: Vec<String>,
+    /// The services a bridge carries the call to (`discord`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    bridges: Vec<String>,
+    /// The people a bridge carries into the call from another service.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    bridged: Vec<JsBridgedPerson>,
     /// The call was ended: nobody is in it until it is restarted.
     ended: bool,
 }
@@ -51,17 +76,52 @@ pub(super) fn js_channels(channels: Vec<tilo_live::calls::Channel>) -> Vec<JsCha
             screens: channel.screens(),
             muted: channel.muted(),
             deafened: channel.deafened(),
+            bridges: channel.bridges(),
+            bridged: channel
+                .bridged()
+                .into_iter()
+                .map(|person| JsBridgedPerson {
+                    person: person.person,
+                    service: person.service,
+                    account: person.account,
+                    name: person.name,
+                    avatar: person.avatar,
+                })
+                .collect(),
             members: channel
                 .callers
                 .into_iter()
-                .map(|caller| JsCaller {
-                    publishes: channel.rule.may(caller.person.as_deref()).publish,
-                    device: hex::encode(caller.device),
-                    user: caller.person.unwrap_or_default(),
-                    camera: caller.camera,
-                    screen: caller.screen,
-                    muted: caller.muted,
-                    deafened: caller.deafened,
+                // A bridge is no person of the call: the page shows the call
+                // bridged, never the bridge's person as someone in it.
+                .filter(|caller| caller.bridge.is_none())
+                .map(|caller| {
+                    let carried = caller.bridged.clone().map(|carried| {
+                        (
+                            carried.name,
+                            carried.service,
+                            carried.linked.or_else(|| caller.person.clone()),
+                        )
+                    });
+                    JsCaller {
+                        publishes: channel.rule.may(caller.person.as_deref()).publish,
+                        // A bridged person's voice is played as the person it
+                        // is, so its frames and its volume are theirs.
+                        device: carried.as_ref().map_or_else(
+                            || hex::encode(caller.device),
+                            |(_, _, person)| {
+                                person.clone().unwrap_or_else(|| hex::encode(caller.device))
+                            },
+                        ),
+                        user: caller.person.unwrap_or_default(),
+                        name: carried
+                            .as_ref()
+                            .map_or_else(String::new, |(name, _, _)| name.clone()),
+                        service: carried.map_or_else(String::new, |(_, service, _)| service),
+                        camera: caller.camera,
+                        screen: caller.screen,
+                        muted: caller.muted,
+                        deafened: caller.deafened,
+                    }
                 })
                 .collect(),
             channel: channel.channel,

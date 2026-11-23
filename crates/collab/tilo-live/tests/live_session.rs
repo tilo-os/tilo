@@ -343,6 +343,7 @@ fn voice(sequence: u32, payload: &[u8]) -> Vec<u8> {
         sequence: u64::from(sequence),
         timestamp: u64::from(sequence).saturating_mul(u64::from(FRAME_SAMPLES)),
         duration: FRAME_SAMPLES,
+        speaker: None,
         payload: payload.to_vec(),
     }
     .encode()

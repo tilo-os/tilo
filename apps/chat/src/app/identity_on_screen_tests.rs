@@ -252,6 +252,8 @@ fn a_call_names_each_person_once() {
         channel.clone(),
         vec![crate::model::VoiceMember {
             user: MemberId::person("crane"),
+            name: None,
+            service: None,
             talking: false,
             muted: false,
             deafened: false,

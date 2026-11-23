@@ -50,6 +50,7 @@ impl OwnPresence {
             wave,
             pointer: None,
             shell: None,
+            bridged: Vec::new(),
         }
     }
 }

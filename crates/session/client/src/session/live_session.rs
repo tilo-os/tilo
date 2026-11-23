@@ -744,6 +744,7 @@ impl Task {
                 sequence: u64::from(sequence),
                 timestamp: frame.timestamp_48k,
                 duration: tilo_live::voice::FRAME_SAMPLES,
+                speaker: None,
                 payload: frame.opus,
             };
             let Ok(body) = object.encode() else {
@@ -896,9 +897,12 @@ impl Task {
             // as the page's app plays it.
             if heard.track == Track::Audio {
                 if let Ok(object) = tilo_live::voice::VoiceObject::decode(&heard.body) {
+                    // A bridge carries the voice of the people it brings into
+                    // the call: the frame names whose it is, and the page plays
+                    // it as theirs.
                     self.reports.emit(&crate::Event::CallAudio {
                         ws: workspace_id,
-                        from: heard.sender,
+                        from: object.speaker.unwrap_or(heard.sender),
                         sequence: object.sequence,
                         timestamp_48k: object.timestamp,
                         opus: object.payload,

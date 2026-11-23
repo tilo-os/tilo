@@ -1180,6 +1180,7 @@ fn speak_and_hear(
         sequence: u64::from(*sequence),
         timestamp: u64::from(*sequence).saturating_mul(u64::from(tilo_live::voice::FRAME_SAMPLES)),
         duration: tilo_live::voice::FRAME_SAMPLES,
+        speaker: None,
         payload: vec![0xf8, 0xff, 0xfe],
     }
     .encode()

@@ -123,7 +123,9 @@ export function createPeerVoice({peer, workspace, device = null, person = '', cr
     /** Call `listener(calls)` whenever the calls are listed; returns its removal. */
     onCalls(listener) { callListeners.add(listener); return () => callListeners.delete(listener); },
     /** The workspace's calls, as its presence says them: `[{call, channel, name, active,
-     * members, people, cameras, screens, muted, deafened}]`, `call` the channel. */
+     * members, people, cameras, screens, muted, deafened, bridges, bridged}]`, `call` the channel.
+     * A call a bridge carries people into also names its services (`bridges`) and each person
+     * reached through them (`bridged`: `{person, service, account, name, avatar}`). */
     list: () => Promise.resolve(refresh()),
     /** A voice channel's call to join: a channel's call is whoever says they are in it, so
      * every channel has one. Resolves to `{call, active}`. */

@@ -968,11 +968,24 @@ impl crate::app::ChatApp {
                     roster.deafened.iter().any(|person| person == user),
                 ),
             };
+            // Who a bridge carries in from another service: shown by the name
+            // they have there, reached through it.
+            let bridged = |user: &str| {
+                roster
+                    .bridged
+                    .iter()
+                    .find(|person| person.person == user)
+                    .map(|person| (person.name.clone(), person.service.clone()))
+            };
             // A roster names its people by their stored keys; one that
             // names no member is no one to show a tile for.
             let member = |user: &str, (muted, deafened): (bool, bool)| {
+                let (name, service) = bridged(user)
+                    .map_or((None, None), |(name, service)| (Some(name), Some(service)));
                 Some(crate::model::VoiceMember {
                     user: ui::tilo_resource::MemberId::parsed_person(user)?,
+                    name,
+                    service,
                     talking: snapshot.speaking.iter().any(|person| person == user),
                     muted,
                     deafened,
@@ -1875,6 +1888,8 @@ mod tests {
                 "c_standup".into(),
                 vec![crate::model::VoiceMember {
                     user: MemberId::person("someone"),
+                    name: None,
+                    service: None,
                     talking: false,
                     muted: false,
                     deafened: false,

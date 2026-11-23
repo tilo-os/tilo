@@ -7,11 +7,14 @@
 //! bridge to Discord ([`CallPresence::bridge`]), so every call view shows
 //! the call as bridged there and the bridge as no one's face. What the Tilo
 //! callers say is handed to the connector's worker speaker by speaker, which
-//! mixes it into the Discord channel; what Discord people say is published
-//! on the bridge's own audio track. One voice is carried at a time that way:
-//! a Discord speaker holds the track while they talk, and the next one takes
-//! it when they pause ([`FLOOR`]). Nothing Discord said goes back to
-//! Discord, and a person blocked in the bridge or muted in Discord is not
+//! mixes it into the Discord channel.
+//!
+//! Every Discord person in the carried channel is a participant of the Tilo
+//! call of their own: the bridge says them on presence on their behalf, under
+//! their name and picture there ([`Bridged`]), and the voice it publishes is
+//! theirs (a [`VoiceObject`] names its speaker), so each is heard, shown and
+//! turned down on their own. Nothing Discord said goes back to Discord, and a
+//! person blocked in the bridge, muted in Discord or denied in the call is not
 //! carried.
 //!
 //! Which call is carried follows who is in it: a pair is carried while its
@@ -20,17 +23,17 @@
 //! server at a time, so one pair is carried at a time, the first occupied
 //! one by Discord id, kept until it empties.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ::discord::voice::VoicePair;
-use collab_types::presence::CallPresence;
+use collab_types::presence::{Bridged, CallPresence};
 use tilo_agent_session::AppCatalogue;
 use tilo_connector::{CallLink, CallsReport, ConnectorProcess, OutsideAudio};
 use tilo_live::live::Track;
 use tilo_live::live_session::{Join, LiveSession};
-use tilo_live::presence::{self, Board, Call, LiveCall, Own};
+use tilo_live::presence::{self, Board, BridgedMember, Call, LiveCall, Own};
 use tilo_live::relay::Relay;
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
@@ -52,9 +55,8 @@ const HEARING: Duration = Duration::from_millis(10);
 /// How often the workspace's devices and keys are read again, and who is
 /// where looked at once more.
 const TICK: Duration = Duration::from_secs(1);
-/// How long a Discord speaker keeps the bridge's voice after their last
-/// frame: a pause this long hands it to whoever speaks next.
-pub const FLOOR: Duration = Duration::from_millis(200);
+/// The longest an avatar fetch may hold a bridged person's arrival.
+const AVATAR_WAIT: Duration = Duration::from_secs(10);
 
 /// The host's place in the workspace's live session: its session, and the
 /// presence it reads and says there.
@@ -69,36 +71,50 @@ struct Taking {
     calls: Vec<LiveCall>,
 }
 
-/// The Discord speaker who holds the bridge's voice, and the bridge's audio
-/// track as it stands.
-struct Voice {
-    holder: Option<(String, Instant)>,
-    sequence: u32,
-    timestamp: u64,
-    started: Instant,
+/// One Discord person carried into the Tilo call: who they are there, the
+/// member they are in the call as, and whether the call lets them speak.
+struct Guest {
+    /// The member they are in the call as: the member their account is linked
+    /// to, else their stand-in publisher, as hex.
+    person: String,
+    /// What the bridge says of them in the call.
+    member: BridgedMember,
+    /// Their microphone is off, in Discord or in the call: nothing of theirs
+    /// is carried.
+    muted: bool,
+    /// Their next voice object: each speaker's stream is its own, as any
+    /// caller's is.
+    voice: GuestVoice,
 }
 
-impl Voice {
+/// One carried speaker's audio: their stream's place.
+struct GuestVoice {
+    /// The next timestamp of their voice, in 48 kHz samples since they were
+    /// carried.
+    timestamp: u64,
+    started: Instant,
+    sent: bool,
+}
+
+impl GuestVoice {
     fn new() -> Self {
         Self {
-            holder: None,
-            sequence: 0,
             timestamp: 0,
             started: Instant::now(),
+            sent: false,
         }
     }
 
-    /// The next object of the bridge's track for `opus` from `speaker`, or
-    /// `None` while someone else holds it. Its timestamp follows the clock,
-    /// so a receiver hears a pause as one.
-    fn take(&mut self, speaker: &str, opus: Vec<u8>, now: Instant) -> Option<(u32, VoiceObject)> {
-        if let Some((holder, at)) = &self.holder
-            && holder != speaker
-            && now.saturating_duration_since(*at) < FLOOR
-        {
-            return None;
-        }
-        self.holder = Some((speaker.to_owned(), now));
+    /// The next object of `speaker`'s stream for `opus`, the `sequence`th of
+    /// the bridge's track: one tilo-voice/1 object naming whose voice it is,
+    /// its timestamp following the clock so a receiver hears a pause as one.
+    fn take(
+        &mut self,
+        speaker: [u8; 32],
+        opus: Vec<u8>,
+        sequence: u64,
+        now: Instant,
+    ) -> VoiceObject {
         let elapsed = now.saturating_duration_since(self.started);
         let by_clock = u64::try_from(
             elapsed
@@ -108,23 +124,20 @@ impl Voice {
                 .unwrap_or_default(),
         )
         .unwrap_or(u64::MAX);
-        let timestamp = if self.sequence == 0 {
-            by_clock
-        } else {
+        let timestamp = if self.sent {
             by_clock.max(self.timestamp.saturating_add(u64::from(FRAME_SAMPLES)))
+        } else {
+            by_clock
         };
         self.timestamp = timestamp;
-        let sequence = self.sequence;
-        self.sequence = self.sequence.wrapping_add(1);
-        Some((
+        self.sent = true;
+        VoiceObject {
             sequence,
-            VoiceObject {
-                sequence: u64::from(sequence),
-                timestamp,
-                duration: FRAME_SAMPLES,
-                payload: opus,
-            },
-        ))
+            timestamp,
+            duration: FRAME_SAMPLES,
+            speaker: Some(speaker),
+            payload: opus,
+        }
     }
 }
 
@@ -144,10 +157,18 @@ pub struct VoiceBridge {
     in_tilo: bool,
     /// What the worker was last asked: the outside call and its status.
     asked: Option<(Option<String>, Option<String>)>,
-    /// The Discord people whose voice is carried: those in the carried
-    /// channel, the muted and the blocked left out.
-    heard_from: BTreeSet<String>,
-    voice: Voice,
+    /// The Discord people carried into the Tilo call, by their account there:
+    /// the blocked and those the call leaves out are absent, and a muted one is
+    /// shown but not heard.
+    guests: BTreeMap<String, Guest>,
+    /// The next object of the bridge's audio track: the track numbers its
+    /// datagrams, whatever speaker each carries.
+    published: u32,
+    /// Avatars fetched, by URL: none when the fetch failed.
+    avatars: std::collections::HashMap<String, Option<String>>,
+    /// What the workspace's calls allow, and the person each member device is,
+    /// as they were last read.
+    gate: tilo_peer_state::CallGate,
 }
 
 impl VoiceBridge {
@@ -172,8 +193,10 @@ impl VoiceBridge {
             carried: None,
             in_tilo: false,
             asked: None,
-            heard_from: BTreeSet::new(),
-            voice: Voice::new(),
+            guests: BTreeMap::new(),
+            published: 0,
+            avatars: std::collections::HashMap::new(),
+            gate: tilo_peer_state::CallGate::default(),
         }
     }
 
@@ -230,13 +253,18 @@ impl VoiceBridge {
         let Some(devices) = self.devices().await else {
             return;
         };
+        // What the workspace's calls allow: the bridge carries to Discord no voice a call refuses.
+        // It is read before the keys, so a call that moved on is held to before the session says
+        // anything of it; a read that failed keeps the last word rather than letting everyone in.
+        if let Some(gate) = self.call_gate().await {
+            self.gate = gate;
+        }
+        let (rules, persons) = self.gate.clone();
         let Some(keys) = self.keys().await else {
             return;
         };
         let roster = Roster::new(devices);
         let epoch = keys.epoch();
-        // What the workspace's calls allow: the bridge carries to Discord no voice a call refuses.
-        let (rules, persons) = self.call_gate().await.unwrap_or_default();
         if self
             .taking
             .as_ref()
@@ -245,8 +273,22 @@ impl VoiceBridge {
             self.taking = None;
         }
         if let Some(taking) = &mut self.taking {
-            taking.live.set_calls(rules, persons);
-            hand_call_keys(&self.workspaces, &self.workspace, &taking.live).await;
+            taking.live.set_calls(rules.clone(), persons.clone());
+            // A call's media keys come only to the bridge while the call admits
+            // its person: an ended call, or one that denied them, reaches it
+            // through no keys of the rule it moved on to.
+            let admitted = taking.live.call_keys_wanted().is_none_or(|(channel, _)| {
+                let rule = rules.get(&channel).cloned().unwrap_or_default();
+                rule.may(
+                    persons
+                        .get(&self.host.device_public_key)
+                        .map(String::as_str),
+                )
+                .any()
+            });
+            if admitted {
+                hand_call_keys(&self.workspaces, &self.workspace, &taking.live).await;
+            }
             if taking.roster != roster {
                 taking.live.set_roster(roster.clone());
                 taking.roster = roster;
@@ -267,8 +309,19 @@ impl VoiceBridge {
         };
         match LiveSession::local(&self.relay, &join) {
             Ok(live) => {
-                live.set_calls(rules, persons);
-                hand_call_keys(&self.workspaces, &self.workspace, &live).await;
+                live.set_calls(rules.clone(), persons.clone());
+                let admitted = live.call_keys_wanted().is_none_or(|(channel, _)| {
+                    let rule = rules.get(&channel).cloned().unwrap_or_default();
+                    rule.may(
+                        persons
+                            .get(&self.host.device_public_key)
+                            .map(String::as_str),
+                    )
+                    .any()
+                });
+                if admitted {
+                    hand_call_keys(&self.workspaces, &self.workspace, &live).await;
+                }
                 let mut board = Board::new(self.workspace.clone(), self.host.device_public_key);
                 board.say(&self.own());
                 self.taking = Some(Taking {
@@ -336,6 +389,16 @@ impl VoiceBridge {
                     muted: false,
                     deafened: false,
                 }),
+            // The Discord people the bridge carries are participants of the call
+            // of their own, never the bridge's person.
+            bridged: if self.in_tilo {
+                self.guests
+                    .values()
+                    .map(|guest| guest.member.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            },
             ..Own::default()
         }
     }
@@ -395,21 +458,32 @@ impl VoiceBridge {
     }
 
     /// One frame Discord person `speaker` said: the bridge says it in the
-    /// Tilo call while they hold its voice.
+    /// Tilo call as theirs, unless they are muted or the call leaves them out.
     fn carry_in(&mut self, frame: OutsideAudio) {
-        if !self.in_tilo || !self.heard_from.contains(&frame.speaker) {
+        if !self.in_tilo {
             return;
         }
-        let Some(taking) = &self.taking else {
-            return;
-        };
-        let Some((sequence, object)) = self.voice.take(&frame.speaker, frame.opus, Instant::now())
+        let Some(guest) = self
+            .guests
+            .get_mut(&frame.speaker)
+            .filter(|guest| !guest.muted)
         else {
             return;
         };
+        let Some(person) = person_key(&guest.person) else {
+            return;
+        };
+        let Some(taking) = &self.taking else {
+            return;
+        };
+        let sequence = self.published;
+        let object = guest
+            .voice
+            .take(person, frame.opus, u64::from(sequence), Instant::now());
         let Ok(body) = object.encode() else {
             return;
         };
+        self.published = self.published.wrapping_add(1);
         if let Err(error) = taking.live.publish(Track::Audio, sequence, &body) {
             tracing::debug!(workspace = %self.workspace, %error, "a Discord frame was not carried");
         }
@@ -451,14 +525,139 @@ impl VoiceBridge {
             self.let_go().await;
             self.carried = Some(pair.clone());
         }
-        self.heard_from = discord_people(report, &pair.discord, &guild)
-            .into_iter()
-            .collect();
         let status = status(&live, &pair.tilo);
         self.ask(Some(pair.discord.clone()), Some(status)).await;
         // Nothing crosses until the worker is in the Discord channel.
         let joined = matches!(&report.link, CallLink::Joined { call } if *call == pair.discord);
         self.set_in_tilo(joined);
+        if joined {
+            self.sync_guests(report, &pair, &guild).await;
+        } else {
+            self.guests.clear();
+        }
+    }
+
+    /// Carry each Discord person in `pair`'s channel as a participant of the
+    /// Tilo call of their own, and stop carrying anyone who left, went quiet on
+    /// the bridge or is denied in the call.
+    async fn sync_guests(
+        &mut self,
+        report: &CallsReport,
+        pair: &VoicePair,
+        guild: &::discord::Guild,
+    ) {
+        let (rules, persons) = self.gate.clone();
+        let rule = rules.get(&pair.tilo).cloned().unwrap_or_default();
+        let bridge_may = rule.may(
+            persons
+                .get(&self.host.device_public_key)
+                .map(String::as_str),
+        );
+        // A call that leaves the bridge out carries nobody through it.
+        let people = if bridge_may.any() {
+            discord_people(report, &pair.discord, guild)
+        } else {
+            Vec::new()
+        };
+        let wanted: BTreeSet<String> = people.iter().map(|person| person.account.clone()).collect();
+        self.guests.retain(|account, _| wanted.contains(account));
+        for person in people {
+            let linked = guild.linked_person(&person.account).map(str::to_owned);
+            let session = bridged_session(&person.account);
+            let stand_in = collab_types::presence::stand_in(self.host.device_public_key, &session);
+            let person_hex = linked.clone().unwrap_or_else(|| hex::encode(stand_in));
+            let may = rule.may(Some(&person_hex));
+            if !may.any() {
+                // Denied in the call: carried in neither direction.
+                self.guests.remove(&person.account);
+                continue;
+            }
+            let name = shown_name(&person.name, &person.account);
+            let bridged = Bridged {
+                service: SERVICE.to_owned(),
+                account: person.account.clone(),
+                name: name.clone(),
+                avatar: self.avatar(person.avatar_url.as_deref()).await,
+                linked,
+            };
+            let muted = person.muted || !may.publish;
+            let member = BridgedMember {
+                session,
+                name,
+                bridged,
+                call: Call {
+                    call: CallPresence {
+                        channel: pair.tilo.clone(),
+                        name: String::new(),
+                        bridge: None,
+                    },
+                    camera: false,
+                    screen: false,
+                    muted,
+                    deafened: !may.subscribe,
+                },
+            };
+            match self.guests.entry(person.account.clone()) {
+                std::collections::btree_map::Entry::Occupied(mut held) => {
+                    if held.get().member == member && held.get().muted == muted {
+                        continue;
+                    }
+                    // A name, picture or rule moved: keep their stream's place
+                    // so the frame after the change is heard as theirs.
+                    let voice = std::mem::replace(&mut held.get_mut().voice, GuestVoice::new());
+                    held.insert(Guest {
+                        person: person_hex,
+                        member,
+                        muted,
+                        voice,
+                    });
+                }
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(Guest {
+                        person: person_hex,
+                        member,
+                        muted,
+                        voice: GuestVoice::new(),
+                    });
+                }
+            }
+        }
+        // Each bridged person says themselves on the bridge's presence: who is
+        // here, by what name, and in the call.
+        let own = self.own();
+        if let Some(taking) = &mut self.taking {
+            taking.board.say(&own);
+        }
+    }
+
+    /// The avatar `url` as the workspace stores it: what is already kept, else
+    /// fetched once through the worker.
+    async fn avatar(&mut self, url: Option<&str>) -> Option<String> {
+        let url = url?;
+        if let Some(known) = self.avatars.get(url) {
+            return known.clone();
+        }
+        let op = serde_json::json!({
+            "op": {
+                "op": "fetch-asset",
+                "url": url,
+                "max_bytes": tilo_actions::appearance::MAX_AVATAR_BYTES,
+            },
+        });
+        let fetched = match tokio::time::timeout(AVATAR_WAIT, self.lane.perform(op)).await {
+            Ok(Ok(result)) => result
+                .get("blob")
+                .and_then(serde_json::Value::as_str)
+                .filter(|blob| content_hash(blob))
+                .map(str::to_owned),
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "a Discord avatar was not fetched");
+                None
+            }
+            Err(_) => None,
+        };
+        self.avatars.insert(url.to_owned(), fetched.clone());
+        fetched
     }
 
     /// Be in the carried pair's Tilo call, or not: what the bridge's
@@ -493,7 +692,7 @@ impl VoiceBridge {
     async fn let_go(&mut self) {
         self.set_in_tilo(false);
         self.carried = None;
-        self.heard_from.clear();
+        self.guests.clear();
         self.ask(None, None).await;
     }
 }
@@ -514,26 +713,31 @@ fn choose(
     pairs.iter().find(|pair| occupied(pair)).cloned()
 }
 
-/// Who is in Discord voice channel `channel`, by account: the people the
-/// bridge keeps out, and the muted, left out.
-fn discord_people(report: &CallsReport, channel: &str, guild: &::discord::Guild) -> Vec<String> {
+/// Who is in Discord voice channel `channel`, the people the bridge keeps out
+/// left out: the muted stay, shown as such. A call the workspace denies one of
+/// them leaves that one out later.
+fn discord_people<'a>(
+    report: &'a CallsReport,
+    channel: &str,
+    guild: &::discord::Guild,
+) -> Vec<&'a tilo_connector::OutsidePerson> {
     report
         .calls
         .iter()
         .filter(|call| call.call == channel)
         .flat_map(|call| &call.people)
-        .filter(|person| !person.muted && !guild.blocks(&person.account))
-        .map(|person| person.account.clone())
+        .filter(|person| !guild.blocks(&person.account))
         .collect()
 }
 
-/// The devices in the Tilo call of voice channel `channel`, bridges left
-/// out, by their publisher.
+/// The devices in the Tilo call of voice channel `channel`, bridges and the
+/// people a bridge carries left out, by their publisher: whose voice is handed
+/// to Discord.
 fn tilo_callers(live: &[LiveCall], channel: &str) -> Vec<String> {
     live.iter()
         .filter(|call| call.channel == channel)
         .flat_map(|call| &call.people)
-        .filter(|caller| caller.bridge.is_none())
+        .filter(|caller| caller.bridge.is_none() && caller.bridged.is_none())
         .map(|caller| caller.id.clone())
         .collect()
 }
@@ -544,7 +748,7 @@ fn status(live: &[LiveCall], channel: &str) -> String {
         .iter()
         .filter(|call| call.channel == channel)
         .flat_map(|call| &call.people)
-        .filter(|caller| caller.bridge.is_none())
+        .filter(|caller| caller.bridge.is_none() && caller.bridged.is_none())
         .map(|caller| caller.label.trim().to_owned())
         .filter(|name| !name.is_empty())
         .collect();
@@ -554,6 +758,41 @@ fn status(live: &[LiveCall], channel: &str) -> String {
     } else {
         format!("On Tilo: {}", names.join(", "))
     }
+}
+
+/// The session a Discord account's bridged participant is said under: one per
+/// account, so every device derives the same publisher for them.
+fn bridged_session(account: &str) -> String {
+    format!("{SERVICE}:{account}")
+}
+
+/// The name a Discord person is shown by: theirs as an appearance may carry it,
+/// else their account's.
+fn shown_name(name: &str, account: &str) -> String {
+    tilo_actions::appearance::Appearance::new(name, None, None).map_or_else(
+        |_| {
+            format!("Discord user {account}")
+                .chars()
+                .take(collab_types::presence::MAX_BRIDGED_NAME_CHARS)
+                .collect()
+        },
+        |appearance| appearance.name,
+    )
+}
+
+/// A person id as the key the live session's voice names: 32 bytes in hex.
+fn person_key(person: &str) -> Option<[u8; 32]> {
+    let mut key = [0; 32];
+    hex::decode_to_slice(person, &mut key).ok()?;
+    Some(key)
+}
+
+/// Whether `blob` names content by its BLAKE3 hex, as an avatar must.
+fn content_hash(blob: &str) -> bool {
+    blob.len() == 64
+        && blob
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Hand `live` the keys of the call media it needs now when this host holds them: the key group

@@ -1,6 +1,9 @@
 //! The transport-independent tilo-voice/1 object profile.
 
 pub const HEADER_BYTES: usize = 32;
+/// The header of an object whose voice is a bridged person's: the first one
+/// plus their key.
+pub const BRIDGED_HEADER_BYTES: usize = 64;
 pub const MAX_OBJECT_BYTES: usize = 4096;
 pub const FRAME_SAMPLES: u16 = 960;
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -17,6 +20,10 @@ pub struct VoiceObject {
     pub sequence: u64,
     pub timestamp: u64,
     pub duration: u16,
+    /// The bridged person whose voice this is, when a bridge carries them: the
+    /// key their participant is known by, never the bridge device's. `None`
+    /// for the voice of the device that sends it.
+    pub speaker: Option<[u8; 32]>,
     pub payload: Vec<u8>,
 }
 
@@ -34,60 +41,87 @@ fn field<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], InvalidVoic
 }
 
 impl VoiceObject {
-    /// Encode this object in the tilo-voice/1 wire layout.
+    /// Encode this object in the tilo-voice/1 wire layout: an object that names
+    /// a bridged speaker carries their key in its header.
     pub fn encode(&self) -> Result<Vec<u8>, InvalidVoiceObject> {
+        let header = if self.speaker.is_some() {
+            BRIDGED_HEADER_BYTES
+        } else {
+            HEADER_BYTES
+        };
         if self.duration != FRAME_SAMPLES
             || self.payload.is_empty()
-            || self.payload.len() > MAX_OBJECT_BYTES - HEADER_BYTES
+            || self.payload.len() > MAX_OBJECT_BYTES.saturating_sub(header)
         {
             return Err(InvalidVoiceObject);
         }
         let length = u32::try_from(self.payload.len()).map_err(|_| InvalidVoiceObject)?;
-        let mut bytes = Vec::with_capacity(HEADER_BYTES.saturating_add(self.payload.len()));
-        bytes.extend_from_slice(&[1, 0, 0, 0]);
+        let mut bytes = Vec::with_capacity(header.saturating_add(self.payload.len()));
+        let version = if self.speaker.is_some() { 2 } else { 1 };
+        bytes.extend_from_slice(&[version, 0, 0, 0]);
         bytes.extend_from_slice(&self.sequence.to_le_bytes());
         bytes.extend_from_slice(&self.timestamp.to_le_bytes());
         bytes.extend_from_slice(&self.duration.to_le_bytes());
         bytes.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
         bytes.extend_from_slice(&[CHANNELS, 0]);
+        if let Some(speaker) = &self.speaker {
+            bytes.extend_from_slice(speaker);
+        }
         bytes.extend_from_slice(&length.to_le_bytes());
-        debug_assert_eq!(bytes.len(), HEADER_BYTES);
+        debug_assert_eq!(bytes.len(), header);
         bytes.extend_from_slice(&self.payload);
         Ok(bytes)
     }
 
     /// Decode one complete, valid tilo-voice/1 object.
     pub fn decode(bytes: &[u8]) -> Result<Self, InvalidVoiceObject> {
-        validate(bytes)?;
+        let header = validate(bytes)?;
+        let speaker = if header == BRIDGED_HEADER_BYTES {
+            Some(field::<32>(bytes, 28)?)
+        } else {
+            None
+        };
         Ok(Self {
             sequence: u64::from_le_bytes(field(bytes, 4)?),
             timestamp: u64::from_le_bytes(field(bytes, 12)?),
             duration: FRAME_SAMPLES,
-            payload: bytes
-                .get(HEADER_BYTES..)
-                .ok_or(InvalidVoiceObject)?
-                .to_vec(),
+            speaker,
+            payload: bytes.get(header..).ok_or(InvalidVoiceObject)?.to_vec(),
         })
+    }
+}
+
+/// The header size of the object `bytes` begins with: whose voice it carries
+/// decides how long the header is.
+fn header_size(bytes: &[u8]) -> Result<usize, InvalidVoiceObject> {
+    match bytes.first() {
+        Some(1) => Ok(HEADER_BYTES),
+        Some(2) => Ok(BRIDGED_HEADER_BYTES),
+        _ => Err(InvalidVoiceObject),
     }
 }
 
 /// Validate without allocating or copying the encoded payload. Used at the
 /// relay's complete-frame boundary before subscribers can observe an object.
-pub fn validate(bytes: &[u8]) -> Result<(), InvalidVoiceObject> {
-    if !(HEADER_BYTES + 1..=MAX_OBJECT_BYTES).contains(&bytes.len()) {
+/// The header size it read.
+pub fn validate(bytes: &[u8]) -> Result<usize, InvalidVoiceObject> {
+    let header = header_size(bytes)?;
+    if !(header.saturating_add(1)..=MAX_OBJECT_BYTES).contains(&bytes.len()) {
         return Err(InvalidVoiceObject);
     }
     let payload_length =
-        u32::try_from(bytes.len().saturating_sub(HEADER_BYTES)).map_err(|_| InvalidVoiceObject)?;
-    if field::<4>(bytes, 0)? != [1, 0, 0, 0]
+        u32::try_from(bytes.len().saturating_sub(header)).map_err(|_| InvalidVoiceObject)?;
+    let length_at = header.checked_sub(4).ok_or(InvalidVoiceObject)?;
+    let version = if header == BRIDGED_HEADER_BYTES { 2 } else { 1 };
+    if field::<4>(bytes, 0)? != [version, 0, 0, 0]
         || field::<2>(bytes, 20)? != FRAME_SAMPLES.to_le_bytes()
         || field::<4>(bytes, 22)? != SAMPLE_RATE.to_le_bytes()
         || field::<2>(bytes, 26)? != [CHANNELS, 0]
-        || field::<4>(bytes, 28)? != payload_length.to_le_bytes()
+        || field::<4>(bytes, length_at)? != payload_length.to_le_bytes()
     {
         return Err(InvalidVoiceObject);
     }
-    Ok(())
+    Ok(header)
 }
 
 /// Split a datagram bundle (one to [`MAX_BUNDLE_OBJECTS`] complete, individually
@@ -100,12 +134,17 @@ pub fn bundle_objects(bytes: &[u8]) -> Result<Vec<&[u8]>, InvalidVoiceObject> {
     let mut objects = Vec::with_capacity(MAX_BUNDLE_OBJECTS);
     let mut rest = bytes;
     while !rest.is_empty() {
-        if objects.len() == MAX_BUNDLE_OBJECTS || rest.len() < HEADER_BYTES {
+        if objects.len() == MAX_BUNDLE_OBJECTS {
             return Err(InvalidVoiceObject);
         }
-        let length = usize::try_from(u32::from_le_bytes(field(rest, 28)?))
+        let header = header_size(rest)?;
+        if rest.len() < header {
+            return Err(InvalidVoiceObject);
+        }
+        let length_at = header.checked_sub(4).ok_or(InvalidVoiceObject)?;
+        let length = usize::try_from(u32::from_le_bytes(field(rest, length_at)?))
             .map_err(|_| InvalidVoiceObject)?;
-        let end = HEADER_BYTES.checked_add(length).ok_or(InvalidVoiceObject)?;
+        let end = header.checked_add(length).ok_or(InvalidVoiceObject)?;
         let (object, tail) = rest.split_at_checked(end).ok_or(InvalidVoiceObject)?;
         validate(object)?;
         objects.push(object);

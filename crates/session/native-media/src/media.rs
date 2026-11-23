@@ -114,6 +114,12 @@ pub trait MediaSession: Send {
     fn set_screen(&mut self, _on: bool) -> Result<(), Issue> {
         Err(Issue::ScreenLost)
     }
+    /// Who the call heard talking lately, each once and sorted (person ids,
+    /// lowercase hex): what the app's speaking rings follow. A bridged person
+    /// is among them by the id every call view knows them as.
+    fn speaking(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// The pictures that arrived after `after`, oldest first, together with
     /// the cursor the one after them starts at: an app draws them in that
     /// order. The cursor of the first collection is the call's, so a client

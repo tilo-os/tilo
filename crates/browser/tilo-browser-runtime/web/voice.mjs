@@ -76,8 +76,10 @@ export function microphoneIssue(error) {
  * `capture_failed`) or null, and `phase` is `idle`, `joining`,
  * `connecting`, `live`, `reconnecting` or `ended`; `admitted` says whether the
  * host granted the call (an ended call that never was is a refusal), and each
- * member is `{device, user, publishes, camera, screen, muted, deafened,
- * speaking, self}`.
+ * member is `{device, user, name, service, publishes, camera, screen, muted,
+ * deafened, speaking, self}`: `name` and `service` are a bridged person's name
+ * on the other service and the one the call reaches them through, and `null`
+ * for a person of the workspace.
  */
 export function createVoiceCall({
   signalling,
@@ -164,6 +166,10 @@ export function createVoiceCall({
     return grant.members.map(member => ({
       device: member.device,
       user: member.user,
+      // A bridged person is shown by the name they have on the other service,
+      // marked as reached through it; a person of the workspace has neither.
+      name: member.name ?? null,
+      service: member.service ?? null,
       publishes: member.publishes,
       camera: member.camera === true,
       screen: member.screen === true,

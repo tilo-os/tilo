@@ -239,7 +239,7 @@ impl ChatApp {
                 .map(|person| {
                     let name = self.user_name(&person);
                     let speaking = self.speaking.level(person.id(), now) > 0.0;
-                    NavItem::new(format!("in-call:{}/{}", channel.id, person.id()), name)
+                    let row = NavItem::new(format!("in-call:{}/{}", channel.id, person.id()), name)
                         .person(
                             person.clone(),
                             Some(self.identity_colour(&person)),
@@ -247,7 +247,13 @@ impl ChatApp {
                         )
                         .person_face(self.user_name(&person), None)
                         .without_actions()
-                        .chosen_by_press()
+                        .chosen_by_press();
+                    // Someone a bridge carries in from another service is
+                    // marked as reached through it.
+                    match self.voice_service(&person) {
+                        Some(service) => row.secondary(service),
+                        None => row,
+                    }
                 })
                 .collect();
             if !people.is_empty() {
