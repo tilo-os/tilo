@@ -108,7 +108,7 @@ def at_path(value, path: str):
     at = value
     for key in path.split("."):
         at = at.get(key) if isinstance(at, dict) else (
-            at[int(key)] if isinstance(at, list) and key.isdigit() else None)
+            at[int(key)] if isinstance(at, list) and key.isdigit() and int(key) < len(at) else None)
     if measure == "len":
         return len(at) if isinstance(at, (list, dict)) else None
     return at
@@ -440,20 +440,6 @@ def resolved(served: dict, value):
     if isinstance(value, list):
         return [resolved(served, inner) for inner in value]
     return value
-
-
-def posed(dump: dict, path: str):
-    """Where `path` stands in what the desktop published: a dotted path of keys,
-    a number for a place in a list (`workspace_tree.workspaces.0.strips`), and
-    `#len` after it for how many the list or the map there holds."""
-    path, _, measure = path.partition("#")
-    at = dump
-    for key in path.split("."):
-        if isinstance(at, list) and key.isdigit():
-            at = at[int(key)] if int(key) < len(at) else None
-        else:
-            at = at.get(key) if isinstance(at, dict) else None
-    return len(at) if measure == "len" and isinstance(at, (list, dict)) else at
 
 
 def drawn(target: dict) -> bool:
@@ -1333,7 +1319,7 @@ class Walk:
         deadline = float(value.get("within", 10))
 
         def read(dump: dict, path: str):
-            return posed(dump, path)
+            return at_path(dump, path)
 
         def differs() -> dict:
             dump = self.session.state_dump()

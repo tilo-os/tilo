@@ -453,22 +453,5 @@ class NamingWhatTheRunMade(unittest.TestCase):
             walk.resolved({}, {"served": "provider.id"})
 
 
-class ReadingWhatTheDesktopShows(unittest.TestCase):
-    DUMP = {"chrome": {"overlays": {"overview": True}},
-            "workspace_tree": {"workspaces": [{"strips": [{"name": "one"}, {"name": "two"}]}]}}
-
-    def test_a_dotted_path_reads_the_value_under_it(self):
-        self.assertIs(walk.posed(self.DUMP, "chrome.overlays.overview"), True)
-
-    def test_a_number_names_a_place_in_a_list(self):
-        self.assertEqual(walk.posed(self.DUMP, "workspace_tree.workspaces.0.strips.1.name"), "two")
-
-    def test_the_measure_counts_what_stands_there(self):
-        self.assertEqual(walk.posed(self.DUMP, "workspace_tree.workspaces.0.strips#len"), 2)
-
-    def test_a_place_past_the_end_reads_nothing(self):
-        self.assertIsNone(walk.posed(self.DUMP, "workspace_tree.workspaces.3.strips#len"))
-
-
 if __name__ == "__main__":
     unittest.main()
