@@ -681,6 +681,7 @@ mod agents_kinds {
         InvokeArgument, InvokeRequest, RemoteActionTarget, person_accounts,
     };
     use tilo_actions::{ActionAddress, InvocationId};
+    use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
     use super::super::super::tests::{admit, governed};
     use super::super::turn_use_tests::on_turn;
@@ -1384,10 +1385,12 @@ mod agents_kinds {
         }
     }
 
-    /// Pinning test for the settle loops across all four kept-ask kinds via `ServerAgents::look`:
+    /// The settle loops across all four kept-ask kinds, as an engine starting after a restart
+    /// runs them (`ServerAgents::settle_asks`):
     /// - interrupted asks of all four kinds are forgotten;
-    /// - an unasked `KeptAsk` older than `UNASKED_FOR` (300 s) is forgotten while a fresh one stays;
-    /// - waiting `ConnectAsk` and `MailAsk` whose agent is absent from the workspace are forgotten.
+    /// - waiting `KeptAsk`, `ConnectAsk` and `MailAsk` whose agent is absent from the workspace
+    ///   are forgotten, a lapsed one as well;
+    /// - a waiting vault use stays kept: it answers that it waits until its person answers.
     #[tokio::test]
     async fn settle_loops_clear_interrupted_and_expired_asks_across_all_four_kinds() {
         let dir = tempfile::tempdir().unwrap();
@@ -1413,7 +1416,7 @@ mod agents_kinds {
             actions,
             Arc::new(NoAgentKeys),
         );
-        agents.look(&workspace).await.unwrap();
+        agents.settle_asks(&workspace).await;
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while (!workspaces.open_connects(&workspace).is_empty()
@@ -1428,18 +1431,14 @@ mod agents_kinds {
             .into_iter()
             .map(|a| a.ask)
             .collect();
-        assert_eq!(
-            remaining_asks,
-            vec!["aa000000000000000000000000000002".to_owned()]
-        );
-        assert_eq!(
-            workspaces.claim_ask("aa000000000000000000000000000001"),
-            Err(NOTHING_WAITS.to_owned())
-        );
-        assert_eq!(
-            workspaces.claim_ask("aa000000000000000000000000000003"),
-            Err(NOTHING_WAITS.to_owned())
-        );
+        assert_eq!(remaining_asks, Vec::<String>::new());
+        for id in [
+            "aa000000000000000000000000000001",
+            "aa000000000000000000000000000002",
+            "aa000000000000000000000000000003",
+        ] {
+            assert_eq!(workspaces.claim_ask(id), Err(NOTHING_WAITS.to_owned()));
+        }
 
         let remaining_uses: Vec<String> = workspaces
             .open_use_asks(&workspace)
@@ -1601,8 +1600,8 @@ mod agents_kinds {
     /// Deliberate stricter load checks and secret-use non-expiry:
     /// - misplaced kept-ask files (wrong filename or wrong workspace directory) are ignored;
     /// - malformed ask ids are refused immediately by every `claim_*`;
-    /// - an unasked secret-use `OpenAsk` older than `UNASKED_FOR` (300 s) is NOT expired by
-    ///   `ServerAgents::look` and still answers `TurnUse::Waits`.
+    /// - an unasked secret-use `OpenAsk` asked long ago is NOT expired by
+    ///   `ServerAgents::settle_asks` and still answers `TurnUse::Waits`.
     #[tokio::test]
     async fn misplaced_files_are_ignored_and_unasked_vault_uses_do_not_expire() {
         use super::super::super::tests::caller;
@@ -1635,7 +1634,7 @@ mod agents_kinds {
             .join(format!("{}.json", kept.ask));
         server.shutdown().await;
 
-        // Backdate the kept secret-use file so it is older than UNASKED_FOR (300 s).
+        // Backdate the kept secret-use file far into the past.
         let mut stored: Value =
             serde_json::from_slice(&std::fs::read(&kept_path).unwrap()).unwrap();
         stored["askedAtNs"] = json!(1_000_000u64);
@@ -1669,7 +1668,7 @@ mod agents_kinds {
             actions,
             Arc::new(NoAgentKeys),
         );
-        agents.look(&workspace).await.unwrap();
+        agents.settle_asks(&workspace).await;
 
         let remaining_uses: Vec<String> = workspaces
             .open_use_asks(&workspace)
@@ -1679,12 +1678,406 @@ mod agents_kinds {
         assert_eq!(
             remaining_uses,
             vec![kept.ask],
-            "unasked secret-use ask older than UNASKED_FOR stays kept"
+            "an old unanswered secret-use ask stays kept"
         );
         assert_eq!(
             workspaces.use_for_turn(&ada_turn, &req, json!({})).await,
             Ok(TurnUse::Waits),
-            "secret-use ask older than UNASKED_FOR still answers Waits"
+            "an old secret-use ask still answers Waits"
+        );
+        server.shutdown().await;
+    }
+
+    struct FixedAgentKeys([u8; 32]);
+
+    impl crate::agents::agent_keys::AgentKeys for FixedAgentKeys {
+        fn grant(
+            &self,
+            _workspace: crate::workspaces::WorkspaceId,
+            _agent: &str,
+            _name: &str,
+            _person: [u8; 32],
+        ) -> Result<[u8; 32], String> {
+            Ok(self.0)
+        }
+
+        fn sign(
+            &self,
+            _workspace: crate::workspaces::WorkspaceId,
+            _key: &[u8; 32],
+            _request: &mut InvokeRequest,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn made(
+            &self,
+            _key: &[u8; 32],
+        ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
+            None
+        }
+    }
+
+    /// A workspace whose actions this test never reaches.
+    #[derive(Clone, Default)]
+    struct NoActions;
+
+    impl tilo_actions::remote::ActionProvider for NoActions {
+        fn query(
+            &self,
+            _caller: &tilo_actions::remote::Caller,
+            _query: tilo_actions::remote::CatalogueQuery,
+        ) -> tilo_actions::remote::Pending<
+            Result<tilo_actions::remote::CataloguePage, ActionCallError>,
+        > {
+            tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::CataloguePage::default()))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &tilo_actions::remote::Caller,
+            _request: InvokeRequest,
+        ) -> tilo_actions::remote::Pending<
+            Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
+        > {
+            tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+
+        fn observe(
+            &self,
+            _caller: &tilo_actions::remote::Caller,
+            _id: &InvocationId,
+        ) -> Option<tilo_actions::remote::InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &tilo_actions::remote::Caller,
+            _id: &InvocationId,
+        ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+            tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
+        }
+    }
+
+    /// The person on their approving device, answering each question the server puts to them
+    /// as `answer` says, by the action it names; `None` leaves it unanswered.
+    struct Answering {
+        answer: Box<dyn Fn(&str) -> Option<ConfirmationAnswer> + Send + Sync>,
+        asked: Mutex<Vec<(String, bool)>>,
+    }
+
+    impl Answering {
+        fn by(answer: impl Fn(&str) -> Option<ConfirmationAnswer> + Send + Sync + 'static) -> Arc<Self> {
+            Arc::new(Self {
+                answer: Box::new(answer),
+                asked: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl crate::workspaces::AsksPeople for Answering {
+        fn ask(
+            &self,
+            _person: [u8; 32],
+            question: PendingConfirmation,
+        ) -> crate::workspaces::PersonAnswer {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((question.action_label.clone(), question.allow_always));
+            match (self.answer)(&question.action_label) {
+                Some(answer) => Box::pin(async move { Ok(answer) }),
+                None => Box::pin(std::future::pending()),
+            }
+        }
+    }
+
+    async fn publish_scout_agent(workspaces: &Workspaces, workspace: &str, person: [u8; 32]) {
+        let keeper = hex::encode(person);
+        workspaces
+            .author_agents(workspace, |doc| {
+                let agents =
+                    tilo_resource::Replica::<tilo_workspace_agent::WorkspaceAgents>::from_doc(
+                        std::mem::take(doc),
+                    );
+                let mut listing = agents
+                    .as_author(&keeper)
+                    .in_app(tilo_workspace_agent::OWNER, "Assistant");
+                listing
+                    .apply(tilo_workspace_agent::WorkspaceAgents::CREATE_AGENT.with(
+                        tilo_workspace_agent::workspace_agents::CreateAgent {
+                            mcp_client: None,
+                            name: tilo_resource::NonBlank::parse("Scout").unwrap(),
+                            id: Some("scout".to_owned()),
+                            model: None,
+                        },
+                    ))
+                    .map_err(|error| error.to_string())?;
+                std::mem::swap(doc, listing.doc_mut());
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    fn web_call_request(url: &str, key: &Value) -> InvokeRequest {
+        let Value::Object(argument) = json!({"url": url, "key": key, "reason": "Read balance."})
+        else {
+            panic!("object");
+        };
+        InvokeRequest {
+            invocation: InvocationId::new(),
+            target: tilo_actions::remote::person_vault::call_target(),
+            argument: InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
+    async fn wait_until(check: impl Fn() -> bool) {
+        let start = std::time::Instant::now();
+        while !check() && start.elapsed() < std::time::Duration::from_secs(5) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(check(), "timed out waiting for settle loop");
+    }
+
+    /// Ask again what waits, as an engine starting after a restart does, and wait until the
+    /// person's answer to the use was carried out.
+    async fn settle_web_call_answer(agents: &crate::agents::ServerAgents, workspaces: &Workspaces, workspace: &str) {
+        agents.settle_asks(workspace).await;
+        wait_until(|| workspaces.open_use_asks(workspace).is_empty()).await;
+    }
+
+    /// A web call never offers always (`!open.takes_always()`). A question about one answered
+    /// with always nonetheless is refused as `No`: nothing runs and no one-shot call is
+    /// allowed. Answering with the offered allow once runs that call once.
+    #[tokio::test]
+    async fn web_call_answered_with_unoffered_always_runs_nothing() {
+        use test_http::{Reply, Responder};
+        use tilo_actions::remote::person_vault;
+
+        use super::super::super::tests::caller;
+        use super::super::turn_use_tests::asked;
+        use super::super::vault_tests::ask;
+        use crate::workspaces::hosted_use::TurnUse;
+
+        const TEST_KEY: &str = "made-up-web-call-key-0123456789abcdef";
+
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
+        workspaces.call_private_model_addresses(true);
+        let (workspace, workspace_id, service) = governed(&workspaces).await;
+        let ada = admit(&workspaces, &workspace, &owner, 1).await;
+        let as_ada = caller(&ada);
+        publish_scout_agent(&workspaces, &workspace, ada.user_public_key).await;
+
+        let paying = Responder::handle(|_| {
+            Some(
+                Reply::status(200)
+                    .header("Content-Type", "application/json")
+                    .body(r#"{"balance":1}"#),
+            )
+        });
+        let item = ask(
+            &service,
+            workspace_id,
+            (&ada, &as_ada),
+            person_vault::ADD,
+            json!({"kind": "key", "belongsTo": [paying.url()], "secret": TEST_KEY}),
+        )
+        .await
+        .unwrap()["reference"]
+            .clone();
+
+        let scout = on_turn(&ada, &workspace, "scout");
+        let turn = HostedTurn {
+            workspace: workspace_id,
+            caller: &scout,
+            bound: None,
+        };
+        let asked_in = json!({"conversation": "c_general", "cause": "m0", "session": "s1"});
+        let req = web_call_request(&format!("{}/v1/balance", paying.url()), &item);
+        let first = asked(workspaces.use_for_turn(&turn, &req, asked_in.clone()).await);
+        assert!(!first.takes_always(), "web call does not offer ALWAYS");
+
+        let answers = Arc::new(Mutex::new(vec![
+            ConfirmationAnswer::AllowAlways,
+            ConfirmationAnswer::AllowOnce,
+        ]));
+        let asker = {
+            let answers = Arc::clone(&answers);
+            Answering::by(move |_| Some(answers.lock().unwrap().remove(0)))
+        };
+        workspaces.ask_people(asker.clone());
+        let agents = crate::agents::ServerAgents::on_device(
+            workspaces.clone(),
+            Arc::new(NoActions),
+            Arc::new(FixedAgentKeys(ada.device_public_key)),
+        );
+        settle_web_call_answer(&agents, &workspaces, &workspace).await;
+        assert_eq!(
+            asker.asked.lock().unwrap().as_slice(),
+            &[("Read balance.".to_owned(), false)],
+            "the person is asked, and always is not offered"
+        );
+        assert!(paying.drain_requests().is_empty(), "unoffered always runs nothing");
+
+        let second = asked(workspaces.use_for_turn(&turn, &req, asked_in.clone()).await);
+        assert_ne!(second.ask, first.ask, "nothing let the first answer stand");
+        settle_web_call_answer(&agents, &workspaces, &workspace).await;
+        assert!(matches!(
+            workspaces.use_for_turn(&turn, &req, asked_in).await,
+            Ok(TurnUse::Done(_))
+        ));
+        assert_eq!(
+            paying.drain_requests().len(),
+            1,
+            "offered allow once runs the web call once"
+        );
+        server.shutdown().await;
+    }
+
+    struct RecordingCarries {
+        seen: Arc<Mutex<Vec<(String, crate::agents::Answered)>>>,
+    }
+
+    impl crate::agents::Carries for RecordingCarries {
+        fn carry<'a>(
+            &'a self,
+            ask: &'a crate::workspaces::person_asking::kept_asks::KeptAsk,
+            answer: crate::agents::Answered,
+        ) -> crate::agents::Carried<'a> {
+            self.seen.lock().unwrap().push((ask.ask.clone(), answer));
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    fn seed_approval_ask(
+        workspaces: &Workspaces,
+        person: &[u8; 32],
+        workspace: &str,
+        job: usize,
+        always: Option<tilo_actions::remote::person_asking::Asked>,
+    ) -> crate::workspaces::person_asking::kept_asks::KeptAsk {
+        let new = crate::workspaces::person_asking::kept_asks::NewAsk {
+            workspace: workspace.to_owned(),
+            agent: "scout".to_owned(),
+            name: "Scout".to_owned(),
+            carrier: "test-carrier".to_owned(),
+            kept: json!({"job": job}),
+            always,
+            words: tilo_actions::remote::person_asking::Words {
+                action: format!("job {job}"),
+                ..tilo_actions::remote::person_asking::Words::default()
+            },
+            asked_in: json!({"conversation": "c_general", "cause": "m0", "session": "s1"}),
+        };
+        workspaces.keep_ask(person, new).unwrap().unwrap()
+    }
+
+    fn approval_scope(workspace: &str) -> tilo_actions::remote::person_asking::Asked {
+        use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
+        Asked {
+            workspace: workspace.to_owned(),
+            agent: "scout".to_owned(),
+            action: ActionName {
+                provider: "app.example".to_owned(),
+                kind: "letters.box".to_owned(),
+                action: "send".to_owned(),
+            },
+            on: Some(Thing {
+                document: String::new(),
+                resource: "letters.box/out".to_owned(),
+            }),
+        }
+    }
+
+    /// Approval asks (`KeptAsk`) waiting over a restart are asked again on the person's
+    /// devices, and their answers carried once:
+    /// - always answered where always was not offered (`always: None`) is carried as `No`;
+    /// - allow once is carried as `Once`;
+    /// - always where it was offered (`always: Some(scope)`) is carried as `Always` and lets
+    ///   the permission stand.
+    #[tokio::test]
+    async fn approval_asks_refuse_unoffered_always_and_carry_offered_answers() {
+        use crate::agents::Answered;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
+        let (workspace, _workspace_id, _service) = governed(&workspaces).await;
+        let ada = admit(&workspaces, &workspace, &owner, 1).await;
+        publish_scout_agent(&workspaces, &workspace, ada.user_public_key).await;
+
+        let scope = approval_scope(&workspace);
+        let unoffered = seed_approval_ask(&workspaces, &ada.user_public_key, &workspace, 1, None);
+        let once_ask = seed_approval_ask(&workspaces, &ada.user_public_key, &workspace, 2, None);
+        let always_ask = seed_approval_ask(
+            &workspaces,
+            &ada.user_public_key,
+            &workspace,
+            3,
+            Some(scope.clone()),
+        );
+        let asker = Answering::by(|action| match action {
+            "job 2" => Some(ConfirmationAnswer::AllowOnce),
+            _ => Some(ConfirmationAnswer::AllowAlways),
+        });
+        workspaces.ask_people(asker.clone());
+
+        let carried = Arc::new(Mutex::new(Vec::new()));
+        let agents = crate::agents::ServerAgents::on_device(
+            workspaces.clone(),
+            Arc::new(NoActions),
+            Arc::new(FixedAgentKeys(ada.device_public_key)),
+        );
+        agents.carries(
+            "test-carrier",
+            Arc::new(RecordingCarries {
+                seen: Arc::clone(&carried),
+            }),
+        );
+        agents.settle_asks(&workspace).await;
+        wait_until(|| workspaces.open_asks(&workspace).is_empty()).await;
+        let mut asked = asker.asked.lock().unwrap().clone();
+        asked.sort();
+        assert_eq!(
+            asked,
+            [
+                ("job 1".to_owned(), false),
+                ("job 2".to_owned(), false),
+                ("job 3".to_owned(), true),
+            ],
+            "always is offered only where it may stand"
+        );
+
+        let mut seen = carried.lock().unwrap().clone();
+        seen.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut expected = vec![
+            (unoffered.ask, Answered::No),
+            (once_ask.ask, Answered::Once),
+            (always_ask.ask, Answered::Always),
+        ];
+        expected.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(seen, expected);
+
+        assert!(workspaces.stands(&ada.user_public_key, &scope).is_some());
+        assert_eq!(
+            workspaces
+                .permissions_of(&ada.user_public_key)
+                .permissions
+                .len(),
+            1
         );
         server.shutdown().await;
     }

@@ -127,6 +127,12 @@ pub(super) fn asked_in(caller: &Caller) -> Value {
     serde_json::to_value(kept).unwrap_or(Value::Null)
 }
 
+/// The person a kept ask names by their root key, hex.
+pub(super) fn person_of(hex_key: &str) -> Option<[u8; 32]> {
+    let mut person = [0; 32];
+    hex::decode_to_slice(hex_key, &mut person).ok()?;
+    Some(person)
+}
 
 /// One shared settle loop over any kept-ask kind:
 /// - skips asks currently being carried out (`started && !interrupted`);
@@ -156,7 +162,6 @@ pub(super) async fn settle_kept<K, I, IFut, W, WFut>(
     }
 }
 
-
 /// Ask `person` `words` for `agent` of `workspace` through the system's one way of asking, and
 /// wait for their answer: allow once, always (only where `always` may stand), or not. A question
 /// that lapsed or that nobody could be asked is a no.
@@ -164,7 +169,7 @@ pub(super) async fn confirm(
     workspaces: &Workspaces,
     person: [u8; 32],
     (workspace, agent): (&str, &Agent),
-    words: &str,
+    (title, named): (&str, &Words),
     always: bool,
 ) -> Answered {
     let mut id = [0_u8; 32];
@@ -176,15 +181,21 @@ pub(super) async fn confirm(
         id,
         agent_id: agent.id.0.clone(),
         agent_label: agent.name.clone(),
-        title: words.to_owned(),
-        action_label: words.to_owned(),
+        title: title.to_owned(),
+        action_label: if named.action.is_empty() {
+            title.to_owned()
+        } else {
+            named.action.clone()
+        },
+        resource_label: named.on.clone(),
         workspace: workspace.to_owned(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(ASKED_FOR_NS),
+        allow_always: always,
         ..PendingConfirmation::default()
     };
     match workspaces.ask_person_confirmation(person, question).await {
-        Ok(ConfirmationAnswer::AllowAlways) if always => Answered::Always,
-        Ok(ConfirmationAnswer::AllowOnce | ConfirmationAnswer::AllowAlways) => Answered::Once,
+        Ok(ConfirmationAnswer::AllowAlways) => Answered::Always,
+        Ok(ConfirmationAnswer::AllowOnce) => Answered::Once,
         Ok(_) => Answered::No,
         Err(error) => {
             tracing::info!(%workspace, %error, "a person could not be asked, so nothing is done");
@@ -286,22 +297,93 @@ impl Agents {
         };
         // Asked on the person's own devices, for as long as they take: the call that asked
         // ends now, and the answer is carried out when it comes.
-        let (agents, agent, words) = (self.clone(), agent.clone(), words.trim().to_owned());
-        tokio::spawn(async move {
-            let always = kept.always.is_some();
-            let answer = confirm(
-                &agents.workspaces,
-                person,
-                (&kept.workspace, &agent),
-                &words,
-                always,
-            )
-            .await;
-            agents
-                .carry_answer(&kept.workspace.clone(), &agent, &kept, answer)
-                .await;
-        });
+        tokio::spawn(self.clone().ask_kept(person, agent.clone(), kept, words.trim().to_owned()));
         Ok(None)
+    }
+
+    /// Ask again what the agents of `workspace` asked their people and nobody answered yet,
+    /// as after a restart of this server: a question is put again on the person's devices,
+    /// and its answer carried out as it would have been. An answer that was being carried out
+    /// when this server stopped is carried out by nobody, and its ask is forgotten, as is one
+    /// whose question would have lapsed by now or whose agent the workspace no longer has (a
+    /// vault use stays kept).
+    pub(crate) async fn settle_asks(&self, workspace: &str) {
+        // Where a person's password for a calendar or a mail account is wanted and this process
+        // does not ask them for it, they are asked again.
+        self.settle_connects(workspace).await;
+        self.settle_mail_connects(workspace).await;
+
+        let open_asks = self.workspaces.open_asks(workspace);
+        let open_uses = self.workspaces.open_use_asks(workspace);
+        if open_asks.is_empty() && open_uses.is_empty() {
+            return;
+        }
+        let agents = self.agents(workspace).await.unwrap_or_default();
+        settle_kept(
+            open_asks,
+            |ask| {
+                self.workspaces.forget_ask(&ask);
+                async {}
+            },
+            |ask| {
+                let lapsed = ask
+                    .asked_at_ms
+                    .saturating_mul(1_000_000)
+                    .saturating_add(ASKED_FOR_NS)
+                    < tilo_clock::unix_now_ns();
+                let again = person_of(&ask.person)
+                    .zip(agents.get(&ask.agent).cloned())
+                    .filter(|_| !lapsed)
+                    .map(|(person, agent)| {
+                        let title = ask.words.action.clone();
+                        self.clone().ask_kept(person, agent, ask.clone(), title)
+                    });
+                if again.is_none() {
+                    self.workspaces.forget_ask(&ask);
+                }
+                async move {
+                    if let Some(again) = again {
+                        tokio::spawn(again);
+                    }
+                }
+            },
+        )
+        .await;
+        // A use waits for its answer as long as it is kept: one whose agent this server does
+        // not find now is left as it is, and answers that it waits.
+        settle_kept(
+            open_uses,
+            |ask| {
+                self.workspaces.use_interrupted(&ask);
+                async {}
+            },
+            |ask| {
+                let again = person_of(&ask.person)
+                    .zip(agents.get(&ask.agent).cloned())
+                    .map(|(person, agent)| super::vault_uses::ask_use(self.clone(), person, agent, ask));
+                async move {
+                    if let Some(again) = again {
+                        tokio::spawn(again);
+                    }
+                }
+            },
+        )
+        .await;
+    }
+
+    /// Ask `person` what `kept` keeps, in the words `title`, for `agent`, and carry out their
+    /// answer once it comes ([`Self::carry_answer`]).
+    async fn ask_kept(self, person: [u8; 32], agent: Agent, kept: KeptAsk, title: String) {
+        let answer = confirm(
+            &self.workspaces,
+            person,
+            (&kept.workspace, &agent),
+            (&title, &kept.words),
+            kept.always.is_some(),
+        )
+        .await;
+        self.carry_answer(&kept.workspace.clone(), &agent, &kept, answer)
+            .await;
     }
 
     /// Settle every open device-password ask of kind `K` through [`settle_kept`]:
@@ -346,7 +428,8 @@ impl Agents {
         .await;
     }
 
-    /// Settle every open chat-question ask of kind `K` through [`settle_kept`].
+    /// The person `person_hex` names, and the agent's callers for the turn `asked_in` names:
+    /// within that turn, and outside it. None when the person is admitted on no device.
     pub(super) async fn asker_of(
         &self,
         workspace_id: WorkspaceId,
@@ -354,8 +437,7 @@ impl Agents {
         asked_in: &Value,
         agent: &Agent,
     ) -> Option<([u8; 32], Caller, Caller)> {
-        let mut person = [0; 32];
-        hex::decode_to_slice(person_hex, &mut person).ok()?;
+        let person = person_of(person_hex)?;
         self.workspaces.person_device(workspace_id, person).await?;
         let asked_in: AskedIn = serde_json::from_value(asked_in.clone()).ok()?;
         let outside = self
@@ -371,8 +453,6 @@ impl Agents {
             ));
         Some((person, turn, outside))
     }
-
-    /// Say on the question `found` names what came of its answer.
 
     /// Carry `answer`, the person's own, out for `kept`, asked for `agent` of `workspace`:
     /// claimed first, so it is carried out once; what was asked lets stand where they said

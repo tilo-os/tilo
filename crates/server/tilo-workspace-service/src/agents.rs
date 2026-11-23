@@ -1098,6 +1098,11 @@ impl ServerAgents {
         let mut writes = self.workspaces.document_writes();
         let mut known = None;
         self.read_answering(&mut known).await;
+        // What the agents asked their people before this server last stopped, and nobody
+        // answered, is asked again.
+        for workspace in self.workspaces.described().await {
+            Box::pin(self.settle_asks(&workspace.id().to_string())).await;
+        }
         loop {
             tokio::select! {
                 answer = asked.recv() => {

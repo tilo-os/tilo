@@ -11,15 +11,13 @@
 //! takes them.
 //!
 //! No device of the person's is on, so the first use of an item somewhere
-//! asks them. The question is Chat's own, of the kind `action`, put in the
-//! conversation the agent works in as the turn's caller, and the tool call
-//! ends at once: nothing waits on a thread. When the person answers, on any
-//! device of theirs, the server reads the answer from the workspace's document
-//! (`settle_asks`, at every look at what waits) and carries out what it kept
-//! for that question itself: `allow` once, `always` with the item's leave
-//! written first, `deny` not at all. It says `started` before it carries
-//! anything out, so an answer is carried out at most once, and then how it
-//! ended.
+//! asks them, on their own devices, through the system's one way of asking
+//! ([`super::asks::confirm`]), and the tool call ends at once: nothing waits on
+//! the turn. When the person answers, the server carries out what it kept for
+//! that question itself: allow once, always with the item's leave written
+//! first, deny not at all. It claims the use before it carries anything out,
+//! so an answer is carried out at most once. A question nobody answered when
+//! this server stopped is asked again when it starts (`settle_asks`).
 //!
 //! A field of a web page is the one use whose secret leaves this server: the page is in the
 //! workspace's Browser window, and only its engine writes into it. The turn names the field and
@@ -325,40 +323,44 @@ impl TurnUses {
         let mut person = [0; 32];
         hex::decode_to_slice(&self.person, &mut person)
             .map_err(|_| "the turn names no person".to_owned())?;
-        let words = if open.reason.is_empty() {
-            NO_REASON.to_owned()
-        } else {
-            open.reason.clone()
-        };
-        let (agents, agent, workspace, open) = (
+        tokio::spawn(ask_use(
             self.agents.clone(),
+            person,
             self.agent.clone(),
-            self.workspace.clone(),
             open.clone(),
-        );
-        tokio::spawn(async move {
-            let answer = super::asks::confirm(
-                &agents.workspaces,
-                person,
-                (&workspace, &agent),
-                &words,
-                open.takes_always(),
-            )
-            .await;
-            let Some(workspace_id) = WorkspaceId::parse(&workspace) else {
-                return;
-            };
-            let answer = match answer {
-                Answered::Once => UseAnswer::Once,
-                Answered::Always => UseAnswer::Always,
-                Answered::No => UseAnswer::No,
-            };
-            agents
-                .carry_out_use((&workspace, workspace_id), &agent, open, answer)
-                .await;
-        });
+        ));
         Ok(())
     }
+}
+
+/// Ask `person` whether `agent` may make the use `open` keeps, and carry out their answer once
+/// it comes: once, always where the use takes always, or not at all.
+pub(super) async fn ask_use(agents: ServerAgents, person: [u8; 32], agent: Agent, open: OpenAsk) {
+    let words = if open.reason.is_empty() {
+        NO_REASON.to_owned()
+    } else {
+        open.reason.clone()
+    };
+    let answer = super::asks::confirm(
+        &agents.workspaces,
+        person,
+        (&open.workspace, &agent),
+        (&words, &tilo_actions::remote::person_asking::Words::default()),
+        open.takes_always(),
+    )
+    .await;
+    let Some(workspace_id) = WorkspaceId::parse(&open.workspace) else {
+        return;
+    };
+    let answer = match answer {
+        Answered::Once => UseAnswer::Once,
+        Answered::Always => UseAnswer::Always,
+        Answered::No => UseAnswer::No,
+    };
+    let workspace = open.workspace.clone();
+    agents
+        .carry_out_use((&workspace, workspace_id), &agent, open, answer)
+        .await;
 }
 
 impl TurnProvider for TurnUses {
