@@ -509,6 +509,10 @@ struct ChatSettle<'a> {
 /// What a kept-ask kind answered through a Chat question supplies to the shared
 /// chat settle loop.
 pub(super) trait ChatAskKind: KeptAskKind + Send + 'static {
+    /// How long an ask whose question is not in the chat document is kept
+    /// before being forgotten, or `None` when unasked asks never expire on age.
+    const UNASKED_FOR: Option<Duration>;
+
     fn agent(&self) -> &str;
     fn asked_in(&self) -> &Value;
     fn asked_at_ms(&self) -> u64;
@@ -529,6 +533,8 @@ pub(super) trait ChatAskKind: KeptAskKind + Send + 'static {
 }
 
 impl ChatAskKind for KeptAsk {
+    const UNASKED_FOR: Option<Duration> = Some(UNASKED_FOR);
+
     fn agent(&self) -> &str {
         &self.agent
     }
@@ -943,13 +949,15 @@ impl Agents {
                     ask.person(),
                     &ask.expected_detail(),
                 ) else {
-                    // Its question is not in the document: one that was never asked
-                    // does nothing any more once UNASKED_FOR has passed.
-                    let old = Duration::from_millis(
-                        tilo_clock::unix_now_ms().saturating_sub(ask.asked_at_ms()),
-                    ) > UNASKED_FOR;
-                    if old {
-                        ask.forget(&self.workspaces);
+                    if let Some(limit) = K::UNASKED_FOR {
+                        // Its question is not in the document: one that was never asked
+                        // does nothing any more once `limit` has passed.
+                        let old = Duration::from_millis(
+                            tilo_clock::unix_now_ms().saturating_sub(ask.asked_at_ms()),
+                        ) > limit;
+                        if old {
+                            ask.forget(&self.workspaces);
+                        }
                     }
                     return;
                 };

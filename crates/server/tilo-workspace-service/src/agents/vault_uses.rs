@@ -44,6 +44,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::policy::MemberId;
@@ -630,6 +631,11 @@ struct AnsweredAsk {
 }
 
 impl ChatAskKind for OpenAsk {
+    // Secret-use asks never expire for not yet appearing in Chat: a person's
+    // later "allow" still carries out what was kept, and only an interrupted
+    // ask is forgotten when its question is absent.
+    const UNASKED_FOR: Option<Duration> = None;
+
     fn agent(&self) -> &str {
         &self.agent
     }
@@ -647,8 +653,9 @@ impl ChatAskKind for OpenAsk {
     }
 
     fn takes_always(&self) -> bool {
-        // Stricter than the previous vault-use loop: an unoffered `ALWAYS` answer
-        // in Chat for a web call is refused as `No` rather than downgraded to `Once`.
+        // `TurnUses::put` only offers `ALWAYS` when `OpenAsk::takes_always()` is
+        // true (not for a web call), so an unoffered `ALWAYS` answer in Chat is
+        // refused as `No` and carries nothing out.
         Self::takes_always(self)
     }
 

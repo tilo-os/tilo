@@ -278,19 +278,20 @@ impl<K: KeptAskKind> KeptAskStore<K> {
     }
 
     /// Give back the claim on `ask` before anything of its answer was carried
-    /// out. Writes `started = false` before updating memory so a write failure
-    /// leaves it claimed in both memory and on disk.
+    /// out. Clears `started` in memory before writing to disk so that if the
+    /// write fails, this process can still claim and carry out the answer on
+    /// the next look, while a restart still sees `started = true` on disk as
+    /// interrupted.
     pub(crate) fn release(&self, base: &Path, ask: &K) -> Result<(), K::Error> {
-        self.with_open(base, |open| {
-            let Some(kept) = open.iter_mut().find(|kept| kept.id() == ask.id()) else {
-                return Ok(());
-            };
-            let mut released = kept.clone();
-            released.set_started(false);
-            Self::write(base, &released).map_err(K::refused)?;
+        let released = self.with_open(base, |open| {
+            let kept = open.iter_mut().find(|kept| kept.id() == ask.id())?;
             kept.set_started(false);
-            Ok(())
-        })
+            Some(kept.clone())
+        });
+        match released {
+            Some(released) => Self::write(base, &released).map_err(K::refused),
+            None => Ok(()),
+        }
     }
 
     /// Forget `ask` in `workspace`, removing it from memory and disk.
@@ -482,7 +483,9 @@ impl Workspaces {
     /// forgets it where the question was taken back meanwhile.
     ///
     /// # Errors
-    /// The ask could not be written: it stays claimed, and a restart says it was interrupted.
+    /// The ask could not be written: its claim is already cleared in memory so this process
+    /// can claim it again on the next look, while on disk it stays started so a restart says
+    /// it was interrupted.
     pub fn release_ask(&self, ask: &KeptAsk) -> Result<(), String> {
         self.asking().asks.release(&self.inner.dir, ask)
     }
