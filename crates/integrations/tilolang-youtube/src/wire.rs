@@ -274,6 +274,7 @@ mod tests {
             &FromConnector::Stream {
                 request: 9,
                 url: "https://video.example/watch?v=abc".to_owned(),
+                playback: Playback::default(),
             },
             STREAM_WIRE,
         );
