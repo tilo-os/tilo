@@ -23,7 +23,8 @@ cargo build "${cargo_args[@]}" -p tilolang-process --bin tilolang-process
 # also compiles tools such as the benchmark harness; under fat LTO each can
 # retain 7-8 GiB and Cargo runs them concurrently even though they are never
 # installed in a release package.
-cargo build "${cargo_args[@]}" -p tilo-session --bin tilo-session
+cargo build "${cargo_args[@]}" -p tilo-session --bin tilo-session \
+    --features tilo-app-window/keyboard-legends
 
 target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 if [[ -n ${TILO_CARGO_TARGET:-} ]]; then

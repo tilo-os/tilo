@@ -417,6 +417,32 @@ pub struct Reading {
     /// Whether a window stands where a dock rides.
     #[serde(default)]
     pub dock_covered: bool,
+    /// The screens of the person's other devices, as their shared placement lays them out
+    /// beside this device's: what Settings draws beyond this machine's own.
+    #[serde(default)]
+    pub shared: Vec<SharedScreen>,
+}
+
+/// One screen of another of the person's devices, in the shared layout.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct SharedScreen {
+    /// The device that drives it.
+    pub device: String,
+    /// What the person calls that device.
+    pub device_label: String,
+    /// Its stable output id on that device.
+    pub output: String,
+    /// What the monitor calls itself.
+    pub name: String,
+    /// Its top-left and size in the shared layout, in logical pixels.
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    /// Whether the device is online now.
+    pub online: bool,
+    /// Whether the pointer crosses onto it from a screen of another device.
+    pub reachable: bool,
 }
 
 impl Reading {
@@ -451,6 +477,14 @@ pub struct Display {
     /// The colour it shows: what its sink accepts and the signal it is driven with, so what is
     /// shown on it is prepared for it.
     pub colour: DisplayCapabilities,
+    /// Where it stands in the desk's logical layout, and how large it is: what a person
+    /// arranging their screens sees.
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    /// Physical pixels per logical pixel it draws at.
+    pub scale: f64,
 }
 
 /// The session's displays, as the session holds them.
@@ -497,6 +531,9 @@ struct Shown {
     monitor: String,
     name: String,
     colour: DisplayCapabilities,
+    /// Its logical rectangle in the desk, while it is on.
+    rect: (i32, i32, i32, i32),
+    scale: f64,
 }
 
 impl Inner {
@@ -519,6 +556,11 @@ impl Inner {
                         backlight: level
                             .is_some_and(|level| level.kind != BrightnessKind::Software),
                         colour: shown.colour,
+                        x: shown.rect.0,
+                        y: shown.rect.1,
+                        width: u32::try_from(shown.rect.2).unwrap_or(0),
+                        height: u32::try_from(shown.rect.3).unwrap_or(0),
+                        scale: shown.scale,
                     }
                 })
                 .collect(),
@@ -530,6 +572,7 @@ impl Inner {
             dock_covered: self.edges.dock_covered,
         };
         reading.level = reading.brightness();
+        reading.shared = shared_screens();
         reading
     }
 
@@ -547,6 +590,41 @@ impl Inner {
         levels
     }
 }
+
+/// The person's other devices' screens, as their shared placement lays them out beside this
+/// device's own, and whether the pointer crosses onto each.
+fn shared_screens() -> Vec<SharedScreen> {
+    use settings_store::person_displays::{Layout, PersonDisplays, Placements};
+    let Some(devices) = PersonDisplays::published() else {
+        return Vec::new();
+    };
+    let layout = Layout::resolve(&devices.devices, &Placements::load());
+    layout
+        .displays
+        .iter()
+        .filter(|display| !display.local)
+        .map(|display| SharedScreen {
+            device: display.device.clone(),
+            device_label: display.device_label.clone(),
+            output: display.output.clone(),
+            name: display.name.clone(),
+            x: display.rect.x,
+            y: display.rect.y,
+            width: display.rect.width,
+            height: display.rect.height,
+            online: display.online,
+            reachable: layout.displays.iter().any(|other| {
+                other.device != display.device && meets(other.rect, display.rect)
+            }),
+        })
+        .collect()
+}
+
+/// Whether two screens touch or overlap, so the pointer crosses between them.
+fn meets(a: settings_store::person_displays::Rect, b: settings_store::person_displays::Rect) -> bool {
+    a.x <= b.right() && b.x <= a.right() && a.y <= b.bottom() && b.y <= a.bottom()
+}
+
 
 impl Displays {
     /// The displays over `backlights` , whose modes land as `commands` the loop carries out.
@@ -588,6 +666,8 @@ impl Displays {
                 monitor: output.monitor.clone(),
                 name: display_name(output),
                 colour: output.colour,
+                rect: output.rect.unwrap_or_default(),
+                scale: output.scale,
             })
             .collect();
         let connectors: Vec<String> = shown.iter().map(|shown| shown.connector.clone()).collect();
@@ -1026,6 +1106,8 @@ mod tests {
                 monitor: (*connector).into(),
                 name: (*name).into(),
                 colour: DisplayCapabilities::sdr_default(),
+                rect: (0, 0, 1920, 1080),
+                scale: 1.0,
             })
             .collect();
         inner.told = shown

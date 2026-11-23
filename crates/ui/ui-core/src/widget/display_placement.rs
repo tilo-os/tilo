@@ -235,7 +235,6 @@ fn round_to_i32(value: f64) -> i32 {
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
-#[crate::component::not_a_component(system, "the display settings' placement of screens")]
 pub struct DisplayPlacement {
     displays: Vec<PlacedDisplay>,
     moves: Vec<(String, ActionEmitter<(i32, i32)>)>,
@@ -250,6 +249,12 @@ pub struct DisplayPlacement {
     dirty: bool,
     focused: bool,
     rect: Rect,
+    /// What the canvas is called, when its view names it: the pane's own words over the
+    /// toolkit's.
+    accessible_name: Option<String>,
+    /// What the view hears when the person chooses a screen, and when a moved screen lands.
+    choose: Option<crate::component::Event>,
+    moved: Option<crate::component::Event>,
     /// Bumped each time it paints anew: what a page's picture of it is versioned by.
     paint_generation: u64,
 }
@@ -277,7 +282,38 @@ impl DisplayPlacement {
             dirty: true,
             focused: false,
             rect: Rect::ZERO,
+            accessible_name: None,
+            choose: None,
+            moved: None,
             paint_generation: 0,
+        }
+    }
+
+    /// Name the canvas as its view does, for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: String) -> Self {
+        self.accessible_name = Some(name);
+        self
+    }
+
+    /// What the view hears when the person chooses a screen: carries its connector.
+    #[must_use]
+    pub fn on_choose(mut self, event: crate::component::Event) -> Self {
+        self.choose = Some(event);
+        self
+    }
+
+    /// What the view hears when a moved screen lands: carries its connector and its new
+    /// top-left in the shared layout, its x and then its y.
+    #[must_use]
+    pub fn on_move(mut self, event: crate::component::Event) -> Self {
+        self.moved = Some(event);
+        self
+    }
+
+    fn chose(&mut self, connector: &str) {
+        if let Some(event) = &self.choose {
+            event.fire(Some(crate::component::Value::Text(connector.to_owned())));
         }
     }
 
@@ -585,6 +621,7 @@ impl DisplayPlacement {
             && selection.with(|selected| *selected != display.connector)
         {
             selection.set(display.connector.clone());
+            self.chose(&display.connector);
         }
         self.dirty = true;
         if !display.movable {
@@ -736,7 +773,8 @@ impl DisplayPlacement {
         if selection.with(|selected| *selected == next) {
             return false;
         }
-        selection.set(next);
+        selection.set(next.clone());
+        self.chose(&next);
         self.dirty = true;
         true
     }
@@ -754,6 +792,7 @@ impl DisplayPlacement {
         }
         if selection.with(|selected| selected != connector) {
             selection.set(connector.to_owned());
+            self.chose(connector);
             self.dirty = true;
         }
         true
@@ -803,13 +842,23 @@ impl DisplayPlacement {
             .displays
             .iter()
             .any(|display| display.connector == connector && display.placement == settled);
-        if !unchanged
-            && let Some((_, emitter)) = self
+        if !unchanged {
+            if let Some((_, emitter)) = self
                 .moves
                 .iter_mut()
                 .find(|(candidate, _)| *candidate == connector)
-        {
-            let _ = emitter.emit((settled.x, settled.y));
+            {
+                let _ = emitter.emit((settled.x, settled.y));
+            }
+            if let Some(event) = &self.moved {
+                event.fire(Some(crate::component::Value::List(vec![
+                    crate::component::Value::Text(connector.to_owned()),
+                    crate::component::Value::List(vec![
+                        crate::component::Value::Int(i64::from(settled.x)),
+                        crate::component::Value::Int(i64::from(settled.y)),
+                    ]),
+                ])));
+            }
         }
         let positions = self
             .displays
@@ -1026,6 +1075,7 @@ struct TileState {
 }
 
 impl Widget for DisplayPlacement {
+    crate::described!();
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn build_layout(
@@ -1314,7 +1364,11 @@ impl Widget for DisplayPlacement {
         let mapping = self.mapping();
         let selected = self.selected();
         let mut group = AccessNode::new(Role::Group)
-            .with_name(t("display-placement-name"))
+            .with_name(
+                self.accessible_name
+                    .clone()
+                    .unwrap_or_else(|| t("display-placement-name")),
+            )
             .with_description(t("display-placement-description"))
             .with_bounds(self.rect);
         for display in &self.displays {
@@ -2218,6 +2272,54 @@ mod tests {
         assert!(
             !canvas.choose("Virtual-1"),
             "never a display it does not show"
+        );
+    }
+
+    /// A dropped screen reports its connector and where it landed, and a press reports the
+    /// screen it chose: what a described view answers, and nothing a click-only canvas could.
+    #[test]
+    fn a_drop_reports_where_the_screen_landed_and_a_press_who_was_chosen() {
+        use crate::component::{Event, Fired, Intent};
+        let (mut canvas, selection) = selected_canvas();
+        let queue = crate::Intents::<Fired>::default();
+        canvas.moved = Some(Event::View(Intent::new(&queue, "canvas", "moved")));
+        canvas.choose = Some(Event::View(Intent::new(&queue, "canvas", "chose")));
+        let monitor = canvas.mapping().to_canvas(canvas.displays[1].placement);
+        let start = Point::new(
+            monitor.x0 + monitor.width() * 0.4,
+            monitor.y0 + monitor.height() * 0.5,
+        );
+        assert!(canvas.press(start));
+        assert_eq!(
+            selection.with(Clone::clone),
+            "HDMI-A-1",
+            "the pressed screen is the chosen one"
+        );
+        assert!(canvas.drag_to(start + Vec2::new(60.0, 0.0)));
+        assert!(canvas.release());
+        let fired = queue.take();
+        let chose = fired
+            .iter()
+            .find(|fired| fired.event == "chose")
+            .expect("a press reports the screen it chose");
+        assert_eq!(
+            chose.value,
+            Some(crate::component::Value::Text("HDMI-A-1".into()))
+        );
+        let moved = fired
+            .iter()
+            .find(|fired| fired.event == "moved")
+            .expect("a drop reports where the screen landed");
+        let Some(crate::component::Value::List(parts)) = &moved.value else {
+            panic!("a move carries the connector and its place: {:?}", moved.value);
+        };
+        assert_eq!(
+            parts.first(),
+            Some(&crate::component::Value::Text("HDMI-A-1".into()))
+        );
+        assert!(
+            matches!(parts.get(1), Some(crate::component::Value::List(at)) if at.len() == 2),
+            "a move carries the x and y it landed at: {parts:?}"
         );
     }
 

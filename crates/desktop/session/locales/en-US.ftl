@@ -609,3 +609,4 @@ so-tilo-session-banners-focus-newest = Focus the newest notification
 so-tilo-session-banners-read = Read it in full
 so-tilo-session-banners-answer-call = Answer the call
 so-tilo-session-banners-decline-call = Decline the call
+session-input = Input devices

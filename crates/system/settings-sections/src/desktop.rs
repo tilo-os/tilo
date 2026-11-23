@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use settings_store::hardware::{
     DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
 };
-use settings_store::person_displays::Placements;
+use settings_store::person_displays::{PlacedDisplay, Placements};
 use ui::tilo_resource;
 
 /// The shell's desktop navigation preferences, as the person's settings
@@ -150,12 +150,35 @@ impl SharedDisplayPrefs {
     #[action(id = "arrange-displays")]
     pub fn arrange_displays(
         &mut self,
-        #[param("The placement, as its display entries")] placement: serde_json::Value,
+        #[param("The placement, as its display entries")] placement: Placements,
     ) -> Result<(), tilo_resource::Refusal> {
-        let placement = Placements::from_value(&placement).ok_or_else(|| {
-            tilo_resource::Refusal::new("the placement is malformed or out of bounds")
-        })?;
         self.placement = self.placement.with_changes(placement.displays);
+        Ok(())
+    }
+
+    /// Move one of the person's screens to a new top-left in the layout: `screen` is the
+    /// `device/output` key the layout names it by.
+    #[action(id = "move-display")]
+    pub fn move_display(
+        &mut self,
+        #[param("The screen, as `device/output`")] screen: String,
+        #[param("Its new left, in logical pixels")] x: i32,
+        #[param("Its new top, in logical pixels")] y: i32,
+    ) -> Result<(), tilo_resource::Refusal> {
+        let (device, output) = screen
+            .split_once('/')
+            .filter(|(device, output)| !device.is_empty() && !output.is_empty())
+            .ok_or_else(|| tilo_resource::Refusal::new("a screen is named `device/output`"))?;
+        let Some(entry) = self.placement.entry(device, output) else {
+            return Err(tilo_resource::Refusal::new("the layout has no such screen"));
+        };
+        let moved = PlacedDisplay {
+            x,
+            y,
+            placed: true,
+            ..entry.clone()
+        };
+        self.placement = self.placement.with_changes([moved]);
         Ok(())
     }
 }
@@ -227,9 +250,131 @@ impl settings_model::SettingsSchema for PendingDisplayChange {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.display-change")]
-impl PendingDisplayChange {}
+impl PendingDisplayChange {
+    /// Try a layout now: the displays take it while the person decides, and it stays only when
+    /// kept before its deadline. The monitors attached now are the ones it is arranged for, so a
+    /// change staged for a dock does not apply without it.
+    #[action(id = "apply-display-change")]
+    pub fn apply_display_change(
+        &mut self,
+        #[param("The output configuration to try")] candidate: DisplayConfig,
+    ) -> Result<(), tilo_resource::Refusal> {
+        let observed = settings_store::hardware::DisplayHardwareSnapshot::load().ok_or_else(|| {
+            tilo_resource::Refusal::new("no display is publishing what it can show")
+        })?;
+        let descriptors: Vec<settings_store::hardware::OutputDescriptor> = observed
+            .outputs
+            .iter()
+            .map(|output| output.descriptor.clone())
+            .collect();
+        if descriptors.is_empty() {
+            return Err(tilo_resource::Refusal::new("no display is connected"));
+        }
+        if candidate.outputs.len() != descriptors.len()
+            || descriptors
+                .iter()
+                .any(|output| !candidate.outputs.contains_key(&output.connector))
+        {
+            return Err(tilo_resource::Refusal::new(
+                "the configuration must name exactly the connected displays",
+            ));
+        }
+        candidate
+            .validate_for(&descriptors)
+            .map_err(|error| tilo_resource::Refusal::new(format!("{error:?}")))?;
+        let set = DisplaySet::of_descriptors(&descriptors);
+        let transaction = DisplayTransaction::prepare_request(set, candidate)
+            .map_err(|error| tilo_resource::Refusal::new(error.to_string()))?;
+        self.absorb(transaction);
+        Ok(())
+    }
+
+    /// Move one of this device's screens to a new top-left: the layout takes it at once, and
+    /// stays only when kept before its deadline.
+    #[action(id = "move-display-screen")]
+    pub fn move_display_screen(
+        &mut self,
+        #[param("The output's connector, such as `eDP-1`")] connector: String,
+        #[param("Its new left, in logical pixels")] x: i32,
+        #[param("Its new top, in logical pixels")] y: i32,
+    ) -> Result<(), tilo_resource::Refusal> {
+        let observed = settings_store::hardware::DisplayHardwareSnapshot::load().ok_or_else(|| {
+            tilo_resource::Refusal::new("no display is publishing what it can show")
+        })?;
+        let descriptors: Vec<settings_store::hardware::OutputDescriptor> = observed
+            .outputs
+            .iter()
+            .map(|output| output.descriptor.clone())
+            .collect();
+        let set = DisplaySet::of_descriptors(&descriptors);
+        if !descriptors
+            .iter()
+            .any(|output| output.connector == connector)
+        {
+            return Err(tilo_resource::Refusal::new("no such display is connected"));
+        }
+        let mut candidate = DisplayConfig::load_effective(&set);
+        let Some(entry) = candidate.outputs.get_mut(&connector) else {
+            return Err(tilo_resource::Refusal::new(
+                "the display has no configuration to move",
+            ));
+        };
+        entry.x = x;
+        entry.y = y;
+        candidate
+            .validate_for(&descriptors)
+            .map_err(|error| tilo_resource::Refusal::new(format!("{error:?}")))?;
+        let transaction = DisplayTransaction::prepare_request(set, candidate)
+            .map_err(|error| tilo_resource::Refusal::new(error.to_string()))?;
+        self.absorb(transaction);
+        Ok(())
+    }
+
+    /// Keep the layout being tried: it becomes what the person chose, instead of reverting when
+    /// its deadline passes.
+    #[action(id = "keep-display-change")]
+    pub fn keep_display_change(&mut self) -> Result<(), tilo_resource::Refusal> {
+        if self.state != DisplayTransactionState::AwaitingConfirmation
+            || self.deadline_unix_ms.is_some_and(|deadline| {
+                tilo_clock::unix_now_ms() >= deadline
+            })
+        {
+            return Err(tilo_resource::Refusal::new(
+                "no display change is waiting to be kept",
+            ));
+        }
+        self.state = DisplayTransactionState::ConfirmRequested;
+        Ok(())
+    }
+
+    /// Put the layout back as it was before the change being tried.
+    #[action(id = "revert-display-change")]
+    pub fn revert_display_change(&mut self) -> Result<(), tilo_resource::Refusal> {
+        if !matches!(
+            self.state,
+            DisplayTransactionState::Requested
+                | DisplayTransactionState::AwaitingConfirmation
+                | DisplayTransactionState::ConfirmRequested
+        ) {
+            return Err(tilo_resource::Refusal::new("no display change is pending"));
+        }
+        self.state = DisplayTransactionState::RevertRequested;
+        Ok(())
+    }
+}
 
 impl PendingDisplayChange {
+    /// Take on `transaction`: it becomes the change this record holds.
+    fn absorb(&mut self, transaction: DisplayTransaction) {
+        self.id = transaction.id;
+        self.state = transaction.state;
+        self.set = transaction.set;
+        self.previous = transaction.previous;
+        self.candidate = transaction.candidate;
+        self.deadline_unix_ms = transaction.deadline_unix_ms;
+        self.message = transaction.message;
+    }
+
     /// The change the section holds, if it holds one.
     #[must_use]
     pub fn transaction(&self) -> Option<DisplayTransaction> {

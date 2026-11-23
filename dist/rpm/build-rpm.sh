@@ -78,7 +78,8 @@ if (( run_cargo )); then
     ( cd "$repo_root" && cargo build --release --locked \
         -p tilo-runtime --bin tilo-runtime --no-default-features )
     say "cargo build --release (native session)"
-    ( cd "$repo_root" && cargo build --release --locked -p tilo-session --bin tilo-session )
+    ( cd "$repo_root" && cargo build --release --locked -p tilo-session --bin tilo-session \
+        --features tilo-app-window/keyboard-legends )
 fi
 
 # Cargo resolves a relative CARGO_TARGET_DIR from the repository root (the

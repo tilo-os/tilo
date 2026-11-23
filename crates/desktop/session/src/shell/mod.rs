@@ -82,6 +82,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         tilo_system_service::update_surface(),
         tilo_system_service::time_zone_surface(),
         crate::displays::surface(),
+        crate::input::surface(),
         crate::notifications::surface(),
         crate::osd::surface(),
         crate::controls::night_light_surface(),

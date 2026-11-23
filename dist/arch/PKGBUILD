@@ -34,7 +34,7 @@ build() {
   cargo build --release --locked -p tilo-runtime --bin tilo-runtime --no-default-features
   cargo build --release --locked -p tilolang-process --bin tilolang-process
   export TILO_UNLOCK_HELPER_PATH=/usr/lib/tilo/tilo-unlock-helper
-  cargo build --release --locked -p tilo-session --bin tilo-session
+  cargo build --release --locked -p tilo-session --bin tilo-session --features tilo-app-window/keyboard-legends
   ./dist/stage-payload.sh target/release "$srcdir/payload"
 }
 

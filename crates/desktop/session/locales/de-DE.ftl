@@ -614,3 +614,4 @@ so-tilo-session-banners-focus-newest = Den neuesten Hinweis fokussieren
 so-tilo-session-banners-read = Ganz lesen
 so-tilo-session-banners-answer-call = Den Anruf annehmen
 so-tilo-session-banners-decline-call = Den Anruf ablehnen
+session-input = Eingabegeräte

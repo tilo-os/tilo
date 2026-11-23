@@ -177,6 +177,8 @@ fn page_title(page: Text) -> Text {
         std.say("Media")
     } else if page == "places" {
         std.say("Places")
+    } else if page == "screens" {
+        std.say("Screens")
     } else if page == "chrome" {
         std.say("Shell parts")
     } else if page == "customs" {
@@ -224,6 +226,9 @@ view gallery(g: Gallery) {
                     ui.NavItem("places", "Places", icon: .map_pin) {
                         on select: set(showing, "places")
                     }
+                    ui.NavItem("screens", "Screens", icon: .monitor) {
+                        on select: set(showing, "screens")
+                    }
                 }
                 ui.NavSection("The shell") {
                     ui.NavItem("chrome", "Shell parts", icon: .monitor) {
@@ -264,6 +269,8 @@ view gallery(g: Gallery) {
                             data(g)
                         } else if showing == "media" {
                             media(g)
+                        } else if showing == "screens" {
+                            screens(g)
                         } else if showing == "chrome" {
                             shell_parts(g)
                         } else if showing == "type" {

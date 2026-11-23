@@ -492,12 +492,95 @@ view notifications_pane() {
     }
 }
 
-/// This device's screens: the brightness of each, whether the picture turns with it, and the
+/// This device's screens: how they are arranged and used together, how bright each is, and the
 /// warmth of the night light.
 view displays_pane() {
+    state chosen: Option<Text> = .none
     let d = settings.display
+    let change = settings.display_change
     let night = settings.night_light
     let screens = device.displays
+    ui.Section("Use the screens") {
+        row(gap: .related, align: .center, wrap: true) {
+            for mode in ["extend", "mirror", "built-in", "external"] {
+                ui.Button(mode_name(mode), size: .small) {
+                    on press: device.set_mode(device.displays, mode: mode)
+                }
+            }
+            ui.Button("Identify", icon: .monitor, size: .small) {
+                on press: settings.identify_displays(settings.display)
+            }
+        }
+        if change.state == .awaiting_confirmation {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Text(
+                    "These screens are showing a change it has not kept.",
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.Button("Keep", role: .primary, size: .small) {
+                    on press: settings.keep_display_change(settings.display_change)
+                }
+                ui.Button("Revert", size: .small) {
+                    on press: settings.revert_display_change(settings.display_change)
+                }
+            }
+        }
+    }
+    ui.Section("Arrangement") {
+        ui.PlacementCanvas(name: "Screens", selected: chosen) {
+            for display in screens.displays {
+                ui.PlacementScreen(
+                    key: display.connector,
+                    name: display.name,
+                    number: (screens.displays.index_of(display) ?? 0) + 1,
+                    x: display.x,
+                    y: display.y,
+                    width: display.width,
+                    height: display.height,
+                    movable: true,
+                )
+            }
+            for other in screens.shared {
+                ui.PlacementScreen(
+                    key: "{other.device}/{other.output}",
+                    name: other.name,
+                    number: screens.displays.len() + (screens.shared.index_of(other) ?? 0) + 1,
+                    x: other.x,
+                    y: other.y,
+                    width: other.width,
+                    height: other.height,
+                    movable: true,
+                    group: other.device,
+                    device: other.device,
+                    output: other.output,
+                    online: other.online,
+                    reachable: other.reachable,
+                )
+            }
+            on chose(connector: Text): set(chosen, .some(connector))
+            on moved(connector: Text, at: List<Int>): if screens.displays.any(s -> s.connector == connector) {
+                settings.move_display_screen(
+                    settings.display_change,
+                    connector: connector,
+                    x: at.at(0) ?? 0,
+                    y: at.at(1) ?? 0,
+                )
+            } else {
+                settings.move_display(
+                    settings.display_placement,
+                    screen: connector,
+                    x: at.at(0) ?? 0,
+                    y: at.at(1) ?? 0,
+                )
+            }
+        }
+        ui.Text(
+            "Drag a screen beside another to put them next to each other. They meet where they touch.",
+            role: .caption,
+            secondary: true,
+        )
+    }
     ui.Section("This device") {
         setting(
             "Automatic brightness",
@@ -830,6 +913,21 @@ view power_pane() {
                 step: 1.0,
             ),
         )
+    }
+}
+
+/// How the screens are used together, as the button that picks it says it.
+fn mode_name(mode: Text) -> Text {
+    if mode == "extend" {
+        "Side by side"
+    } else if mode == "mirror" {
+        "Same on each"
+    } else if mode == "built-in" {
+        "Built-in only"
+    } else if mode == "external" {
+        "External only"
+    } else {
+        mode
     }
 }
 

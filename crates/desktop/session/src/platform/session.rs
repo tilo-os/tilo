@@ -1637,6 +1637,9 @@ impl Session {
             options.backlights.take(),
             Rc::clone(&commands),
         );
+        // The keyboards, pointers, touchscreens and drawing tablets the compositor sees, published
+        // as one reading: the one reader of its input snapshot.
+        crate::input::Input::mount(&services);
         // A brightness key or slider anywhere wakes the loop, so a display
         // dimmed in software follows at once.
         displays_service.watch(&options.wake.handle());

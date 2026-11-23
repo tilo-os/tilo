@@ -8,6 +8,10 @@ repository.workspace = true
 homepage.workspace = true
 description = "A tilolang app's window in the toolkit: the generic adapter, the shell composition and the toolkit's widgets, built from the component patches an app instance sends and reporting what the person did."
 
+[features]
+# The installed keyboard layouts' legends in `ui.KeyboardMap`, which needs libxkbcommon.
+keyboard-legends = ["tilo-keyboard-map/native"]
+
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
@@ -30,6 +34,9 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 
+[build-dependencies]
+tilo-component-scan = { version = "0.1.0", path = "../../ui/tilo-component-scan" }
+
 [dev-dependencies]
 tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
@@ -38,6 +45,11 @@ ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The keyboard map draws a PC model's geometry and, with the `keyboard-legends` feature, the
+# legends of the installed XKB layouts: reading those needs libxkbcommon, so a build that wants
+# them turns the feature on and links it.
+tilo-keyboard-map = { version = "0.1.0", path = "../../desktop/tilo-keyboard-map", default-features = false }
+tilo-pc-keyboard-geometry = { version = "0.1.0", path = "../../desktop/pc-keyboard-geometry" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 # A view's song or video is a Tilo content address (`tilo-blob://…`): the window reads its bytes

@@ -40,7 +40,11 @@ pub const PART: &str = "part";
 pub fn components() -> &'static ui::component::Registry {
     static COMPONENTS: OnceLock<ui::component::Registry> = OnceLock::new();
     COMPONENTS.get_or_init(|| {
-        ui::component::Registry::of(&[&ui::component::TOOLKIT, &tilo_rich_edit::COMPONENTS])
+        ui::component::Registry::of(&[
+            &ui::component::TOOLKIT,
+            &tilo_rich_edit::COMPONENTS,
+            &crate::COMPONENTS,
+        ])
     })
 }
 

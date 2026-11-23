@@ -2780,6 +2780,11 @@ pub mod keyboard_map;
 pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
 /// Logical screen topology canvas shared by local and native peer displays.
 pub mod display_placement;
+pub use display_placement::{
+    DisplayPlacement, PlacedDisplay, PlacementGesture, SharedDisplayState,
+};
+mod display_placement_component;
+pub use display_placement_component::{PlacementCanvasProps, PlacementScreenProps};
 mod graph_canvas;
 pub use graph_canvas::{
     Connection, GraphCanvas, GraphCanvasConnection, GraphCanvasNode, GraphCanvasProps,

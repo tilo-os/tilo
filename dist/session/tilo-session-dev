@@ -92,7 +92,7 @@ chain_is_trusted "$(dirname -- "$TARGET_REAL")" || die "the directories above $T
 
 LC_ALL=C grep -q -a -F -e "$MARKER" -- "$TARGET_REAL" || die \
     "$TARGET_REAL carries no dev-session build marker — build it with
-    cargo build --locked -p tilo-session --bin tilo-session --features dev-session
+    cargo build --locked -p tilo-session --bin tilo-session --features dev-session,tilo-app-window/keyboard-legends
   (a --release build never carries the marker, by design)"
 
 # Optional developer app/runtime overlay.  The file is intentionally a tiny

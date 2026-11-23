@@ -22,6 +22,7 @@ pub mod catalogue;
 pub mod date;
 pub mod form;
 pub mod i18n;
+pub mod keyboard_map;
 mod media_source;
 pub mod page_runner;
 pub mod pane;
@@ -34,6 +35,16 @@ pub use tilo_render_protocol::patch::{
     Actor, Binding, Event, Invocation, Level, Node as UiNode, ResourceRef, Value,
 };
 pub use window::AppWindow;
+
+include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
+
+/// The widgets this window describes itself, beside the toolkit's and the rich editor's: the
+/// keyboard map, which compiles the layouts installed on the device.
+pub static COMPONENTS: ui::component::Set = ui::component::Set {
+    entries: generated_entries,
+    parts: &GENERATED_PARTS,
+    enums: Vec::new,
+};
 
 /// Construct a `tilolang_tilo::instance::GlobalLocale` wired to the toolkit's shared catalogues,
 /// language, revision and region formats. Hosts using the toolkit construct a `static` with this

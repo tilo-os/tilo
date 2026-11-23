@@ -412,6 +412,93 @@ impl InputDevicePrefs {
         Ok(())
     }
 
+    /// Choose one layout's physical model, compose key or caps-lock behaviour, on a keyboard or
+    /// on the shared layouts (`all`). Nothing else of the keyboard's profile changes.
+    #[action(id = "set-layout-option")]
+    pub fn set_layout_option(
+        &mut self,
+        #[param("The keyboard's device key, or `all` for the shared layouts")] keyboard: String,
+        #[param("The layout the option is for")] layout: String,
+        #[param("`model`, `compose` or `caps`")] option: String,
+        #[param("The chosen model or key; none for the layout's own")] value: Option<String>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        device_key(&keyboard)?;
+        if keyboard == settings_store::keyboard_sources::OSK {
+            return Err(ui::tilo_resource::Refusal::new(
+                "the on-screen keyboard's layouts are its own section's",
+            ));
+        }
+        if settings_store::hardware::InputSource::parse(&layout).is_none() {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{layout}` is not a keyboard layout"
+            )));
+        }
+        let all = settings_store::keyboard_sources::ALL;
+        let mut profile = match self.keyboard_assignments.get(&keyboard).cloned() {
+            Some(profile) => profile,
+            None if keyboard == all => settings_store::keyboard_sources::KeyboardProfile {
+                sources: self.keyboard_layouts.clone(),
+                active: self.keyboard_layout.clone(),
+                options: std::collections::BTreeMap::new(),
+            },
+            None => {
+                return Err(ui::tilo_resource::Refusal::new(
+                    "this keyboard types the shared layouts",
+                ));
+            }
+        };
+        if !profile.sources.iter().any(|source| *source == layout) {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{layout}` is not one of this keyboard's layouts"
+            )));
+        }
+        let entry = profile.options.entry(layout.clone()).or_default();
+        match option.as_str() {
+            "model" => {
+                if let Some(model) = &value
+                    && !valid_keyboard_model(model)
+                {
+                    return Err(ui::tilo_resource::Refusal::new(format!(
+                        "`{model}` is not a physical keyboard model"
+                    )));
+                }
+                entry.model = value;
+            }
+            "compose" => {
+                if let Some(key) = &value
+                    && !matches!(key.as_str(), "ralt" | "menu" | "caps" | "rwin" | "lwin")
+                {
+                    return Err(ui::tilo_resource::Refusal::new(format!(
+                        "`{key}` is not a compose key"
+                    )));
+                }
+                entry.compose_key = value;
+            }
+            "caps" => {
+                if let Some(key) = &value
+                    && !matches!(key.as_str(), "ctrl" | "escape" | "backspace")
+                {
+                    return Err(ui::tilo_resource::Refusal::new(format!(
+                        "`{key}` is not a caps-lock behaviour"
+                    )));
+                }
+                entry.caps_lock = value;
+            }
+            other => {
+                return Err(ui::tilo_resource::Refusal::new(format!(
+                    "`{other}` is not a layout option"
+                )));
+            }
+        }
+        entry.customised =
+            entry.model.is_some() || entry.compose_key.is_some() || entry.caps_lock.is_some();
+        if !entry.customised {
+            profile.options.remove(&layout);
+        }
+        self.keyboard_assignments.insert(keyboard, profile);
+        Ok(())
+    }
+
     /// Choose the physical keyboard model the keyboard drawing shows and the
     /// keyboard types with.
     #[action(id = "set-keyboard-model")]
@@ -2037,6 +2124,15 @@ impl settings_model::SettingsSchema for DisplayPrefs {
     migrate = crate::leaves_moved_out
 )]
 impl DisplayPrefs {
+    /// Show each display's number on it for a moment, so the person can tell which screen the
+    /// layout draws where.
+    #[action(id = "identify-displays")]
+    pub fn identify_displays(&mut self) -> Result<(), tilo_resource::Refusal> {
+        settings_store::display_identify::IdentifyRequest::request()
+            .map(|_| ())
+            .map_err(|error| tilo_resource::Refusal::new(error.to_string()))
+    }
+
     /// Let the built-in panel's brightness follow the ambient light, or
     /// not. Settings offers it where a light sensor can drive the panel; the
     /// field is changed only here.

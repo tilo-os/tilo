@@ -36,7 +36,7 @@ impl DisplayModel {
     fn arrange(&self, next: &Placements) -> Result<(), String> {
         self.sections
             .invoke::<SharedDisplayPrefs>(
-                SharedDisplayPrefs::ARRANGE_DISPLAYS.with(next.to_value()),
+                SharedDisplayPrefs::ARRANGE_DISPLAYS.with(next.clone()),
             )
             .map_err(|error| t_args("display-shared-save-failed", &[("error", error.into())]))
     }

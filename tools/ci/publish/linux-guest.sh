@@ -78,7 +78,8 @@ case ${1:-} in
     # The VM's windows reach the desktop through an app keeper, which
     # tilo-linux-vm finds beside itself.
     CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked -p tilo-session --bin tilo-session \
-      -p linux-vm --bin tilo-linux-vm -p tilo-app-keeper --bin tilo-app-keeper
+      -p linux-vm --bin tilo-linux-vm -p tilo-app-keeper --bin tilo-app-keeper \
+      --features tilo-app-window/keyboard-legends
     install -D -m 0755 "$target/debug/tilo-session" "$out/tilo-session"
     install -D -m 0755 "$target/debug/tilo-linux-vm" "$out/tilo-linux-vm"
     install -D -m 0755 "$target/debug/tilo-app-keeper" "$out/tilo-app-keeper"

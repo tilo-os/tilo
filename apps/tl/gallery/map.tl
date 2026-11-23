@@ -51,3 +51,35 @@ view places(g: Gallery) {
 scenario "places" {
     root Gallery
 }
+
+/// Screens arranged by dragging: this device's panel beside a desk monitor, each named and
+/// numbered as Identify shows them.
+view screens(g: Gallery) {
+    ui.PlacementCanvas(name: "Screens", identify: true) {
+        ui.PlacementScreen(
+            key: "eDP-1",
+            name: "Laptop",
+            number: 1,
+            x: 0,
+            y: 0,
+            width: 1440,
+            height: 900,
+            primary: true,
+            movable: true,
+        )
+        ui.PlacementScreen(
+            key: "HDMI-A-1",
+            name: "Desk monitor",
+            number: 2,
+            x: 1440,
+            y: 0,
+            width: 2560,
+            height: 1440,
+            movable: true,
+        )
+    }
+}
+
+scenario "screens" {
+    root Gallery
+}

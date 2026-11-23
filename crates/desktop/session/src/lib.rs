@@ -246,6 +246,8 @@ mod identity_admin;
 #[cfg(target_os = "linux")]
 mod input_method;
 #[cfg(target_os = "linux")]
+mod input;
+#[cfg(target_os = "linux")]
 mod input_sources;
 pub mod invite;
 #[cfg(target_os = "linux")]
