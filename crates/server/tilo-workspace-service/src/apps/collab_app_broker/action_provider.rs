@@ -1903,15 +1903,6 @@ impl AppBrokerState {
             }
             Ok(Reservation::Reserved) => {}
         }
-        let destination = match self.admit_launchable(caller, request) {
-            Ok(admitted) => admitted,
-            Err(error) => {
-                if let Ok(mut log) = self.remote_invocations.lock() {
-                    log.abandon(&request.invocation);
-                }
-                return Pending::ready(Err(error));
-            }
-        };
         let runtime = match super::launchable::delivery_runtime() {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -1932,9 +1923,36 @@ impl AppBrokerState {
         // runs on the delivery runtime's blocking pool, the wait is a task
         // there, and neither runs on the broker's local set.
         runtime.spawn(async move {
-            let started = state
-                .relaunch_and_deliver(&completer, &caller, &destination, origin.as_ref(), &request)
-                .await;
+            // A press waits for the workspace the shell is still joining, as an app's open does.
+            let mut destination = state.admit_launchable(&caller, &request);
+            if matches!(destination, Err(ActionCallError::UnknownAction))
+                && let Some((workspace, _)) = application_provider(&request.target.provider)
+                && caller.workspace() == Some(workspace)
+            {
+                destination = match state
+                    .workspace_once_joined(&caller, workspace, |_, _, _| ())
+                    .await
+                {
+                    Some(()) => state.admit_launchable(&caller, &request),
+                    None => Err(ActionCallError::Unavailable {
+                        reason: format!("still joining {workspace}; try again"),
+                    }),
+                };
+            }
+            let started = match destination {
+                Ok(destination) => {
+                    state
+                        .relaunch_and_deliver(
+                            &completer,
+                            &caller,
+                            &destination,
+                            origin.as_ref(),
+                            &request,
+                        )
+                        .await
+                }
+                Err(error) => Err(error),
+            };
             let result = match state.remote_invocations.lock() {
                 Ok(mut log) => match started {
                     Ok(job) => {
