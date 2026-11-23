@@ -159,7 +159,7 @@ runtime() {
     local icd required
     icd="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
     # On macOS wgpu draws with the Mac's own GPU through Metal: lavapipe is Linux's CPU driver.
-    if [[ $(uname -s) == Darwin ]]; then
+    if [[ ${OSTYPE:-} == darwin* ]]; then
         :
     elif [[ -r $icd ]]; then
         provide WGPU_BACKEND vulkan
@@ -207,7 +207,7 @@ runtime() {
     # that requires one (tilo_test_env's `Audio`) in a package that step leaves out fails. A Mac
     # promises none: the endpoint is PulseAudio's, which macOS doesn't have.
     local audio=1
-    [[ $(uname -s) != Darwin ]] || audio=0
+    [[ ${OSTYPE:-} != darwin* ]] || audio=0
     provide TILO_REQUIRE_AUDIO "${TILO_REQUIRE_AUDIO:-$audio}"
 }
 
@@ -232,7 +232,7 @@ fonts() {
 
 audio() {
     local owner=${TILO_TEST_ENV_OWNER:-$PPID} ready daemon name line
-    [[ ${TILO_REQUIRE_AUDIO:-} != 0 && $(uname -s) != Darwin ]] || return 0
+    [[ ${TILO_REQUIRE_AUDIO:-} != 0 && ${OSTYPE:-} != darwin* ]] || return 0
     if [[ -n ${TILO_HEADLESS_AUDIO_PID:-} && -n ${PULSE_RUNTIME_PATH:-} &&
         ${PULSE_SERVER:-} == "unix:$PULSE_RUNTIME_PATH/native" &&
         -S $PULSE_RUNTIME_PATH/native ]] && kill -0 "$TILO_HEADLESS_AUDIO_PID" 2>/dev/null; then
