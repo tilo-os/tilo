@@ -952,10 +952,11 @@ view suggestions<R>(of: R) {
 /// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
 /// consecutive changes by one person or by one run, is an entry saying who made it, what
 /// they did and when — one sentence, wrapping as a sentence does, the face of whoever made it
-/// beside it. What they did is what its last change says (`version_said`), worked out from the
+/// beside it. What they did is what its one change says (`version_said`), worked out from the
 /// fields the change wrote, the person looking as "You" — or, where every change the step folds
 /// is one action's and that action's words say how many, the step's own words ("wrote 7
-/// messages"), so the count stands in the sentence and no count stands beside it. What the
+/// messages"), so the count stands in the sentence and no count stands beside it. A step of
+/// several other changes says how many ("You · 2 changes"), and opened, each says what it did. What the
 /// sentence leaves out stands
 /// under it, muted (`version_notes`): each field the change wrote, what it held before beside
 /// what it holds now, each as the field's type shows it. Steps of one hand, within the hour,
@@ -1009,16 +1010,22 @@ view history<R>(of: R) {
                                     ui.Text(v.actor, role: .label)
                                     // A run's own words stand under its sentence: its changes are
                                     // what it did, and it names them all. The step's own words
-                                    // stand where they say how many changes it folds. A step that
-                                    // made the resource says so: what followed the making in the
-                                    // same hand is under it, opened with the step.
+                                    // stand where they say how many changes it folds. A step of
+                                    // several changes says whose they are and how many: each of
+                                    // them says what it did where the step is opened, so the
+                                    // heading repeats none of them.
                                     if s.run == .none {
-                                        if made {
-                                            if let first = s.versions.first() {
-                                                std.version_said(first)
-                                            }
-                                        } else if s.said != "" {
+                                        if s.said != "" {
                                             ui.Text(s.said, role: .label)
+                                        } else if s.changes > 1 {
+                                            ui.Text("·", role: .caption, secondary: true)
+                                            ui.Text(
+                                                phrase(
+                                                    "tilolang-history-changes",
+                                                    count: s.changes,
+                                                ),
+                                                role: .label,
+                                            )
                                         } else {
                                             std.version_said(v)
                                         }
@@ -1084,15 +1091,6 @@ view history<R>(of: R) {
                                     std.version_notes(v, spoken: s.run == .none)
                                 }
                             } else if s.changes > 1 {
-                                // A step whose sentence already names how many changes it folds
-                                // says it once.
-                                if s.said == "" {
-                                    ui.Text(
-                                        phrase("tilolang-history-changes", count: s.changes),
-                                        role: .caption,
-                                        secondary: true,
-                                    )
-                                }
                                 if open == key {
                                     ui.Button(
                                         phrase("tilolang-history-hide"),
@@ -1189,15 +1187,18 @@ template view version_changes(v: host.Version, spoken: Bool = true) {
         v.changes.filter(c -> v.count > 1 or v.did != "" or c.shows == "")
     } else { v.changes }
     if v.kind != "created" and v.kind != "removed" and not unsaid.is_empty() {
-        grid(columns: 2, gap: .related) {
+        stack(gap: .tight) {
             for c in unsaid {
-                ui.Text(c.label, role: .caption, secondary: true)
-                std.value_change {
-                    before: {
-                        c.before
-                    }
-                    after: {
-                        c.after
+                // The value stands beside its field's name, one line read left to right.
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Text(c.label, role: .caption, secondary: true)
+                    std.value_change {
+                        before: {
+                            c.before
+                        }
+                        after: {
+                            c.after
+                        }
                     }
                 }
             }

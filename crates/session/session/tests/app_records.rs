@@ -555,7 +555,7 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
         session(&mut home, root.path(), std::sync::Arc::clone(&launches));
     let me = me();
 
-    let (typed, steps, lead, (placeholder, arrow, said)) =
+    let (typed, steps, lead, (placeholder, arrow, beside, said)) =
         in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
             let package = host.package(TASKS)?;
             let task = package.meta.types.iter().find(|ty| ty.name == "Task")?;
@@ -676,9 +676,19 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
                     && node.props.get("icon") == Some(&Value::text("arrow-right"))
             })
             .is_some();
+            // The field's name and its change stand on one line.
+            let beside = node_where(opened, &|node| {
+                node.kind == "row"
+                    && node.children.iter().any(|child| {
+                        child.kind == "ui.Text"
+                            && child.props.get("value") == Some(&Value::text("Title"))
+                    })
+                    && node_where(node, &|inner| inner.kind == "ui.Icon").is_some()
+            })
+            .is_some();
             let mut said = Vec::new();
             texts_of(opened, &mut said);
-            Some((typed, steps, lead, (placeholder, arrow, said)))
+            Some((typed, steps, lead, (placeholder, arrow, beside, said)))
         });
     let expected: Vec<(String, String)> = (1..=TYPED.len())
         .map(|end| (TYPED[..end - 1].to_owned(), TYPED[..end].to_owned()))
@@ -688,15 +698,26 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
         steps, "2 2",
         "the making and the burst of typing are one step of two acts, each listed once"
     );
-    // The step leads with the making: the task reads as made, the typing under it.
+    // The step's heading says whose its changes are and how many, and repeats none of them;
+    // opened, each says what it did, once.
     assert!(
-        lead.iter().any(|text| text == "created it"),
-        "the step says the person made it: {lead:?}"
+        lead.iter()
+            .any(|text| text == "2 changes" || text == "tilolang-history-changes"),
+        "the step says how many changes it holds: {lead:?}"
     );
     assert!(
-        !lead.iter().any(|text| text == "renamed"),
-        "the step does not lead with the typing: {lead:?}"
+        !lead
+            .iter()
+            .any(|text| text == "created it" || text == "renamed"),
+        "the heading repeats none of its changes: {lead:?}"
     );
+    for did in ["created it", "renamed"] {
+        assert_eq!(
+            said.iter().filter(|text| *text == did).count(),
+            1,
+            "opened, the step lists `{did}` once: {said:?}"
+        );
+    }
     // Opened, the typing reads from the empty title, as the field shows it, to what was typed.
     assert!(
         placeholder,
@@ -705,6 +726,10 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
     assert!(
         arrow,
         "an arrow stands between what the title held and what it holds"
+    );
+    assert!(
+        beside,
+        "the change stands beside the field's name, on its line"
     );
     assert!(
         !said

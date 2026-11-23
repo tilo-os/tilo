@@ -1806,16 +1806,21 @@ tilo_test_env::scenario! {
         );
 
         // The picks fold into one step of the task's history with its making, the way one person's
-        // changes made in a row do, and a step that made the task says so whatever followed it.
-        // The page itself draws the assignee as a chip, with no label beside it.
+        // changes made in a row do: the step says whose they are and how many, and each says what
+        // it did where the step is opened. The page itself draws the assignee as a chip, with no
+        // label beside it.
         let shown = history_texts(&ada, &task);
         assert!(
-            shown.join(" ").contains("You created it"),
-            "the step that made the task leads with its making: {shown:?}"
+            // The words where the host reads its catalogue, the phrase's key where not.
+            shown
+                .iter()
+                .any(|text| text.ends_with(" changes") || text == "tilolang-history-changes"),
+            "the step says how many changes it holds: {shown:?}"
         );
         assert!(
-            !shown.join(" ").contains("You unassigned it"),
-            "the picks after the making stand under it, not in its lead: {shown:?}"
+            !shown.join(" ").contains("You unassigned it")
+                && !shown.join(" ").contains("You created it"),
+            "the step's heading repeats none of its changes: {shown:?}"
         );
         pick_the_assignee(&ada, &mut page, &key, &pick("ben"));
         let shown = texts(page.tree());
