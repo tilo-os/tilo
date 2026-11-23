@@ -139,6 +139,10 @@ build_host() {
     # the session without a stack (stories/shell/mail-password.py).
     cargo build --locked --timings "${args[@]}" \
         -p tilo-account-probe --example mail_stand_in || return 1
+    # The iCloud-shaped double: the same mail servers beside a linked CalDAV server under one
+    # app password, so a story rehearses one connect feeding Mail and Calendar.
+    cargo build --locked --timings "${args[@]}" \
+        -p tilo-account-probe --example icloud_double || return 1
     # The power authorities a session serves on its own system bus, for a machine with no battery,
     # no platform profile and no polkit behind them (a check's VM,
     # crates/os/power/examples/fake_power.rs).
@@ -299,6 +303,7 @@ cp -p "$target/$host_profile/osk" "$out/bin/tilo-osk"
 # The stand-in mail server a user story starts beside its shells, under the name that says what
 # it is (the stack stages the same example as `mail-stand-in`).
 cp -p "$target/$host_profile/examples/mail_stand_in" "$out/bin/mail-stand-in"
+cp -p "$target/$host_profile/examples/icloud_double" "$out/bin/icloud-double"
 cp -p "$target/$host_profile/examples/fake_power" "$out/bin/fake-power"
 # Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
 [[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"
