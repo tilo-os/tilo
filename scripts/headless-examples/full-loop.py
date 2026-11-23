@@ -48,7 +48,7 @@ FINAL_PNG = pathlib.Path("/tmp/full-loop-final.png")
 
 
 def state(session) -> dict:
-    response = session.control({"op": "state_dump"})
+    response = session.read("state")
     if "state" not in response:
         raise RuntimeError(f"unexpected state_dump response: {response}")
     return response["state"]

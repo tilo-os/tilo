@@ -101,7 +101,7 @@ device's `admin-control.sock`; an existing live listener is never replaced.
 
 That socket serves the semantic half of the protocol only — action frames
 (listing, invoking and following actions), `state-dump`, `windows`,
-`record-read`, the profile ops — and never synthetic input, snapshots or the test
+`resource_read`, the profile ops — and never synthetic input, snapshots or the test
 identity. `tilo action list` and `tilo do` speak those frames:
 
 ```bash
@@ -196,15 +196,14 @@ echo '{"op":"pinch","fingers":2,"scale":1.25}' | nc -U "$TILO_TEST_CONTROL"
 # Capture a PNG of the current state:
 echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U "$TILO_TEST_CONTROL"
 
-# The live layout + chrome as JSON. A workspace's append-only history (effect
-# receipts, task audit trails) is left out; add "include_history":true to get
-# it. `peers` is who is here: this session's own row, and one row per
-# workspace it takes part in with everyone present there, as the roster every
-# surface draws is read.
-echo '{"op":"state_dump"}' | nc -U "$TILO_TEST_CONTROL"
-
-# Just the open windows, one row per tab:
-echo '{"op":"windows"}' | nc -U "$TILO_TEST_CONTROL"
+# The live layout + chrome as JSON. The desktop's state, its windows, the layout, the questions
+# waiting for the person, the open search and the devices keeping a workspace are resources of
+# the session's own (`so.tilo.session`), read with the action model's frame: `{"version": 3,
+# "message": {"Invoke": {"invocation": "<uuid>", "target": {"provider": "so.tilo.session",
+# "address": {"resource": "state", "action": "read"}}, "argument": "None"}}}`. `tilo-control
+# state-dump`, `windows` and `questions` send that read for you.
+TILO_TEST_CONTROL=... tilo-control state-dump
+TILO_TEST_CONTROL=... tilo-control windows
 
 # Pointer press and release as separate events. `click_at` bundles them,
 # which cannot express a drag-and-drop: the source client has to be *holding*
@@ -223,7 +222,7 @@ TILO_TEST_CONTROL=... tilo do new-note --title Trip
 # Records an app publishes, read through the record API as this person reads
 # them, answered once they differ from `after` (the `revision` an earlier answer
 # gave) or `wait_ms` passes:
-echo '{"op":"record_read","app":"notes","records":["notebook"]}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"resource_read","app":"notes","records":["notebook"]}' | nc -U "$TILO_TEST_CONTROL"
 
 # The compositor's own memory report (see "Idle memory"):
 echo '{"op":"process_memory"}' | nc -U "$TILO_TEST_CONTROL"

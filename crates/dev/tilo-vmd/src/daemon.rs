@@ -89,7 +89,12 @@ fn desktop_in_transition(reply: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
         return false;
     };
-    let answer = value.get("answer").unwrap_or(&value);
+    // A read answers in its completed receipt; the control protocol's own answer carries the
+    // state directly.
+    let answer = value
+        .pointer("/message/Receipt/status/Completed/output/value")
+        .or_else(|| value.get("answer"))
+        .unwrap_or(&value);
     answer
         .get("state")
         .unwrap_or(answer)
@@ -129,7 +134,19 @@ impl onboarding_walk::Screen for OnboardingScreen<'_> {
     }
 
     fn settled(&mut self) -> Result<bool, DaemonError> {
-        let request = serde_json::json!({ "op": "state_dump" });
+        // The session's own `state` resource, read with the action model's frame: the value is
+        // the state dump the control protocol answered.
+        let request = serde_json::json!({
+            "version": 3,
+            "message": {"Invoke": {
+                "invocation": uuid::Uuid::new_v4().to_string(),
+                "target": {
+                    "provider": "so.tilo.session",
+                    "address": {"resource": "state", "action": "read"},
+                },
+                "argument": "None",
+            }},
+        });
         let reply = self
             .daemon
             .apply

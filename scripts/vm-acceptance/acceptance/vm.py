@@ -255,10 +255,16 @@ class TiloVm:
     def state(self) -> dict:
         return self.control_json("state-dump")
 
+    def session_read(self, resource: str):
+        """The session's own `resource` (`state`, `windows`, `layout`, `questions`, `search`,
+        `devices`), as the walk reads it."""
+        return real_apps.session_reading(
+            self.raw(real_apps.invocation("so.tilo.session", resource, "read")))
+
     def search(self) -> dict:
         """What the shell's search shows now: `query`, `rows` (each its title, subtitle, kind
         and facts) and whether it still waits for sources (`searching`)."""
-        return self.raw({"op": "search_rows"})["answer"]
+        return self.session_read("search")["answer"]
 
     def actions(self, query: str = "") -> list[dict]:
         """Every catalogue row with an action the desktop lists for `query`, page after page
@@ -297,7 +303,7 @@ class TiloVm:
         """The shell's open windows: each with `window` (the mapped window's id), `app_id`, `rect`
         (`[x, y, width, height]`, null while no window of the tab is mapped) and `frames`, how many
         frames that window's client committed."""
-        return self.raw({"op": "windows"})["answer"]["windows"]
+        return self.session_read("windows")["answer"]["windows"]
 
     # -- control socket, input half (synthetic) -----------------------------
 

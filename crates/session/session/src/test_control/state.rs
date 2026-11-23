@@ -86,14 +86,6 @@ fn in_scope(row: &Json, scope: &Scope) -> bool {
     row.get("workspace").and_then(Json::as_str) == Some(scope.workspace.as_str())
 }
 
-/// `tree` with every workspace but the one `scope` holds left out.
-pub(super) fn within(tree: &Layout, scope: &Scope) -> Layout {
-    let mut tree = tree.clone();
-    tree.workspaces
-        .retain(|workspace| workspace.id().to_string() == scope.workspace);
-    tree
-}
-
 /// Whether a state dump says the screen is locked.
 fn locked_in(dump: &Json) -> bool {
     dump.get("state")
@@ -221,38 +213,6 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
         // The text on the clipboard, as the history last read it.
         "clipboard": session.clipboard.text(),
     }})
-}
-
-/// Who hosts each workspace this computer holds, and whether its host took this computer in yet: a
-/// machine copied from another holds its workspaces before their hosts admit it, and `tilo-vm vm
-/// branch` waits for that. One row per held workspace: its id, its name on the shell, the
-/// host's name as its person gave it, whether this computer is the host, and whether it still
-/// waits for the host. A socket sees what [`shown`] lets it see of the session: an app its own
-/// workspace, and nothing of a locked session but through a development socket.
-pub(super) fn keeping_devices(tree: &Layout, session: &Session<'_>, ctx: &Context) -> Json {
-    let rows: Vec<Json> = if ctx.who != Audience::Dev && session.locked {
-        Vec::new()
-    } else {
-        tree.workspaces
-            .iter()
-            .filter(|workspace| {
-                ctx.scope
-                    .as_ref()
-                    .is_none_or(|scope| workspace.id().to_string() == scope.workspace)
-            })
-            .filter_map(|workspace| {
-                let hosting = session.engine?.hosting(workspace.id())?;
-                Some(json!({
-                    "workspace": workspace.id().to_string(),
-                    "name": workspace.name.clone(),
-                    "host": hosting.host,
-                    "hosted_here": hosting.here,
-                    "awaiting_host": !hosting.admitted,
-                }))
-            })
-            .collect()
-    };
-    json!({"answer": {"workspaces": rows}})
 }
 
 /// What the person was told, as the banners and the centre show it: oldest first, one row per

@@ -114,25 +114,35 @@ fn windows_args() -> &'static [String] {
     ARGS.get_or_init(|| {
         vec![
             "raw".into(),
-            serde_json::json!({ "op": "windows" }).to_string(),
+            session_frame("windows", "read", serde_json::json!("None")).to_string(),
         ]
+    })
+}
+
+/// The action model's frame invoking `resource`'s `action` of the session with `argument`, at the
+/// version this build's session reads.
+fn session_frame(resource: &str, action: &str, argument: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "version": 3,
+        "message": {"Invoke": {
+            "invocation": uuid::Uuid::new_v4().to_string(),
+            "target": {
+                "provider": "so.tilo.session",
+                "address": {"resource": resource, "action": action},
+            },
+            "argument": argument,
+        }},
     })
 }
 
 /// The action frame that opens `app` as the desktop's own open-app does, answered once it is
 /// admitted: what a person's request to open an app sends the session.
 fn open_app_frame(app: &str) -> String {
-    json!({
-        "version": 2,
-        "message": {"Invoke": {
-            "invocation": uuid::Uuid::new_v4().to_string(),
-            "target": {
-                "provider": "so.tilo.session",
-                "address": {"resource": "desktop:chrome", "action": "open-app"},
-            },
-            "argument": {"Json": {"app": app}},
-        }},
-    })
+    session_frame(
+        "desktop:chrome",
+        "open-app",
+        serde_json::json!({"Json": {"app": app}}),
+    )
     .to_string()
 }
 
@@ -163,9 +173,10 @@ fn control_json(
 }
 
 fn window_rows(value: &Value) -> impl Iterator<Item = &Value> {
+    // The read is the session's own `windows` resource, answered with its value in the
+    // completed receipt.
     value
-        .get("answer")
-        .and_then(|answer| answer.get("windows"))
+        .pointer("/message/Receipt/status/Completed/output/value/answer/windows")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()

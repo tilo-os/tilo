@@ -45,7 +45,7 @@ mod state;
 mod wheel_input;
 
 use gesture_input::asked_of_gestures;
-use state::{presence_stamp, shown, state_dump, window_rows, within};
+use state::{presence_stamp, shown, state_dump, window_rows};
 use wheel_input::wheel;
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
@@ -326,24 +326,18 @@ enum Op {
     ProfileStop,
     ProvisionTestIdentity,
     ProcessMemory,
-    /// The questions waiting for the person, as their sheets show them.
-    Questions,
     ResourceRead,
     Scroll,
-    SearchRows,
     Snapshot,
-    StateDump,
     Swipe,
     Type,
     Unlock,
     Watch,
-    Windows,
-    KeepingDevices,
 }
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 28] = [
+    const ALL: [Self; 23] = [
         Self::ClickAt,
         Self::ClickNamed,
         Self::Drag,
@@ -360,18 +354,13 @@ impl Op {
         Self::ProfileStatus,
         Self::ProfileStop,
         Self::ProvisionTestIdentity,
-        Self::Questions,
         Self::ResourceRead,
         Self::Scroll,
-        Self::SearchRows,
         Self::Snapshot,
-        Self::StateDump,
         Self::Swipe,
         Self::Type,
         Self::Unlock,
         Self::Watch,
-        Self::Windows,
-        Self::KeepingDevices,
     ];
 
     /// The op `request` names, or `None` for one the protocol does not answer at all.
@@ -393,18 +382,13 @@ impl Op {
             "profile_status" => Self::ProfileStatus,
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
-            "questions" => Self::Questions,
             "resource_read" => Self::ResourceRead,
             "scroll" => Self::Scroll,
-            "search_rows" => Self::SearchRows,
             "snapshot" => Self::Snapshot,
-            "state_dump" => Self::StateDump,
             "swipe" => Self::Swipe,
             "type" => Self::Type,
             "unlock" => Self::Unlock,
             "watch" => Self::Watch,
-            "windows" => Self::Windows,
-            "keeping_devices" => Self::KeepingDevices,
             _ => return None,
         })
     }
@@ -428,18 +412,13 @@ impl Op {
             Self::ProfileStatus => "profile_status",
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
-            Self::Questions => "questions",
             Self::ResourceRead => "resource_read",
             Self::Scroll => "scroll",
-            Self::SearchRows => "search_rows",
             Self::Snapshot => "snapshot",
-            Self::StateDump => "state_dump",
             Self::Swipe => "swipe",
             Self::Type => "type",
             Self::Unlock => "unlock",
             Self::Watch => "watch",
-            Self::Windows => "windows",
-            Self::KeepingDevices => "keeping_devices",
         }
     }
 
@@ -455,10 +434,7 @@ impl Op {
                 | Self::ProfileStatus
                 | Self::ProfileStop
                 | Self::ResourceRead
-                | Self::StateDump
                 | Self::Watch
-                | Self::Windows
-                | Self::KeepingDevices
         )
     }
 }
@@ -500,11 +476,11 @@ fn not_this_api(who: Audience, op: Op) -> Json {
     refusal(
         "not_permitted",
         &format!(
-            "this control socket serves action frames, the state the session shows and its \
-             own diagnostics (`process_memory`, `profile_start`, `profile_status`, \
-             `profile_stop`, `resource_read`, `state_dump`, `watch` and `windows`), not \
-             `{}`; synthetic input and screenshots exist only on a development session's \
-             test-control socket",
+            "this control socket serves action frames and the session's own diagnostics \
+             (`process_memory`, `profile_start`, `profile_status`, `profile_stop`, \
+             `resource_read` and `watch`), not `{}`; the desktop's state, its windows, its \
+             questions and the rest are read from the session's own resources, and synthetic \
+             input and screenshots exist only on a development session's test-control socket",
             op.name()
         ),
     )
@@ -1094,13 +1070,13 @@ fn watch(
 fn loop_answer(
     op: Op,
     request: &Json,
-    ctx: &Context,
+    _ctx: &Context,
     compositor: &mut Compositor,
     session: &Session<'_>,
     held: &RefCell<BTreeSet<u32>>,
     fingers_down: &std::cell::Cell<Option<u32>>,
 ) -> Json {
-    if let Some(answer) = asked_of_shell(ctx, op, request, compositor, session) {
+    if let Some(answer) = asked_of_shell(op, request, compositor, session) {
         return answer;
     }
     if op == Op::Scroll {
@@ -1122,41 +1098,7 @@ fn loop_answer(
     )
 }
 
-/// The answer to what `op` asks of the session and its hosted surfaces, when it asks of them.
-/// The windows a tool reads: where each is drawn, how many frames it drew, and the resource it
-/// shows. Nothing shows a window while the screen is locked, to anyone but the developer.
-fn windows_answer(ctx: &Context, compositor: &Compositor, session: &Session<'_>) -> Json {
-    let rows = if ctx.who != Audience::Dev && session.locked {
-        Vec::new()
-    } else {
-        // Where each window is drawn, read off the frame's own layout: a row says what a tool
-        // aiming at that window aims at. How many frames it drew is read off the compositor, where
-        // the client's commits arrive. The resource it shows is the one the shell's own views read
-        // of its place: what the window's bar carries.
-        let rect_of = |id: u64| compositor.window_rect(id);
-        let frames_of = |id: u64| compositor.window_frames(id);
-        let places = session.layout.borrow().reading().places;
-        let resource_of = |tab: u64| {
-            places
-                .iter()
-                .find(|place| place.key == tab.to_string())
-                .map(|place| place.resource.clone())
-                .filter(|resource| !resource.is_empty())
-        };
-        match &ctx.scope {
-            None => session
-                .handle
-                .read(|tree| window_rows(tree, rect_of, frames_of, resource_of)),
-            Some(scope) => session
-                .handle
-                .read(|tree| window_rows(&within(tree, scope), rect_of, frames_of, resource_of)),
-        }
-    };
-    json!({"answer": {"windows": rows}})
-}
-
 fn asked_of_shell(
-    ctx: &Context,
     op: Op,
     request: &Json,
     compositor: &mut Compositor,
@@ -1204,56 +1146,10 @@ fn asked_of_shell(
                 refusal("input_failed", "could not set the clipboard")
             }
         }
-        Op::SearchRows => {
-            let (query, rows) = session.handle.search_rows();
-            let rows: Vec<Json> = rows
-                .iter()
-                .map(|row| {
-                    json!({
-                        "title": row.title,
-                        "subtitle": row.subtitle,
-                        "kind": row.kind,
-                        "facts": row.facts,
-                    })
-                })
-                .collect();
-            // Whether the search still owes rows: a tool timing what a person waits for stops on
-            // the rows being final, not on rows that are about to change under the same query.
-            json!({"answer": {
-                "query": query,
-                "rows": rows,
-                "searching": session.handle.search_searching(),
-            }})
-        }
         Op::ProcessMemory => json!({"answer": tilo_compositor::memory_report::report()}),
         Op::ProfileStart => profile_start(request),
         Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
-        Op::StateDump => shown(ctx, session.handle.read(|tree| state_dump(tree, session))),
-        Op::Questions => {
-            let pending = session
-                .questions
-                .map(tilo_service::Questions::pending)
-                .unwrap_or_default();
-            let questions: Vec<Json> = pending
-                .into_iter()
-                .map(|question| {
-                    json!({
-                        "handle": question.handle,
-                        "resource": tilo_service::question_resource(&question.handle),
-                        "kind": question.kind,
-                        "app": question.app_id,
-                        "label": question.label,
-                        "details": question.details,
-                    })
-                })
-                .collect();
-            json!({"answer": {"questions": questions}})
-        }
-        Op::KeepingDevices => session
-            .handle
-            .read(|tree| state::keeping_devices(tree, session, ctx)),
-        Op::Windows => windows_answer(ctx, compositor, session),
         _ => return None,
     })
 }

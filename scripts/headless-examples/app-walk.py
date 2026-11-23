@@ -739,7 +739,7 @@ class Walk:
 
     def op_questions(self, _value) -> dict:
         """What is asking the person now: a file chooser, a sheet."""
-        return {"questions": self.session.control({"op": "questions"})["answer"]["questions"]}
+        return {"questions": self.session.read("questions")["answer"]["questions"]}
 
     def op_theme(self, value) -> dict:
         self.set_dark(bool(value))
@@ -761,7 +761,7 @@ class Walk:
 
     def chooser_question(self) -> dict | None:
         """The file chooser asking the person now, if one is."""
-        questions = self.session.control({"op": "questions"})["answer"]["questions"]
+        questions = self.session.read("questions")["answer"]["questions"]
         return next((q for q in questions if q.get("kind") == FILE_CHOOSER_QUESTION), None)
 
     def chooser_step(self, ident: str) -> dict | None:

@@ -44,6 +44,7 @@ import subprocess
 import sys
 import time
 import traceback
+import uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -1295,8 +1296,14 @@ def steps(run: Run, args) -> None:
 def hosts_of(vm: TiloVm) -> list[dict]:
     """Each workspace `vm` 's session holds, who hosts it, and whether it still waits for that
     host to take this device in (`keeping_devices`)."""
-    answer = first_json(vm.run("control", "raw", '{"op":"keeping_devices"}', timeout=60))
-    return ((answer.get("answer") or answer).get("workspaces")) or []
+    frame = {"version": 3, "message": {"Invoke": {
+        "invocation": uuid.uuid4().hex,
+        "target": {"provider": "so.tilo.session",
+                   "address": {"resource": "devices", "action": "read"}},
+        "argument": "None"}}}
+    answer = first_json(vm.run("control", "raw", json.dumps(frame), timeout=60))
+    return (answer["message"]["Receipt"]["status"]["Completed"]["output"]["value"]
+            ["answer"]["workspaces"]) or []
 
 
 def admitted_alone(facts: dict, run: Run) -> None:

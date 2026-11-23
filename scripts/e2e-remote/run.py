@@ -941,7 +941,7 @@ class Run:
                          f"not {capped(this.get('label') or '')!r} as A's label reads: {session}")
         if session.get("environment") or session.get("environment_id"):
             raise Failed(f"B registers the agent from A as one of an environment: {session}")
-        windows = b.vm.raw({"op": "windows"})
+        windows = b.vm.windows()
         res.facts["b_windows"] = windows
         if "so.tilo.notes" not in json.dumps(windows):
             raise Failed(f"Notes did not open on B: {json.dumps(windows)[:800]}")
@@ -1051,7 +1051,7 @@ class Run:
                     res.facts[f"so_far_{party.box.letter}_{key}"] = value
             try:
                 res.facts["shown_on_b"] = [str(t.get("name")) for t in self.targets(b)][:80]
-                res.facts["windows_on_b"] = b.vm.raw({"op": "windows"})
+                res.facts["windows_on_b"] = b.vm.windows()
             except VmError as exc:
                 res.facts["shown_on_b"] = str(exc)[:300]
             try:
@@ -1068,7 +1068,7 @@ class Run:
         shows it, live, in its tab, and no other machine opened a Browser of its own in that
         tab. What each shell lists is read from its session; nothing is written anywhere."""
         def windows(box: Box) -> list:
-            return (box.vm.raw({"op": "windows"}).get("answer") or {}).get("windows") or []
+            return box.vm.windows()
 
         live = [window for window in windows(b)
                 if window.get("app_id") == BROWSER and window.get("kind") == "Foreign"
@@ -1261,7 +1261,7 @@ class Run:
         its window stands on the shell and stays: a Browser that ends as it starts shows its
         window for a moment."""
         def open_windows() -> bool:
-            return BROWSER in json.dumps(b.vm.raw({"op": "windows"}))
+            return BROWSER in json.dumps(b.vm.windows())
 
         if open_windows():
             return
@@ -1687,7 +1687,7 @@ class Run:
                              f"{json.dumps(as_pictures, ensure_ascii=False)[:300]}; A received "
                              f"{res.facts['received_on_a'][:300]}")
             if not pictured or not seen["hosted_tab_on_a"]:
-                res.facts["windows_on_a"] = a.vm.raw({"op": "windows"})
+                res.facts["windows_on_a"] = a.vm.windows()
                 viewers = [viewer for shared in seen["sharing_on_b"]
                            for viewer in shared.get("viewers") or []]
                 # A live session that is not open carries nothing, whatever the shares say: the sharing
@@ -1922,7 +1922,7 @@ class Run:
         def own_browser() -> list:
             """A's own live Browser windows. Its shell lists B's Browser too, as a window that
             runs on B, so a Browser among A's windows is not yet one A runs."""
-            listed = (a.vm.raw({"op": "windows"}).get("answer") or {}).get("windows") or []
+            listed = a.vm.windows()
             return [window for window in listed
                     if window.get("app_id") == BROWSER and window.get("kind") == "Foreign"
                     and window.get("window") is not None]

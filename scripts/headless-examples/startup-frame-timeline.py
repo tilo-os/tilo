@@ -21,7 +21,8 @@ import subprocess
 import sys
 import time
 
-from real_apps import Refused, address, catalogue, control_call, invocation, receipt
+from real_apps import (Refused, address, catalogue, control_call, invocation, receipt,
+                         session_reading)
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The one place that picks a session's private runtime directory.
@@ -204,12 +205,12 @@ def windows(sock: pathlib.Path) -> list[dict]:
     """The shell's open windows: each with `window`, `app_id`, `rect` (`[x, y, width, height]`,
     null while no window of the tab is mapped) and `frames`, the frames its client committed."""
     try:
-        response = control_call(sock, {"op": "windows"}, timeout=5)
+        rows = session_reading(control_call(
+            sock, invocation("so.tilo.session", "windows", "read"), timeout=5))["answer"]["windows"]
     except Refused as error:
         raise RuntimeError(f"window observation refused: {error}") from error
-    rows = response.get("answer", {}).get("windows")
     if not isinstance(rows, list):
-        raise RuntimeError(f"window response cannot observe its subject: {response}")
+        raise RuntimeError(f"window response cannot observe its subject: {rows}")
     return rows
 
 
@@ -379,7 +380,8 @@ def main() -> None:
                 if shell.poll() is not None:
                     raise RuntimeError(f"compositor exited {shell.returncode}; see compositor.log")
                 try:
-                    control_call(sock, {"op": "state_dump"}, timeout=0.5)
+                    session_reading(control_call(
+                        sock, invocation("so.tilo.session", "state", "read"), timeout=0.5))
                     break
                 except (OSError, KeyError):
                     if time.monotonic() >= deadline:

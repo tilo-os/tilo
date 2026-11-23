@@ -42,7 +42,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from real_apps import Agent, address, catalogue  # noqa: E402
+from real_apps import Agent, address, catalogue, invocation, session_reading  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The one place that picks a session's private runtime directory.
@@ -205,7 +205,7 @@ class Shell:
         return json.loads(answer)
 
     def workspace(self) -> dict:
-        tree = (self.call({"op": "state_dump"}).get("state") or {}).get("workspace_tree") or {}
+        tree = (session_reading(self.call(invocation("so.tilo.session", "state", "read"))).get("state") or {}).get("workspace_tree") or {}
         return (tree.get("workspaces") or [{}])[0]
 
     def grants(self) -> list[str]:
@@ -216,7 +216,7 @@ class Shell:
 
     def agents(self) -> list[dict]:
         """The agents the shell shows, as its bar lists them."""
-        return (self.call({"op": "state_dump"}).get("state") or {}).get("agents") or []
+        return (session_reading(self.call(invocation("so.tilo.session", "state", "read"))).get("state") or {}).get("agents") or []
 
     def targets(self) -> dict[str, list[float]]:
         """The shell's named controls, each with where it stands."""
@@ -320,7 +320,7 @@ def main() -> int:
         with socket.socket(socket.AF_UNIX) as outsider:
             outsider.settimeout(30)
             outsider.connect(str(shell.mcp))
-            outsider.sendall(b'{"op":"state_dump"}\n')
+            outsider.sendall(b'{"op":"list_targets"}\n')
             reply = b""
             while not reply.endswith(b"\n"):
                 chunk = outsider.recv(1 << 16)

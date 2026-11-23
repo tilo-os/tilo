@@ -69,7 +69,7 @@ def request_link(owner):
                                      None, 10000)))
     click(owner, "Copy link")
     link = until("a native link on the owner's clipboard",
-                 lambda: owner.control({"op": "state_dump"})["state"].get("clipboard"), 5)
+                 lambda: owner.read("state")["state"].get("clipboard"), 5)
     if not link.startswith("tilo://pair-device?"):
         raise Failed("the owner did not copy a native pairing link")
     return link

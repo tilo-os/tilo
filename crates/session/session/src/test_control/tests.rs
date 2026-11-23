@@ -125,10 +125,7 @@ tilo_test_env::scenario! {
             Op::ProfileStatus,
             Op::ProfileStop,
             Op::ResourceRead,
-            Op::StateDump,
             Op::Watch,
-            Op::Windows,
-            Op::KeepingDevices,
         ];
         for op in Op::ALL {
             let served_there = owner.contains(&op);
@@ -154,7 +151,6 @@ tilo_test_env::scenario! {
                 "click_at",
                 "click_named",
                 "drag",
-                "keeping_devices",
                 "key",
                 "key_down",
                 "key_up",
@@ -168,17 +164,13 @@ tilo_test_env::scenario! {
                 "profile_status",
                 "profile_stop",
                 "provision_test_identity",
-                "questions",
                 "resource_read",
                 "scroll",
-                "search_rows",
                 "snapshot",
-                "state_dump",
                 "swipe",
                 "type",
                 "unlock",
                 "watch",
-                "windows",
             ],
             "the protocol's ops"
         );
@@ -388,10 +380,8 @@ tilo_test_env::scenario! {
         // pass has drawn it.
         for op in [
             Op::ClickNamed,
-            Op::StateDump,
             Op::Snapshot,
             Op::Watch,
-            Op::Windows,
         ] {
             assert!(!op.hands_input(), "{} waits for the frame", op.name());
         }

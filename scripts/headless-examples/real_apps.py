@@ -178,7 +178,7 @@ def control_call(socket_path: Path | str, payload: dict | str, timeout: float = 
 
 
 # The action model's frame version, as `tilo_actions::remote::REMOTE_ACTIONS_VERSION` names it.
-FRAME_VERSION = 2
+FRAME_VERSION = 3
 
 
 def frame(message: dict) -> dict:
@@ -274,6 +274,20 @@ def receipt(answer: dict) -> dict | str:
     if isinstance(status, dict) and "Rejected" in status:
         raise Refused("invoke", refusal(status["Rejected"]["error"]))
     return Status(status) if isinstance(status, dict) else status
+
+
+def session_reading(answer: dict):
+    """The value a read of the session's own resource answered, from its completed receipt:
+    the state dump, the windows, the layout, the questions, the open search or the devices
+    keeping a workspace, each in the shape the control protocol's own reads answered."""
+    status = answer["message"]["Receipt"]["status"]
+    if isinstance(status, dict) and "Completed" in status:
+        value = (status["Completed"].get("output") or {}).get("value")
+        if value is not None:
+            return value
+    if isinstance(status, dict) and "Rejected" in status:
+        raise Refused("read", refusal(status["Rejected"]["error"]))
+    raise Failed(f"a read of the session's own resource answered {status!r}")
 
 
 def runtime_for(state: Path) -> Path:
@@ -399,6 +413,11 @@ class ScriptedSession:
         """One request on this session's control socket and its reply
         (`control_call`), as `Session.control` is for the product session."""
         return control_call(self.control_socket, payload, timeout)
+
+    def read(self, resource: str):
+        """The session's own `resource` (`state`, `windows`, `layout`, `questions`, `search`,
+        `devices`), as the walk reads it (`session_reading`)."""
+        return session_reading(self.control(invocation("so.tilo.session", resource, "read")))
 
     def answers(self) -> bool:
         """Whether the session answers a request on its control socket yet."""
@@ -765,6 +784,11 @@ class Session:
             raise Failed("the session is not running")
         return control_call(self.control_socket(), payload, timeout)
 
+    def read(self, resource: str):
+        """The session's own `resource` (`state`, `windows`, `layout`, `questions`, `search`,
+        `devices`), as the walk reads it (`session_reading`)."""
+        return session_reading(self.control(invocation("so.tilo.session", resource, "read")))
+
     def control_cmd(self, *args: str) -> str:
         """`tilo-control` of the build this session runs from, in the session's environment."""
         return run([control_binary(), *args], env=self.env())
@@ -786,8 +810,8 @@ class Session:
 
     def search_rows(self) -> dict:
         """The open search's query, the rows it shows and whether it is still
-        filling in, as of the last frame the shell drew (`search_rows`)."""
-        return self.control({"op": "search_rows"})["answer"]
+        filling in, as of the last frame the shell drew (`search`)."""
+        return self.read("search")["answer"]
 
     def wait_search_rows(self, query: str, wanted=(), deadline: float = 30.0) -> dict:
         """The search's rows once they are the answer to `query`: the palette is
@@ -824,10 +848,10 @@ class Session:
         return self.invoke_row(row)
 
     def windows(self) -> list:
-        return self.control({"op": "windows"})["answer"]["windows"]
+        return self.read("windows")["answer"]["windows"]
 
     def state_dump(self) -> dict:
-        return self.control({"op": "state_dump"})["state"]
+        return self.read("state")["state"]
 
     def launch(self, app: str, deadline: float = 120.0) -> dict:
         """Open `app` (its directory under apps/, or its application id) through

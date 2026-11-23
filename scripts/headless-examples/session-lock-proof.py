@@ -33,7 +33,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from real_apps import address, catalogue, invocation, receipt  # noqa: E402
+from real_apps import address, catalogue, invocation, receipt, session_reading  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The one place that picks a session's private runtime directory.
@@ -158,7 +158,7 @@ class Shell:
         return json.loads(answer)
 
     def chrome(self) -> dict:
-        return (self.call({"op": "state_dump"}).get("state") or {}).get("chrome") or {}
+        return (session_reading(self.call(invocation("so.tilo.session", "state", "read"))).get("state") or {}).get("chrome") or {}
 
     def locked(self) -> bool:
         return self.chrome().get("session_locked") is True
@@ -236,7 +236,7 @@ def main() -> int:
         check("with the password that was typed", shell.asked()[1:2] == [PASSWORD],
               ", ".join(shell.asked())[:80])
         check("the lock screen is gone", until(lambda: not shell.screen_drawn()))
-        state = shell.call({"op": "state_dump"}).get("state") or {}
+        state = session_reading(shell.call(invocation("so.tilo.session", "state", "read"))).get("state") or {}
         workspaces = (state.get("workspace_tree") or {}).get("workspaces") or []
         check("the shell behind it is readable again", bool(workspaces),
               ", ".join(str(workspace.get("name", "")) for workspace in workspaces))

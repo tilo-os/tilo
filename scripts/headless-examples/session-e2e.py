@@ -101,7 +101,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 SESSION_SH = REPO / "dist/dev/nested-session.sh"
 sys.path.insert(0, str(HERE / "agent-tilolang"))
-from real_apps import address, catalogue, invocation, receipt  # noqa: E402
+from real_apps import address, catalogue, invocation, receipt, session_reading  # noqa: E402
 from replay_model import OpenAiReplay  # noqa: E402
 
 # The tilolang apps, by their directory under apps/tl, and the native apps beside them: the
@@ -677,7 +677,7 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
 
     def shown_rows() -> list[dict]:
         """The rows the open search shows, in the shell's order."""
-        return session.control_json("raw", json.dumps({"op": "search_rows"}))["answer"]["rows"]
+        return session_reading(session.control_json("raw", json.dumps(invocation("so.tilo.session", "search", "read"))))["answer"]["rows"]
 
     def agent_row() -> dict | None:
         """The row handing what was typed to the person's agent, at the place the shell gives it

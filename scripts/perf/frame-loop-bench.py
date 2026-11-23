@@ -58,6 +58,7 @@ import sys
 import threading
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -474,9 +475,13 @@ def window_frames(ctl: Control) -> list[dict]:
     """The shell's open windows: `window` (its id), `app_id`, `rect` (null while no window of the
     tab is mapped) and `frames`, how many frames its client committed. A window showing the same
     thing keeps its count, so a rise between two reads is a frame it drew."""
-    reply = ctl.send({"op": "windows"})
-    body = reply.get("answer", reply.get("ok", reply))
-    rows = body.get("windows") if isinstance(body, dict) else body
+    reply = ctl.send({"version": 3, "message": {"Invoke": {
+        "invocation": uuid.uuid4().hex,
+        "target": {"provider": "so.tilo.session",
+                   "address": {"resource": "windows", "action": "read"}},
+        "argument": "None"}}})
+    rows = (reply["message"]["Receipt"]["status"]["Completed"]["output"]["value"]
+            ["answer"]["windows"])
     return [row for row in rows if row.get("window") is not None] if isinstance(rows, list) else []
 
 

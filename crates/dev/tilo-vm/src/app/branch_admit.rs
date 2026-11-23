@@ -489,7 +489,7 @@ fn timed_out(src: &str, still: &[(String, String)], rerun: &str) -> CliError {
     refuse_admit(
         format!("{src}'s branches were not taken in in time: {what}"),
         format!(
-            "the branches are made and stopped, {src} is as it was; see what the branch's session says of its workspaces (tilo-vm vm start <branch>, then tilo-vm control --account <account> raw '{{\"op\":\"keeping_devices\"}}'), and rerun to try again: {rerun}   (--admit-timeout gives it longer)"
+            "the branches are made and stopped, {src} is as it was; see what the branch's session says of its workspaces (tilo-vm vm start <branch>, then read that account's session `devices` resource), and rerun to try again: {rerun}   (--admit-timeout gives it longer)"
         ),
     )
 }
@@ -568,14 +568,9 @@ impl Guests for LiveGuests {
                 continue;
             }
             let held = if account.session == "active" {
-                control_json(
-                    &mut remote,
-                    &account.name,
-                    &HOSTS.map(str::to_owned),
-                    &mut worst,
-                )
-                .ok()
-                .map(|answer| held_of(&answer))
+                control_json(&mut remote, &account.name, &hosts(), &mut worst)
+                    .ok()
+                    .map(|answer| held_of(&answer))
             } else {
                 if wake && self.woken.insert(format!("{vm}:{}", account.name)) {
                     remote.call(AccountRestart {
@@ -634,11 +629,16 @@ pub(super) fn machine_line() -> Vec<String> {
     vec![format!("sh -c {}", crate::vmbuild::sh_quote(MACHINE))]
 }
 
-const HOSTS: [&str; 2] = ["raw", r#"{"op":"keeping_devices"}"#];
+fn hosts() -> Vec<String> {
+    vec![
+        "raw".to_owned(),
+        super::session_frame("devices", "read", serde_json::json!("None")).to_string(),
+    ]
+}
 
 pub(super) fn held_of(answer: &Value) -> Vec<Held> {
     answer
-        .pointer("/answer/workspaces")
+        .pointer("/message/Receipt/status/Completed/output/value/answer/workspaces")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()

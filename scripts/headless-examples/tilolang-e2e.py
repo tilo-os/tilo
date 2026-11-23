@@ -439,7 +439,7 @@ def search_beside(session: Session, title: str, beside: bool = True) -> None:
     session.control({"op": "key_up", "key": "Super"})
     session.control({"op": "type", "text": title})
     def settled():
-        answer = session.control({"op": "search_rows"})["answer"]
+        answer = session.read("search")["answer"]
         if answer["query"] != title or answer["searching"]:
             return None
         rows = answer["rows"]

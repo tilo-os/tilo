@@ -330,7 +330,8 @@ def run(args: argparse.Namespace, socket_path: str) -> list[tuple[str, str, list
             last["response_bytes"] = len(line)
 
         results.append(("agent.state_dump.local", "ms", measure(
-            conn, lambda: request({"op": "state_dump"}), args.warmup, args.samples, dump),
+            conn, lambda: request(real_apps.invocation("so.tilo.session", "state", "read")),
+            args.warmup, args.samples, dump),
             {**common, "address": "", **last}))
 
         accepted = invoke_payload(noop, wait=False)

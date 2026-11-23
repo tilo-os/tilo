@@ -29,6 +29,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import uuid
 import zlib
 from pathlib import Path
 
@@ -62,6 +63,15 @@ class Control:
         if "err" in decoded:
             raise Failure(f"control request failed: {request}: {decoded}")
         return decoded
+
+    def read(self, resource: str) -> dict:
+        """The session's own `resource`, as the walk reads it."""
+        answer = self.send({"version": 3, "message": {"Invoke": {
+            "invocation": uuid.uuid4().hex,
+            "target": {"provider": "so.tilo.session",
+                       "address": {"resource": resource, "action": "read"}},
+            "argument": "None"}}})
+        return answer["message"]["Receipt"]["status"]["Completed"]["output"]["value"]
 
     def target_names(self) -> set[str]:
         response = self.send({"op": "list_targets"})
@@ -97,7 +107,7 @@ def mint_identity(session: Path, env: dict, control: Control, log: Path) -> None
         minting = start_session(session, env, output)
         try:
             wait_until("the minting session's test-control socket", control.path.exists, 120)
-            wait_until("the minting session", lambda: control.send({"op": "state_dump"}), 120)
+            wait_until("the minting session", lambda: control.read("state"), 120)
             minted = control.send({"op": "provision_test_identity"})
             check(bool(minted.get("answer", {}).get("throwaway")),
                   f"a throwaway identity is minted ({json.dumps(minted)[:200]})")
@@ -125,7 +135,7 @@ def wayland_display(log: Path) -> str | None:
 def windows(control: Control) -> dict:
     """The shell's open windows, each with `rect` (`[x, y, width, height]`, null while no window
     of the tab is mapped) and `frames`, the frames its client committed."""
-    return control.send({"op": "windows"})
+    return control.read("windows")
 
 
 def frame_for(control: Control, app_id: str) -> dict | None:
@@ -282,7 +292,7 @@ def run(args: argparse.Namespace) -> None:
         mint_identity(args.session, env, control, artifacts / "identity.log")
         compositor = start_session(args.session, env, compositor_log)
         wait_until("test-control socket", control_path.exists, 120)
-        wait_until("initial workspace", lambda: control.send({"op": "state_dump"}), 120)
+        wait_until("initial workspace", lambda: control.read("state"), 120)
         wait_until("the desktop, past onboarding", lambda: on_the_desktop(control), 120)
         env["WAYLAND_DISPLAY"] = wait_until(
             "published Wayland display", lambda: wayland_display(args.artifacts / "compositor.log"))
@@ -319,7 +329,7 @@ def run(args: argparse.Namespace) -> None:
             log=foot_log,
         )
         frame = wait_until(f"{APP_ID} to map and present", lambda: frame_for(control, APP_ID), 180)
-        dump = json.dumps(control.send({"op": "state_dump"}))
+        dump = json.dumps(control.read("state"))
         check(APP_ID in dump, f"state dump lists the foreign tab {APP_ID}")
         shot = artifacts / "vm-window.png"
         control.send({"op": "snapshot", "path": str(shot)})
