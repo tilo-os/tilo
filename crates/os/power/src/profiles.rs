@@ -32,10 +32,7 @@ impl PowerProfilesMonitor {
     pub async fn profiles(&self) -> zbus::Result<Vec<String>> {
         let profiles: Vec<HashMap<String, OwnedValue>> =
             self.proxy.get_property("Profiles").await?;
-        Ok(profiles
-            .iter()
-            .filter_map(|profile| String::try_from(profile.get("Profile")?.try_clone().ok()?).ok())
-            .collect())
+        Ok(profile_names(&profiles))
     }
 
     pub async fn receive_active_profile_changed(
@@ -43,6 +40,21 @@ impl PowerProfilesMonitor {
     ) -> zbus::proxy::PropertyStream<'static, String> {
         self.proxy.receive_property_changed("ActiveProfile").await
     }
+
+    /// Every change of `Profiles`, the list of profiles the daemon advertises.
+    pub async fn receive_profiles_changed(
+        &self,
+    ) -> zbus::proxy::PropertyStream<'static, Vec<HashMap<String, OwnedValue>>> {
+        self.proxy.receive_property_changed("Profiles").await
+    }
+}
+
+/// Extract profile names from the daemon's `Profiles` property entries, preserving order.
+pub(crate) fn profile_names(profiles: &[HashMap<String, OwnedValue>]) -> Vec<String> {
+    profiles
+        .iter()
+        .filter_map(|profile| String::try_from(profile.get("Profile")?.try_clone().ok()?).ok())
+        .collect()
 }
 
 #[cfg(test)]

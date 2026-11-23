@@ -626,3 +626,156 @@ async fn the_proxy_takes_its_locks_and_reads_loginds_verdict() {
     );
     assert_eq!(delegated.what(), asked.what);
 }
+
+const PROFILES_PATH: &str = "/net/hadess/PowerProfiles";
+
+struct FakePowerProfiles {
+    active: String,
+    profiles: Vec<String>,
+}
+
+#[zbus::interface(name = "net.hadess.PowerProfiles")]
+impl FakePowerProfiles {
+    #[zbus(property)]
+    fn active_profile(&self) -> String {
+        self.active.clone()
+    }
+
+    #[zbus(property)]
+    fn profiles(&self) -> Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
+        self.profiles
+            .iter()
+            .map(|name| {
+                std::collections::HashMap::from([
+                    (
+                        "Profile".to_owned(),
+                        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
+                            name.as_str(),
+                        ))
+                        .expect("profile"),
+                    ),
+                    (
+                        "Driver".to_owned(),
+                        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
+                            "platform_profile",
+                        ))
+                        .expect("driver"),
+                    ),
+                ])
+            })
+            .collect()
+    }
+}
+
+async fn start_with_profiles(
+    active: &str,
+    profiles: &[&str],
+) -> (Connection, PowerBridge, tempfile::TempDir) {
+    let calls = Shared::default();
+    let (server, client) = tokio::net::UnixStream::pair().expect("socketpair");
+    let server = Builder::unix_stream(server)
+        .server(Guid::generate())
+        .expect("server")
+        .p2p()
+        .serve_at(
+            LOGIND_PATH,
+            FakeLogind {
+                calls: Arc::clone(&calls),
+                verdict: "yes".into(),
+                foreign: Vec::new(),
+            },
+        )
+        .expect("logind")
+        .serve_at(
+            UPOWER_PATH,
+            FakeUPower {
+                calls: Arc::clone(&calls),
+                lid_closed: false,
+                lid_present: true,
+                on_battery: true,
+                devices: Vec::new(),
+            },
+        )
+        .expect("upower")
+        .serve_at(
+            DISPLAY_PATH,
+            FakeDisplayDevice {
+                kind: 2,
+                present: true,
+                percentage: 80.0,
+                state: 2,
+                capacity: 90.0,
+            },
+        )
+        .expect("display device")
+        .serve_at(
+            PROFILES_PATH,
+            FakePowerProfiles {
+                active: active.to_owned(),
+                profiles: profiles.iter().map(|&name| name.to_owned()).collect(),
+            },
+        )
+        .expect("power profiles")
+        .build();
+    let client = Builder::unix_stream(client).p2p().build();
+    let (server, client) = tokio::join!(server, client);
+    let (server, client) = (server.expect("server"), client.expect("client"));
+
+    let bridge = PowerBridge::new();
+    let registry = InhibitRegistry::new();
+    let state_home = tempfile::tempdir().expect("state home");
+    let mut service =
+        PowerService::with_connection(&client, bridge.clone(), registry, quiet_policy())
+            .await
+            .expect("service");
+    service.history = PowerHistoryWriter::in_state_home(Some(state_home.path().to_path_buf()));
+    tokio::spawn(async move {
+        let _client = client;
+        service.run().await;
+    });
+    (server, bridge, state_home)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn power_profiles_and_active_profile_follow_dbus_signals_live() {
+    let (server, bridge, _state_home) =
+        start_with_profiles("balanced", &["balanced", "power-saver"]).await;
+
+    eventually("startup primes profiles and active profile", || {
+        bridge.profiles_snapshot()
+            == (
+                vec!["balanced".to_owned(), "power-saver".to_owned()],
+                Some("balanced".to_owned()),
+            )
+    })
+    .await;
+
+    let iface = server
+        .object_server()
+        .interface::<_, FakePowerProfiles>(PROFILES_PATH)
+        .await
+        .expect("power profiles iface");
+    iface.get_mut().await.active = "power-saver".into();
+    iface
+        .get()
+        .await
+        .active_profile_changed(iface.signal_emitter())
+        .await
+        .expect("ActiveProfile changed");
+    eventually("ActiveProfile signal updates bridge live", || {
+        bridge.active_profile().as_deref() == Some("power-saver")
+    })
+    .await;
+
+    iface.get_mut().await.profiles = vec!["performance".into(), "balanced".into()];
+    iface
+        .get()
+        .await
+        .profiles_changed(iface.signal_emitter())
+        .await
+        .expect("Profiles changed");
+    eventually("Profiles signal updates bridge live", || {
+        bridge.profiles() == ["performance", "balanced"]
+    })
+    .await;
+}

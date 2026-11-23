@@ -3,6 +3,7 @@
 //! session-lock state and the notification stack): signals one way, commands the
 //! other, each drained per frame.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -89,6 +90,11 @@ pub struct PowerBridge {
     /// for up to a minute, so a signal that only queued waited for whatever woke it
     /// next (a resume applied 16 s late, a sleep delay held to logind's timeout).
     signal_wake: Arc<Mutex<Option<SignalWake>>>,
+    /// How often the daemon's offered profiles or active profile moved: checked on
+    /// every poll with one atomic load before locking [`BridgeInner`].
+    profiles_moved: Arc<AtomicU64>,
+    /// Woken whenever the daemon's offered profiles or active profile moves.
+    profile_wakes: Arc<Mutex<Vec<SignalWake>>>,
 }
 
 impl std::fmt::Debug for PowerBridge {
@@ -111,12 +117,19 @@ impl PowerBridge {
             inner: Arc::new(Mutex::new(BridgeInner::default())),
             command_wake: Arc::new(Notify::new()),
             signal_wake: Arc::new(Mutex::new(None)),
+            profiles_moved: Arc::new(AtomicU64::new(0)),
+            profile_wakes: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     /// Wake the compositor loop with `wake` whenever a signal is pushed.
     pub fn set_signal_wake(&self, wake: SignalWake) {
         *self.signal_wake.lock_recover() = Some(wake);
+    }
+
+    /// Wake `wake` whenever the daemon's offered profiles or active profile moves.
+    pub fn on_profiles_change(&self, wake: SignalWake) {
+        self.profile_wakes.lock_recover().push(wake);
     }
 
     /// Push a signal for the compositor loop and wake it to apply it.
@@ -128,6 +141,14 @@ impl PowerBridge {
     fn wake(&self) {
         let wake = self.signal_wake.lock_recover().clone();
         if let Some(wake) = wake {
+            wake();
+        }
+    }
+
+    fn wake_profiles(&self) {
+        self.wake();
+        let wakes = self.profile_wakes.lock_recover().clone();
+        for wake in wakes {
             wake();
         }
     }
@@ -146,6 +167,8 @@ impl PowerBridge {
             inner.active_profile = Some(profile.to_owned());
             drop(inner);
             self.reading_moved();
+            self.profiles_moved.fetch_add(1, Ordering::Release);
+            self.wake_profiles();
         }
     }
 
@@ -162,7 +185,20 @@ impl PowerBridge {
             inner.profiles = profiles;
             drop(inner);
             self.reading_moved();
+            self.profiles_moved.fetch_add(1, Ordering::Release);
+            self.wake_profiles();
         }
+    }
+
+    /// How often the offered power profiles or the active profile moved.
+    pub fn profiles_moved(&self) -> u64 {
+        self.profiles_moved.load(Ordering::Acquire)
+    }
+
+    /// The offered power profiles and the active profile read together.
+    pub fn profiles_snapshot(&self) -> (Vec<String>, Option<String>) {
+        let inner = self.lock();
+        (inner.profiles.clone(), inner.active_profile.clone())
     }
 
     /// How often what the power readings show moved: a session that saw another
@@ -357,5 +393,42 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(1), wake.notified())
             .await
             .expect("the pending command's permit wakes the next wait");
+    }
+
+    #[test]
+    fn power_profile_changes_move_profiles_counter_and_wake_listeners_without_moving_sleep() {
+        let service = PowerBridge::new();
+        let compositor = service.clone();
+        assert_eq!(compositor.profiles_moved(), 0);
+        let profile_woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        compositor.on_profiles_change(Arc::new({
+            let profile_woken = Arc::clone(&profile_woken);
+            move || {
+                profile_woken.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+        service.note_profiles(vec!["balanced".into(), "power-saver".into()]);
+        assert_eq!(compositor.profiles_moved(), 1);
+        assert_eq!(profile_woken.load(Ordering::SeqCst), 1);
+
+        service.note_active_profile("power-saver");
+        assert_eq!(compositor.profiles_moved(), 2);
+        assert_eq!(profile_woken.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            compositor.profiles_snapshot(),
+            (
+                vec!["balanced".to_owned(), "power-saver".to_owned()],
+                Some("power-saver".to_owned()),
+            )
+        );
+
+        service.note_active_profile("power-saver");
+        assert_eq!(
+            compositor.profiles_moved(),
+            2,
+            "a duplicate profile note does not move the counter"
+        );
+        service.note_active_profile("performance");
+        assert_eq!(compositor.profiles_moved(), 3);
     }
 }

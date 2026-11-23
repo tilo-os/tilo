@@ -56,6 +56,8 @@ struct Deadlines {
     sleep_stream: Option<Instant>,
     /// Resubscribe to power-profiles-daemon's `ActiveProfile`.
     profile_stream: Option<Instant>,
+    /// Resubscribe to power-profiles-daemon's `Profiles`.
+    profiles_stream: Option<Instant>,
     /// Resubscribe to `UPower`'s `LidIsClosed`.
     lid_stream: Option<Instant>,
     /// Resubscribe to the display device's charge.
@@ -75,6 +77,7 @@ impl Deadlines {
         [
             self.sleep_stream,
             self.profile_stream,
+            self.profiles_stream,
             self.lid_stream,
             self.battery_stream,
             self.foreign_inhibitors,
@@ -87,11 +90,17 @@ impl Deadlines {
     }
 }
 
+type ProfilesStream = zbus::proxy::PropertyStream<
+    'static,
+    Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>,
+>;
+
 /// The signal streams the loop waits on, `None` while one waits for its
 /// resubscription deadline.
 struct Streams {
     sleep: Option<zbus::proxy::SignalStream<'static>>,
     profile: Option<zbus::proxy::PropertyStream<'static, String>>,
+    profiles: Option<ProfilesStream>,
     lid: Option<zbus::proxy::PropertyStream<'static, bool>>,
     battery: Option<futures_util::stream::BoxStream<'static, ()>>,
 }
@@ -394,6 +403,20 @@ impl PowerService {
                         deadlines.profile_stream = Some(stream_retry_after(Instant::now()));
                     }
                 }
+                changed = next_or_pending(&mut streams.profiles), if streams.profiles.is_some() => {
+                    if let Some(changed) = changed {
+                        match changed.get().await {
+                            Ok(profiles) => self
+                                .bridge
+                                .note_profiles(crate::profiles::profile_names(&profiles)),
+                            Err(error) => debug!(target: "tilo::power", %error, "power profiles change could not be read"),
+                        }
+                    } else {
+                        debug!(target: "tilo::power", "power-profiles stream ended; scheduling resubscription");
+                        streams.profiles = None;
+                        deadlines.profiles_stream = Some(stream_retry_after(Instant::now()));
+                    }
+                }
                 changed = next_or_pending(&mut streams.lid), if streams.lid.is_some() => {
                     if let Some(changed) = changed {
                         match changed.get().await {
@@ -443,15 +466,19 @@ impl PowerService {
             Some(monitor) => Some(monitor.receive_active_profile_changed().await),
             None => None,
         };
-        if let Some(monitor) = profile_monitor.as_ref()
-            && let Ok(profile) = monitor.active_profile().await
-        {
-            self.apply_active_profile(&profile);
-        }
+        let profiles = match profile_monitor.as_ref() {
+            Some(monitor) => Some(monitor.receive_profiles_changed().await),
+            None => None,
+        };
         if let Some(monitor) = profile_monitor.as_ref()
             && let Ok(profiles) = monitor.profiles().await
         {
             self.bridge.note_profiles(profiles);
+        }
+        if let Some(monitor) = profile_monitor.as_ref()
+            && let Ok(profile) = monitor.active_profile().await
+        {
+            self.apply_active_profile(&profile);
         }
 
         self.sample_history(deadlines).await;
@@ -460,6 +487,7 @@ impl PowerService {
         let streams = Streams {
             sleep,
             profile,
+            profiles,
             lid: Some(self.upower.receive_lid_changes().await),
             battery: Some(self.upower.receive_battery_changes().await),
         };
@@ -488,12 +516,24 @@ impl PowerService {
             }
         }
         if take_due(&mut deadlines.profile_stream, now)
-            && let Some(monitor) = self.power_profiles.as_ref()
+            && let Some(monitor) = self.power_profiles.clone()
         {
             // power-profiles-daemon's zbus property stream has no fallible subscription step;
             // if its stream ended, creating a new one is the retry.
             streams.profile = Some(monitor.receive_active_profile_changed().await);
+            if let Ok(profile) = monitor.active_profile().await {
+                self.apply_active_profile(&profile);
+            }
             info!(target: "tilo::power", "subscribed to power-profile changes");
+        }
+        if take_due(&mut deadlines.profiles_stream, now)
+            && let Some(monitor) = self.power_profiles.as_ref()
+        {
+            streams.profiles = Some(monitor.receive_profiles_changed().await);
+            if let Ok(profiles) = monitor.profiles().await {
+                self.bridge.note_profiles(profiles);
+            }
+            info!(target: "tilo::power", "subscribed to power-profiles list changes");
         }
         if take_due(&mut deadlines.lid_stream, now) {
             streams.lid = Some(self.upower.receive_lid_changes().await);
