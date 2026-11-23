@@ -46,12 +46,9 @@ type Raw = std::os::fd::RawFd;
 #[cfg(windows)]
 type Raw = std::os::windows::io::RawHandle;
 
-/// The most descriptors one packet carries.
-#[cfg(unix)]
-const MAX_FDS: usize = crate::message::MAX_FDS;
-/// The most handles one packet carries, as many as a Unix packet's descriptors.
-#[cfg(windows)]
-const MAX_FDS: usize = 7;
+/// The most descriptors (on Windows, handles) one packet carries.
+#[cfg(any(unix, windows))]
+use crate::process_link::MAX_FDS;
 
 /// The largest packet: a workspace's policy as one app sees it, which the session
 /// bounds at 64 KiB, and the rest of its message.
