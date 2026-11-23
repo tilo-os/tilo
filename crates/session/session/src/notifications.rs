@@ -419,6 +419,9 @@ pub(crate) struct SessionNotifications {
     /// The Do Not Disturb change since the readout last said one: whoever flipped the switch, on
     /// screen it says so.
     quiet_changed: Cell<Option<bool>>,
+    /// The banner the person sent keyboard focus to ([`BannerAction::FocusNewest`]), while it
+    /// stands: the shell draws it as the one the keys act on.
+    focused: Cell<Option<u64>>,
     /// Where the centre is written between sessions; `None` keeps it in memory.
     history: Option<crate::kept::Kept>,
     /// What continues on the person's other devices, and what they showed here.
@@ -535,6 +538,7 @@ impl SessionNotifications {
             shell_banners: Cell::new(false),
             generation: 0,
             quiet_changed: Cell::new(None),
+            focused: Cell::new(None),
             history,
             mirror,
             noted,
@@ -599,6 +603,41 @@ impl SessionNotifications {
                 (end % 60).into(),
             )))
         })
+    }
+
+    /// The banner `named` names, or the newest when it names none; `None` when nothing is on
+    /// screen or the named one has left.
+    fn live_banner(&self, named: Option<&str>) -> Option<Notification> {
+        let log = self.desktop.log();
+        let active = log.active();
+        match named {
+            Some(named) => {
+                let id = named.trim().parse::<u64>().ok()?;
+                active.iter().find(|banner| banner.id == id).cloned()
+            }
+            None => active.last().cloned(),
+        }
+    }
+
+    /// Send keyboard focus to the newest banner, and say which one took it.
+    ///
+    /// # Errors
+    /// Nothing is on screen to take it.
+    pub(crate) fn focus_newest(&self) -> Result<u64, String> {
+        let id = self
+            .live_banner(None)
+            .ok_or_else(|| "no notification is on screen".to_owned())?
+            .id;
+        self.focused.set(Some(id));
+        Ok(id)
+    }
+
+    /// The banner the keyboard is on, while it stands.
+    fn focused_banner(&self) -> Option<u64> {
+        let id = self.focused.get()?;
+        let log = self.desktop.log();
+        let stands = log.active().iter().any(|banner| banner.id == id);
+        stands.then_some(id)
     }
 
     /// Turn Do Not Disturb on or off: the one persisted switch, applied here at once so what the
@@ -1334,21 +1373,211 @@ pub enum CentreAction {
     },
 }
 
+/// The resource the live banners are published under: what a banner on screen offers, with the
+/// newest banner standing for one nothing names.
+pub const BANNERS: &str = "session:banners";
+
+/// The live banners as the session publishes them, where a press, the palette, an agent and a
+/// script close one, choose on it, reply to it or answer the call it rings for.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "notifications.banners",
+    label = "Notification banners",
+    effects = BannerAction
+)]
+pub struct BannersRoot;
+
+/// What a banner on screen does, by the id its row carries; left out, the newest banner does (for
+/// a call, the ringing one).
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.banners")]
+pub enum BannerAction {
+    /// Open the notification
+    #[effect(kind = "outside")]
+    #[effect(own_device, attended)]
+    Open {
+        /// The banner to open; the newest when left out
+        #[param("The banner to open; the newest when left out")]
+        banner: Option<String>,
+    },
+    /// Dismiss the notification
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    Dismiss {
+        /// The banner to close; the newest when left out
+        #[param("The banner to close; the newest when left out")]
+        banner: Option<String>,
+    },
+    /// Choose on the notification
+    #[effect(kind = "outside")]
+    #[effect(own_device, attended)]
+    Act {
+        /// The banner; the newest when left out
+        #[param("The banner; the newest when left out")]
+        banner: Option<String>,
+        /// The choice, by its key or its label (Snooze, Approve…)
+        #[param("The choice, by its key or its label (Snooze, Approve…)")]
+        choice: String,
+    },
+    /// Reply to the notification
+    #[effect(kind = "outside")]
+    #[effect(own_device, attended)]
+    Reply {
+        /// The banner; the newest when left out
+        #[param("The banner; the newest when left out")]
+        banner: Option<String>,
+        /// What to reply
+        #[param("What to reply")]
+        text: String,
+    },
+    /// Snooze the notification
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    Snooze {
+        /// The banner; the newest when left out
+        #[param("The banner; the newest when left out")]
+        banner: Option<String>,
+    },
+    /// Focus the newest notification
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    FocusNewest,
+    /// Read it in full
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    Read {
+        /// The banner; the newest when left out
+        #[param("The banner; the newest when left out")]
+        banner: Option<String>,
+    },
+    /// Answer the call
+    #[effect(kind = "outside")]
+    #[effect(own_device, attended)]
+    AnswerCall {
+        /// The call's banner; the ringing call when left out
+        #[param("The call's banner; the ringing call when left out")]
+        banner: Option<String>,
+    },
+    /// Decline the call
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    DeclineCall {
+        /// The call's banner; the ringing call when left out
+        #[param("The call's banner; the ringing call when left out")]
+        banner: Option<String>,
+    },
+}
+
+/// The banners as a view of another language reads them (`device.banners`): the same centre the
+/// shell draws them from, so a view presses a row it read.
+#[must_use]
+pub fn banners_surface() -> tilo_actions::surface::Surface {
+    tilo_resource::surface::reading_surface::<NotificationsView, BannerAction>(
+        "banners",
+        "Notifications",
+    )
+}
+
 /// The centre as a view of another language reads it (`device.notifications`).
 #[must_use]
 pub fn surface() -> tilo_actions::surface::Surface {
-    tilo_resource::surface::reading_surface::<NotificationCentre, CentreAction>(
+    tilo_resource::surface::reading_surface::<NotificationsView, CentreAction>(
         "notifications",
         "Notifications",
     )
+}
+
+/// The centre as a view of another language reads it: what it keeps, why fresh banners are held,
+/// and how long ago each notice arrived, which a notice carries as an age rather than a clock so a
+/// view can say "3 min ago" without one.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct NotificationsView {
+    /// How many the person has not read.
+    pub count: usize,
+    /// Why fresh banners are held (Do Not Disturb, presenting, a focus schedule); `None` while
+    /// they show.
+    #[serde(default)]
+    pub quiet: Option<String>,
+    /// The notices the centre keeps, newest first.
+    #[serde(default)]
+    pub notices: Vec<view::Notice>,
+    /// The notice up as a banner now, by its id.
+    #[serde(default)]
+    pub banner: Option<u64>,
+    /// The banner the keyboard is on, while it stands.
+    #[serde(default)]
+    pub focused: Option<u64>,
+}
+
+/// The notice a view reads, kept in a module of its own so its published name stays `Notice`
+/// while the session's own message keeps that name here.
+pub(crate) mod view {
+    /// A notice as a view of another language reads it.
+    #[derive(
+        Clone,
+        Debug,
+        Default,
+        PartialEq,
+        Eq,
+        serde::Serialize,
+        serde::Deserialize,
+        tilo_resource::JsonSchema,
+    )]
+    pub(crate) struct Notice {
+        /// What the verbs name it by.
+        pub number: u64,
+        pub title: String,
+        pub body: String,
+        /// The app's name, or the agent's; empty for the session's own.
+        pub from: String,
+        /// `info`, `success`, `warning` or `error`.
+        pub kind: String,
+        pub seen: bool,
+        /// What its sender offers, in its sender's order.
+        #[serde(default)]
+        pub actions: Vec<NoticeAction>,
+        /// How long ago it arrived, in seconds.
+        #[serde(default)]
+        pub age_seconds: u64,
+        /// Whether its body may show as a banner: a sender that asked for no preview keeps it in
+        /// the centre alone.
+        #[serde(default)]
+        pub preview: bool,
+    }
+
+    /// One action a notice offers, as a view of another language reads it.
+    #[derive(
+        Clone,
+        Debug,
+        Default,
+        PartialEq,
+        Eq,
+        serde::Serialize,
+        serde::Deserialize,
+        tilo_resource::JsonSchema,
+    )]
+    pub(crate) struct NoticeAction {
+        pub key: String,
+        pub label: String,
+    }
 }
 
 /// The centre as the session's services publish it: what it keeps, why fresh banners are held, and
 /// the verbs that change it.
 pub(crate) struct Served {
     notifications: Rc<RefCell<SessionNotifications>>,
-    /// The reading last reported, so a pass that changed nothing is no revision.
-    published: RefCell<Option<NotificationCentre>>,
+    /// The reading last reported, so a pass that changed nothing is no revision: what moved, and
+    /// how old each notice was when that reading was made.
+    published: RefCell<Option<Value>>,
 }
 
 impl Served {
@@ -1358,6 +1587,187 @@ impl Served {
             notifications,
             published: RefCell::new(None),
         }
+    }
+
+    /// What the centre and the banners read now, as one view: the centre's own record, how long
+    /// ago each notice arrived, which may show, and the banner the keyboard is on.
+    fn render(&self) -> Value {
+        let centre = {
+            let notifications = self.notifications.borrow();
+            notifications.centre()
+        };
+        let mut view = self.view_of(&centre);
+        self.add_when(&mut view);
+        reading(&view)
+    }
+
+    /// Add to each notice how long ago it arrived and whether its body may show, which a view
+    /// reads and the centre's own record does not carry. The rest of the reading is the centre's,
+    /// so a reader that knows only its fields reads it as before.
+    fn add_when(&self, view: &mut NotificationsView) {
+        let notifications = self.notifications.borrow();
+        let log = notifications.desktop.log();
+        let now = Instant::now();
+        let when: std::collections::HashMap<u64, (u64, bool)> = log
+            .active()
+            .iter()
+            .chain(log.history().iter())
+            .map(|notification| {
+                (
+                    notification.id,
+                    (
+                        now.saturating_duration_since(notification.created_at)
+                            .as_secs(),
+                        notification.show_preview,
+                    ),
+                )
+            })
+            .collect();
+        drop(log);
+        for notice in &mut view.notices {
+            let Some((age, preview)) = when.get(&notice.number) else {
+                continue;
+            };
+            notice.age_seconds = *age;
+            notice.preview = *preview;
+        }
+    }
+
+    /// The centre as a view of another language reads it: its fields and its notices', the
+    /// notices without a time until [`Self::add_when`] gives each one.
+    fn view_of(&self, centre: &NotificationCentre) -> NotificationsView {
+        NotificationsView {
+            count: centre.count,
+            quiet: centre.quiet.clone(),
+            notices: centre
+                .notices
+                .iter()
+                .map(|notice| view::Notice {
+                    number: notice.number,
+                    title: notice.title.clone(),
+                    body: notice.body.clone(),
+                    from: notice.from.clone(),
+                    kind: notice.kind.clone(),
+                    seen: notice.seen,
+                    actions: notice
+                        .actions
+                        .iter()
+                        .map(|action| view::NoticeAction {
+                            key: action.key.clone(),
+                            label: action.label.clone(),
+                        })
+                        .collect(),
+                    age_seconds: 0,
+                    preview: true,
+                })
+                .collect(),
+            banner: centre.banner,
+            focused: self.notifications.borrow().focused_banner(),
+        }
+    }
+}
+
+impl Served {
+    /// Run one of the banners' actions: what the banner `named` names (the newest when it names
+    /// none) does, as the Rust shell's banners did, through the same asks the desktop answers.
+    fn run_banner(&self, action: &str, arguments: &Map<String, Value>) -> Result<(), ApiError> {
+        let notifications = self.notifications.borrow();
+        match decode::<BannerAction>(&self.resources(), BANNERS, action, arguments)? {
+            BannerAction::Open { banner } => {
+                let id = live_id(&notifications, banner.as_deref())?;
+                notifications.ask(Ask::Banner(BannerAsk::Activate(id)));
+            }
+            BannerAction::Dismiss { banner } => {
+                let id = live_id(&notifications, banner.as_deref())?;
+                notifications.ask(Ask::Banner(BannerAsk::Dismiss(id)));
+            }
+            BannerAction::Act { banner, choice } => {
+                let live = live_banner(&notifications, banner.as_deref())?;
+                let key = choice_key(&live, choice.trim())
+                    .ok_or_else(|| refused(format!("this notification offers no {choice}")))?;
+                notifications.ask(Ask::Banner(BannerAsk::Invoke(live.id, key)));
+            }
+            BannerAction::Reply { banner, text } => {
+                if text.trim().is_empty() {
+                    return Err(ApiError::InvalidArguments(
+                        "a reply needs some text".to_owned(),
+                    ));
+                }
+                let live = live_banner(&notifications, banner.as_deref())?;
+                if !live
+                    .actions
+                    .iter()
+                    .any(|(key, _)| key == tilo_notification_banners::INLINE_REPLY)
+                {
+                    return Err(refused("this notification takes no reply".to_owned()));
+                }
+                notifications.ask(Ask::Reply { id: live.id, text });
+            }
+            BannerAction::Snooze { banner } => {
+                let live = live_banner(&notifications, banner.as_deref())?;
+                if choice_key(&live, "snooze").is_none() {
+                    return Err(refused("this notification cannot be snoozed".to_owned()));
+                }
+                notifications.ask(Ask::Banner(BannerAsk::Invoke(live.id, "snooze".to_owned())));
+            }
+            BannerAction::FocusNewest => {
+                notifications.focus_newest().map_err(refused)?;
+            }
+            BannerAction::Read { banner } => {
+                let id = live_id(&notifications, banner.as_deref())?;
+                notifications.ask(Ask::Read(id));
+            }
+            BannerAction::AnswerCall { banner } => {
+                let live = live_banner(&notifications, banner.as_deref())?;
+                if !live.rings {
+                    return Err(refused("no call is ringing".to_owned()));
+                }
+                notifications.ask(Ask::AnswerCall(live.id));
+            }
+            BannerAction::DeclineCall { banner } => {
+                let live = live_banner(&notifications, banner.as_deref())?;
+                if !live.rings {
+                    return Err(refused("no call is ringing".to_owned()));
+                }
+                notifications.ask(Ask::DeclineCall(live.id));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The banner `named` names, or the newest when it names none.
+fn live_banner(
+    notifications: &SessionNotifications,
+    named: Option<&str>,
+) -> Result<Notification, ApiError> {
+    notifications.live_banner(named).ok_or_else(|| {
+        refused(match named {
+            Some(named) => format!("notification {named} is no longer on screen"),
+            None => "no notification is on screen".to_owned(),
+        })
+    })
+}
+
+/// The id of the banner `named` names, or the newest when it names none.
+fn live_id(notifications: &SessionNotifications, named: Option<&str>) -> Result<u64, ApiError> {
+    live_banner(notifications, named).map(|live| live.id)
+}
+
+/// The key of the action `choice` names by its key or its label, as a person reads it.
+fn choice_key(banner: &Notification, choice: &str) -> Option<String> {
+    banner
+        .actions
+        .iter()
+        .find(|(key, label)| key == choice || label.eq_ignore_ascii_case(choice))
+        .map(|(key, _)| key.clone())
+}
+
+/// Why the banners would not do it, as the caller reads it.
+fn refused(reason: String) -> ApiError {
+    ApiError::Refused {
+        code: "notifications".to_owned(),
+        reason,
     }
 }
 
@@ -1385,17 +1795,26 @@ impl Service for Served {
             };
             spec.type_mut().label = label;
         }
-        vec![resource]
+        // The live banners are their own resource, as the Rust shell published them: a row on
+        // screen offers what the centre's kept notice does not (answer the call, reply, snooze,
+        // focus it), and the newest banner stands for one no row names.
+        let banners = offer::<BannerAction>(
+            tilo_resource::LiveRow::typed::<BannersRoot>(BANNERS, t("session-banners"))
+                .into_resource()
+                .with_personal_reading()
+                .with_view(tilo_actions::ResourceViewSpec::new(
+                    "banners",
+                    t("session-banners"),
+                    "open",
+                )),
+        );
+        vec![resource, banners]
     }
 
     /// What the centre keeps, newest first: what people said to this person,
     /// so only a grant the workspace gives reads it.
     fn read(&self, resource: &str) -> Option<Value> {
-        (resource == RESOURCE).then(|| {
-            let published = self.published.borrow().clone();
-            let centre = published.unwrap_or_else(|| self.notifications.borrow().centre());
-            reading(&centre)
-        })
+        (resource == RESOURCE || resource == BANNERS).then(|| self.render())
     }
 
     fn invoke(
@@ -1404,6 +1823,10 @@ impl Service for Served {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
+        if resource == BANNERS {
+            self.run_banner(action, arguments)?;
+            return Ok(Started::Done(ActionOutput::default()));
+        }
         if resource != RESOURCE {
             return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
@@ -1454,13 +1877,24 @@ impl Service for Served {
     }
 
     fn poll(&mut self) -> bool {
-        let now = self.notifications.borrow().centre();
+        let now = self.render();
         let mut published = self.published.borrow_mut();
         if published.as_ref() == Some(&now) {
             return false;
         }
         *published = Some(now);
         true
+    }
+
+    /// A reading says how long ago each notice arrived, so it is read again as each minute turns.
+    fn wakes_in(&self) -> Option<Duration> {
+        let second = ui::clock::local_now()
+            .timestamp()
+            .as_second()
+            .rem_euclid(60);
+        Some(Duration::from_secs(
+            60_u64.saturating_sub(u64::try_from(second).unwrap_or(0)),
+        ))
     }
 }
 

@@ -237,6 +237,7 @@ session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-time = Time
 
+session-nearby-send = Nearby Send
 session-windows = Windows
 session-tray = Tray
 session-invite = Invite
@@ -609,3 +610,15 @@ airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver
 
 so-tilo-session-notifications-reply = Reply in a banner that offers a reply
 session-osd = Readout
+## Banners
+
+session-banners = Banners
+so-tilo-session-banners-open = Open the notification
+so-tilo-session-banners-dismiss = Dismiss the notification
+so-tilo-session-banners-act = Choose on the notification
+so-tilo-session-banners-reply = Reply to the notification
+so-tilo-session-banners-snooze = Snooze the notification
+so-tilo-session-banners-focus-newest = Focus the newest notification
+so-tilo-session-banners-read = Read it in full
+so-tilo-session-banners-answer-call = Answer the call
+so-tilo-session-banners-decline-call = Decline the call

@@ -87,6 +87,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("osd", "Osd", "session:osd"),
     ("vpn", "Vpn", "vpn"),
     ("night_light", "NightLight", "session:night-light"),
+    ("banners", "Banners", "session:banners"),
     ("time", "Time", "session:time"),
     ("apps", "Apps", "session:apps"),
     ("windows", "Windows", "session:windows"),
@@ -95,6 +96,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("styles", "Styles", "session:styles"),
     ("folders", "Folders", "session:folders"),
     ("overlays", "Overlays", "desktop:overlays"),
+    ("nearby_send", "NearbySend", "session:nearby-send"),
+    ("devices", "Devices", "session:devices"),
+    ("quick_settings", "QuickSettings", "session:quick-settings"),
 ];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
     ("image_model", "ImageModel", "vision:vision.image-model"),
@@ -107,6 +111,8 @@ const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
         "Notifications",
         "settings:settings.notifications",
     ),
+    // The displays' settings: whether the screen stays put when the device turns.
+    ("display", "Display", "settings:settings.display"),
     // The agent model choice the canvas shows and switches: a reading of
     // both provider sections, its `use-model` answered by the settings
     // service (`agent-models-surface.json`).

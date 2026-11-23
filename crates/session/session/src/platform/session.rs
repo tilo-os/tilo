@@ -1525,6 +1525,40 @@ impl Session {
                 &options.person,
                 options.wake.handle(),
             )));
+
+        // The person's other devices, and the files the studio and Files hand
+        // them, as a resource the shell's quick settings, an agent and a script
+        // read and press: the same engine Files reaches, as the same certified
+        // route, in the workspace in front. A share the resource asks for waits
+        // here for the pass that opens the invitation sheet.
+        let nearby_shares: Rc<RefCell<Vec<String>>> = Rc::default();
+        if let (Some(nearby), Some(app_wire)) = (&nearby, &app_wire) {
+            let layout = std::sync::Arc::clone(&app_wire.layout);
+            let shares = Rc::clone(&nearby_shares);
+            services
+                .borrow_mut()
+                .add(Box::new(crate::nearby_send::Served::new(
+                    tilo_workspace_service::apps::nearby_send::NearbySend::new(
+                        std::sync::Arc::clone(nearby)
+                            as std::sync::Arc<
+                                dyn tilo_workspace_service::apps::services::NearbyTransferServices,
+                            >,
+                        options.person.clone(),
+                        move || {
+                            let mut active = String::new();
+                            let _ = tilo_broker_core::services::WorkspaceAuthority::with_tree(
+                                &*layout,
+                                &mut |tree| active = tree.active.to_string(),
+                            );
+                            active
+                        },
+                        move |resource| {
+                            shares.borrow_mut().push(resource.to_owned());
+                            Ok(())
+                        },
+                    ),
+                )));
+        }
         // The shell's own records reach the API as any app's do the moment its package runs.
         if let Some(shell) = &shell {
             shell.share_records(&services, &session_services);
@@ -1712,6 +1746,7 @@ impl Session {
             tilolang_shell: options.shell,
             services,
             sends,
+            nearby_shares,
             table,
             window_shares,
             pages: crate::page_track::PageTracks::new(),

@@ -70,6 +70,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::notifications::surface(),
         crate::osd::surface(),
         crate::controls::night_light_surface(),
+        crate::notifications::banners_surface(),
         crate::time::surface(),
         crate::controls::apps_surface(),
         crate::device_lists::windows_surface(),
@@ -78,6 +79,9 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::device_lists::styles_surface(),
         crate::device_lists::folders_surface(),
         crate::shell::state::overlays_surface(),
+        tilo_workspace_service::apps::nearby_send::surface(),
+        crate::devices::surface(),
+        crate::quick_settings::controls_surface(),
     ]
 }
 

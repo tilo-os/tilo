@@ -613,6 +613,33 @@ fn quick_settings_resource() -> tilo_actions::ResourceSpec {
     )
 }
 
+/// Which controls the panel shows, as a view of another language reads it
+/// (`device.quick_settings`): the controls, in the order they stand, each named as the actions
+/// below name them.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct QuickSettingsView {
+    #[serde(default)]
+    pub controls: Vec<String>,
+}
+
+/// The panel's controls as a view of another language reads them (`device.quick_settings`).
+#[must_use]
+pub(crate) fn controls_surface() -> tilo_actions::surface::Surface {
+    tilo_resource::surface::reading_surface::<QuickSettingsView, LayoutAction>(
+        "quick-settings",
+        "Quick settings",
+    )
+}
+
 /// Which controls the panel shows, as the panel reads them: the person's choice of controls on this
 /// device, kept in its settings document.
 #[derive(Default)]
@@ -680,14 +707,14 @@ impl tilo_service::Service for QuickSettingsService {
 
     fn read(&self, resource: &str) -> Option<serde_json::Value> {
         (resource == QUICK_SETTINGS).then(|| {
-            serde_json::json!({
-                "controls": self
+            tilo_service::reading(&QuickSettingsView {
+                controls: self
                     .shown
                     .borrow()
                     .controls
                     .iter()
-                    .map(|control| tilo_quick_settings::control_id(*control))
-                    .collect::<Vec<_>>(),
+                    .map(|control| tilo_quick_settings::control_id(*control).to_owned())
+                    .collect(),
             })
         })
     }
