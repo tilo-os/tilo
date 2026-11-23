@@ -217,7 +217,7 @@ mod tests {
         workspace
     }
 
-    /// Whether the app's own new-note action is admitted by what `file` holds:
+    /// Whether the app's own `new_note` action is admitted by what `file` holds:
     /// what the notes bar asks (`ActionNeed::of(Undoable)` on its own node).
     fn may_add_notes(file: &Path) -> bool {
         let bytes = held::read(file, MAX_PROJECTION_BYTES)
@@ -229,7 +229,7 @@ mod tests {
         projection
             .authority()
             .decide(
-                &projection.app_node().action("new-note"),
+                &projection.app_node().action("new_note"),
                 ActionKind::Undoable,
                 &Context::at(0),
             )

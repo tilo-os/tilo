@@ -118,7 +118,7 @@ check passes.
 M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
 `tilo-runtime --connect`: the person's consent is answered through the control socket's
 `permission-prompts` actions, the MCP server must offer the path-addressed agent tools, `tilo_ls`
-must list Notes as a running app (it is open), a note made with `notes#new-note` (the harness
+must list Notes as a running app (it is open), a note made with `notes#new_note` (the harness
 grants the test agent Notes for the session) is read back through the desktop, and refusals
 must reach the agent as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
 (fix/mcp-server) they report **xfail** with that reason: an expected failure does not fail the
@@ -149,7 +149,7 @@ environment's agent asking for the other workspace is refused before anyone is a
 "Always allow" admits a second session there without the sheet, as the next instance (E05);
 Stop on one leaves the other working (E06); a program of the login outside the environments is
 refused on an environment's socket (E07). E08 is an agent's own change, a note through
-`notes#new-note` taken in the run the server starts for its connection, landing in its workspace
+`notes#new_note` taken in the run the server starts for its connection, landing in its workspace
 and not the other's. E09 is one that asks first, a file through `terminal#run`: its run puts the
 question to the person on the shell's sheet (Allow once, Always allow the agent, Deny), the harness
 allows it once by its named control, and the file lands in the agent's own workspace's tree.
