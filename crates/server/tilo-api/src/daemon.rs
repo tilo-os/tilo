@@ -309,16 +309,18 @@ impl DaemonPlace {
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
     pub fn wait_for_api(&self, within: Duration) -> Result<(), String> {
-        self.wait_for(&self.api, within)
+        self.wait_for(&self.api, within, !self.system)
     }
 
     /// Wait until the daemon answers at its native endpoint, starting the service when none
-    /// runs: a computer no person's certificate names answers there alone.
+    /// runs: a computer no person's certificate names answers there alone. It founds no person:
+    /// this is how a computer about to be logged in with a ticket reaches its daemon, and the
+    /// ticket's person is the one it becomes.
     ///
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
     pub fn wait_for_native(&self, within: Duration) -> Result<(), String> {
-        self.wait_for(&self.native(), within)
+        self.wait_for(&self.native(), within, false)
     }
 
     /// A connection to the daemon's `tilo mcp` socket, starting the service when none answers
@@ -327,20 +329,19 @@ impl DaemonPlace {
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
     pub fn reach(&self, within: Duration) -> Result<UnixStream, String> {
-        self.wait_for(&self.socket, within)?;
+        self.wait_for(&self.socket, within, !self.system)?;
         tilo_files::native::socket::connect(&self.socket).map_err(|error| error.to_string())
     }
 
     /// Wait until the daemon answers at `socket`, starting the service once when no daemon
-    /// keeps the device: one that runs (still starting, or taking a login up) is waited for. A
-    /// person's own computer that no person's certificate names yet founds its person here, once
-    /// its daemon answers, as its first command always has; Tilo OS's device waits for a sign-in.
-    fn wait_for(&self, socket: &Path, within: Duration) -> Result<(), String> {
+    /// keeps the device: one that runs (still starting, or taking a login up) is waited for. With
+    /// `founding`, a person's own computer that no person's certificate names yet founds its
+    /// person here, once its daemon answers, as its first command always has.
+    fn wait_for(&self, socket: &Path, within: Duration, mut founding: bool) -> Result<(), String> {
         let deadline = Instant::now()
             .checked_add(within)
             .unwrap_or_else(Instant::now);
         let mut started = false;
-        let mut founding = !self.system;
         loop {
             if tilo_files::native::socket::connect(socket).is_ok() {
                 return Ok(());
