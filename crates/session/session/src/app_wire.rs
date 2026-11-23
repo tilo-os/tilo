@@ -1403,6 +1403,11 @@ fn broker_services(
                     std::sync::Arc::new(tilo_workspace_service::agents::WebSearch::new(
                         tilo_rt::app().handle().clone(),
                     )),
+                    // The agents' answers their triggers invoke, taken by this device's agent
+                    // engine.
+                    std::sync::Arc::new(tilo_workspace_service::agents::triggered::Answers::new(
+                        service.clone(),
+                    )),
                 ],
                 // An agent's task writes its programs; this session's links runs them as the
                 // steps of the run the task is in. An agent whose turn is worked in its own

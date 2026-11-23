@@ -211,7 +211,7 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
     );
     runner.arm().await;
     let mut writes = workspaces.document_writes();
-    for (id, title) in [("i-0", "Other"), ("i-1", "First")] {
+    for (id, title) in [("i-1", "First"), ("i-2", "Other")] {
         workspaces
             .own_resource_command(
                 &workspace,
@@ -235,14 +235,14 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
             )
             .await
             .unwrap();
+        let mut written = Vec::new();
+        while let Ok(write) = writes.try_recv() {
+            written.push(write);
+        }
+        assert!(!written.is_empty(), "the write is told to the runner");
+        runner.pass(written.clone()).await;
+        runner.pass(written).await;
     }
-    let mut written = Vec::new();
-    while let Ok(write) = writes.try_recv() {
-        written.push(write);
-    }
-    assert!(!written.is_empty(), "the write is told to the runner");
-    runner.pass(written.clone()).await;
-    runner.pass(written).await;
     let firings = started.0.lock().unwrap().clone();
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(firings[0].shortcut, "tidy");
@@ -287,4 +287,303 @@ fn a_shortcut_saved_by_someone_elses_device_arms_nothing_here() {
         .is_empty(),
         "another person's device arms nothing"
     );
+}
+
+/// Whoever's turns an agent takes here: the agent `scout`, as a device that holds its key.
+#[cfg(feature = "agents")]
+struct ActsAsScout;
+
+#[cfg(feature = "agents")]
+impl crate::work::AgentEngine for ActsAsScout {
+    fn acts_as<'a>(
+        &'a self,
+        _workspace: &'a str,
+        agent: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move { agent == "scout" })
+    }
+}
+
+/// An agent's triggers fire on a message that mentions it, one in its direct conversation and
+/// one an outside author's provider carried in, and each starts one turn of the agent, placed
+/// once workspace-wide; what the agent writes itself, its answer, fires none of them.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answer() {
+    use crate::agents::triggered::{self, Where};
+    use tilo_action_policy::{Actor as Who, MemberId};
+    use tilo_resource_store::wire::{Command, Edit};
+    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+
+    const CHAT: &str = "so.tilo.lang.chat";
+    const MESSAGE: &str = "tl.so.tilo.lang.chat.Message";
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
+    let (key, cert) = governor();
+    let host = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = host.workspaces();
+    workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    workspaces.run_agents(Arc::new(ActsAsScout));
+    let workspace = workspaces.create("Chat").await.unwrap().workspace;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    save_signed(
+        workspaces,
+        &workspace,
+        triggered::triggers("scout", "Scout"),
+        (&key, &cert),
+    )
+    .await;
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    let mut writes = workspaces.document_writes();
+
+    let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
+    let scout = Who::member(MemberId::agent("scout"));
+    let bridge = Who::member(MemberId::bot("bridge"));
+    // `by` puts the resource `id` of `kind` in `parent`, with `fields` and the rich `body`.
+    let put = async |kind: &str,
+                     id: &str,
+                     parent: Option<&str>,
+                     by: &Who,
+                     fields: Vec<(&str, &str)>,
+                     body: Option<serde_json::Value>| {
+        // The write serves an invocation of `by`'s, as the chat app's write for an action that
+        // was delivered to it.
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+        let stamp = Stamp {
+            verb: "send".into(),
+            invoker: Stamp::by(by),
+            invocation: invocation.0.to_string(),
+            at: jiff::Timestamp::now().to_string(),
+            ..Stamp::default()
+        };
+        let mut commands = vec![Command::Put {
+            kind: kind.into(),
+            id: id.into(),
+            resource: Resource {
+                readers: "*".into(),
+                parent: parent.map(str::to_owned),
+                order: None,
+                fields: fields
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), Cell::One(Value::Text(value.into()))))
+                    .collect(),
+            },
+            stamp: stamp.clone(),
+        }];
+        if let Some(body) = body {
+            commands.push(Command::Edit {
+                kind: kind.into(),
+                id: id.into(),
+                edits: vec![Edit::Set {
+                    field: "body".into(),
+                    value: body,
+                }],
+                stamp,
+            });
+        }
+        let caller = tilo_actions::remote::Caller::authenticated(
+            cert.user_public_key,
+            cert.device_public_key,
+        )
+        .in_workspace(&workspace);
+        let context =
+            crate::apps::services::ResourceRequestContext::authenticated(CHAT, &workspace, caller)
+                .serving(vec![(invocation, by.clone())]);
+        workspaces
+            .resource_command(&context, Command::Batch(commands))
+            .await
+            .unwrap();
+    };
+    // Rich text whose words are `words`, mentioning the agent where `mention` says.
+    let rich = |words: &str, mention: bool| {
+        let marks = if mention {
+            json!([{"start": 0, "end": 5, "name": "mention", "value": {"Str": "{\"agent\":\"scout\"}"}}])
+        } else {
+            json!([])
+        };
+        json!({"blocks": [{"text": words, "marks": marks}]})
+    };
+    // What the runner fires on the records written since it last looked.
+    let mut fired = async |runner: &mut Runner| {
+        let mut since = Vec::new();
+        while let Ok(write) = writes.try_recv() {
+            since.push(write);
+        }
+        let before = started.0.lock().unwrap().len();
+        runner.pass(since).await;
+        started.0.lock().unwrap()[before..].to_vec()
+    };
+    put(
+        "tl.so.tilo.lang.chat.TextChannel",
+        "general",
+        None,
+        &person,
+        vec![("name", "general")],
+        None,
+    )
+    .await;
+    put(
+        "tl.so.tilo.lang.chat.Direct",
+        "with-scout",
+        None,
+        &person,
+        vec![
+            ("name", "Scout"),
+            ("person", &serde_json::to_string(&scout).unwrap()),
+        ],
+        None,
+    )
+    .await;
+    let now = fired(&mut runner).await;
+    assert!(
+        now.is_empty(),
+        "making the conversations asks nothing: {now:?}"
+    );
+
+    // A member mentions the agent: one firing, carrying the message.
+    put(
+        MESSAGE,
+        "m-1",
+        Some("general"),
+        &person,
+        vec![],
+        Some(rich("Scout, look at this", true)),
+    )
+    .await;
+    let firings = fired(&mut runner).await;
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    assert_eq!(firings[0].shortcut, triggered::shortcut_id("scout"));
+    let event: DocumentEvent =
+        serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
+    let place = Where::of(&event).unwrap();
+    assert_eq!(
+        (
+            place.app.as_str(),
+            place.record.as_str(),
+            place.item.as_str()
+        ),
+        (CHAT, "general", "m-1"),
+        "the answer goes to the message, in its conversation"
+    );
+    assert_eq!(
+        triggered::asker(&event).as_deref(),
+        Some(hex::encode(cert.user_public_key).as_str())
+    );
+    assert!(
+        triggered::said(&event).contains("look at this"),
+        "{event:?}"
+    );
+    // One device takes the turn, once.
+    let turn = triggered::started_here(workspaces, "scout", &place);
+    let claim = crate::work::takes_turn(workspaces, &workspace, &turn).await;
+    assert!(claim.is_ok(), "this device takes the agent's turn");
+    crate::work::keep_done(workspaces, &workspace, &turn, json!({"answered": true}))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            crate::work::takes_turn(
+                workspaces,
+                &workspace,
+                &triggered::started_here(workspaces, "scout", &place)
+            )
+            .await,
+            Err(crate::work::NotTaken::Done(_))
+        ),
+        "a turn answered is taken by no device again"
+    );
+
+    // The agent answers in the conversation, naming itself: nothing fires on its own words.
+    put(
+        MESSAGE,
+        "m-2",
+        Some("general"),
+        &scout,
+        vec![],
+        Some(rich("Scout here: done", true)),
+    )
+    .await;
+    let now = fired(&mut runner).await;
+    assert!(now.is_empty(), "the agent's answer fires nothing: {now:?}");
+
+    // In its direct conversation, a member's message asks it without naming it; its reply there
+    // asks nothing.
+    put(
+        MESSAGE,
+        "d-1",
+        Some("with-scout"),
+        &person,
+        vec![],
+        Some(rich("Can you help?", false)),
+    )
+    .await;
+    let firings = fired(&mut runner).await;
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    put(
+        MESSAGE,
+        "d-2",
+        Some("with-scout"),
+        &scout,
+        vec![],
+        Some(rich("Sure.", false)),
+    )
+    .await;
+    let now = fired(&mut runner).await;
+    assert!(
+        now.is_empty(),
+        "its reply in the direct conversation fires nothing: {now:?}"
+    );
+
+    // A message an outside author wrote, carried in by a provider, mentioning the agent: it
+    // fires, and the turn is for the person whose trigger it is.
+    put(
+        MESSAGE,
+        "m-3",
+        Some("general"),
+        &bridge,
+        vec![],
+        Some(rich("Scout, a question from outside", true)),
+    )
+    .await;
+    let firings = fired(&mut runner).await;
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    let event: DocumentEvent =
+        serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
+    assert_eq!(triggered::asker(&event), None, "no member asked");
+    assert_eq!(firings[0].saver, hex::encode(cert.user_public_key));
+
+    // A message nobody mentions it in fires nothing.
+    put(
+        MESSAGE,
+        "m-4",
+        Some("general"),
+        &person,
+        vec![],
+        Some(rich("Lunch?", false)),
+    )
+    .await;
+    let now = fired(&mut runner).await;
+    assert!(
+        now.is_empty(),
+        "a message that names nobody fires nothing: {now:?}"
+    );
+    host.shutdown().await;
 }

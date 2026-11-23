@@ -41,7 +41,7 @@ pub(super) type Place = (String, String, String);
 
 pub(super) fn place(workspace: &str, turn: &Turn) -> Place {
     let at = match &turn.ask {
-        Ask::Message { .. } => turn.conversation.clone(),
+        Ask::Message { .. } | Ask::Triggered(_) => turn.conversation.clone(),
         Ask::Issue {
             record,
             issue,

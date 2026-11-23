@@ -288,17 +288,26 @@ pub fn record_events(
         .collect()
 }
 
+/// One resource a change of the resource store touched ([`store_events`]): its event, the
+/// change, and the write it is part of, the same in every document the write changed.
+pub struct StoreEvent {
+    pub event: DocumentEvent,
+    pub change: ChangeHash,
+    pub write: (String, u64),
+}
+
 /// The events of the changes to the resources the store document `record` of `app` keeps,
 /// committed since `since`: one for each resource a stamped change touched, named by its id and
 /// kind, by whoever invoked the verb. The store keeps no time in its changes, so a document's
 /// first look (no `since`) reports only the changes at its heads: the write that woke the runner,
-/// never what the document held before.
+/// never what the document held before. What the resource holds after the change is the
+/// runner's to read from the store ([`Workspaces::store_wrote`]).
 #[must_use]
 pub fn store_events(
     (workspace, app, record): (&str, &str, &str),
     doc: &AutoCommit,
     since: Option<&[ChangeHash]>,
-) -> Vec<DocumentEvent> {
+) -> Vec<StoreEvent> {
     let committed = doc.committed_document();
     let heads = committed.get_heads();
     if since.is_some_and(|since| heads == since) {
@@ -323,34 +332,59 @@ pub fn store_events(
             let Some(kind) = touch.kind else {
                 continue;
             };
-            // What a trigger's filter reads of the resource: its fields as the change left them.
-            let after =
-                tilo_automerge::items::item_json(committed, &[change.hash()], &format!("r:{id}"))
-                    .and_then(|resource| resource.get("f").cloned());
-            events.push(DocumentEvent {
-                workspace: workspace.to_owned(),
-                record: id,
-                did: tilo_actions::Did::verb(
-                    tilo_actions::ActionKey::new(app, &kind, &stamp.verb),
-                    [],
-                ),
-                kind,
-                change: change.hash().to_string(),
-                actor: actor.clone(),
-                arguments: Map::new(),
-                item: None,
-                before: None,
-                after,
-                origin: None,
-                caused_by: None,
-                incoming_message: false,
-                housekeeping: false,
-                shortcut: None,
-                invocation: None,
+            events.push(StoreEvent {
+                change: change.hash(),
+                write: (stamp.invocation.clone(), stamp.moment),
+                event: DocumentEvent {
+                    workspace: workspace.to_owned(),
+                    record: id,
+                    did: tilo_actions::Did::verb(
+                        tilo_actions::ActionKey::new(app, &kind, &stamp.verb),
+                        [],
+                    ),
+                    kind,
+                    change: change.hash().to_string(),
+                    actor: actor.clone(),
+                    arguments: Map::new(),
+                    item: None,
+                    before: None,
+                    after: None,
+                    origin: None,
+                    caused_by: None,
+                    incoming_message: false,
+                    housekeeping: false,
+                    shortcut: None,
+                    invocation: None,
+                },
             });
         }
     }
     events
+}
+
+/// `event`, of one resource a store write touched, with what the write left it holding
+/// ([`Workspaces::store_wrote`]): its fields and content, under `$in` the resource it is nested
+/// in (its kind as `$kind`, its id as `$id`, and its fields), and the item it names.
+fn with_what_it_holds(event: &mut DocumentEvent, wrote: tilo_resource_store::Wrote) {
+    let tilo_resource_store::Wrote {
+        kind,
+        id,
+        mut holds,
+        parent,
+    } = wrote;
+    if let Some((parent_kind, parent_id, mut fields)) = parent {
+        fields.insert("$kind".to_owned(), Value::String(parent_kind));
+        fields.insert("$id".to_owned(), Value::String(parent_id));
+        holds.insert("$in".to_owned(), Value::Object(fields));
+    }
+    let label = holds
+        .get("title")
+        .or_else(|| holds.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    event.item = Some(tilo_automation::dispatch::ItemRef { kind, id, label });
+    event.after = Some(Value::Object(holds));
 }
 
 /// The daemon's trigger runner over the workspaces this device keeps.
@@ -492,6 +526,7 @@ impl Runner {
     /// watches.
     async fn read(&mut self, written: Vec<crate::workspaces::ResourceWrite>) -> Vec<DocumentEvent> {
         let mut events = Vec::new();
+        let mut seen = BTreeSet::new();
         let written: BTreeSet<(String, String, String)> = written
             .into_iter()
             .filter(|write| !write.record.is_empty())
@@ -516,11 +551,22 @@ impl Runner {
             let heads = doc.committed_heads();
             let since = self.cursors.insert(key.clone(), heads);
             if collab_types::is_store_document(record) {
-                events.extend(store_events(
-                    (workspace, app, record),
-                    &doc,
-                    since.as_deref(),
-                ));
+                for StoreEvent {
+                    mut event,
+                    change,
+                    write,
+                } in store_events((workspace, app, record), &doc, since.as_deref())
+                {
+                    // A write that changed a resource and its content is one change of it.
+                    if !seen.insert((write, event.record.clone())) {
+                        continue;
+                    }
+                    let wrote = self.workspaces.store_wrote(workspace, record, change).await;
+                    if let Some(wrote) = wrote.into_iter().find(|wrote| wrote.id == event.record) {
+                        with_what_it_holds(&mut event, wrote);
+                    }
+                    events.push(event);
+                }
                 continue;
             }
             let kind = collab_types::document::identity::identity(&doc)
