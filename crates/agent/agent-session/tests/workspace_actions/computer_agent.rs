@@ -95,7 +95,7 @@ async fn a_computers_agent_is_listed_once_where_it_acts() {
     let hosted = start(&root, &server, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &server).await;
     browser.create(TASKS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
 
     let (_agent, server) = computer_agent(&hosted, &laptop, &server).await;
     let answer = new_task(&server, "From the laptop").await;

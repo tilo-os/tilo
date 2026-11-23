@@ -87,7 +87,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     for (_, mutation) in source.take_document_mutations().unwrap() {
         publisher.peer.write(part_route.clone(), &mutation).unwrap();
     }
-    publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&publisher.peer.barrier().unwrap()).unwrap();
     let retained = hosted
         .server
         .workspace_documents()

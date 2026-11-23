@@ -30,7 +30,7 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     let mut page = Browser::open(&served, &page_device, &home).await;
     page.put_layout();
     let notes = page.create(SHEETS);
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
 
     // Their agent, on a computer of theirs, served over that computer's own session.
     let agent = Browser::open(&served, &computer, &home).await;
@@ -150,7 +150,7 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     // Chat, opened on the page too: its conversations are read once each, and an empty one
     // says what the person sees under it.
     let _chat = page.create("so.tilo.chat");
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
     let (lines, failed) = tool(&mcp, "tilo_view", json!({"path": "chat"})).await;
     assert!(!failed, "{lines}");
     let items: Vec<&str> = lines

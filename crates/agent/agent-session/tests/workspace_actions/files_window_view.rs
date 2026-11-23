@@ -134,7 +134,7 @@ async fn agent_viewing_files(
     let mut page = Browser::open(&hosted, &browser_device, &home).await;
     let _files = page.create(FILES);
     page.put_layout();
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
     let agent = Browser::open(&hosted, &computer, &home).await;
     // Its session is the agent's, as `tilo login` makes it say.
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
@@ -164,7 +164,7 @@ async fn an_agents_view_of_files_lists_the_folder_the_persons_files_hold() {
     let state = crate::support::scratch_dir();
     let (_hosted, person, server, page) = agent_viewing_files(state.path()).await;
     person_keeps_a_folder(&page, FOLDER, &person);
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
     // The workspace holds the folder: what the window shows is the tree, not a skeleton.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -266,7 +266,7 @@ async fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone(
         FOLDER,
         (u64::try_from(changed.as_millisecond()).unwrap(), &person),
     );
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
 
     // What her page shows for it: the time on a 24-hour clock, in Auckland.
     let hers = ui::format::region::RegionFormats {
@@ -357,7 +357,7 @@ async fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() 
         FOLDER,
         (u64::try_from(changed.as_millisecond()).unwrap(), &person),
     );
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
     let hers = ui::format::region::RegionFormats {
         time: ui::clock::TimeStyle::H24,
         ..ui::format::region::RegionFormats::default()

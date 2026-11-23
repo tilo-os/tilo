@@ -118,7 +118,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
         .await
         .unwrap();
     let route = create_feedback_document(&mut browser).await;
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let submission = approved(&route);
     let mut queued = member(&mut browser, &route, &person);
     queued
@@ -306,7 +306,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
         .unwrap();
     let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
     let route = create_feedback_document(&mut browser).await;
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let submission = approved(&route);
     let prompt = ui::feedback::model_review::prompt([(0, "Thanks Ada, \u{2039}email\u{203A}")]);
     let answer = owner_answer(&mut browser, &submission, false, Some(prompt.clone()))
@@ -384,13 +384,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     let mut owner_browser =
         Browser::open_workspace(&hosted, &owner_device, &host, &workspace.workspace).await;
     let route = create_feedback_document(&mut owner_browser).await;
-    owner_browser
-        .peer
-        .barrier()
-        .unwrap()
-        .recv()
-        .unwrap()
-        .unwrap();
+    crate::workspace_actions::saved(&owner_browser.peer.barrier().unwrap()).unwrap();
     admit_person(
         &hosted,
         &host,
@@ -631,7 +625,7 @@ fn publish_member(
         .entry(route.clone())
         .or_default()
         .push(([0; 32], bytes.clone()));
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
 }
 
 async fn resolved_status(browser: &mut Browser, submission: &Submission) -> serde_json::Value {

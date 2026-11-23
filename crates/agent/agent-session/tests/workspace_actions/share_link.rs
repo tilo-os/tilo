@@ -78,7 +78,7 @@ async fn the_server_mints_a_message_link_with_its_range() {
     for (_, mutation) in source.take_document_mutations().unwrap() {
         publisher.peer.write(route.clone(), &mutation).unwrap();
     }
-    publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&publisher.peer.barrier().unwrap()).unwrap();
     let receipt = publisher
         .invoke(request(
             &resource_provider(&route),

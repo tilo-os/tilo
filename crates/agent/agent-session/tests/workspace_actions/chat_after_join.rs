@@ -79,7 +79,7 @@ async fn an_agent_posts_to_chat_a_page_made_after_it_joined() {
     let mut page =
         Browser::open_workspace(&on_server.hosted, &page_device, &on_server.host, &lobby).await;
     let _chat = page.create(CHAT);
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
 
     // Listing the chat reaches the resource the page made.
     let deadline = tilo_test_env::hang_deadline();
@@ -188,7 +188,7 @@ async fn an_agent_posts_to_chat_a_persons_own_workspace_began_with() {
         )
         .await;
         let _chat = page.create(CHAT);
-        page.peer.barrier().unwrap().recv().unwrap().unwrap();
+        crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
         page.peer.close();
     }
 

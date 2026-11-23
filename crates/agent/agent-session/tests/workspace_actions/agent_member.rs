@@ -63,7 +63,7 @@ async fn every_computers_session_of_one_named_agent_is_that_one_agent() {
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     browser.create(TASKS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
 
     issue_by(&hosted, &laptop, &host, "Claude Code", "From the laptop").await;
     issue_by(

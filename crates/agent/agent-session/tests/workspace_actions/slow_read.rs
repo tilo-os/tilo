@@ -211,7 +211,7 @@ async fn a_slow_read_leaves_its_thread_answering() {
             .unwrap();
     }
     let chat = feedback_resource(&mut browser).await;
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let submission = approved(&chat);
     let task_route = DocumentRoute {
         app_id: TASKS.into(),

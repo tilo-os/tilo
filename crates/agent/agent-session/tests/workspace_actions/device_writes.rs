@@ -111,7 +111,7 @@ async fn a_write_the_workspace_refuses_is_never_answered_saved() {
     let mut page = open_admitted_peer(&hosted, &viewer_device, &node, &workspace.workspace).await;
     // Asked at once: the write may still be held for its keys.
     page.create(TASKS);
-    let saved = page.peer.barrier().unwrap().recv().unwrap();
+    let saved = crate::workspace_actions::saved(&page.peer.barrier().unwrap());
     let refusal = saved.expect_err("a viewer's new resource is refused, never saved");
     assert!(
         refusal.contains("not granted"),
@@ -136,7 +136,7 @@ async fn a_write_the_workspace_refuses_is_never_answered_saved() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let saved = page.peer.barrier().unwrap().recv().unwrap();
+    let saved = crate::workspace_actions::saved(&page.peer.barrier().unwrap());
     let refusal = saved.expect_err("a refused write is never answered saved");
     assert!(
         refusal.contains("not granted"),
@@ -144,7 +144,7 @@ async fn a_write_the_workspace_refuses_is_never_answered_saved() {
     );
 
     // It was answered once: what the device writes after it is not refused for it.
-    let after = page.peer.barrier().unwrap().recv().unwrap();
+    let after = crate::workspace_actions::saved(&page.peer.barrier().unwrap());
     assert_eq!(after, Ok(()), "nothing was written since");
 }
 
@@ -326,23 +326,20 @@ async fn each_caller_hears_only_its_own_refusal() {
         )
         .unwrap();
 
-    let taken = page
-        .peer
-        .barrier_for(std::slice::from_ref(&own))
-        .unwrap()
-        .recv()
-        .unwrap();
+    let taken = crate::workspace_actions::saved(
+        &page.peer.barrier_for(std::slice::from_ref(&own)).unwrap(),
+    );
     assert_eq!(
         taken,
         Ok(()),
         "the caller whose write was taken hears it saved"
     );
-    let refused = page
-        .peer
-        .barrier_for(std::slice::from_ref(&refused_route))
-        .unwrap()
-        .recv()
-        .unwrap();
+    let refused = crate::workspace_actions::saved(
+        &page
+            .peer
+            .barrier_for(std::slice::from_ref(&refused_route))
+            .unwrap(),
+    );
     let refusal = refused.expect_err("the caller whose write was refused hears it refused");
     assert!(
         refusal.contains("not granted"),

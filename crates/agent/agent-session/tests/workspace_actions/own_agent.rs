@@ -359,7 +359,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     let mut browser = own.tab().await;
     let tracker = browser.create(TASKS);
     let books = browser.create(EBOOK);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     // The tracker keeps its issues in the parts of its chain.
     browser.follow_chain(TASKS, tasks::issue_list::chain().chain_head().as_str());
     let agent = own.agent().await;
