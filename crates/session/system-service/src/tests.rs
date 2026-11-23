@@ -16,6 +16,7 @@ struct Fake {
     power: Mutex<Power>,
     power_reads: AtomicUsize,
     power_refusal: Mutex<Option<String>>,
+    on_power_mode: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     update: Mutex<Update>,
     time: Mutex<Time>,
     keyboard_light: Mutex<KeyboardLight>,
@@ -33,6 +34,7 @@ impl Fake {
             }),
             power_reads: AtomicUsize::new(0),
             power_refusal: Mutex::new(None),
+            on_power_mode: Mutex::new(None),
             update: Mutex::new(Update::default()),
             time: Mutex::new(Time {
                 zone: Some("Europe/Amsterdam".into()),
@@ -65,6 +67,9 @@ impl System for Fake {
     }
 
     fn power_mode(&self) -> Option<PowerMode> {
+        if let Some(hook) = self.on_power_mode.lock().unwrap().as_ref() {
+            hook();
+        }
         self.power.lock().unwrap().mode
     }
 
@@ -811,4 +816,51 @@ fn live_set_power_mode_carries_new_mode_in_first_reading_when_pending_clears() {
         !service.poll(),
         "delayed signal matching the landed mode does not publish twice"
     );
+}
+
+#[test]
+fn a_live_signal_during_power_mode_read_beats_the_stale_direct_read() {
+    let fake = Fake::new();
+    let live = FakeProfiles::new(
+        vec![
+            PowerMode::Saver,
+            PowerMode::Balanced,
+            PowerMode::Performance,
+        ],
+        Some(PowerMode::Balanced),
+    );
+    // Simulate a newer daemon signal moving the live source while `power_mode()`
+    // is reading back the earlier `Saver` change.
+    *fake.on_power_mode.lock().unwrap() = Some(Box::new({
+        let live = Arc::clone(&live);
+        move || live.set_mode(Some(PowerMode::Performance))
+    }));
+
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::with_power_profiles(
+        system,
+        None,
+        Arc::clone(&live) as Arc<dyn PowerProfiles>,
+    )
+    .unwrap();
+    service.settle();
+
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "saver"}))
+        ),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+
+    let power = service.read(POWER).unwrap();
+    assert_eq!(power["pending"], json!([]));
+    assert_eq!(
+        power["mode"],
+        json!("performance"),
+        "a newer live signal that moved revision past rev_before must not be overwritten by the stale direct read"
+    );
+    assert_eq!(fake.power_reads(), 0);
 }
