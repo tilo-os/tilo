@@ -17430,6 +17430,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-base",
+ "iroh-blobs",
  "jiff",
  "key-group",
  "libc",

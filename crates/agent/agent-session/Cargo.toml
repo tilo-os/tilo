@@ -177,6 +177,9 @@ tilo-session-actions = { path = "../../session/session-actions" }
 tilo-desktop-surface = { path = "../../session/desktop-surface", default-features = false }
 # What a test puts in the workspace in pieces, as a page sends it.
 base64.workspace = true
+# The content hash a test names a file it puts in a peer's folder by, as the shared
+# session test support writes it.
+iroh-blobs.workspace = true
 # The meeting times a test writes into a calendar.
 jiff.workspace = true
 # Documents the tests write and read back as a Word or Markdown file.
