@@ -9,7 +9,10 @@ use tilo_service::{Service, Services, Started, Wake};
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
 };
+use tilo_system_resources::codec_pack::{CodecPack, CodecState, HardwareVideo};
 use tilo_system_resources::disk_unlock::{DiskUnlock, Sealing, UnlockVolume};
+use tilo_system_resources::firmware::{Firmware, FirmwareUpdate};
+use tilo_system_resources::windows_compat::{WindowsCompat, WindowsState};
 use tilo_system_resources::host_info::HostInfo;
 use tilo_system_resources::drives::{
     Drive, DriveMode, Drives, Placement, RememberOffer, RememberedDrive,
@@ -19,8 +22,8 @@ use tilo_system_resources::update::Deployment;
 use tilo_system_resources::users::{LocalAccount, Users};
 
 use crate::device::{
-    Change, DiskUnlockChange, DriveChange, PowerProfiles, PrintChange, StorageChange, System,
-    UserChange,
+    Change, CodecChange, DiskUnlockChange, DriveChange, FirmwareChange, PowerProfiles, PrintChange,
+    StorageChange, System, UserChange, WindowsChange,
 };
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
@@ -58,6 +61,15 @@ struct Fake {
     disk_unlock_changes: Mutex<Vec<DiskUnlockChange>>,
     disk_unlock_refusal: Mutex<Option<String>>,
     host_info: Mutex<HostInfo>,
+    codec: Mutex<CodecPack>,
+    codec_changes: Mutex<Vec<CodecChange>>,
+    codec_refusal: Mutex<Option<String>>,
+    windows: Mutex<WindowsCompat>,
+    windows_changes: Mutex<Vec<WindowsChange>>,
+    windows_refusal: Mutex<Option<String>>,
+    firmware: Mutex<Firmware>,
+    firmware_changes: Mutex<Vec<FirmwareChange>>,
+    firmware_refusal: Mutex<Option<String>>,
 }
 
 impl Fake {
@@ -138,6 +150,15 @@ impl Fake {
             disk_unlock_changes: Mutex::new(Vec::new()),
             disk_unlock_refusal: Mutex::new(None),
             host_info: Mutex::new(HostInfo::default()),
+            codec: Mutex::new(CodecPack::default()),
+            codec_changes: Mutex::new(Vec::new()),
+            codec_refusal: Mutex::new(None),
+            windows: Mutex::new(WindowsCompat::default()),
+            windows_changes: Mutex::new(Vec::new()),
+            windows_refusal: Mutex::new(None),
+            firmware: Mutex::new(Firmware::default()),
+            firmware_changes: Mutex::new(Vec::new()),
+            firmware_refusal: Mutex::new(None),
         })
     }
 
@@ -414,6 +435,56 @@ impl System for Fake {
 
     fn host_info(&self) -> HostInfo {
         self.host_info.lock().unwrap().clone()
+    }
+
+    fn codec_pack(&self) -> CodecPack {
+        self.codec.lock().unwrap().clone()
+    }
+
+    fn change_codec(&self, change: &CodecChange) -> Result<(), String> {
+        self.codec_changes.lock().unwrap().push(*change);
+        if let Some(reason) = self.codec_refusal.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        let mut codec = self.codec.lock().unwrap();
+        match change {
+            CodecChange::Install => codec.state = CodecState::Installed,
+            CodecChange::Remove => codec.state = CodecState::NotInstalled,
+            CodecChange::Refresh => {}
+        }
+        Ok(())
+    }
+
+    fn windows_compat(&self) -> WindowsCompat {
+        self.windows.lock().unwrap().clone()
+    }
+
+    fn change_windows(&self, change: &WindowsChange) -> Result<(), String> {
+        self.windows_changes.lock().unwrap().push(*change);
+        if let Some(reason) = self.windows_refusal.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        let mut windows = self.windows.lock().unwrap();
+        match change {
+            WindowsChange::Install => windows.state = WindowsState::Ready,
+            WindowsChange::Remove => windows.state = WindowsState::NeedsInstall,
+        }
+        Ok(())
+    }
+
+    fn firmware(&self) -> Firmware {
+        self.firmware.lock().unwrap().clone()
+    }
+
+    fn change_firmware(&self, change: &FirmwareChange) -> Result<(), String> {
+        self.firmware_changes.lock().unwrap().push(*change);
+        if let Some(reason) = self.firmware_refusal.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        if matches!(change, FirmwareChange::Install) {
+            self.firmware.lock().unwrap().updates.clear();
+        }
+        Ok(())
     }
 
     fn disk_unlock(&self) -> DiskUnlock {
@@ -1945,4 +2016,137 @@ fn a_fact_this_machine_cannot_read_is_unknown_and_said_so() {
     assert_eq!(facts.cpu, "unknown");
     assert_eq!(facts.hostname, "this-device");
     assert!(facts.unknown, "the reading says a fact is missing");
+}
+
+#[test]
+fn the_codec_pack_resource_installs_removes_and_refuses() {
+    let fake = Fake::new();
+    *fake.codec.lock().unwrap() = CodecPack {
+        available: true,
+        state: CodecState::NotInstalled,
+        hardware: HardwareVideo::Off,
+        summary: "Off".into(),
+        offered: vec!["install".into()],
+        ..CodecPack::default()
+    };
+    let mut service = service(&fake);
+    let codec = service.read(CODEC_PACK).unwrap();
+    assert_eq!(codec["state"], json!("not-installed"));
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == CODEC_PACK)
+        .expect("the codec-pack resource is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for action in ["install", "remove", "refresh"] {
+        assert!(actions.contains(&action), "{action} is published: {actions:?}");
+    }
+    assert_eq!(
+        service.invoke(CODEC_PACK, "install", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(fake.codec_changes.lock().unwrap().clone(), [CodecChange::Install]);
+    assert_eq!(service.read(CODEC_PACK).unwrap()["state"], json!("installed"));
+
+    *fake.codec_refusal.lock().unwrap() = Some("the helper refused".into());
+    service.invoke(CODEC_PACK, "remove", &Map::new()).unwrap();
+    service.settle();
+    let codec = service.read(CODEC_PACK).unwrap();
+    assert_eq!(codec["problem"], json!("the helper refused"));
+    assert_eq!(codec["pending"], json!([]));
+}
+
+#[test]
+fn the_windows_compat_resource_installs_and_refuses_without_the_grant() {
+    let fake = Fake::new();
+    *fake.windows.lock().unwrap() = WindowsCompat {
+        available: true,
+        state: WindowsState::NeedsInstall,
+        summary: "Windows support is not installed.".into(),
+        size: Some("3.4 GB".into()),
+        ..WindowsCompat::default()
+    };
+    let mut service = service(&fake);
+    let windows = service.read(WINDOWS_COMPAT).unwrap();
+    assert_eq!(windows["state"], json!("needs-install"));
+    assert_eq!(windows["size"], json!("3.4 GB"));
+    assert_eq!(
+        service.invoke(WINDOWS_COMPAT, "install", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(
+        fake.windows_changes.lock().unwrap().clone(),
+        [WindowsChange::Install]
+    );
+    assert_eq!(
+        service.read(WINDOWS_COMPAT).unwrap()["state"],
+        json!("ready")
+    );
+
+    *fake.windows_refusal.lock().unwrap() = Some("authentication was refused".into());
+    service.invoke(WINDOWS_COMPAT, "remove", &Map::new()).unwrap();
+    service.settle();
+    let windows = service.read(WINDOWS_COMPAT).unwrap();
+    assert_eq!(windows["problem"], json!("authentication was refused"));
+}
+
+#[test]
+fn the_firmware_resource_reads_the_updates_and_installs_them() {
+    let fake = Fake::new();
+    *fake.firmware.lock().unwrap() = Firmware {
+        available: true,
+        updates: vec![FirmwareUpdate {
+            device_id: Some("abc".into()),
+            device: "Fingerprint reader".into(),
+            current_version: Some("1.0".into()),
+            new_version: Some("1.1".into()),
+            ..FirmwareUpdate::default()
+        }],
+        ..Firmware::default()
+    };
+    let mut service = service(&fake);
+    assert_eq!(
+        service.read(FIRMWARE).unwrap()["updates"][0]["device"],
+        json!("Fingerprint reader")
+    );
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == FIRMWARE)
+        .expect("the firmware resource is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert!(actions.contains(&"refresh"), "{actions:?}");
+    assert!(actions.contains(&"install"), "{actions:?}");
+
+    assert_eq!(
+        service.invoke(FIRMWARE, "install", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(service.read(FIRMWARE).unwrap()["installing"], json!(true));
+    service.settle();
+    assert_eq!(
+        fake.firmware_changes.lock().unwrap().clone(),
+        [FirmwareChange::Install]
+    );
+    assert_eq!(service.read(FIRMWARE).unwrap()["updates"], json!([]));
+
+    *fake.firmware_refusal.lock().unwrap() =
+        Some("connect power before updating firmware".into());
+    service.invoke(FIRMWARE, "install", &Map::new()).unwrap();
+    service.settle();
+    let firmware = service.read(FIRMWARE).unwrap();
+    assert_eq!(
+        firmware["problem"],
+        json!("connect power before updating firmware")
+    );
 }

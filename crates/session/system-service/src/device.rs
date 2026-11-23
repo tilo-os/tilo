@@ -3,7 +3,9 @@
 //! Location portal, the keyboard's LED); a test lends one of its own.
 
 use settings_store::day_schedule::Location;
+use tilo_system_resources::codec_pack::CodecPack;
 use tilo_system_resources::disk_unlock::DiskUnlock;
+use tilo_system_resources::firmware::Firmware;
 use tilo_system_resources::drives::Drives;
 use tilo_system_resources::host_info::HostInfo;
 use tilo_system_resources::storage::Storage;
@@ -12,6 +14,7 @@ use tilo_system_resources::printers::{
     PrinterSupply, Printers, QueueState as PrintQueueState,
 };
 use tilo_system_resources::users::Users;
+use tilo_system_resources::windows_compat::WindowsCompat;
 
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
@@ -45,6 +48,28 @@ pub enum DriveChange {
     Unmount { drive: String },
     Forget { grant: String },
     SetMode { grant: String, safely: bool },
+}
+
+/// A change to make on the media codecs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodecChange {
+    Install,
+    Remove,
+    Refresh,
+}
+
+/// A change to make on the Windows compatibility layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowsChange {
+    Install,
+    Remove,
+}
+
+/// A change to make on the firmware.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirmwareChange {
+    Refresh,
+    Install,
 }
 
 /// A change to make on the disk unlock: what a person, an agent or a script asked of the
@@ -261,6 +286,45 @@ pub trait System: Send + Sync {
     /// Why it did not happen.
     fn change_disk_unlock(&self, _change: &DiskUnlockChange) -> Result<(), String> {
         Err("this machine has no unlocking to change".to_owned())
+    }
+
+    /// The media codecs this computer offers.
+    fn codec_pack(&self) -> CodecPack {
+        CodecPack::default()
+    }
+
+    /// Make `change` on the codecs.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_codec(&self, _change: &CodecChange) -> Result<(), String> {
+        Err("this machine has no media codecs to install".to_owned())
+    }
+
+    /// The Windows compatibility layer this computer offers.
+    fn windows_compat(&self) -> WindowsCompat {
+        WindowsCompat::default()
+    }
+
+    /// Make `change` on the Windows compatibility layer.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_windows(&self, _change: &WindowsChange) -> Result<(), String> {
+        Err("this machine cannot install Windows support".to_owned())
+    }
+
+    /// The firmware updates fwupd offers and what it installed before.
+    fn firmware(&self) -> Firmware {
+        Firmware::default()
+    }
+
+    /// Make `change` on the firmware.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_firmware(&self, _change: &FirmwareChange) -> Result<(), String> {
+        Err("this machine has no firmware to update".to_owned())
     }
 }
 
@@ -515,6 +579,33 @@ impl System for OsSystem {
             DiskUnlockChange::SetNetworks { volume, networks } => {
                 crate::disk_unlock::set_networks(volume, networks)
             }
+        }
+    }
+
+    fn codec_pack(&self) -> CodecPack {
+        crate::codec_pack::reading()
+    }
+
+    fn change_codec(&self, change: &CodecChange) -> Result<(), String> {
+        crate::codec_pack::change(change)
+    }
+
+    fn windows_compat(&self) -> WindowsCompat {
+        crate::windows_compat::reading()
+    }
+
+    fn change_windows(&self, change: &WindowsChange) -> Result<(), String> {
+        crate::windows_compat::change(change)
+    }
+
+    fn firmware(&self) -> Firmware {
+        crate::firmware::reading()
+    }
+
+    fn change_firmware(&self, change: &FirmwareChange) -> Result<(), String> {
+        match change {
+            FirmwareChange::Refresh => crate::firmware::refresh(),
+            FirmwareChange::Install => crate::firmware::install(),
         }
     }
 }

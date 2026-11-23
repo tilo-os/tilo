@@ -104,6 +104,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("storage", "Storage", "storage"),
     ("disk_unlock", "DiskUnlock", "disk-unlock"),
     ("host_info", "HostInfo", "host-info"),
+    ("codec_pack", "CodecPack", "codec-pack"),
+    ("windows_compat", "WindowsCompat", "windows-compat"),
+    ("firmware", "Firmware", "firmware"),
     ("modem", "Modem", "modem"),
     ("tethering", "Tethering", "tethering"),
     // What the machine booted, what update waits, and the zone its clock keeps.

@@ -24,11 +24,14 @@
 //! in its reading until it lands, and why a change did not happen is the
 //! reading's problem until the next.
 
+pub mod codec_pack;
 pub mod device;
 pub mod disk_unlock;
+pub mod firmware;
 pub mod drives;
 pub mod host_info;
 pub mod storage;
+pub mod windows_compat;
 pub use tilo_system_resources::effects;
 tilo_resource::declared_names!();
 
@@ -49,8 +52,8 @@ use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
 use device::{
-    Change, DiskUnlockChange, DriveChange, PowerProfiles, PrintChange, StorageChange, System,
-    UserChange, follow_once,
+    Change, CodecChange, DiskUnlockChange, DriveChange, FirmwareChange, PowerProfiles, PrintChange,
+    StorageChange, System, UserChange, WindowsChange, follow_once,
 };
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
@@ -58,8 +61,8 @@ use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    DISK_UNLOCK, DRIVES, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS, SCANNERS, STORAGE,
-    SYSTEM_UPDATE, TIME_ZONE, USERS,
+    CODEC_PACK, DISK_UNLOCK, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS,
+    SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS, WINDOWS_COMPAT,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -80,6 +83,16 @@ enum Part {
     DiskUnlock,
     HostInfo,
     Scanners,
+    CodecPack,
+    WindowsCompat,
+    Firmware,
+}
+
+/// A change to one of the resources a privileged helper answers for an extension.
+enum ExtensionChange {
+    Codec(CodecChange),
+    Windows(WindowsChange),
+    Firmware(FirmwareChange),
 }
 
 /// What the machine reads now.
@@ -96,6 +109,9 @@ pub struct Readings {
     pub disk_unlock: tilo_system_resources::disk_unlock::DiskUnlock,
     pub host_info: tilo_system_resources::host_info::HostInfo,
     pub scanners: tilo_system_resources::scanners::Scanners,
+    pub codec_pack: tilo_system_resources::codec_pack::CodecPack,
+    pub windows_compat: tilo_system_resources::windows_compat::WindowsCompat,
+    pub firmware: tilo_system_resources::firmware::Firmware,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -119,6 +135,9 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         disk_unlock: system.disk_unlock(),
         host_info: system.host_info(),
         scanners: system.scanners(),
+        codec_pack: system.codec_pack(),
+        windows_compat: system.windows_compat(),
+        firmware: system.firmware(),
     }
 }
 
@@ -373,6 +392,15 @@ impl SystemService {
                 &mut readings.scanners.pending,
                 &mut readings.scanners.problem,
             ),
+            Part::CodecPack => (
+                &mut readings.codec_pack.pending,
+                &mut readings.codec_pack.problem,
+            ),
+            Part::WindowsCompat => (
+                &mut readings.windows_compat.pending,
+                &mut readings.windows_compat.problem,
+            ),
+            Part::Firmware => (&mut readings.firmware.pending, &mut readings.firmware.problem),
         }
     }
 
@@ -410,6 +438,17 @@ impl SystemService {
         }
         readings.host_info.pending = std::mem::take(&mut old.host_info.pending);
         readings.host_info.problem = old.host_info.problem.take();
+        readings.codec_pack.pending = std::mem::take(&mut old.codec_pack.pending);
+        readings.codec_pack.problem = old.codec_pack.problem.take();
+        readings.windows_compat.pending = std::mem::take(&mut old.windows_compat.pending);
+        readings.windows_compat.problem = old.windows_compat.problem.take();
+        readings.firmware.pending = std::mem::take(&mut old.firmware.pending);
+        readings.firmware.problem = old.firmware.problem.take();
+        readings.firmware.installing = readings
+            .firmware
+            .pending
+            .iter()
+            .any(|action| action == "install");
         readings.disk_unlock.pending = std::mem::take(&mut old.disk_unlock.pending);
         readings.disk_unlock.problem = old.disk_unlock.problem.take();
         if !readings.disk_unlock.scanned {
@@ -562,6 +601,32 @@ impl SystemService {
                 action,
                 result,
                 readings: Box::new(readings),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Make `change` on one of the extension-backed resources (its status follows a helper), or
+    /// read it again, landing the machine's answer and a fresh reading.
+    fn start_extension(&mut self, part: Part, action: &str, change: ExtensionChange) -> Started {
+        self.status(part).0.push(action.to_owned());
+        if part == Part::Firmware && action == "install" {
+            self.readings.firmware.installing = true;
+        }
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = match &change {
+                ExtensionChange::Codec(change) => system.change_codec(change),
+                ExtensionChange::Windows(change) => system.change_windows(change),
+                ExtensionChange::Firmware(change) => system.change_firmware(change),
+            };
+            Landed::Changed {
+                part,
+                action,
+                result,
+                readings: Box::new(read(system, is_live(live_active.as_ref()))),
                 live_power_mode: None,
             }
         });
@@ -821,6 +886,33 @@ pub fn printers_surface() -> tilo_resource::surface::Surface {
     >(PRINTERS, "Printers")
 }
 
+/// The `codec-pack` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn codec_pack_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::codec_pack::CodecPack,
+        tilo_system_resources::codec_pack::CodecPackAction,
+    >(CODEC_PACK, "Media codecs")
+}
+
+/// The `windows-compat` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn windows_compat_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::windows_compat::WindowsCompat,
+        tilo_system_resources::windows_compat::WindowsCompatAction,
+    >(WINDOWS_COMPAT, "Windows support")
+}
+
+/// The `firmware` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn firmware_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::firmware::Firmware,
+        tilo_system_resources::firmware::FirmwareAction,
+    >(FIRMWARE, "Firmware")
+}
+
 /// The `host-info` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
 pub fn host_info_surface() -> tilo_resource::surface::Surface {
@@ -1031,6 +1123,9 @@ impl Service for SystemService {
             disk_unlock::resource(&self.readings.disk_unlock),
             host_info::resource(&self.readings.host_info),
             scanners::resource(&self.readings.scanners),
+            codec_pack::resource(&self.readings.codec_pack),
+            windows_compat::resource(&self.readings.windows_compat),
+            firmware::resource(&self.readings.firmware),
         ]
     }
 
@@ -1047,6 +1142,9 @@ impl Service for SystemService {
             DISK_UNLOCK => Some(reading(&self.readings.disk_unlock)),
             HOST_INFO => Some(reading(&self.readings.host_info)),
             SCANNERS => Some(reading(&self.readings.scanners)),
+            CODEC_PACK => Some(reading(&self.readings.codec_pack)),
+            WINDOWS_COMPAT => Some(reading(&self.readings.windows_compat)),
+            FIRMWARE => Some(reading(&self.readings.firmware)),
             _ => None,
         }
     }
@@ -1312,6 +1410,54 @@ impl Service for SystemService {
                         Ok(self.start_reread(Part::HostInfo, id))
                     }
                 }
+            }
+            CODEC_PACK => {
+                let action = decode::<tilo_system_resources::codec_pack::CodecPackAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                let change = match action {
+                    tilo_system_resources::codec_pack::CodecPackAction::Install => {
+                        CodecChange::Install
+                    }
+                    tilo_system_resources::codec_pack::CodecPackAction::Remove => {
+                        CodecChange::Remove
+                    }
+                    tilo_system_resources::codec_pack::CodecPackAction::Refresh => {
+                        CodecChange::Refresh
+                    }
+                };
+                Ok(self.start_extension(Part::CodecPack, id, ExtensionChange::Codec(change)))
+            }
+            WINDOWS_COMPAT => {
+                let action = decode::<tilo_system_resources::windows_compat::WindowsCompatAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                let change = match action {
+                    tilo_system_resources::windows_compat::WindowsCompatAction::Install => {
+                        WindowsChange::Install
+                    }
+                    tilo_system_resources::windows_compat::WindowsCompatAction::Remove => {
+                        WindowsChange::Remove
+                    }
+                };
+                Ok(self.start_extension(Part::WindowsCompat, id, ExtensionChange::Windows(change)))
+            }
+            FIRMWARE => {
+                let action = decode::<tilo_system_resources::firmware::FirmwareAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                let change = match action {
+                    tilo_system_resources::firmware::FirmwareAction::Refresh => {
+                        FirmwareChange::Refresh
+                    }
+                    tilo_system_resources::firmware::FirmwareAction::Install => {
+                        FirmwareChange::Install
+                    }
+                };
+                Ok(self.start_extension(Part::Firmware, id, ExtensionChange::Firmware(change)))
             }
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,

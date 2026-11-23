@@ -103,6 +103,12 @@ view settings_window(s: Settings) {
                     }
                 }
                 ui.NavSection("System") {
+                    ui.NavItem("firmware", "Firmware", icon: .package) {
+                        on select: set(pane, "firmware")
+                    }
+                    ui.NavItem("compatibility", "Compatibility", icon: .puzzle) {
+                        on select: set(pane, "compatibility")
+                    }
                     ui.NavItem("disk_unlock", "Disk unlock", icon: .lock) {
                         on select: set(pane, "disk_unlock")
                     }
@@ -163,6 +169,10 @@ view settings_window(s: Settings) {
                         devices_pane()
                     } else if pane == "continuity" {
                         continuity_pane()
+                    } else if pane == "firmware" {
+                        firmware_pane()
+                    } else if pane == "compatibility" {
+                        compatibility_pane()
                     } else if pane == "disk_unlock" {
                         disk_unlock_pane()
                     } else if pane == "storage" {
@@ -225,6 +235,10 @@ fn pane_title(pane: Text) -> Text {
         "Devices and access"
     } else if pane == "continuity" {
         "Continuity"
+    } else if pane == "firmware" {
+        "Firmware"
+    } else if pane == "compatibility" {
+        "Compatibility"
     } else if pane == "disk_unlock" {
         "Disk unlock"
     } else if pane == "storage" {

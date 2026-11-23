@@ -9,20 +9,26 @@
 
 pub mod effects;
 pub mod model;
+pub mod codec_pack;
 pub mod disk_unlock;
+pub mod firmware;
 pub mod drives;
 pub mod host_info;
 pub mod printers;
 pub mod scanners;
 pub mod update;
 pub mod users;
+pub mod windows_compat;
 
+pub use codec_pack::CODEC_PACK;
 pub use disk_unlock::DISK_UNLOCK;
+pub use firmware::FIRMWARE;
 pub use drives::DRIVES;
 pub use host_info::HOST_INFO;
 pub use printers::PRINTERS;
 pub use scanners::SCANNERS;
 pub use users::USERS;
+pub use windows_compat::WINDOWS_COMPAT;
 
 /// The resources' ids.
 pub const POWER: &str = "power";
