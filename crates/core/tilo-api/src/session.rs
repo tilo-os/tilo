@@ -97,6 +97,10 @@ pub struct Reached {
     pub provider: Provider,
     /// The person, as the workspace names them.
     pub person: String,
+    /// The caller a key's run was admitted as, which every call of the session is made as, so the
+    /// workspace's grants and presence see the key rather than its person; `None` where the
+    /// desktop answers as its person themselves.
+    pub caller: Option<tilo_actions::remote::Caller>,
     /// Where its programs run: the device here starts each task's host; `None` where it runs
     /// none.
     pub tasks: Option<Arc<dyn tilo_mcp::TaskHosts>>,
@@ -472,15 +476,19 @@ impl Session {
                 let reached = here.enter(workspace, key).map_err(Refusal::Unavailable)?;
                 let provider =
                     Joined::provider(workspace, Some(reached.provider), self.account.clone());
-                let server = McpServer::for_person(provider, workspace.to_owned(), &reached.person)
-                    .with_work_group(tilo_actions::WorkGroup {
-                        id: format!("{}-{}", self.id, program.unwrap_or_default()),
-                        label: Some(self.label.clone()),
-                        kind: "api".into(),
-                        declared_id: None,
-                        session: None,
-                    })
-                    .with_task_hosts(reached.tasks);
+                let server = match reached.caller {
+                    Some(caller) => McpServer::admitted(provider, caller)
+                        .map_err(|error| Refusal::Unavailable(error.to_string()))?,
+                    None => McpServer::for_person(provider, workspace.to_owned(), &reached.person),
+                }
+                .with_work_group(tilo_actions::WorkGroup {
+                    id: format!("{}-{}", self.id, program.unwrap_or_default()),
+                    label: Some(self.label.clone()),
+                    kind: "api".into(),
+                    declared_id: None,
+                    session: None,
+                })
+                .with_task_hosts(reached.tasks);
                 let held = Arc::new(Served { server });
                 *entered = Some(Arc::clone(&held));
                 drop(entered);

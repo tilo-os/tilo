@@ -601,6 +601,7 @@ mod tests {
             Ok(crate::session::Reached {
                 provider,
                 person: "ada".into(),
+                caller: None,
                 tasks: None,
             })
         }
@@ -1090,6 +1091,7 @@ mod tests {
                     .then(|| Reached {
                         provider: Arc::new(Served(Arc::clone(&self.0))),
                         person: String::new(),
+                        caller: None,
                         tasks: None,
                     })
                     .ok_or_else(|| format!("{workspace} is not kept here"))

@@ -7,7 +7,8 @@
 //! What a key of the person's reaches through `/v1` besides actions: the one listing an agent's
 //! `tilo_ls` prints, read the same from the API; a program's key reaching the host directly, with
 //! no API server between them; a file larger than one request going up in pieces that resume;
-//! and a workspace answering what changed in it, search, and a run taken back whole.
+//! a workspace answering what changed in it, search, and a run taken back whole; and a key's read
+//! admitted as the key itself.
 
 use serde_json::{Value, json};
 
@@ -275,5 +276,19 @@ fn a_workspace_streams_changes_finds_and_undoes_runs() {
                 .expect("the stream stays open");
             seen.push_str(&String::from_utf8_lossy(&chunk));
         }
+    });
+}
+
+/// A key's read is the key's: it is admitted as the caller its certificate names, not as the
+/// person whose computer serves the workspace, so the workspace's grants decide it for the key's
+/// own device.
+#[test]
+fn a_keys_read_is_admitted_as_the_key() {
+    host::run(|host| async move {
+        let page = host.page_key("A page");
+        let (status, listed) = page
+            .get(&format!("/v1/workspaces/{}/resources", host.workspace()))
+            .await;
+        assert_eq!(status, 200, "a key's read is admitted as the key: {listed}");
     });
 }

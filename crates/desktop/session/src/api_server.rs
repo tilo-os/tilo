@@ -64,6 +64,7 @@ impl tilo_api::session::Here for Desktop {
         Ok(tilo_api::session::Reached {
             provider: Arc::new(api),
             person: self.services.person().to_owned(),
+            caller: None,
             tasks: person_tasks(&self.services).map(|tasks| tasks as Arc<dyn tilo_mcp::TaskHosts>),
         })
     }

@@ -106,6 +106,13 @@ fn a_registered_provider_answers_a_call_made_on_the_device() {
         let asked = probe.asked();
         assert_eq!(asked.len(), 1, "the provider was asked once: {asked:?}");
         assert_eq!(asked[0].target.provider, PROVIDER);
+        // The call is the key's, as its run was admitted, not the person's at this desktop: the
+        // workspace's grants and who is here see the key's own device.
+        let callers = probe.callers();
+        assert!(
+            callers[0].device_public_key().is_some(),
+            "the provider is called as the key's admitted run: {callers:?}"
+        );
     });
 }
 

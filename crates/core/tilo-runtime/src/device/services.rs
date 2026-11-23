@@ -1448,10 +1448,11 @@ impl tilo_api::session::Here for Daemon {
         let caller = provider
             .admission_caller()
             .ok_or_else(|| "the key's run was not admitted".to_owned())?;
-        let tasks = self.task_hosts(provider.clone(), caller, &self.actor);
+        let tasks = self.task_hosts(provider.clone(), caller.clone(), &self.actor);
         Ok(tilo_api::session::Reached {
             provider: Arc::new(provider),
             person: self.actor.clone(),
+            caller: Some(caller),
             tasks,
         })
     }
