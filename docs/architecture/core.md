@@ -713,9 +713,9 @@ The copies:
   windowless call of that app, and stopped when idle. It is how the system
   runs app code, not an app being open. Idle means no call or window for a
   while, not the last window closing, and a spare sandbox started ahead
-  becomes the next app's process, so an open starts no process. A window
-  runs no app code: one window process per workspace, started with the
-  session, draws every hosted app's windows, and the compositor names a
+  becomes the next app's process, so an open starts no process. One app's
+  windows never share a process with another app's: a spare started ahead
+  becomes that app's window process too, and the compositor names a
   window's app from the instance the session gave it, never from the
   process. `app-keeper` stays only for programs that are not Tilo
   apps.
