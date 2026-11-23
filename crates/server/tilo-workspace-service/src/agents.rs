@@ -82,7 +82,6 @@ pub mod telling;
 mod across;
 mod answers;
 mod asking;
-mod asks;
 mod calendar_connect;
 mod calendars;
 mod carried;
@@ -94,7 +93,6 @@ mod instructions;
 mod issue_work;
 mod learned;
 mod mail;
-mod mail_connect;
 mod narration;
 mod shares;
 mod steps;
@@ -116,7 +114,6 @@ mod turn_pages;
 // The Browser windows a host places, as a turn reaches them.
 pub mod windows;
 
-pub use asks::{Answered, Carried, Carries, ServerAsk};
 pub use engine_actions::EngineActions;
 pub use sub_agents::Line;
 /// The engines, and a server on this machine that answers as they and the pages do, for a
@@ -885,8 +882,6 @@ pub struct ServerAgents {
     going: Arc<going::Turns>,
     /// The events this host runs for its people, which a turn's tools reach for its person.
     events: Option<WorkspaceEvents>,
-    /// What carries out the answers to what code of this server asked.
-    carriers: asks::Carriers,
     /// What the people's assistants find to do on their own, which a turn's tools reach too.
     initiative: Option<Initiative>,
     /// The Browser windows this server places for its workspaces, where it places any: a
@@ -944,7 +939,7 @@ impl ServerAgents {
     ) -> Self {
         // The device takes the turns of its workspaces' agents that are its own from now on.
         workspaces.run_agents(Arc::new(EngineKeys(roster.clone())));
-        let agents = Self {
+        Self {
             workspaces,
             actions,
             roster,
@@ -952,22 +947,12 @@ impl ServerAgents {
             language: None,
             going: Arc::default(),
             events: None,
-            carriers: Arc::default(),
             initiative: None,
             browsers: None,
             placed: None,
             #[cfg(any(test, feature = "fixture-servers"))]
             web_routes: None,
-        };
-        // What a person answers about a connection of theirs is carried out from the start.
-        agents.carries(
-            connections::WORD,
-            connections::answers(&agents.workspaces, &agents.roster),
-        );
-        // What a turn asks its person is put to them in its conversation.
-        agents.ask_in_conversations();
-        agents.carry_sends();
-        agents
+        }
     }
 
     /// Say the agents' own words (why no model answered, what a provider's failure was) in the
@@ -1186,9 +1171,6 @@ impl ServerAgents {
     /// # Errors
     /// What the workspace owes could not be read.
     pub async fn read_look(&self, workspace: &str) -> Result<LookRead, String> {
-        // What its people answered about what its agents asked them first
-        // (general asks, vault uses, calendar passwords and mail passwords).
-        Box::pin(self.settle_asks(workspace)).await;
         // Taken before anything is read: a turn that begins or goes on from here may answer
         // something newer than what this look reads.
         let reading = self.going.reading();
@@ -1243,7 +1225,6 @@ impl ServerAgents {
                         {
                             tracing::warn!(%workspace, agent = %ended.0, %error, "a stopped turn of a host agent was not ended");
                         }
-                        agents.take_back_asked(&workspace, &turn, &turn.ask).await;
                         drop(held);
                         agents.look_after(workspace, ended).await;
                     });
@@ -1383,7 +1364,6 @@ impl ServerAgents {
     async fn asks_at(&self, workspace: &str, now_ms: i64) -> Result<Asks, String> {
         let agents = self.agents(workspace).await?;
         if agents.is_empty() {
-            self.workspaces.note_waiting(workspace, Vec::new());
             return Ok(Asks::default());
         }
         let mut routes = self
@@ -1444,14 +1424,10 @@ impl ServerAgents {
         routes: &[(String, String)],
     ) -> Result<Asks, String> {
         let mut asks = Asks::default();
-        // The questions its agents asked that wait for their person, read
-        // from the same parts.
-        let mut waiting = Vec::new();
         // The answers that owe their askers a turn, and the wakes written already.
         let mut answered = Vec::new();
         let mut woken = std::collections::BTreeSet::new();
         let Some(chat) = self.read::<chat::chat::Chat>(workspace, CHAT, "").await? else {
-            self.workspaces.note_waiting(workspace, waiting);
             return Ok(asks);
         };
         let mut team = self.team(workspace, agents).await?;
@@ -1468,7 +1444,6 @@ impl ServerAgents {
             else {
                 continue;
             };
-            waiting.extend(self::asks::waiting_in(workspace, document, &part, agents));
             answered.extend(answers::answered_in(&part, agents));
             woken.extend(answers::woken_in(&part));
             for summons in chat::summons::summonses(&chat, &part) {
@@ -1539,7 +1514,6 @@ impl ServerAgents {
             }
             team.read(document, &chat, &part);
         }
-        self.workspaces.note_waiting(workspace, waiting);
         answered.retain(|wake| !woken.contains(&wake.key));
         asks.answered = answered;
         team.settle(&mut asks);
@@ -1714,7 +1688,13 @@ impl ServerAgents {
         // What the turn's tools reach beside the workspace's resources, each a provider of the
         // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
         // Beside that, the services its person connected, by this server's own entry for a turn.
-        let own = connections::of(self.as_asker(), turn, &scope.reply(turn), workspace_id).await;
+        let own = connections::of(
+            self.workspaces.clone(),
+            turn,
+            &scope.reply(turn),
+            workspace_id,
+        )
+        .await;
         scope.provider = scope.provider.answering(own);
         let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
         let mail = mail::TurnMail::for_turn(self, turn, &scope.reply(turn)).await;
@@ -1726,15 +1706,11 @@ impl ServerAgents {
             .answering(uses)
             .answering(mail)
             .answering(calendars);
-        // What connects a calendar its person tells it of: they are asked for its password
-        // where no agent reads it.
+        // What connects a calendar or a mail account its person tells it of: they are asked
+        // for its password where no agent reads it.
         let connects =
             calendar_connect::TurnConnects::for_turn(self, turn, &scope.reply(turn)).await;
         scope.provider = scope.provider.answering(connects);
-        // What signs a mail account in from its address alone: the same asking, for mail.
-        let signs_in =
-            mail_connect::TurnMailConnects::for_turn(self, turn, &scope.reply(turn)).await;
-        scope.provider = scope.provider.answering(signs_in);
         // Its open of Browser, whose window this server places where it has a machine for one.
         let browser =
             turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));
@@ -1961,10 +1937,6 @@ impl ServerAgents {
             &outcome,
         )
         .await;
-        if matches!(outcome, Outcome::Cancelled) {
-            // Its person stopped it: what it asked them and still waits is taken back.
-            self.take_back_asked(workspace, &turn, &began).await;
-        }
         self.sub_ended(&scope, &turn, &outcome, from_starter).await;
         // The answer is finished for its person, its words being whole. What it asks into its
         // conversation's summary takes a model's time: it is written once this turn's place

@@ -239,7 +239,7 @@ pub(super) fn answer_of(value: &Value) -> Value {
                 }
             }
         }
-        "failed" if !says_put(value) => {
+        "failed" => {
             answer.insert("status".into(), "failed".into());
             let code = value
                 .pointer("/update/error/code")
@@ -272,6 +272,14 @@ pub(super) fn answer_of(value: &Value) -> Value {
                 "error".into(),
                 json!({"code":"cancelled","message":message}),
             );
+        }
+        _ if says_asked(value) => {
+            // Waits in its asked record for the person's answer: no failure, and nothing
+            // runs until they give it.
+            answer.insert("status".into(), "asked".into());
+            if let Some(record) = asked_record(value) {
+                answer.insert("record".into(), record.into());
+            }
         }
         _ => {
             // Still running: the invocation id follows it, and the same call
@@ -348,57 +356,42 @@ pub(super) fn actions_named(actions: &[ActionDescriptor]) -> Vec<Value> {
     actions.iter().map(action_named).collect()
 }
 
-/// What an invocation whose person is asked says of it where its provider said no more.
+/// What an invocation whose person is asked says of it.
 const PERSON_ASKED: &str = "Its person is asked to allow this. Nothing happened yet.";
 /// What whoever made such a call does meanwhile.
 const ASKED_MEANWHILE: &str = "Go on with what does not need it, tell them it waits for their \
      answer, and do not make this call again.";
 
-/// What whoever made a call does meanwhile whose provider ended it where it asked.
-const ASKED_GO_ON: &str = "Go on with what does not need it.";
-
-/// Whether the answer `value` says that its invocation's person is asked to allow it: a
-/// progress whose phase is the protocol's own word for a confirmation that is required, or
-/// an end with nothing done that says a question was put to them ([`says_put`]).
+/// Whether the answer `value` says that its invocation waits in its asked record for its
+/// person's answer: a progress of the asked phase.
 fn says_asked(value: &Value) -> bool {
-    (value.pointer("/update/state").and_then(Value::as_str) == Some("progress")
+    value.pointer("/update/state").and_then(Value::as_str) == Some("progress")
         && value.pointer("/update/phase").and_then(Value::as_str)
-            == Some(tilo_actions::remote::CONFIRMATION_REQUIRED_CODE))
-        || says_put(value)
+            == Some(tilo_actions::remote::asked::ASKED_PHASE)
 }
 
-/// Whether the answer `value` is an invocation that ended with nothing done because its
-/// person is asked about it first and answers in their own time (in the conversation, say):
-/// its failure carries the detail for that, whatever its code.
-fn says_put(value: &Value) -> bool {
-    value.pointer("/update/state").and_then(Value::as_str) == Some("failed")
-        && tilo_actions::remote::person_asking::says_asked(value.pointer("/update/error/details"))
-}
-
-/// What an agent reads of an invocation whose person is asked to allow it: where they are
-/// asked, what to do meanwhile, and the id that says how it went.
-fn asked_words(value: &Value) -> String {
-    // Ended where it asked: its provider's own sentence says where its person is asked and
-    // what follows their answer, and nothing of it is under way to ask after.
-    if let Some(said) = value
-        .pointer("/update/error/message")
+/// The asked record the answer `value` waits in (`<workspace>/<record>`).
+fn asked_record(value: &Value) -> Option<&str> {
+    value
+        .pointer("/update/message")
         .and_then(Value::as_str)
-    {
-        return format!("asked: {} {ASKED_GO_ON}", said.trim());
-    }
+        .map(str::trim)
+        .filter(|record| !record.is_empty())
+}
+
+/// What an agent reads of an invocation whose person is asked to allow it: the record it
+/// waits in, what to do meanwhile, and the id that says how it went.
+fn asked_words(value: &Value) -> String {
     let id = value
         .get("invocation_id")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let said = value
-        .pointer("/update/message")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|said| !said.is_empty())
-        .unwrap_or(PERSON_ASKED);
+    let record = asked_record(value)
+        .map(|record| format!(" It waits in {record}."))
+        .unwrap_or_default();
     format!(
-        "asked: {said} {ASKED_MEANWHILE}\ntilo_status {{\"invocation_id\":\"{id}\"}} says how it \
-         went"
+        "asked: {PERSON_ASKED}{record} {ASKED_MEANWHILE}\ntilo_status {{\"invocation_id\":\"{id}\"}} \
+         says how it went"
     )
 }
 
@@ -439,7 +432,7 @@ pub(super) fn outcome(value: &Value) -> Reply {
             text
         }
         // Its person is asked to allow it, which is no failure and nothing to wait for.
-        "progress" | "failed" if asked => asked_words(value),
+        "progress" if asked => asked_words(value),
         "failed" => {
             let code = value
                 .pointer("/update/error/code")

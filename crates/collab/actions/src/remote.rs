@@ -146,7 +146,7 @@ pub use test_provider::TestProvider;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
 use crate::api::ActionAddress;
-use crate::context::{ActionContext, ActionFacet};
+use crate::context::ActionContext;
 use crate::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::params::ARGUMENTS_JSON_PREFIX;
 
@@ -2155,6 +2155,36 @@ impl<T> InvocationLog<T> {
             },
         );
         Ok(Reservation::Reserved)
+    }
+
+    /// Admit `request` again under its id where its person approved the asked record it waits
+    /// in: the entry `caller` admitted for the same target and arguments, whose handle `waits`
+    /// says is still asked, is reserved again carrying their answer, and the caller completes or
+    /// abandons it as after [`Self::reserve`]. False where nothing of that waits, which a reserve
+    /// then refuses as another invocation.
+    pub fn readmit(
+        &mut self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        waits: impl FnOnce(&T) -> bool,
+    ) -> bool {
+        let Some(entry) = self.entries.get_mut(&request.invocation) else {
+            return false;
+        };
+        let again = request.approval().is_some()
+            && caller.continues(&entry.caller)
+            && entry.request.target == request.target
+            && entry.request.argument == request.argument
+            && entry.handle.as_ref().is_some_and(waits);
+        if again {
+            entry.request = InvokeRequest {
+                wait_ms: None,
+                appearance: None,
+                ..request.clone()
+            };
+            entry.handle = None;
+        }
+        again
     }
 
     /// Record the provider's handle for a reserved invocation.

@@ -16,8 +16,7 @@ use iroh_base::EndpointAddr;
 use tilo_server_protocol::auth::{self, Hello, HelloAck};
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_protocol::certify::{
-    ApproverDecision, ApproverRequest, CERTIFY_ALPN, ConfirmationAnswer, PendingCertification,
-    PendingConfirmation, PendingDelegate,
+    ApproverDecision, ApproverRequest, CERTIFY_ALPN, PendingCertification, PendingDelegate,
 };
 use tilo_server_protocol::certify::{
     ApproverReply, CertifyOpen, CertifyReply, MAX_CERTIFY_FRAME_BYTES, MemberApproval,
@@ -86,7 +85,7 @@ async fn read<T: serde::de::DeserializeOwned>(
 async fn read_approver_reply(
     recv: &mut (impl AsyncRead + Unpin),
 ) -> Result<ApproverReply, CertifyError> {
-    ApproverReply::decode(&read_frame(recv, MAX_CERTIFY_FRAME_BYTES).await?)
+    postcard::from_bytes(&read_frame(recv, MAX_CERTIFY_FRAME_BYTES).await?)
         .map_err(|error| codec(&error))
 }
 
@@ -273,7 +272,6 @@ impl Approver {
             ApproverReply::Refused { reason } => Err(codec(&reason)),
             ApproverReply::Decided
             | ApproverReply::DelegateProposals(_)
-            | ApproverReply::Confirmations(_)
             | ApproverReply::PushKey(_) => Err(codec(&"unexpected approver reply")),
         }
     }
@@ -284,34 +282,10 @@ impl Approver {
         match self.call(&ApproverRequest::DelegateProposals).await? {
             ApproverReply::DelegateProposals(pending) => Ok(pending),
             ApproverReply::Refused { reason } => Err(codec(&reason)),
-            ApproverReply::Decided
-            | ApproverReply::Pending(_)
-            | ApproverReply::Confirmations(_)
-            | ApproverReply::PushKey(_) => Err(codec(&"unexpected approver reply")),
+            ApproverReply::Decided | ApproverReply::Pending(_) | ApproverReply::PushKey(_) => {
+                Err(codec(&"unexpected approver reply"))
+            }
         }
-    }
-
-    /// Every question an agent of the server is waiting on: shown as the
-    /// server's confirmation sheet and answered with [`Self::answer`].
-    pub async fn list_confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
-        match self.call(&ApproverRequest::Confirmations).await? {
-            ApproverReply::Confirmations(asked) => Ok(asked),
-            ApproverReply::Refused { reason } => Err(codec(&reason)),
-            ApproverReply::Decided
-            | ApproverReply::Pending(_)
-            | ApproverReply::DelegateProposals(_)
-            | ApproverReply::PushKey(_) => Err(codec(&"unexpected approver reply")),
-        }
-    }
-
-    /// Answer question `id` for its one invocation. `Ok(Refused)` means
-    /// the question is gone (answered, expired or withdrawn).
-    pub async fn answer(
-        &mut self,
-        id: [u8; 32],
-        answer: ConfirmationAnswer,
-    ) -> Result<ApproverReply, CertifyError> {
-        self.call(&ApproverRequest::Answer { id, answer }).await
     }
 
     /// Answer one request. `Ok(Refused)` means the server did not accept the

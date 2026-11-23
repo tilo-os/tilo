@@ -14,29 +14,24 @@
 //!   at an address or proposes one only where a rule names that action;
 //! - listing, looking, reading a connection's commands again and calling a
 //!   command that only reads are done at once;
-//! - a command that changes something is called unasked only where its
-//!   person let that command of that connection stand for this agent, as
-//!   the service defined it then. Otherwise nothing
-//!   is called: the person is asked ([`Taken::Asks`]), shown the service by
-//!   the site its address names, the command and its arguments whole;
-//! - a connection is never added by a turn. An agent proposes one, and its
-//!   person is asked.
-//!
-//! Whoever carries the turn out puts the question to the person and hands
-//! their own answer back ([`Workspaces::connection_answered`]). What is done
-//! then is what was kept when they were asked, for the person and the agent
-//! that asked, held to every rule above again.
+//! - a command that changes something is called unasked only where a grant
+//!   of the workspace's lets this agent call that command of that connection,
+//!   as the service defines it now. Otherwise it waits for the person's yes,
+//!   shown the service by the site its address names, the command and its
+//!   arguments whole, and their approve admits the same call again, held to
+//!   every rule above once more;
+//! - a connection is never added by a turn alone. An agent proposes one, and
+//!   it is added once its person approved the proposal.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
 use tilo_action_policy::{Answer, Level, Segment, TreePath};
-use tilo_actions::remote::person_asking::{Asked, Words};
+use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::person_connections::{
-    self, AskedCall, Asks, AtAddress, Call, CalledAt, Card, Command, Connection, Connections,
-    Leave, Named, Proposed, Taken,
+    self, AtAddress, Call, Command, Connection, Connections, Leave, Named,
 };
 use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -51,7 +46,6 @@ use super::{AGENT_VERBS, CONNECTIONS, Refused, address_params, argument};
 use crate::connections::{self, Calling, Reach};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
-use crate::workspaces::person_asking::kept_asks::KeptAsk;
 use crate::workspaces::workspace_stores::Store;
 
 /// The most arguments a question shows whole, as JSON: a call with more is
@@ -64,16 +58,6 @@ const MAX_ARGUMENT_NAME_BYTES: usize = 64;
 
 const TOO_LARGE_TO_ASK: &str = "Those arguments are larger than a question shows whole, so your person cannot be asked about this call";
 const CONNECTED: &str = "That service is connected already: it is in the list of connections";
-/// What an agent that proposed a connection is told.
-const PROPOSED: &str = "Your person is asked in your conversation with them whether to connect this service. Nothing is connected before they say yes there: tell them it waits for their answer.";
-/// What an answer nothing waits under any more is refused with.
-const NO_LONGER_WAITS: &str = "Nothing waits for that answer any more";
-/// What an answer is refused with where the turn it would be carried out
-/// for is not the asking agent's own for its person.
-const NOT_THEIRS: &str =
-    "That question is not this agent's to its own person any more, so nothing was done";
-const NOT_NAMED: &str =
-    "The agent that asked is no longer let near that connection, so nothing was called";
 
 /// Proposing a connection: its person is asked, and nothing is added by the
 /// call.
@@ -85,55 +69,25 @@ const PROPOSES: Verb = Verb {
     params: address_params,
 };
 
-/// What a question about a connection shows beside its words, as the
-/// question's detail spells it: a call, or the card of a service.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum Shown {
-    Call(AskedCall),
-    Connection(Card),
-}
-
-/// What this server keeps while a person is asked about a connection.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Waits {
-    shown: Shown,
-    /// The words the question was put with.
-    words: String,
-    /// What named the command's definition when its person was asked; empty
-    /// for a proposal.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    digest: String,
-}
-
 fn refused(reason: String) -> Refused {
     Refused::Refused { reason }
 }
 
-fn done<T: Serialize>(answered: T) -> Result<Taken, Refused> {
-    serde_json::to_value(answered)
-        .map(Taken::Done)
-        .map_err(|error| refused(error.to_string()))
+fn done<T: Serialize>(answered: T) -> Result<Value, Refused> {
+    serde_json::to_value(answered).map_err(|error| refused(error.to_string()))
 }
 
-/// What `waits` asks the person of `using`.
-fn asks(
-    using: &AskedTurn,
-    waits: &Waits,
-    always: Option<Asked>,
-    named: Words,
-    answers: Option<Value>,
-) -> Result<Taken, Refused> {
-    let kept = serde_json::to_value(waits).map_err(|error| refused(error.to_string()))?;
-    Ok(Taken::Asks(Box::new(Asks {
-        person: using.person,
-        words: waits.words.clone(),
-        kept,
-        always,
-        named,
-        answers,
-    })))
+/// Where a grant that lets `using`'s agent call the command `name` of `connection`, as the
+/// service defines it now (`digest`), stands in its workspace's policy.
+fn call_node(using: &AskedTurn, connection: &str, (name, digest): (&str, &str)) -> TreePath {
+    TreePath::workspace(&using.workspace)
+        .app(person_connections::PROVIDER)
+        .kind(person_connections::COMMAND_KIND)
+        .resource(format!(
+            "{connection}/{}",
+            person_connections::command_resource(name, digest)
+        ))
+        .action(person_connections::CALL)
 }
 
 /// The arguments `request` carries, whole.
@@ -334,7 +288,7 @@ impl Workspaces {
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
-    ) -> Result<Taken, Refused> {
+    ) -> Result<Value, Refused> {
         let using = self.asked_turn(turn).await?;
         let target = &request.target;
         if target.provider != person_connections::PROVIDER {
@@ -359,7 +313,7 @@ impl Workspaces {
                 command: action.to_owned(),
                 arguments: arguments_of(request),
             };
-            return self.call_for_turn(turn, &using, at, call).await;
+            return self.call_for_turn((turn, request), &using, at, call).await;
         }
         if resource != person_connections::RESOURCE {
             return Err(Refused::UnknownAction);
@@ -410,26 +364,27 @@ impl Workspaces {
                     request,
                     "a call names its connection, a command of it and the command's arguments",
                 )?;
-                self.call_for_turn(turn, &using, at, call).await
+                self.call_for_turn((turn, request), &using, at, call).await
             }
             person_connections::PROPOSE => {
                 narrowed(target)?;
                 let proposed: AtAddress = argument(request, by_address)?;
-                Self::propose_for_turn(&using, at, &proposed.address).await
+                Self::propose_for_turn((turn, request), at, &proposed.address).await
             }
             _ => Err(Refused::UnknownAction),
         }
     }
 
-    /// Call the command `call` names for the turn of `using`, or answer
-    /// that its person is asked first.
+    /// Call the command `call` names for the turn of `using`, where it only reads, a grant
+    /// lets this agent call it, or its person approved this very call; otherwise it waits for
+    /// their yes.
     async fn call_for_turn(
         &self,
-        turn: &HostedTurn<'_>,
+        (turn, request): (&HostedTurn<'_>, &InvokeRequest),
         using: &AskedTurn,
         (root, reach): (&Path, &Reach),
         call: Call,
-    ) -> Result<Taken, Refused> {
+    ) -> Result<Value, Refused> {
         if !names(turn, &using.workspace, &call.connection) {
             return Err(Refused::NotPermitted);
         }
@@ -443,78 +398,46 @@ impl Workspaces {
                     .map_err(refused)?,
             );
         }
-        let always = person_connections::always_call(
-            &using.workspace,
-            &using.agent,
-            &call.connection,
-            (&call.command, &found.digest),
-        );
-        // What its person let stand is read at every call, so a permission
-        // taken back covers nothing from that moment.
-        if self
-            .governed_permission_stands(&using.person, &always)
-            .await
-            .map_err(refused)?
-        {
-            let allowed = Calling::Allowed {
-                by: &using.name,
-                leave: Leave::Always,
-                digest: &found.digest,
-            };
-            let called = connections::call(
-                (root, self.vault_at(&using.workspace)),
-                reach,
-                allowed,
-                call,
-            )
-            .await
-            .map_err(refused)?;
-            // What let it through is counted where its person reads it.
-            if let Some(permission) = self.stands(&using.person, &always) {
-                self.permission_used(&using.person, &permission);
+        // What a grant lets stand is read at every call, so a grant taken back covers nothing
+        // from that moment.
+        let node = call_node(using, &call.connection, (&call.command, &found.digest));
+        let leave = if self.granted(&using.workspace, &using.agent, &node).await {
+            Leave::Always
+        } else {
+            // What a question could not show whole is refused before anybody is asked.
+            let sent = serde_json::to_string(&call.arguments)
+                .map_err(|error| refused(error.to_string()))?;
+            if sent.len() > MAX_ASKED_BYTES {
+                return Err(refused(TOO_LARGE_TO_ASK.to_owned()));
             }
-            return done(called);
-        }
-        // What a question could not show whole is refused before anybody
-        // is asked.
-        let sent =
-            serde_json::to_string(&call.arguments).map_err(|error| refused(error.to_string()))?;
-        if sent.len() > MAX_ASKED_BYTES {
-            return Err(refused(TOO_LARGE_TO_ASK.to_owned()));
-        }
-        let words = format!(
-            "May I call {} at {}? It changes something there. It is sent these arguments: {sent}",
-            call.command, found.site
-        );
-        let named = Words {
-            action: "Call a command of a connected service".to_owned(),
-            on: format!("{} at {}", call.command, found.site),
-            place: String::new(),
+            crate::workspaces::asking::approved_or_asks(request, || AskedFacts {
+                on: Some(format!("{} at {}", call.command, found.site)),
+                facts: vec![Fact::new("Arguments", sent)],
+                verb: "call".to_owned(),
+                plural: Some("commands".to_owned()),
+                ..AskedFacts::by(crate::workspaces::asking::asked_by(turn.caller))
+            })?;
+            Leave::Once
         };
-        let shown = Shown::Call(AskedCall {
-            connection: CalledAt {
-                id: call.connection,
-                address: found.address,
-                name: found.name,
-            },
-            command: call.command,
-            arguments: call.arguments,
-        });
-        let waits = Waits {
-            shown,
-            words,
-            digest: found.digest,
+        let allowed = Calling::Allowed {
+            by: &using.name,
+            leave,
+            digest: &found.digest,
         };
-        asks(using, &waits, Some(always), named, None)
+        done(
+            connections::call((root, self.vault_at(&using.workspace)), reach, allowed, call)
+                .await
+                .map_err(refused)?,
+        )
     }
 
-    /// Look at the service at `address` and answer what the person of
-    /// `using` is asked about connecting it. Nothing is kept.
+    /// Connect the service at `address` for `turn`'s person once they approved the proposal
+    /// `request` makes; until then it waits for their yes, shown the service.
     async fn propose_for_turn(
-        using: &AskedTurn,
+        (turn, request): (&HostedTurn<'_>, &InvokeRequest),
         (root, reach): (&Path, &Reach),
         address: &str,
-    ) -> Result<Taken, Refused> {
+    ) -> Result<Value, Refused> {
         let looked = connections::look(root, reach, address)
             .await
             .map_err(refused)?;
@@ -527,47 +450,34 @@ impl Workspaces {
             return Err(refused(CONNECTED.to_owned()));
         }
         let site = connections::site(reach, &looked.address).map_err(refused)?;
-        let card = Card {
-            address: looked.address,
-            name: looked.name,
-            needs_sign_in: looked.needs_sign_in,
-            sign_in_at: looked.sign_in_at,
-            commands: looked
-                .commands
-                .as_ref()
-                .map(|commands| u32::try_from(commands.len()).unwrap_or(u32::MAX)),
-        };
-        // The system's words alone: what the service calls itself is on
-        // the card, as its own word.
-        let mut words = format!("Connect the service at {site}?");
-        match (card.commands, &card.sign_in_at) {
-            (Some(commands), _) => {
-                let _ = write!(words, " It lists {commands} commands.");
+        crate::workspaces::asking::approved_or_asks(request, || {
+            // The system's words alone: what the service calls itself is its own word.
+            let mut facts = vec![Fact::new("Address", looked.address.clone())];
+            if !looked.name.is_empty() {
+                facts.push(Fact::new("It calls itself", looked.name.clone()));
             }
-            (None, Some(issuer)) if card.needs_sign_in => {
-                let _ = write!(
-                    words,
-                    " It wants you to sign in at {issuer} before it lists its commands."
-                );
+            match (&looked.commands, &looked.sign_in_at) {
+                (Some(commands), _) => {
+                    facts.push(Fact::new("Commands", commands.len().to_string()));
+                }
+                (None, Some(issuer)) if looked.needs_sign_in => {
+                    facts.push(Fact::new("Sign in at", issuer.clone()));
+                }
+                (None, _) => {}
             }
-            (None, _) => words.push_str(" It wants you to sign in before it lists its commands."),
-        }
-        let named = Words {
-            action: "Connect a service".to_owned(),
-            on: site,
-            place: String::new(),
-        };
-        let answers = serde_json::to_value(Proposed {
-            connection: card.clone(),
-            told: PROPOSED.to_owned(),
-        })
-        .map_err(|error| refused(error.to_string()))?;
-        let waits = Waits {
-            shown: Shown::Connection(card),
-            words,
-            digest: String::new(),
-        };
-        asks(using, &waits, None, named, Some(answers))
+            AskedFacts {
+                on: Some(site),
+                facts,
+                verb: "connect".to_owned(),
+                ..AskedFacts::by(crate::workspaces::asking::asked_by(turn.caller))
+            }
+        })?;
+        // Their own yes is what adds it: the address looked at now.
+        done(
+            connections::add(root, reach, &looked.address)
+                .await
+                .map_err(refused)?,
+        )
     }
 
     /// What `turn` finds of its person's connections in its listing: what an
@@ -616,98 +526,5 @@ impl Workspaces {
             );
         }
         rows
-    }
-
-    /// Carry out the person's answer to the question about `ask`, which
-    /// this server kept for a connection: `leave` is how they allowed it,
-    /// `None` where they did not. `turn` is the asking agent's turn as this
-    /// server reads it now.
-    ///
-    /// The caller read the answer from what the person wrote themselves, to
-    /// a question this server put, and claimed the ask first, so an answer
-    /// is carried out once. What is done is what was kept under the ask: the
-    /// call as it was shown, sent only while the service still defines the
-    /// command as it did then, or the connection that was proposed, added
-    /// as its person's own.
-    ///
-    /// # Errors
-    /// Nothing of a connection is kept under that ask, the turn is not the
-    /// asking agent's own for the person asked, the agent is no longer let
-    /// near the connection, or the connections refuse it, in their own
-    /// words.
-    pub async fn connection_answered(
-        &self,
-        turn: &HostedTurn<'_>,
-        ask: &KeptAsk,
-        leave: Option<Leave>,
-    ) -> Result<Option<Value>, String> {
-        if ask.carrier != person_connections::CARRIER {
-            return Err(NO_LONGER_WAITS.to_owned());
-        }
-        let waits: Waits =
-            serde_json::from_value(ask.kept.clone()).map_err(|_| NO_LONGER_WAITS.to_owned())?;
-        let using = self
-            .asked_turn(turn)
-            .await
-            .map_err(|_| NOT_THEIRS.to_owned())?;
-        if hex::encode(using.person) != ask.person
-            || using.agent != ask.agent
-            || using.workspace != ask.workspace
-        {
-            return Err(NOT_THEIRS.to_owned());
-        }
-        let Some(leave) = leave.filter(|leave| matches!(leave, Leave::Once | Leave::Always)) else {
-            return Ok(None);
-        };
-        let root = self.workspace_root(&using.workspace);
-        let reach = self.connections_reach();
-        match waits.shown {
-            Shown::Call(asked) => {
-                if !names(turn, &using.workspace, &asked.connection.id) {
-                    return Err(NOT_NAMED.to_owned());
-                }
-                let allowed = Calling::Allowed {
-                    by: &using.name,
-                    leave,
-                    digest: &waits.digest,
-                };
-                let call = Call {
-                    connection: asked.connection.id,
-                    command: asked.command,
-                    arguments: asked.arguments,
-                };
-                let expected = person_connections::always_call(
-                    &using.workspace,
-                    &using.agent,
-                    &call.connection,
-                    (&call.command, &waits.digest),
-                );
-                if leave == Leave::Always {
-                    if ask.always.as_ref() != Some(&expected) {
-                        return Err(NO_LONGER_WAITS.to_owned());
-                    }
-                    self.grant_always_in_workspace(&using.person, &expected)
-                        .await?;
-                } else {
-                    self.governed_permission_stands(&using.person, &expected)
-                        .await?;
-                }
-                let called = connections::call(
-                    (&root, self.vault_at(&using.workspace)),
-                    &reach,
-                    allowed,
-                    call,
-                )
-                .await?;
-                serde_json::to_value(called)
-                    .map(Some)
-                    .map_err(|err| err.to_string())
-            }
-            // Their own yes is what adds it: the address this server looked
-            // at when it asked, read again now.
-            Shown::Connection(card) => connections::add(&root, &reach, &card.address)
-                .await
-                .map(|_| None),
-        }
     }
 }

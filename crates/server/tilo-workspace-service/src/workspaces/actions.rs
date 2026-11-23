@@ -57,7 +57,7 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
     WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
     WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, formats,
-    mcp_server, person_accounts, person_asking, person_connections, person_models, person_telling,
+    asked, mcp_server, person_accounts, person_connections, person_models, person_telling,
     person_vault, server_account, workspace_governance_address, workspace_governance_child,
     workspace_governance_operation, workspace_governance_resource, workspace_member,
     workspace_person,
@@ -1752,13 +1752,15 @@ impl Workspaces {
             }
             // What the person keeps to sign in with, in that same vault:
             // nothing of it is read back, and no agent asks.
-            // The same holds for what their agents no longer ask them, in
-            // the same store: read and taken back by the person alone, and
-            // written by no request.
             #[cfg(not(target_arch = "wasm32"))]
-            (person_vault::PROVIDER | person_asking::PROVIDER, _) => {
-                self.person_alone_invoke(workspace_id, caller, certificate, request)
+            (person_vault::PROVIDER, _) => {
+                self.person_vault_invoke(workspace_id, caller, certificate, request)
                     .await
+            }
+            // The calls that wait for the person's yes, read from their asked records.
+            #[cfg(not(target_arch = "wasm32"))]
+            (asked::PROVIDER, _) => {
+                self.asking_invoke(workspace_id, caller, certificate, request)
             }
             // The formats and zone the person reads dates in: theirs alone,
             // kept in their own workspace on their own devices.
@@ -1931,7 +1933,7 @@ impl Workspaces {
                 caller,
                 &device,
                 &verb.operation(GOVERNANCE),
-                &arguments_of(request),
+                (&arguments_of(request), request.approval().is_some()),
             )
             .await?;
         }
@@ -3046,7 +3048,6 @@ fn caller_wait(request: &InvokeRequest) -> Option<std::time::Duration> {
             std::time::Duration::from_millis(u64::from(wait_ms))
                 .min(tilo_actions::remote::MAX_REMOTE_WAIT)
         })
-        .or_else(|| super::unattended::asks_first(request))
 }
 
 impl ActionProvider for InWorkspace {
@@ -3138,6 +3139,7 @@ impl ActionProvider for InWorkspace {
                         Store::MAIL,
                         person_accounts::WATCH,
                         tilo_action_policy::ActionKind::Read,
+ request,
                     )
                     .await?;
                 host.follow_accounts(&workspaces, &caller, reach.workspace.to_string(), &request)
@@ -3149,9 +3151,18 @@ impl ActionProvider for InWorkspace {
             return self.ask_model(workspaces, caller, request);
         }
         let invocation = request.invocation;
-        // The log's guard must not outlive the reservation: a retry reads
-        // it again below.
-        let reservation = self.server.log().reserve(caller, &request);
+        // Approved where it waited for its person's yes: admitted again under its id, carrying
+        // their answer. The log's guard must not outlive the reservation: a retry reads it
+        // again below.
+        let readmitted = self
+            .server
+            .log()
+            .readmit(caller, &request, invocation_states::waits_asked);
+        let reservation = if readmitted {
+            Ok(tilo_actions::remote::Reservation::Reserved)
+        } else {
+            self.server.log().reserve(caller, &request)
+        };
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(tilo_actions::remote::Reservation::Admitted) => {
@@ -3165,36 +3176,30 @@ impl ActionProvider for InWorkspace {
             }
             Ok(tilo_actions::remote::Reservation::Reserved) => {}
         }
-        let (host, caller, workspace_id, certificate) = (
-            self.server.clone(),
-            caller.clone(),
-            self.workspace_id,
-            self.certificate.clone(),
-        );
-        let wait = caller_wait(&request);
+        let call = invocation_states::Call {
+            workspaces,
+            workspace_id: self.workspace_id,
+            caller: caller.clone(),
+            request,
+        };
+        let (host, certificate) = (self.server.clone(), self.certificate.clone());
+        let wait = caller_wait(&call.request);
         let runtime = self.server.shared.runtime.clone();
         self.server.spawn(async move {
-            // An invocation that puts a question to its person answers its caller at once that
-            // it waits for their approval, rather than at the end of the wait.
-            let asking = std::sync::Arc::new(tokio::sync::Notify::new());
-            let told = std::sync::Arc::clone(&asking);
-            let mut work = runtime.spawn(agents::ASKING.scope(told, async move {
+            let (workspaces, workspace_id, caller, request) = (
+                call.workspaces.clone(),
+                call.workspace_id,
+                call.caller.clone(),
+                call.request.clone(),
+            );
+            let mut work = runtime.spawn(async move {
                 Box::pin(workspaces.invoke(workspace_id, &caller, certificate.as_ref(), &request))
                     .await
-            }));
-            let (ran, asked) = match answered_within(&mut work, wait, &asking).await {
-                Ok(ran) => ran,
-                Err(asked) => {
-                    let receipt = still_running(&host, invocation, work, asked);
-                    if asked {
-                        return Err(ActionCallError::Refused {
-                            reason: tilo_actions::remote::AWAITING_APPROVAL_REASON.to_owned(),
-                        });
-                    }
-                    return Ok(receipt);
-                }
-            };
-            ended(&host, invocation, ran, asked)
+            });
+            match answered_within(&mut work, wait).await {
+                Some(ran) => ended(&host, &call, ran).await,
+                None => Ok(still_running(&host, call, work)),
+            }
         })
     }
 
@@ -3312,8 +3317,8 @@ const PROVIDERS: [&str; 11] = [
     person_vault::PROVIDER,
     // What the person calls important, and what may interrupt them.
     person_telling::PROVIDER,
-    // What the person's agents no longer ask them, in the same store.
-    person_asking::PROVIDER,
+    // The calls that wait for the person's yes.
+    asked::PROVIDER,
     // The services the person connected by their address.
     person_connections::PROVIDER,
     // What the agents on this server learned about the person.

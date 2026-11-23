@@ -43,48 +43,52 @@ use tilo_actions::remote::person_vault::{
     self, AddItem, AlwaysUse, AskForItem, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse,
     ItemUses, ItemView, KeepEntry, KeptItems, RemoveItem, TakeBack, UsesOf,
 };
+use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
-use super::person_asking::{ApprovalChange, is_scoped_approval};
 use super::workspace_stores::Store;
-use super::{WorkspaceId, Workspaces};
+use super::{GovernedWorkspace, WorkspaceId, Workspaces};
 
 impl Workspaces {
-    /// Ask `person`, on their own devices, for the secret `question` words, and keep what they
-    /// type in `workspace`'s vault as the item `asked` names: the reference of the item it is
-    /// kept as, `None` where they declined. The secret goes from their device's protected field
-    /// to this host and into the vault; only the reference comes back.
+    /// The item `workspace`'s vault keeps for what `asked` asked its person for: the newest
+    /// of its kind that belongs where it was asked to, which their own add kept.
     ///
     /// # Errors
-    /// No device of theirs could be asked, nobody answered in time, or the vault did not keep
-    /// what they typed.
-    pub async fn ask_for_item(
+    /// The vault does not open or read.
+    pub(crate) async fn asked_item(
         &self,
-        (person, workspace): ([u8; 32], &str),
-        question: tilo_server_protocol::certify::PendingConfirmation,
-        asked: AskForItem,
+        workspace: &str,
+        asked: &AskForItem,
     ) -> Result<Option<ItemRef>, String> {
-        use tilo_server_protocol::certify::ConfirmationAnswer;
-        if !question.ask.as_ref().is_some_and(|ask| ask.secret) {
-            return Err("only a question for a secret is answered into the vault".to_owned());
+        let opened = self.open_vault(workspace).await?;
+        Ok(kept(&opened.items())
+            .map_err(|error| error.to_string())?
+            .items
+            .into_iter()
+            .filter(|item| item.kind == asked.kind && item.belongs_to == asked.belongs_to)
+            .max_by_key(|item| item.added_at)
+            .map(|item| item.reference))
+    }
+
+    /// Take back the grants `ids` of `workspace`, written as the host's change to it.
+    async fn revoke_grants(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        at: std::time::SystemTime,
+        ids: &[tilo_action_policy::GrantId],
+    ) -> Result<(), String> {
+        if !self.governs(workspace) {
+            return Err("this server's person does not govern the workspace".to_owned());
         }
-        let ConfirmationAnswer::Secret(typed) =
-            self.ask_person_confirmation(person, question).await?
-        else {
-            return Ok(None);
-        };
-        let adding = AddItem {
-            kind: asked.kind,
-            belongs_to: asked.belongs_to,
-            username: asked.username,
-            sent_in: asked.sent_in,
-            secret: typed.expose().to_owned(),
-        };
-        let kept = self
-            .changing_vault(workspace, |items| add(items, adding))
-            .await?;
-        Ok(Some(kept.reference))
+        let key = &self.inner.host.key;
+        let mut candidate = workspace.peer().clone();
+        if candidate.governance_mut().remove_governed_grants(ids, key, at)? {
+            let state = workspace.collaboration().clone();
+            workspace.commit(candidate, key, at, |_, _| Ok(state))?;
+            self.settle(workspace).await?;
+        }
+        Ok(())
     }
 
     /// Answer a [`person_vault::PROVIDER`] request.
@@ -111,6 +115,7 @@ impl Workspaces {
                 Store::VAULT,
                 action,
                 effect,
+ request,
             )
             .await?;
         let workspace = reach.workspace.to_string();
@@ -276,7 +281,7 @@ impl Workspaces {
                 false
             });
             if !ids.is_empty() {
-                self.change_approval(&mut workspace, at, ApprovalChange::Revoke(&ids))
+                self.revoke_grants(&mut workspace, at, &ids)
                     .await
                     .map_err(ActionCallError::refused)?;
             }
@@ -321,9 +326,9 @@ impl Workspaces {
             Store::MODELS
         };
         let reach = self
-            .reaching_allowed(asked, used_for, action, ActionKind::Undoable)
+            .reaching_allowed(asked, used_for, action, ActionKind::Undoable, request)
             .await?;
-        self.reaching_allowed(asked, Store::VAULT, action, ActionKind::Undoable)
+        self.reaching_allowed(asked, Store::VAULT, action, ActionKind::Undoable, request)
             .await?;
         let by = reach.by();
         let workspace = reach.workspace.to_string();
@@ -366,48 +371,43 @@ impl Workspaces {
                      name it signs in with, and never the secret",
                 )?;
                 let asked = asked.checked().map_err(ActionCallError::refused)?;
-                let id = workspace_id.map(|id| id.to_string()).unwrap_or_default();
-                let workspace = self.summary(&id).await.map_or(id, |summary| summary.name);
-                let question = secret_question(caller, &by, &workspace, &asked);
-                let person = Self::asking_person(caller, certificate, workspace_id)?;
-                let kept = self
-                    .ask_for_item((person, &reach.workspace.to_string()), question, asked)
-                    .await;
-                said(kept.map(|reference| person_vault::Asked { reference }))
+                Self::asking_person(caller, certificate, workspace_id)?;
+                if request.approval().is_none() {
+                    return Err(ActionCallError::asks(secret_asked(caller, &by, &asked)));
+                }
+                let reference = self.asked_item(&workspace, &asked).await;
+                said(reference.map(|reference| person_vault::Asked { reference }))
             }
             _ => Err(ActionCallError::UnknownAction),
         }
     }
 }
 
-/// How long a person's devices ask for a secret before the ask lapses, in nanoseconds.
-const SECRET_WAIT_NS: u64 = 30 * 60 * 1_000_000_000;
-
-/// The question that asks the person `caller` acts for for the secret `asked` names, in the
-/// system's words: `by` is the agent that asks, by the name its person knows it under.
-pub fn secret_question(
-    caller: &Caller,
-    by: &str,
-    workspace: &str,
-    asked: &AskForItem,
-) -> tilo_server_protocol::certify::PendingConfirmation {
-    let mut id = [0_u8; 32];
-    tilo_failure::ignored!(
-        "a question without random bytes is still one question",
-        getrandom::fill(&mut id).ok()
-    );
-    tilo_server_protocol::certify::PendingConfirmation {
-        id,
-        agent_id: caller.acting().agent_id().unwrap_or_default().to_owned(),
-        agent_label: by.to_owned(),
-        workspace: workspace.to_owned(),
-        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(SECRET_WAIT_NS),
-        ask: Some(tilo_server_protocol::certify::AgentAsk {
-            question: asked.words(by),
-            choices: Vec::new(),
-            secret: true,
-        }),
-        ..tilo_server_protocol::certify::PendingConfirmation::default()
+/// What the person `caller` acts for is shown when its agent, known to them as `by`, asks for
+/// the secret `asked` names: the system's words, and the vault's own add, filled with what is
+/// asked for, which they answer by calling themselves.
+pub fn secret_asked(caller: &Caller, by: &str, asked: &AskForItem) -> AskedFacts {
+    let mut facts = vec![
+        Fact::new("kind", serde_json::to_value(asked.kind).ok().and_then(|kind| kind.as_str().map(str::to_owned)).unwrap_or_default()),
+        Fact::new("belongsTo", asked.belongs_to.join(" ")),
+    ];
+    if !asked.username.is_empty() {
+        facts.push(Fact::new("username", asked.username.clone()));
+    }
+    if !asked.sent_in.is_empty() {
+        facts.push(Fact::new("sentIn", asked.sent_in.clone()));
+    }
+    AskedFacts {
+        words: asked.words(by),
+        facts,
+        verb: "keep".to_owned(),
+        takes: Some(format!(
+            "{}/{}#{}",
+            person_vault::PROVIDER,
+            person_vault::RESOURCE,
+            person_vault::ADD
+        )),
+        ..AskedFacts::by(super::asking::asked_by(caller))
     }
 }
 
@@ -528,7 +528,7 @@ fn said<T: serde::Serialize>(outcome: Result<T, String>) -> Result<Value, Action
 /// What `grant` lets an agent always use of the workspace's vault item
 /// `item`, if it is such a grant.
 fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
-    if !is_scoped_approval(grant) || grant.answer != Answer::Allow {
+    if grant.answer != Answer::Allow {
         return None;
     }
     let agent = grant.grantee.agent_id()?;

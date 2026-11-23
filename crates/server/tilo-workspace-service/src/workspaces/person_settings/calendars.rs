@@ -44,8 +44,8 @@
 //! its person's own, as every other entry the calendar holds is.
 //! Text that names people otherwise (its person as the organiser, or people
 //! and not its person) is put in only once the person was shown every
-//! address it names and allowed it, or where they let that stay allowed
-//! ([`crate::workspaces::person_asking`]). Filing an entry under categories
+//! address it names and approved the call, or where a grant of theirs lets
+//! that agent do so. Filing an entry under categories
 //! rewrites it, so the same holds there ([`filed`]): unasked the agent files
 //! what it put in itself, what is its person's own it files once they
 //! allowed it, and an entry whose lines leave writing to its server it does
@@ -63,11 +63,10 @@ use serde_json::Value;
 use tilo_account_probe::imap::Reach;
 use tilo_account_probe::{AccountTester as _, FindingAccountTester};
 use tilo_actions::remote::person_accounts;
-use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
+use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{ActionCallError as ActionError, Caller, InvokeRequest};
 use tilo_dav::{Credentials, DavClient, Depth, Limits, Precondition, Url, props};
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::kept_sign_ins::{NO_SIGN_IN, SIGN_IN, Signing, places_of, sign_in_of};
@@ -125,9 +124,6 @@ const LIMITS: Limits = Limits {
     max_href_bytes: 4096,
 };
 const REPORTED: [tilo_dav::PropName; 2] = [props::GETETAG, props::CALENDAR_DATA];
-/// How long an entry waits for its person's answer before the question is a
-/// refusal.
-const ASK_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 /// How much of an entry's title a question shows before it says that more
 /// follows.
 const TITLE_CHARS: usize = 200;
@@ -1510,57 +1506,35 @@ fn shown(planned: &Planned) -> Result<Vec<(String, String)>, String> {
     Ok(rows)
 }
 
-/// The question `rows` are, put to the person whose account `account` is by
-/// their agent `assistant`, asking as `caller`, about what `does` says it
-/// would do: a confirmation their devices answer.
-fn question(
-    assistant: &Assistant,
+/// What the person whose account `account` is is shown about what their agent, asking as
+/// `caller`, would do (`verb`, on `plural`): `rows`, every address the entry names.
+fn facts(
     caller: &Caller,
     account: &Account,
-    does: &str,
+    (verb, plural): (&str, &str),
     rows: Vec<(String, String)>,
-) -> PendingConfirmation {
-    let mut id = [0_u8; 32];
-    for half in id.chunks_mut(16) {
-        half.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    }
-    PendingConfirmation {
-        id,
-        agent_id: assistant.agent.clone(),
-        agent_label: caller.agent_name().unwrap_or(&assistant.agent).to_owned(),
-        title: String::new(),
-        action_label: does.to_owned(),
-        resource_label: account.name.clone(),
-        arguments: rows,
-        risk: "sensitive".into(),
-        kind: "undoable".into(),
-        undoable: false,
-        workspace: String::new(),
-        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(ASK_WAIT_NS),
-        page: None,
-        ask: None,
-        allow_always: false,
+) -> AskedFacts {
+    AskedFacts {
+        on: Some(account.name.clone()),
+        facts: rows
+            .into_iter()
+            .map(|(label, value)| Fact::new(label, value))
+            .collect(),
+        verb: verb.to_owned(),
+        plural: Some(plural.to_owned()),
+        ..AskedFacts::by(crate::workspaces::asking::asked_by(caller))
     }
 }
 
-/// What a permission that stays covers here: this agent, in this workspace,
-/// doing `action` to its person's calendars. For [`ADD_INVITATION`] that is
-/// putting in entries that name people, for [`SET_CATEGORIES`] filing what
-/// is its person's own.
-fn scope_of(assistant: &Assistant, action: &str) -> Asked {
-    Asked {
-        workspace: assistant.workspace.clone(),
-        agent: assistant.agent.clone(),
-        action: ActionName {
-            provider: person_accounts::PROVIDER.to_owned(),
-            kind: person_accounts::PROVIDER.to_owned(),
-            action: action.to_owned(),
-        },
-        on: Some(Thing {
-            document: String::new(),
-            resource: RESOURCE.to_owned(),
-        }),
-    }
+/// Where a grant that lets an agent do `action` to its person's calendars unasked stands in
+/// `workspace`'s policy. For [`ADD_INVITATION`] that is putting in entries that name people,
+/// for [`SET_CATEGORIES`] filing what is its person's own.
+fn node_of(workspace: &str, action: &str) -> tilo_action_policy::TreePath {
+    tilo_action_policy::TreePath::workspace(workspace)
+        .app(person_accounts::PROVIDER)
+        .kind(person_accounts::PROVIDER)
+        .resource(RESOURCE)
+        .action(action)
 }
 
 /// An entry about to be filed under categories, as its server held it when
@@ -1811,6 +1785,7 @@ impl Workspaces {
                 Store::CALENDARS,
                 ADD_WITH_ITEM,
                 tilo_action_policy::ActionKind::Undoable,
+ request,
             )
             .await?;
         let by = reach.by();
@@ -1839,8 +1814,9 @@ impl Workspaces {
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
-        action: &str,
+        request: &InvokeRequest,
     ) -> Result<(PathBuf, Vec<Account>, Option<Assistant>, Asking), ActionError> {
+        let action = request.target.address.action.as_str();
         let effect = calendar_effect(action);
         let reach = self
             .reaching(
@@ -1855,7 +1831,7 @@ impl Workspaces {
         let reach = if judged_first {
             reach
         } else {
-            self.allowed(reach, caller, Store::CALENDARS, action, effect)
+            self.allowed(reach, caller, Store::CALENDARS, action, request)
                 .await?
         };
         let workspace = reach.workspace.to_string();
@@ -1880,37 +1856,6 @@ impl Workspaces {
         Ok((root, accounts, assistant, asking))
     }
 
-    /// Put `question`, about an entry an agent of `person`'s would put into
-    /// their calendar, to that person and wait for their answer, through
-    /// what a message is put to them through before it leaves: only their
-    /// allowing it lets the entry in. With nobody to ask through, and for a
-    /// question nobody answered, their confirmation is still wanted.
-    async fn ask_about_entry(
-        &self,
-        person: [u8; 32],
-        question: PendingConfirmation,
-    ) -> Result<(), ActionError> {
-        let asker = self
-            .inner
-            .asks_people
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .ok_or_else(ActionError::confirmation_required)?;
-        match asker.ask(person, question).await {
-            Ok(ConfirmationAnswer::AllowOnce) => Ok(()),
-            Ok(
-                ConfirmationAnswer::Deny
-                | ConfirmationAnswer::Reply(_)
-                | ConfirmationAnswer::Secret(_)
-                | ConfirmationAnswer::AllowAlways,
-            ) => Err(ActionError::Refused {
-                reason: "the person did not allow it".into(),
-            }),
-            Err(_) => Err(ActionError::confirmation_required()),
-        }
-    }
-
     /// Put an invitation in for the agent its person named for the account,
     /// whose text is the agent's own writing ([`judged`]): what is its
     /// person's own is refused, and what names people and is no invitation
@@ -1923,7 +1868,7 @@ impl Workspaces {
         accounts: Vec<Account>,
         invitation: Invitation,
         assistant: &Assistant,
-        caller: &Caller,
+        (caller, request): (&Caller, &InvokeRequest),
     ) -> Result<Value, ActionError> {
         let reading = root.clone();
         let by = assistant.putting();
@@ -1940,25 +1885,19 @@ impl Workspaces {
             Ok(read) => read,
             Err(reason) => return Err(ActionError::Refused { reason }),
         };
-        let judged = judged.or_asked(assistant.asks);
-        // A permission of theirs that stays, where one lets it go unasked.
-        let stays = match judged {
-            Judged::Goes => None,
-            Judged::Asks(rows) => {
-                let stays = self.stands(&assistant.person, &scope_of(assistant, ADD_INVITATION));
-                if stays.is_none() {
-                    let question = question(
-                        assistant,
-                        caller,
-                        &planned.account,
-                        "put this entry into the calendar",
-                        rows,
-                    );
-                    self.ask_about_entry(assistant.person, question).await?;
-                }
-                stays
-            }
-        };
+        if let Judged::Asks(rows) = judged.or_asked(assistant.asks)
+            && !self
+                .granted(
+                    &assistant.workspace,
+                    &assistant.agent,
+                    &node_of(&assistant.workspace, ADD_INVITATION),
+                )
+                .await
+        {
+            crate::workspaces::asking::approved_or_asks(request, || {
+                facts(caller, &planned.account, ("put in", "calendar entries"), rows)
+            })?;
+        }
         let creates = matches!(planned.change, Change::Create(_));
         let made = off_thread(move || {
             let (account, entry) = (planned.account.clone(), planned.entry.clone());
@@ -1970,10 +1909,6 @@ impl Workspaces {
             Ok(made)
         })
         .await;
-        // What went ahead unasked is counted, for its person to see.
-        if let (Ok(_), Some(permission)) = (&made, &stays) {
-            self.permission_used(&assistant.person, permission);
-        }
         answer(&made)
     }
 
@@ -1989,7 +1924,7 @@ impl Workspaces {
         accounts: Vec<Account>,
         asked: Categories,
         assistant: &Assistant,
-        caller: &Caller,
+        (caller, request): (&Caller, &InvokeRequest),
     ) -> Result<Value, ActionError> {
         let reading = root.clone();
         let by = assistant.putting();
@@ -2004,30 +1939,20 @@ impl Workspaces {
             Ok(read) => read,
             Err(reason) => return Err(ActionError::Refused { reason }),
         };
-        let judged = judged.or_asked(assistant.asks);
-        // A permission of theirs that stays, where one lets it go unasked.
-        let stays = match judged {
-            Judged::Goes => None,
-            Judged::Asks(rows) => {
-                let stays = self.stands(&assistant.person, &scope_of(assistant, SET_CATEGORIES));
-                if stays.is_none() {
-                    let question = question(
-                        assistant,
-                        caller,
-                        &filing.account,
-                        "file this entry under categories",
-                        rows,
-                    );
-                    self.ask_about_entry(assistant.person, question).await?;
-                }
-                stays
-            }
-        };
-        let made = off_thread(move || file(&root, &reach, filing)).await;
-        // What went ahead unasked is counted, for its person to see.
-        if let (Ok(_), Some(permission)) = (&made, &stays) {
-            self.permission_used(&assistant.person, permission);
+        if let Judged::Asks(rows) = judged.or_asked(assistant.asks)
+            && !self
+                .granted(
+                    &assistant.workspace,
+                    &assistant.agent,
+                    &node_of(&assistant.workspace, SET_CATEGORIES),
+                )
+                .await
+        {
+            crate::workspaces::asking::approved_or_asks(request, || {
+                facts(caller, &filing.account, ("file", "calendar entries"), rows)
+            })?;
         }
+        let made = off_thread(move || file(&root, &reach, filing)).await;
         answer(&made)
     }
 
@@ -2060,7 +1985,7 @@ impl Workspaces {
                 .await;
         }
         let (root, accounts, assistant, reach) = self
-            .calendars_asked(workspace_id, caller, certificate, &action)
+            .calendars_asked(workspace_id, caller, certificate, request)
             .await?;
         let listed = |root: &Path, accounts: &[Account]| Listed {
             accounts: accounts.iter().map(|account| view(root, account)).collect(),
@@ -2121,7 +2046,7 @@ impl Workspaces {
                             accounts,
                             asked,
                             &assistant,
-                            caller,
+                            (caller, request),
                         ))
                         .await
                     }
@@ -2140,7 +2065,7 @@ impl Workspaces {
                             accounts,
                             asked,
                             &assistant,
-                            caller,
+                            (caller, request),
                         ))
                         .await
                     }

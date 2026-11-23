@@ -10,50 +10,24 @@
 //! arrived, reads a message with the files it carries by name and size, searches and keeps a
 //! draft, with every device of its person off.
 //!
-//! A send asks, every time. The entry sets the message apart and answers what its person is to
-//! be shown, and this puts the question to them (`ask` of this server's agents): into the
-//! person's own conversation with the agent, whatever conversation the turn works in, because
-//! the question shows whom a message of theirs goes to and what it says. The tool call ends at
-//! once, told that its person is asked, and nothing waits on a thread. The question offers
-//! allow and deny, and no answer of always. When the person answers, on any device of theirs,
-//! the server carries out what it kept ([`Sends`]): the message leaves, once, and only while
-//! the question still says exactly what the server asked.
+//! A send asks, every time. The entry sets the message apart and refuses the call for want of
+//! its person's yes, showing them whom a message of theirs goes to and what it says; the call
+//! waits as its asked record, and nothing waits on a thread. No grant is offered. Their
+//! approve admits the same call again, and the message leaves, once, and only while it still
+//! shows exactly what they were shown.
 
 use std::sync::Arc;
 
-use serde_json::json;
-use tilo_actions::policy::MemberId;
-use tilo_actions::remote::person_asking::Words;
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
     Pending, RemoteActionTarget, person_accounts,
 };
-use tilo_actions::{ActionFailure, ActionOutput, InvocationUpdate};
+use tilo_actions::{ActionOutput, InvocationUpdate};
 use tilo_workspace_agent::Agent;
 
-use super::asks::{Answered, Carried, Carries, ServerAsk};
 use super::turn_provider::{Ending, Rows};
-use super::{CHAT, Reply, ServerAgents as Agents, Turn, TurnProvider, WorkspaceId};
-use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{
-    AskedSend, HostedTurn, MAIL_CONNECT, SEND_CARRIER, TurnMail as Taken,
-};
-use crate::workspaces::person_asking::kept_asks::KeptAsk;
-
-/// What an agent is told when its person is asked before a message leaves: nothing was sent,
-/// and it neither waits nor sends again.
-const ASKED: &str = "Your person is asked in your conversation with them whether this message \
-     may leave. Nothing was sent. It leaves when they allow it there: tell them it waits for \
-     their answer, and do not send it again.";
-
-/// The failure code of a send that was not made because its person is asked first. It is not
-/// the code of an action that wants a confirmation: the agent's tools word that one
-/// themselves, and the words here are the ones the agent must read.
-const ASKED_FIRST: &str = "asked_person_first";
-
-/// What an answer is told when the question it was given to no longer says what this server
-/// asked.
-const CHANGED: &str = "The question no longer says what this server asked, so nothing was sent.";
+use super::{Reply, ServerAgents as Agents, Turn, TurnProvider, WorkspaceId};
+use crate::workspaces::hosted_use::{HostedTurn, MAIL_CONNECT};
 
 /// What one turn reaches of its person's mail. A turn's caller changes when its person writes
 /// again while it works, so each request is taken as the caller of the tool call that made it.
@@ -107,67 +81,14 @@ impl TurnMail {
             caller,
             bound: narrowed.as_deref(),
         };
-        let workspaces = &self.agents.workspaces;
-        let asked = match workspaces.mail_for_turn(&hosted, request).await? {
-            Taken::Done(value) => {
-                return Ok(InvocationUpdate::Succeeded {
-                    invocation,
-                    output: ActionOutput {
-                        value: Some(value),
-                        resources: Vec::new(),
-                    },
-                });
-            }
-            Taken::Asks(asked) => asked,
-        };
-        let words = match self.put(&asked).await {
-            Ok(()) => ASKED.to_owned(),
-            Err(why) => {
-                workspaces.send_not_asked(&asked);
-                format!(
-                    "Your person could not be asked whether this message may leave ({why}), so \
-                     nothing was sent. It is still begun."
-                )
-            }
-        };
-        Ok(InvocationUpdate::Failed {
+        let value = self.agents.workspaces.mail_for_turn(&hosted, request).await?;
+        Ok(InvocationUpdate::Succeeded {
             invocation,
-            error: ActionFailure {
-                code: ASKED_FIRST.to_owned(),
-                message: words,
-                details: None,
-                retryable: false,
+            output: ActionOutput {
+                value: Some(value),
+                resources: Vec::new(),
             },
         })
-    }
-
-    /// Put the question about `asked` to its person, in their own conversation with the agent:
-    /// what it shows of their mail is theirs alone to read.
-    async fn put(&self, asked: &AskedSend) -> Result<(), String> {
-        let mut person = [0; 32];
-        hex::decode_to_slice(&asked.person, &mut person)
-            .map_err(|_| "the turn names no person".to_owned())?;
-        let kept = serde_json::to_value(asked).map_err(|error| error.to_string())?;
-        self.agents
-            .ask(ServerAsk {
-                workspace: self.workspace.clone(),
-                person,
-                agent: self.agent.id.0.clone(),
-                conversation: String::new(),
-                words: asked.words(),
-                carrier: SEND_CARRIER.to_owned(),
-                kept,
-                // Whether anything may let mail leave unasked is its person's to decide, and
-                // no answer here does.
-                always: None,
-                named: Words {
-                    action: "Send a message".to_owned(),
-                    on: asked.account.clone(),
-                    place: String::new(),
-                },
-            })
-            .await
-            .map(drop)
     }
 }
 
@@ -220,102 +141,5 @@ impl TurnProvider for TurnMail {
 
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
         Box::pin(async move { self.take(&caller, &request).await })
-    }
-}
-
-/// What carries out a person's answer to the question about a message their agent would send.
-struct Sends {
-    workspaces: Workspaces,
-}
-
-impl Sends {
-    /// Whether the question about `ask` still says `words`, exactly as this server asked: an
-    /// agent may edit a message it wrote, and a question that was ever edited, or that stands
-    /// beside another under the same ask, is not the one its person was asked.
-    async fn says(&self, ask: &KeptAsk, words: &str) -> bool {
-        let agent = MemberId::agent(ask.agent.clone());
-        let person = MemberId::person(ask.person.clone());
-        let shown = json!({"ask": ask.ask});
-        let routes = self
-            .workspaces
-            .document_routes(&ask.workspace)
-            .await
-            .unwrap_or_default();
-        let mut found = false;
-        for (app, document) in routes {
-            if app != CHAT
-                || collab_types::document::DocumentId::parse(&document)
-                    .is_none_or(|part| chat::parts::part_index(&part).is_none())
-            {
-                continue;
-            }
-            let Ok(Some(saved)) = self
-                .workspaces
-                .resource_document(&ask.workspace, CHAT, &document)
-                .await
-            else {
-                continue;
-            };
-            let Ok(mut held) = automerge::AutoCommit::load(&saved) else {
-                continue;
-            };
-            let Ok(part) = crate::agents::opened::<chat::parts::ChatMessages>(&mut held) else {
-                continue;
-            };
-            for (_, message) in part.messages.iter() {
-                let asks = message.author == agent
-                    && message.question.as_ref().is_some_and(|question| {
-                        question.person == person && question.kept().as_ref() == Some(&shown)
-                    });
-                if !asks {
-                    continue;
-                }
-                let as_asked = message.text == words
-                    && !message.edited
-                    && message.history.is_empty()
-                    && message.body.is_empty();
-                if !as_asked {
-                    return false;
-                }
-                found = true;
-            }
-        }
-        found
-    }
-}
-
-impl Carries for Sends {
-    /// Only its person's allow lets the message leave, and only while the question says what
-    /// the server asked. Whatever they answered, what waited is gone after it.
-    fn carry<'a>(&'a self, ask: &'a KeptAsk, answer: Answered) -> Carried<'a> {
-        Box::pin(async move {
-            let mut changed = false;
-            if answer == Answered::Once {
-                let words = tilo_failure::ignored!(
-                    "a kept ask that is not a send asked for no words to check",
-                    serde_json::from_value::<AskedSend>(ask.kept.clone()).ok()
-                )
-                .map(|asked| asked.words())
-                .unwrap_or_default();
-                changed = !self.says(ask, words.trim()).await;
-            }
-            let allowed = answer == Answered::Once && !changed;
-            let left = self.workspaces.send_asked(ask, allowed).await.map(|_| None);
-            if changed {
-                return Err(CHANGED.to_owned());
-            }
-            left
-        })
-    }
-}
-
-impl Agents {
-    /// Carry out the answers to the questions about messages from now on: named when this
-    /// server's agents start, because a person who answers after a restart starts no turn.
-    pub(super) fn carry_sends(&self) {
-        let sends = Sends {
-            workspaces: self.workspaces.clone(),
-        };
-        self.carries(SEND_CARRIER, Arc::new(sends));
     }
 }

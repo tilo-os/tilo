@@ -56,16 +56,6 @@ fn failed(invocation: InvocationId, message: String) -> InvocationUpdate {
     }
 }
 
-/// Whether `outcome` is an invocation that waits for its person's answer.
-const fn waits(outcome: &Performed) -> bool {
-    matches!(
-        outcome,
-        Err(Outcome::Rejected(
-            ActionCallError::ConfirmationRequired { .. }
-        ))
-    )
-}
-
 impl Worker {
     /// Do `request` for `caller` and save what it changed: how it went and what is not saved
     /// yet. Where it waits for its person, it is refused showing them what would be done.
@@ -83,12 +73,19 @@ impl Worker {
         request: &InvokeRequest,
     ) -> Result<(Performed, Option<Unsaved>), InvocationReceipt> {
         let (outcome, unsaved, about) = self.performed(workspace_id, caller, request);
-        if waits(&outcome)
-            && let Some(about) = about
-        {
-            return Err(self.asked(workspace_id, caller, request, &about));
+        match (outcome, about) {
+            (Err(Outcome::Rejected(ActionCallError::ConfirmationRequired(_))), Some(about)) => {
+                Err(self.asked(workspace_id, caller, request, &about))
+            }
+            // A provider that leaves the call to the person says itself what they are shown;
+            // one that refuses a call they approved is not asked about again.
+            (Err(Outcome::Rejected(ActionCallError::ConfirmationRequired(facts))), None)
+                if request.approval().is_none() =>
+            {
+                Err(self.keep_asked(workspace_id, caller, request, *facts))
+            }
+            (outcome, _) => Ok((outcome, unsaved)),
         }
-        Ok((outcome, unsaved))
     }
 
     /// Do `request` and save what it changed: how it went, what is not
@@ -159,7 +156,7 @@ impl Worker {
                 if let Some(entry) = self.log().entries.get_mut(&invocation) {
                     entry.asked = true;
                 }
-                self.ended(invocation, asked_as(invocation, &record))
+                self.ended(invocation, record.waiting(invocation))
             }
             Some(Err(why)) => self.ended(
                 invocation,
@@ -194,136 +191,6 @@ impl super::WorkspaceActions {
     /// `records`: the workspace's store, which the host hands the service once.
     pub fn asked_records(&self, records: Arc<dyn tilo_actions::remote::asked::AskedRecords>) {
         let _ = self.shared.asked_records.set(records);
-    }
-}
-
-/// How `invocation` stands while the person is asked about it in `record`: under way, with
-/// nothing of it done, its phase saying so and its message naming the record.
-fn asked_as(
-    invocation: InvocationId,
-    record: &tilo_actions::remote::asked::RecordRef,
-) -> InvocationUpdate {
-    InvocationUpdate::Progress {
-        invocation,
-        sequence: 1,
-        phase: tilo_actions::remote::asked::ASKED_PHASE.to_owned(),
-        completed: None,
-        total: None,
-        message: Some(format!("{}/{}", record.workspace, record.record)),
-    }
-}
-
-/// `invocation` ended with nothing done, told `message`.
-fn failed(invocation: InvocationId, message: String) -> InvocationUpdate {
-    InvocationUpdate::Failed {
-        invocation,
-        error: tilo_actions::ActionFailure {
-            code: tilo_actions::api::ApiError::ConfirmationRequired
-                .code()
-                .to_owned(),
-            message,
-            details: None,
-            retryable: false,
-        },
-    }
-}
-
-/// Whether `outcome` is an invocation that waits for its person's answer.
-const fn waits(outcome: &Performed) -> bool {
-    matches!(
-        outcome,
-        Err(Outcome::Rejected(
-            ActionCallError::ConfirmationRequired { .. }
-        ))
-    )
-}
-
-impl Worker {
-    /// Do `request` for `caller` and save what it changed: how it went and what is not saved
-    /// yet. Where it waits for its person, it is refused showing them what would be done.
-    ///
-    /// # Errors
-    /// The receipt of an invocation its person could not be shown whole.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the receipt is the answer the caller documents"
-    )]
-    pub(super) fn invoke_or_ask(
-        &mut self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<(Performed, Option<Unsaved>), InvocationReceipt> {
-        let (outcome, unsaved, about) = self.performed(workspace_id, caller, request);
-        if waits(&outcome)
-            && let Some(about) = about
-        {
-            return Err(self.asked(workspace_id, caller, request, &about));
-        }
-        Ok((outcome, unsaved))
-    }
-
-    /// Do `request` and save what it changed: how it went, what is not
-    /// saved yet, and what its person is shown where it waits for them.
-    fn performed(
-        &mut self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> (Performed, Option<Unsaved>, Option<Box<About>>) {
-        let performed = self.perform(workspace_id, caller, request);
-        self.note_written(request.invocation);
-        let opens = self.opened_resource(request).is_some();
-        let (outcome, unsaved) = self.saved(workspace_id, performed, opens);
-        let about = self
-            .log()
-            .entries
-            .get_mut(&request.invocation)
-            .and_then(|entry| entry.about.take());
-        (outcome, unsaved, about)
-    }
-
-    /// The receipt of `invocation`, which `caller` asked for and which waits for its person:
-    /// refused for want of their yes, showing them `about`, or refused outright where they
-    /// could not be shown all of it.
-    pub(super) fn asked(
-        &self,
-        caller: &Caller,
-        invocation: InvocationId,
-        about: &About,
-    ) -> InvocationReceipt {
-        let draft = about.draft();
-        let update = match shortened(&draft) {
-            Some(label) => failed(invocation, format!("{NOT_SHOWN}: {label}.")),
-            None => {
-                let error = ActionCallError::asks(about.facts(caller));
-                let receipt = InvocationReceipt {
-                    invocation,
-                    status: tilo_actions::remote::ReceiptStatus::Rejected { error },
-                };
-                self.log().forget(&invocation);
-                return receipt;
-            }
-        };
-        if let Some(entry) = self.log().entries.get_mut(&invocation) {
-            entry.update = update.clone();
-        }
-        InvocationState::new(invocation, update).receipt()
-    }
-}
-
-/// `invocation` ended with nothing done, told `message`.
-fn failed(invocation: InvocationId, message: String) -> InvocationUpdate {
-    InvocationUpdate::Failed {
-        invocation,
-        error: tilo_actions::ActionFailure {
-            code: tilo_actions::api::ApiError::ConfirmationRequired
-                .code()
-                .to_owned(),
-            message,
-            details: None,
-            retryable: false,
-        },
     }
 }
 

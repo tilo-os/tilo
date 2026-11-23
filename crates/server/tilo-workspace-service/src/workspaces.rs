@@ -123,10 +123,10 @@ pub use person_telling::{Spenders, ToTell};
 #[cfg(not(target_arch = "wasm32"))]
 pub use person_telling::addresses as push_addresses;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod person_asking;
+mod asking;
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
-mod person_vault;
+pub(crate) mod person_vault;
 // The workspace's one vault, Passwords' document, as this device holds it.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod vault;
@@ -187,17 +187,16 @@ pub mod person_resources;
 pub use person_resources::{Holds, PersonResources};
 // The person's region and formats and their zone: what a view rendered here for them shows
 // dates in.
+mod readings;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod region;
 pub mod servers;
 mod shares;
+pub mod standing;
 #[cfg(test)]
 pub(crate) mod tests;
 mod unattended;
 mod unbuildable_windows;
-pub use unattended::{Answer as PersonAnswer, AsksPeople};
-mod readings;
-pub mod standing;
 #[cfg(feature = "agents")]
 mod views;
 mod wait_list;
@@ -1057,9 +1056,9 @@ struct WorkspacesInner {
     /// What copies a source's content into a branch of it
     /// ([`Workspaces::branch_content`]).
     branch_content: std::sync::RwLock<Option<Arc<dyn BranchContent>>>,
-    /// What asks a person whether a workspace of theirs runs commands
-    /// unattended ([`Workspaces::ask_people`]).
-    asks_people: std::sync::RwLock<Option<Arc<dyn AsksPeople>>>,
+    /// Where calls that wait for a person's yes are kept as their asked records
+    /// ([`Workspaces::keep_asked_in`]).
+    asked_records: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedRecords>>,
     /// What runs the workspaces' Linux machines, as a branch takes its
     /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
@@ -1411,7 +1410,7 @@ impl Workspaces {
                 deletions: tokio::sync::broadcast::channel(64).0,
                 branches: tokio::sync::broadcast::channel(64).0,
                 branch_content: std::sync::RwLock::default(),
-                asks_people: std::sync::RwLock::default(),
+                asked_records: std::sync::OnceLock::new(),
                 machines: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,

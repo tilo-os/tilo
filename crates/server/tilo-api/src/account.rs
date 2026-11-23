@@ -696,9 +696,7 @@ impl Account {
             Outcome::Held(actions) => {
                 self.keep(id, Run::Asked(actions));
                 ReceiptStatus::Rejected {
-                    error: ActionCallError::ConfirmationRequired {
-                        departure: Vec::new(),
-                    },
+                    error: ActionCallError::confirmation_required(),
                 }
             }
             Outcome::Failed {

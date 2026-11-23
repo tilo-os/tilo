@@ -18,20 +18,15 @@
 //! - a second version of the message that a reader's mail program would
 //!   show in place of these words is refused, since nothing here shows it.
 //!
-//! The rows are the whole of what is asked ([`Shown::rows`]): whatever puts
-//! the question to the person, the confirmation their devices answer today
-//! or a waiting question in a conversation, carries the same rows and lets
-//! the same reading leave.
+//! The rows are the whole of what is asked ([`Shown::rows`]): the call's
+//! asked record shows them, and the send their approve admits leaves only
+//! while the message still reads as those rows.
 
 use tilo_actions::remote::Caller;
+use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::person_accounts::SendFile;
 use tilo_mail_session::Leaving;
 
-use tilo_server_protocol::certify::PendingConfirmation;
-
-/// How long a message waits for its person's answer before the question is
-/// a refusal.
-const WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 /// The most addresses one question names.
 pub(super) const MOST_ADDRESSES: usize = 20;
 /// The longest address, and the longest sender's name, a row shows whole.
@@ -142,25 +137,17 @@ impl Shown {
         &self.rows
     }
 
-    /// The question as a confirmation the person's devices answer, asked by
-    /// `agent` as `caller`.
-    pub(super) fn question(&self, agent: &str, caller: &Caller) -> PendingConfirmation {
-        PendingConfirmation {
-            id: crate::workspaces::actions::agents::question_id(),
-            agent_id: agent.to_owned(),
-            agent_label: caller.agent_name().unwrap_or(agent).to_owned(),
-            title: String::new(),
-            action_label: "send this message".into(),
-            resource_label: self.account.clone(),
-            arguments: self.rows().to_vec(),
-            risk: "sensitive".into(),
-            kind: "outside".into(),
-            undoable: false,
-            workspace: String::new(),
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(WAIT_NS),
-            page: None,
-            ask: None,
-            allow_always: false,
+    /// What the person is shown, asked by `caller`: the account it leaves from and every row.
+    pub(super) fn facts(&self, caller: &Caller) -> AskedFacts {
+        AskedFacts {
+            on: Some(self.account.clone()),
+            facts: self
+                .rows
+                .iter()
+                .map(|(label, value)| Fact::new(label.clone(), value.clone()))
+                .collect(),
+            verb: "send".into(),
+            ..AskedFacts::by(crate::workspaces::asking::asked_by(caller))
         }
     }
 }

@@ -318,7 +318,7 @@ impl Workspaces {
 /// service on the same computer.
 #[must_use]
 pub fn workspace_models_at(service_root: &Path, workspace: &str) -> ProviderConfig {
-    provider_config(&super::person_asking::workspace_store_dir(
+    provider_config(&super::workspace_stores::workspace_store_dir(
         &service_root.join("workspaces"),
         workspace,
     ))

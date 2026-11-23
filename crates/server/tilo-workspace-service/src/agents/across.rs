@@ -26,7 +26,7 @@
 //! What the list says of each workspace:
 //!
 //! - `always`: the person let reading there stay allowed for this agent
-//!   ([`Workspaces::stands`]);
+//!   (a grant of the workspace's policy, [`Workspaces::granted`]);
 //! - `not_asked`: they are asked before anything is read there;
 //! - `no_device`: the workspace admits them on no device of their own now. A device this
 //!   server placed itself for a workspace's window is certified in a person's name and is
@@ -44,7 +44,6 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tilo_actions::remote::ActionCallError as NotTaken;
-use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
 use tilo_actions::remote::{
     Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest, Pending,
     RemoteActionTarget,
@@ -203,22 +202,14 @@ impl TurnElsewhere {
         theirs.then_some(device)
     }
 
-    /// What an answer of always to reading in the workspace `there` covers: this agent, asked
-    /// in the turn's own workspace, reading in that one workspace.
-    fn reading_in(&self, there: &str) -> Asked {
-        Asked {
-            workspace: self.workspace.clone(),
-            agent: self.agent.id.0.clone(),
-            action: ActionName {
-                provider: PROVIDER.to_owned(),
-                kind: MINE.to_owned(),
-                action: READ.to_owned(),
-            },
-            on: Some(Thing {
-                document: String::new(),
-                resource: there.to_owned(),
-            }),
-        }
+    /// What a grant to read in the workspace `there` names: this agent, asked in the turn's
+    /// own workspace, reading in that one workspace.
+    fn reading_in(&self, there: &str) -> tilo_action_policy::TreePath {
+        tilo_action_policy::TreePath::workspace(&self.workspace)
+            .app(PROVIDER)
+            .kind(MINE)
+            .resource(there)
+            .action(READ)
     }
 
     /// The other workspaces `person` is a member of on this server, and those their own list
@@ -256,8 +247,12 @@ impl TurnElsewhere {
                 NO_DEVICE
             } else if self
                 .workspaces
-                .stands(&person, &self.reading_in(&summary.workspace))
-                .is_some()
+                .granted(
+                    &self.workspace,
+                    &self.agent.id.0,
+                    &self.reading_in(&summary.workspace),
+                )
+                .await
             {
                 ALWAYS
             } else {

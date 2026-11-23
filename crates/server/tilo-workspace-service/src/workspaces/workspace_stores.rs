@@ -21,17 +21,14 @@
 //! What stays a person's own (their formats and zone, what may interrupt
 //! them) is kept apart, under `people/<person>/`, and no workspace reaches it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
-use tilo_actions::remote::{ActionCallError, Caller};
-use tilo_server_protocol::certify::PendingConfirmation;
+use tilo_actions::remote::asked::{AskedFacts, Fact};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
 use super::{WorkspaceId, Workspaces};
-
-/// How long the person has to answer a question about a use.
-const QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 
 /// Where a store stands in the workspace's policy: an app's node, and the
 /// kind of resource it is in that app.
@@ -118,17 +115,28 @@ impl Reach {
     }
 }
 
+/// Where every workspace's store stands under the host's directory `dir`.
+fn workspace_store_root(dir: &Path) -> PathBuf {
+    dir.join("workspaces")
+}
+
+/// Where `workspace`'s store stands under the host's directory `dir`: named by the hex of its
+/// id.
+pub(super) fn workspace_store_dir(dir: &Path, workspace: &str) -> PathBuf {
+    workspace_store_root(dir).join(hex::encode(workspace.as_bytes()))
+}
+
 impl Workspaces {
     /// Where this host keeps what `workspace` keeps on it beside its records:
     /// its accounts, providers and connections.
     pub fn workspace_root(&self, workspace: &str) -> PathBuf {
-        super::person_asking::workspace_store_dir(&self.inner.dir, workspace)
+        workspace_store_dir(&self.inner.dir, workspace)
     }
 
     /// Where every workspace's store stands on this host: a directory for
     /// each, named by the hex of its id.
     pub fn workspace_stores_root(&self) -> PathBuf {
-        super::person_asking::workspace_store_root(&self.inner.dir)
+        workspace_store_root(&self.inner.dir)
     }
 
     /// Whether `caller`, on the device `certificate` certifies, may do
@@ -224,66 +232,53 @@ impl Workspaces {
     }
 
     /// [`Self::reaching`], carried through: where the policy asks the
-    /// caller's person first, they are asked on their approving devices,
+    /// caller's person first, `request` goes on only once they approved it,
     /// shown what the action is and where, never its arguments (which may
-    /// hold a secret), and only their allowing it lets it go on.
+    /// hold a secret).
     ///
     /// # Errors
-    /// As [`Self::reaching`], or the person did not allow it.
+    /// As [`Self::reaching`], or it waits for the person's yes.
     pub async fn reaching_allowed(
         &self,
         asked: (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
         store: Store,
         action: &str,
         effect: ActionKind,
+        request: &InvokeRequest,
     ) -> Result<Reach, ActionCallError> {
         let reach = self.reaching(asked, store, action, effect).await?;
-        self.allowed(reach, asked.1, store, action, effect).await
+        self.allowed(reach, asked.1, store, action, request).await
     }
 
-    /// `reach`, once its person allowed it where the policy asks them first:
-    /// the second half of [`Self::reaching_allowed`], for a caller that looks
-    /// at what is asked before it decides whether the question is its own.
+    /// `reach`, once its person approved `request` where the policy asks them first: the
+    /// second half of [`Self::reaching_allowed`], for a caller that looks at what is asked
+    /// before it decides whether the question is its own.
     ///
     /// # Errors
-    /// The person did not allow it.
+    /// It waits for the person's yes.
     pub async fn allowed(
         &self,
         mut reach: Reach,
         caller: &Caller,
         store: Store,
         action: &str,
-        effect: ActionKind,
+        request: &InvokeRequest,
     ) -> Result<Reach, ActionCallError> {
         if reach.answer == Answer::Ask {
-            let agent = caller
+            caller
                 .acting()
                 .agent_id()
                 .ok_or(ActionCallError::NotPermitted)?;
-            let place = self.workspace_name(reach.workspace).await;
-            let question = PendingConfirmation {
-                id: super::actions::agents::question_id(),
-                agent_id: agent.to_owned(),
-                agent_label: reach.by(),
-                title: String::new(),
-                action_label: action.replace('-', " "),
-                resource_label: place.unwrap_or_else(|| store.app.to_owned()),
-                arguments: Vec::new(),
-                risk: "sensitive".into(),
-                kind: match effect {
-                    ActionKind::Read => "read",
-                    ActionKind::Undoable => "undoable",
-                    ActionKind::Outside => "outside",
-                }
-                .into(),
-                undoable: effect == ActionKind::Undoable,
-                workspace: reach.workspace.to_string(),
-                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(QUESTION_WAIT_NS),
-                page: None,
-                ask: None,
-                allow_always: false,
-            };
-            self.ask_person(reach.person, question).await?;
+            let place = self
+                .workspace_name(reach.workspace)
+                .await
+                .unwrap_or_else(|| store.app.to_owned());
+            super::asking::approved_or_asks(request, || AskedFacts {
+                destructive: false,
+                facts: vec![Fact::new("In", place)],
+                verb: action.replace('-', " "),
+                ..AskedFacts::by(super::asking::asked_by(caller))
+            })?;
             reach.answer = Answer::Allow;
         }
         Ok(reach)

@@ -124,6 +124,12 @@ pub struct AskedFacts {
     /// The conversation a turn's question belongs to, by its address.
     #[serde(default)]
     pub conversation: Option<String>,
+    /// The action whose own call by the person answers this, where what is asked is
+    /// something only they type (a password, a key): `<provider>/<resource>#<action>`. The
+    /// asking view opens its form, filled from [`Self::facts`], and their call of it is their
+    /// answer; nothing they type passes through the record.
+    #[serde(default)]
+    pub takes: Option<String>,
 }
 
 impl AskedFacts {
@@ -175,6 +181,23 @@ impl AskedFacts {
 pub struct RecordRef {
     pub workspace: String,
     pub record: String,
+}
+
+impl RecordRef {
+    /// How `invocation` stands while its person is asked about it in this record: under way,
+    /// with nothing of it done, its phase saying so ([`ASKED_PHASE`]) and its message naming
+    /// the record.
+    #[must_use]
+    pub fn waiting(&self, invocation: crate::InvocationId) -> crate::InvocationUpdate {
+        crate::InvocationUpdate::Progress {
+            invocation,
+            sequence: 1,
+            phase: ASKED_PHASE.to_owned(),
+            completed: None,
+            total: None,
+            message: Some(format!("{}/{}", self.workspace, self.record)),
+        }
+    }
 }
 
 /// What writes a call that waits for a person's yes as its own invocation
@@ -343,6 +366,7 @@ mod tests {
                 "verb": "set",
                 "plural": "alarms",
                 "conversation": null,
+                "takes": null,
             })
         );
         assert_eq!(serde_json::from_value::<Asked>(json).unwrap(), row);

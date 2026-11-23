@@ -36,7 +36,7 @@ use serde_json::{Map, json};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::{Ask, CHAT, Outcome, Reply, Turn, asks, invoke_named};
+use super::{Ask, CHAT, Outcome, Reply, Turn, invoke_named};
 
 /// What stands between what a model wrote before a tool, or before its turn ended early, and
 /// what follows it: a paragraph's break.
@@ -180,7 +180,7 @@ impl Written {
     pub(super) fn of(turn: &Turn) -> Self {
         let place = reply_of(turn).map(|reply| Place {
             conversation: turn.agent.sub.as_ref().map_or_else(
-                || asks::conversation_id_of(&turn.conversation, &turn.person, &turn.agent.id.0),
+                || conversation_id_of(&turn.conversation, &turn.person, &turn.agent.id.0),
                 |sub| sub.conversation.clone(),
             ),
             reply,
@@ -1144,4 +1144,22 @@ mod tests {
             "what the provider said only at the end is what the messages lack"
         );
     }
+}
+
+/// The conversation a turn writes in: the one the turn is in, or for a turn an issue caused the
+/// person's own conversation with the agent.
+fn conversation_id_of(conversation: &str, person: &str, agent: &str) -> String {
+    // A conversation's address as Chat itself writes it, up to the conversation's own id.
+    let conversation_ids =
+        chat::summons::conversation_address(&tilo_resource::Id::from_raw(String::new()));
+    conversation
+        .strip_prefix(&conversation_ids)
+        .filter(|conversation_id| !conversation_id.is_empty())
+        .map_or_else(
+            || {
+                chat::Chat::direct_id([MemberId::person(person), MemberId::agent(agent)])
+                    .to_string()
+            },
+            str::to_owned,
+        )
 }

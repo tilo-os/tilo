@@ -5,8 +5,8 @@
 //! for it as for any other action. Without one, the agent's delegation
 //! answers ([`tilo_action_policy::Acting::handed_preset`]), as it does where no
 //! workspace is asked about: reading is allowed,
-//! and whatever changes something asks the person first, on their approving
-//! devices ([`crate::workspaces::AsksPeople`]). The person's own checks follow,
+//! and whatever changes something waits for the person's yes, as the call's
+//! asked record. The person's own checks follow,
 //! the same their own page gets ([`Workspaces::authorize`]), so an agent never
 //! does more than its person may.
 //!
@@ -19,9 +19,9 @@ use serde_json::Value;
 use tilo_action_policy::agent_answers::AnswerScope;
 use tilo_action_policy::roles::{GOVERNANCE_KIND, Rule, governance};
 use tilo_action_policy::{ActionKind, Answer, Context, Grant, Grantee, Party, WorkspacePolicy};
+use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_server_protocol::workspaces::WorkspacesRequest;
 use tilo_server_session::workspaces::{CREATE_WORKSPACE, ENTER_WORKSPACE, LIST_WORKSPACES};
 use tilo_user_identity::DeviceCert;
@@ -29,9 +29,6 @@ use tilo_workspace_agent::WorkspaceAgents;
 
 use super::super::authority::WorkspaceOp;
 use super::Workspaces;
-
-/// How long the person has to answer.
-const QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 
 /// One action of a workspace's governance or of the server's own operations, as the
 /// grants deciding an agent's call of it name it.
@@ -233,14 +230,14 @@ impl Workspaces {
         caller: &Caller,
         certificate: &DeviceCert,
         operation: &Operation<'_>,
-        arguments: &serde_json::Map<String, Value>,
+        (arguments, approved): (&serde_json::Map<String, Value>, bool),
     ) -> Result<(), ActionCallError> {
         if is_the_person(caller, certificate, workspace_id) {
             return Ok(());
         }
-        let Some(agent) = caller.acting().agent_id() else {
+        if caller.acting().agent_id().is_none() {
             return Err(ActionCallError::UnknownAction);
-        };
+        }
         let now = tilo_clock::unix_now_ns();
         match self
             .agent_grants(workspace_id, caller)
@@ -255,77 +252,27 @@ impl Workspaces {
                     operation.label.to_lowercase()
                 ),
             }),
+            Answer::Ask if approved => Ok(()),
             Answer::Ask => {
                 let place = match workspace_id {
                     Some(id) => self.workspace_name(id).await,
                     None => None,
                 };
-                let question = PendingConfirmation {
-                    id: question_id(),
-                    agent_id: agent.to_owned(),
-                    agent_label: caller
-                        .agent_name()
-                        .unwrap_or(&certificate.device_label)
-                        .to_owned(),
-                    title: String::new(),
-                    action_label: operation.label.to_lowercase(),
-                    resource_label: place.clone().unwrap_or_else(|| "your workspaces".into()),
-                    arguments: arguments
-                        .iter()
-                        .map(|(name, value)| {
-                            let shown = value
-                                .as_str()
-                                .map_or_else(|| value.to_string(), str::to_owned);
-                            (name.clone(), shown)
-                        })
-                        .collect(),
-                    risk: "privileged".into(),
-                    kind: "outside".into(),
-                    undoable: false,
-                    workspace: workspace_id.map(|id| id.to_string()).unwrap_or_default(),
-                    expires_at_ns: now.saturating_add(QUESTION_WAIT_NS),
-                    page: None,
-                    ask: None,
-                    allow_always: false,
+                let shown = |value: &Value| {
+                    value
+                        .as_str()
+                        .map_or_else(|| value.to_string(), str::to_owned)
                 };
-                self.ask_person(certificate.user_public_key, question).await
+                Err(ActionCallError::asks(AskedFacts {
+                    on: Some(place.unwrap_or_else(|| "your workspaces".into())),
+                    facts: arguments
+                        .iter()
+                        .map(|(name, value)| Fact::new(name.clone(), shown(value)))
+                        .collect(),
+                    verb: operation.label.to_lowercase(),
+                    ..AskedFacts::by(crate::workspaces::asking::asked_by(caller))
+                }))
             }
-        }
-    }
-
-    /// Put `question` to `person` on their approving devices and wait for
-    /// their answer: only their allowing it lets what it asks about happen.
-    /// With nobody to ask through, and for a question nobody answered, their
-    /// confirmation is still wanted.
-    ///
-    /// # Errors
-    /// The person did not allow it, or was not asked.
-    pub(crate) async fn ask_person(
-        &self,
-        person: [u8; 32],
-        question: PendingConfirmation,
-    ) -> Result<(), ActionCallError> {
-        // Whoever waits for this invocation hears now that it waits for its person, not later
-        // that it took long.
-        let _ = ASKING.try_with(|told| told.notify_one());
-        let asker = self
-            .inner
-            .asks_people
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .ok_or_else(ActionCallError::confirmation_required)?;
-        match asker.ask(person, question).await {
-            Ok(ConfirmationAnswer::AllowOnce) => Ok(()),
-            Ok(
-                ConfirmationAnswer::Deny
-                | ConfirmationAnswer::Reply(_)
-                | ConfirmationAnswer::Secret(_)
-                | ConfirmationAnswer::AllowAlways,
-            ) => Err(ActionCallError::Refused {
-                reason: "the person did not allow it".into(),
-            }),
-            Err(_) => Err(ActionCallError::confirmation_required()),
         }
     }
 }
@@ -337,21 +284,6 @@ fn nothing(workspace: &str) -> Vec<Rule> {
         tilo_action_policy::KindSet::ALL,
         Answer::Deny,
     )]
-}
-
-tokio::task_local! {
-    /// Told when the invocation of this task puts a question to its person
-    /// ([`Workspaces::ask_person`]): its caller then hears it waits for their approval.
-    pub(crate) static ASKING: std::sync::Arc<tokio::sync::Notify>;
-}
-
-/// A fresh question's id.
-pub(crate) fn question_id() -> [u8; 32] {
-    let mut id = [0_u8; 32];
-    for half in id.chunks_mut(16) {
-        half.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    }
-    id
 }
 
 /// Each request a page asks ([`WorkspacesRequest`]), by its name, as the
@@ -465,7 +397,7 @@ impl Workspaces {
                 _ => None,
             })
             .collect();
-        self.admit_operation(workspace_id, caller, device, &operation, &arguments)
+        self.admit_operation(workspace_id, caller, device, &operation, (&arguments, false))
             .await
             .map_err(|refused| refused.to_string())
     }

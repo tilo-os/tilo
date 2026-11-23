@@ -123,9 +123,6 @@ pub(super) struct Notes {
     /// An action its person is asked to allow, by its name, and when they answer: until
     /// then the app says that its person is asked, and nothing of it has happened.
     person_asked: Arc<Mutex<Option<(&'static str, tokio::time::Instant)>>>,
-    /// An action its person is asked about in the conversation, by its name, and whether the
-    /// question was put: the app ends its call there, as a workspace's service does.
-    asked_there: Arc<Mutex<Option<(&'static str, bool)>>>,
     /// How many more reads answer a loading view first; `u32::MAX` never settles.
     loading_outline: Arc<AtomicU32>,
     /// Whether this host keeps a search of its own; one that holds no records to search
@@ -149,9 +146,8 @@ enum Outside {
     Everything,
 }
 
-/// Where the test app says a person is asked, as a workspace's service says it.
-pub(super) const ASKED_ON_DEVICES: &str = "Its person is asked about this on their devices, \
-     and it is done when they allow it there. Nothing happened yet.";
+/// The asked record the test app says a call waits in, as a workspace's dispatch names it.
+pub(super) const ASKED_RECORD: &str = "workspace/invocations/7";
 
 /// What a workspace answers about its installed apps.
 #[derive(Clone, Copy, PartialEq)]
@@ -220,7 +216,6 @@ impl Notes {
             refuses: Arc::default(),
             late: Arc::default(),
             person_asked: Arc::default(),
-            asked_there: Arc::default(),
             loading_outline: Arc::default(),
             searches: true,
             outside: Outside::Nothing,
@@ -1251,10 +1246,10 @@ impl ActionProvider for Notes {
             _ if person_asked => InvocationUpdate::Progress {
                 invocation: *id,
                 sequence: 1,
-                phase: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
+                phase: tilo_actions::remote::asked::ASKED_PHASE.to_owned(),
                 completed: None,
                 total: None,
-                message: Some(ASKED_ON_DEVICES.to_owned()),
+                message: Some(ASKED_RECORD.to_owned()),
             },
             _ if late => InvocationUpdate::Accepted { invocation: *id },
             "slow" => InvocationUpdate::Accepted { invocation: *id },
@@ -1305,7 +1300,7 @@ impl ActionProvider for Notes {
             }))),
             _ => succeeded(None),
         };
-        let state = InvocationState::new(*id, self.or_asked(id, update));
+        let state = InvocationState::new(*id, update);
         Some(state.with_untrusted(self.outside == Outside::Everything))
     }
 

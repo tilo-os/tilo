@@ -535,6 +535,7 @@ impl WorkspaceEvents {
                         Store::EVENTS,
                         action,
                         effect,
+ request,
                     )
                     .await?;
                 Ok(Theirs {

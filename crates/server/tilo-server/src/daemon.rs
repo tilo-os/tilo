@@ -614,15 +614,8 @@ impl Server {
             live.clone(),
             Some(workspaces.clone()),
         );
-        let asks_people = Arc::new(certification.clone());
         if let Some(governed) = &governed {
             certification.keep_issued_in(governed.clone());
-            // Whether a workspace of theirs runs commands unattended is the
-            // person's to answer, on their approving devices. The workspaces
-            // hold the confirmations weakly: they hold the workspaces.
-            governed.ask_people(Arc::new(crate::certification::AsksThroughConfirmations(
-                Arc::downgrade(&asks_people),
-            )));
         }
         let web = Box::new(WebContext {
             server: handler.clone(),

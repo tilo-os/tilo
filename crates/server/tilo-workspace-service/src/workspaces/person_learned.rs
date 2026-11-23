@@ -281,6 +281,7 @@ impl Workspaces {
                 Store::LEARNED,
                 action,
                 effect,
+ request,
             )
             .await?;
         let workspace = reach.workspace.to_string();
