@@ -306,7 +306,12 @@ mod tests {
     }
 
     /// `bytes` with the layout's front at `front`, committed as a change of `key`'s device.
-    fn write_front(bytes: &[u8], key: &SigningKey, front: &str) -> (Vec<u8>, Vec<u8>) {
+    fn write_front(
+        bytes: &[u8],
+        key: &SigningKey,
+        front: &str,
+        person: &str,
+    ) -> (Vec<u8>, Vec<u8>) {
         let mut document = AutoCommit::load(bytes).expect("the record loads");
         document.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
@@ -315,10 +320,9 @@ mod tests {
         document
             .put(ROOT, "front", front)
             .expect("the layout's front");
-        document.commit_with(
-            CommitOptions::default()
-                .with_message(tilo_desktop_model::shared_resource::change_message(None)),
-        );
+        document.commit_with(CommitOptions::default().with_message(
+            tilo_desktop_model::shared_resource::change_message(Some(person)),
+        ));
         (document.save_after(&heads), document.save())
     }
 
@@ -414,7 +418,8 @@ mod tests {
             .replica()
             .read(|peer| peer.document(DESKTOP_APP, DESKTOP_DOCUMENT))
             .expect("the holder keeps the record");
-        let (change, _) = write_front(&current, &other_key, "Elsewhere");
+        let person = hex::encode(holder.replica().read(|peer| peer.owner()));
+        let (change, _) = write_front(&current, &other_key, "Elsewhere", &person);
         let (message, from) = write_message(&other_key, &change, 1, now);
         let outcome = holder
             .receive(from, message, now)
@@ -440,7 +445,8 @@ mod tests {
             .replica()
             .read(|peer| peer.document(DESKTOP_APP, DESKTOP_DOCUMENT))
             .expect("the holder keeps the record");
-        let (change, _) = write_front(&current, &SigningKey::from_bytes(&[2; 32]), "Mine");
+        let person = hex::encode(holder.replica().read(|peer| peer.owner()));
+        let (change, _) = write_front(&current, &SigningKey::from_bytes(&[2; 32]), "Mine", &person);
         let written = futures::executor::block_on(holder.write(
             WORKSPACE,
             &change,
