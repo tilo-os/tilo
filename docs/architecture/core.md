@@ -810,9 +810,9 @@ workspace vault, despite their names.
 
 | Delete | Size |
 |---|---|
-| The self-governing half of `NativeWorkspaceOwner` and the service's governor role | ~10,000 |
+| The self-governing half of `NativeWorkspaceOwner` and the service's governor role, with `workspace.rs` `Membership`, `membership_watch` and the governed-access file: the relay admits the devices of the signed member list, and a hosting server acts in a workspace only by its administrator row there | ~13,500 |
 | `WorkspaceRoles.custom_roles`, `desktop-model` `grants.rs` | ~1,000 |
-| `workspace.rs` `Membership`, `WorkspaceRuntime` and its relay path | ~15,000–25,000 with `peer/` |
+| `WorkspaceRuntime`'s live relay path (subscriber routing, presence, the live session, invocation replay), deleted in the push that carries live traffic over `tilo-peer-state` links | ~10,000–20,000 with `peer/` |
 | `tilo-api` grant file, `WorkspaceGrant`, `apps/workspace_memberships` | ~3,000 |
 | `PersonalStore` and `tilo-personal-store/1` | ~6,000 |
 | The second workspace list | ~2,000 |
