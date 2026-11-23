@@ -558,6 +558,22 @@ impl Engine {
         self.owner.contains_workspace(workspace)
     }
 
+    /// Whether a founding of `workspace` is under way here now: this device is making it on its
+    /// own workspace service, and it is this device's once that lands. An ask of the workspace
+    /// waits for the founding rather than being refused for a workspace that is being made.
+    #[must_use]
+    pub fn is_founding(&self, workspace: WorkspaceId) -> bool {
+        self.founding.lock_recover().contains(&workspace)
+    }
+
+    /// Whether this device's last attempt at founding `workspace` failed and it has not been
+    /// tried since: it is tried again when the next founding ends, not on every pass.
+    #[must_use]
+    pub fn founding_failed(&self, workspace: WorkspaceId) -> bool {
+        let current = *self.founded.borrow();
+        self.failed_at.lock_recover().get(&workspace) == Some(&current)
+    }
+
     /// The name `workspace`'s governance records: the workspace's one name, which every device and
     /// every list of it reads. `None` for a workspace this device does not hold, or one whose
     /// governance names it nowhere (a workspace a build before the name was governance made).

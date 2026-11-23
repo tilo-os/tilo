@@ -952,6 +952,20 @@ impl Session {
             options.wake.handle(),
             &options.person,
         ));
+        // What tells an ask of a workspace this session is founding from one it holds: the ask
+        // waits for the founding and is delivered then.
+        if let Some(engine) = &engine {
+            session_services.keep_engine(std::sync::Arc::clone(engine));
+        }
+        // Until the first pass says whether the person has workspaces of their own, an ask of the
+        // workspace the shell started with waits: that workspace is founded the moment it is known
+        // to be theirs, and taken off the shell otherwise. A session with no identity founds none.
+        if let Some(seed) = seed
+            && personal.is_some()
+            && engine.is_some()
+        {
+            session_services.keep_founding(std::collections::BTreeSet::from([seed.to_string()]));
+        }
         let task_programs = Some(std::sync::Arc::new(
             crate::task_programs::TaskPrograms::new(std::sync::Arc::new(
                 crate::task_programs_host::TaskProgramHost::new(std::sync::Arc::clone(

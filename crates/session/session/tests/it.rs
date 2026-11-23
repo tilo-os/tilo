@@ -107,6 +107,8 @@ mod files_tree;
 mod find_off_loop;
 #[path = "find_records.rs"]
 mod find_records;
+#[path = "first_app.rs"]
+mod first_app;
 #[path = "firstboot.rs"]
 mod firstboot;
 #[path = "float_windows.rs"]
