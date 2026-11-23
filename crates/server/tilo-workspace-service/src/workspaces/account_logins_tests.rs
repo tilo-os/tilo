@@ -178,6 +178,22 @@ impl Members {
         .in_workspace(self.workspace.clone())
     }
 
+    /// Whether the owner's device hands the member's device the vault's keys. The fixture's
+    /// devices share one channel key, so this is where a test sees the vault's key holders.
+    async fn member_holds_the_vaults_keys(&self) -> bool {
+        self.owner
+            .state(&self.workspace)
+            .await
+            .unwrap()
+            .document_key_holders(
+                tilo_app_id::apps::PASSWORDS,
+                tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+                tilo_clock::wall(),
+            )
+            .unwrap()
+            .contains(&self.member_cert.device_public_key)
+    }
+
     fn member_caller(&self) -> Caller {
         Caller::authenticated(
             self.member_cert.user_public_key,
@@ -539,12 +555,16 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     let workspace = members.workspace.clone();
     members.owner_keeps_the_password(&server).await;
     let named = named_entry(&members.member, &workspace).await;
+    assert!(members.member_holds_the_vaults_keys().await);
     members
         .rule_passwords_for_the_member(tilo_action_policy::Answer::Deny)
         .await;
+    assert!(
+        !members.member_holds_the_vaults_keys().await,
+        "the vault's next keys leave the member's device out"
+    );
 
-    // Once the member's device reads the rule, it is refused, in the words its person sees,
-    // though the device holds the vault's keys.
+    // Once the member's device reads the rule, it is refused, in the words its person sees.
     let member = members.member.clone();
     let by = members.member_caller();
     let refused = tilo_test_env::within("the member's device reads the rule", async {
@@ -616,8 +636,12 @@ async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_n
     members
         .rule_passwords_for_the_member(tilo_action_policy::Answer::Ask)
         .await;
+    assert!(
+        !members.member_holds_the_vaults_keys().await,
+        "a device whose person is asked first is handed no vault key"
+    );
 
-    // Once the editor's device reads the rule, its own copy of the vault releases nothing.
+    // Once the editor's device reads the rule, what it kept of the vault releases nothing.
     let member = members.member.clone();
     let by = members.member_caller();
     let named = named_entry(&member, &workspace).await;
