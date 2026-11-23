@@ -6,6 +6,7 @@
 //! [`Words`] resolve. The toolkit re-exports it (`ui::format`, `ui::clock`), so an app drawing a
 //! widget and a host writing a sentence say the same thing.
 
+mod bytes;
 mod clock;
 mod dates;
 mod region;
@@ -14,6 +15,9 @@ mod stored;
 #[cfg(test)]
 mod tests;
 
+pub use bytes::{
+    ByteFormat, ByteRounding, ByteUnit, ByteUnits, binary_bytes, decimal_bytes, format_bytes,
+};
 pub use clock::TimeStyle;
 pub use dates::{
     date, day_done, day_fact, day_heading, day_heading_short, day_range, day_range_numeric,
