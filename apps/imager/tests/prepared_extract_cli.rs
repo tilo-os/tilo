@@ -60,32 +60,64 @@ fn media(root: &Path) -> TestResult {
     )?;
     Ok(())
 }
-fn expectation(kind: &str, data: &[u8]) -> Value {
-    let purpose = match kind {
-        "applications" => "flatpak_applications",
-        "browser" => "browser_profiles",
-        _ => "home",
+fn expectation(kind: &str, data: &[u8]) -> TestResult<Value> {
+    use imager_backend::setup::{
+        browser_transfer, flatpak_transfer::portable as flatpak_portable, portable_home_media,
+        portable_transfer::Limits,
     };
-    let op = "12345678-1234-4234-8234-123456789abc";
-    let mut v = json!({"schema":1,"operation":op,"purpose":purpose,"filename":format!("{kind}-{op}.sealed"),"setup_binding":"example setup","sealed_bytes":data.len(),"plaintext_bytes":10,"entries":1,"ciphertext_sha256":Sha256::digest(data).to_vec(),"limits":{"plaintext_bytes":1024,"entries":10,"metadata_bytes":1024}});
-    let logical = match kind {
-        "applications" => "manifest_sha256",
-        "browser" => "plan_sha256",
-        _ => "runtime_sockets",
+
+    let op = "12345678-1234-4234-8234-123456789abc".to_owned();
+    let limits = Limits {
+        plaintext_bytes: 1024,
+        entries: 10,
+        metadata_bytes: 1024,
     };
-    let value = if kind == "home" {
-        json!(0)
-    } else {
-        json!([3; 32].to_vec())
+    let ciphertext_sha256: [u8; 32] = Sha256::digest(data).into();
+    let value = match kind {
+        "applications" => serde_json::to_value(flatpak_portable::Expectation {
+            filename: flatpak_portable::Expectation::filename(&op)?,
+            operation: op,
+            setup_binding: "example setup".into(),
+            sealed_bytes: data.len() as u64,
+            plaintext_bytes: 10,
+            entries: 1,
+            ciphertext_sha256,
+            limits,
+            kind: flatpak_portable::Applications {
+                consumer_protocol: 2,
+                manifest_sha256: [3; 32],
+            },
+        })?,
+        "browser" => serde_json::to_value(browser_transfer::Expectation {
+            filename: browser_transfer::Expectation::filename(&op)?,
+            operation: op,
+            setup_binding: "example setup".into(),
+            sealed_bytes: data.len() as u64,
+            plaintext_bytes: 10,
+            entries: 1,
+            ciphertext_sha256,
+            limits,
+            kind: browser_transfer::Browser {
+                plan_sha256: [3; 32],
+            },
+        })?,
+        _ => serde_json::to_value(portable_home_media::Expectation {
+            filename: portable_home_media::Expectation::filename(&op)?,
+            operation: op,
+            setup_binding: "example setup".into(),
+            sealed_bytes: data.len() as u64,
+            plaintext_bytes: 10,
+            entries: 1,
+            ciphertext_sha256,
+            limits,
+            kind: portable_home_media::Home { runtime_sockets: 0 },
+        })?,
     };
-    if let Value::Object(ref mut fields) = v {
-        fields.insert(logical.into(), value);
-    }
-    v
+    Ok(value)
 }
 fn selected_payload(root: &Path, kind: &str) -> TestResult<Value> {
     let data = sealed();
-    let e = expectation(kind, &data);
+    let e = expectation(kind, &data)?;
     let mut selection = json!({"schema":1,"prepared_setup":receipt(&data)});
     selection
         .as_object_mut()
@@ -346,7 +378,7 @@ tilo_test_env::scenario! {
     phase malformed_payload_metadata_is_refused;
     {
         for kind in ["home", "applications", "browser"] {
-            let base = expectation(kind, &sealed());
+            let base = expectation(kind, &sealed()).unwrap();
             let mut mutations = vec![Value::Null, json!(true), json!([])];
             for key in base.as_object().unwrap().keys() {
                 let mut v = base.clone();
@@ -359,6 +391,37 @@ tilo_test_env::scenario! {
             let mut extra = base.clone();
             extra["unreviewed_grant"] = json!("/etc");
             mutations.push(extra);
+            let mut nested_extra = base.clone();
+            nested_extra["kind"]["unreviewed_grant"] = json!("/etc");
+            mutations.push(nested_extra);
+            let purpose = match kind {
+                "applications" => "flatpak_applications",
+                "browser" => "browser_profiles",
+                _ => "home",
+            };
+            let logical = match kind {
+                "applications" => "manifest_sha256",
+                "browser" => "plan_sha256",
+                _ => "runtime_sockets",
+            };
+            let mut flat = json!({
+                "schema": 1,
+                "operation": base["operation"],
+                "purpose": purpose,
+                "filename": base["filename"],
+                "setup_binding": base["setup_binding"],
+                "sealed_bytes": base["sealed_bytes"],
+                "plaintext_bytes": base["plaintext_bytes"],
+                "entries": base["entries"],
+                "ciphertext_sha256": base["ciphertext_sha256"],
+                "limits": base["limits"],
+            });
+            flat[logical] = if kind == "home" {
+                json!(0)
+            } else {
+                json!([3; 32].to_vec())
+            };
+            mutations.push(flat);
             for e in mutations {
                 let temp = tempfile::tempdir().unwrap();
                 let root = temp.path().join("media");
@@ -626,4 +689,224 @@ tilo_test_env::scenario! {
             .success()
         );
     }
+}
+
+fn extract_and_retain(kind: &str, root: &Path, out: &Path, target: &Path) -> TestResult {
+    let extracted = extract(root, out)?;
+    if !extracted.status.success() {
+        return Err(format!(
+            "{kind} extract failed: {}",
+            String::from_utf8_lossy(&extracted.stderr).trim()
+        )
+        .into());
+    }
+    let retained = run(
+        &[
+            "retain-home",
+            "--source-dir",
+            out.to_str().ok_or("utf-8 out path")?,
+            "--target-var",
+            target.to_str().ok_or("utf-8 target path")?,
+        ],
+        &[],
+    )?;
+    if !retained.status.success() {
+        return Err(format!(
+            "{kind} retain-home failed: {}",
+            String::from_utf8_lossy(&retained.stderr).trim()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn check_backend_home_selection(
+    setup_receipt: &imager_backend::setup::media_setup::DeliveryReceipt,
+) -> TestResult {
+    use imager_backend::setup::portable_home_media::{HomeSource, MediaGrant};
+    use std::sync::atomic::AtomicBool;
+    use zeroize::Zeroizing;
+
+    let cancel = AtomicBool::new(false);
+    let temp = tempfile::tempdir()?;
+    let source_home = temp.path().join("source-home");
+    let root = temp.path().join("media");
+    let out = temp.path().join("out");
+    let target = temp.path().join("var");
+    private_directories(&[&source_home, &root, &out, &target])?;
+    fs::write(source_home.join("document.txt"), b"real home bytes")?;
+    media(&root)?;
+    let grant = MediaGrant::open(&root)?;
+    let expected = HomeSource::review(&source_home)?.export_to(
+        &grant,
+        "home_op-1",
+        "prepared-binding",
+        Zeroizing::new(b"portable home fixture secret".to_vec()),
+        &cancel,
+    )?;
+    grant.publish_expectation(&expected, &cancel)?;
+    grant.publish_setup_selection(setup_receipt, &expected, &cancel)?;
+
+    extract_and_retain("home", &root, &out, &target)?;
+    let stored: imager_backend::setup::portable_home_media::Expectation = serde_json::from_slice(
+        &fs::read(target.join("lib/tilo/prepared-home/expectation.json"))?,
+    )?;
+    if stored != expected {
+        return Err("retained home expectation differs from backend expectation".into());
+    }
+    Ok(())
+}
+
+fn check_backend_applications_selection(
+    setup_receipt: &imager_backend::setup::media_setup::DeliveryReceipt,
+) -> TestResult {
+    use imager_backend::setup::{
+        flatpak_transfer::portable as flatpak_portable, portable_home_media::MediaGrant,
+        portable_transfer::Limits,
+    };
+    use std::sync::atomic::AtomicBool;
+
+    let cancel = AtomicBool::new(false);
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("media");
+    let out = temp.path().join("out");
+    let target = temp.path().join("var");
+    private_directories(&[&root, &out, &target])?;
+    media(&root)?;
+    let grant = MediaGrant::open(&root)?;
+    let app_data = sealed();
+    let operation = "11111111-1111-4111-8111-111111111111".to_owned();
+    let expected = flatpak_portable::Expectation {
+        filename: format!("applications-{operation}.sealed"),
+        operation: operation.clone(),
+        setup_binding: "prepared-binding".into(),
+        sealed_bytes: app_data.len() as u64,
+        plaintext_bytes: 16,
+        entries: 2,
+        ciphertext_sha256: Sha256::digest(&app_data).into(),
+        limits: Limits {
+            plaintext_bytes: 1024,
+            entries: 16,
+            metadata_bytes: 1024,
+        },
+        kind: flatpak_portable::Applications {
+            consumer_protocol: 2,
+            manifest_sha256: [5; 32],
+        },
+    };
+    write(&root.join(&expected.filename), &app_data)?;
+    write(
+        &root.join(format!("{operation}.receipt.json")),
+        &serde_json::to_vec(&expected)?,
+    )?;
+    grant.publish_applications_selection(setup_receipt, &expected, &cancel)?;
+
+    extract_and_retain("applications", &root, &out, &target)?;
+    let stored: flatpak_portable::Expectation = serde_json::from_slice(&fs::read(
+        target.join("lib/tilo/prepared-applications/expectation.json"),
+    )?)?;
+    if stored != expected {
+        return Err("retained applications expectation differs from backend expectation".into());
+    }
+    Ok(())
+}
+
+fn check_backend_browser_selection(
+    setup_receipt: &imager_backend::setup::media_setup::DeliveryReceipt,
+) -> TestResult {
+    use imager_backend::{
+        browser_selection::SelectedSources,
+        setup::{
+            account_transfer::{self, SourceRoots},
+            browser_profiles,
+            browser_transfer::{self, ExportRequest},
+            portable_home_media::MediaGrant,
+        },
+    };
+    use std::sync::{Arc, atomic::AtomicBool};
+    use zeroize::Zeroizing;
+
+    let cancel = AtomicBool::new(false);
+    let temp = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()?;
+    let source_home = temp.path().join("source-home");
+    let profile = source_home.join(".config/chromium/Default");
+    let root = temp.path().join("media");
+    let out = temp.path().join("out");
+    let target = temp.path().join("var");
+    private_directories(&[&source_home, &profile, &root, &out, &target])?;
+    fs::write(profile.join("Bookmarks"), b"selected bookmarks")?;
+    media(&root)?;
+    let inventory = account_transfer::discover(&SourceRoots {
+        home: source_home.clone(),
+        config: source_home.join(".config"),
+    });
+    let selected = SelectedSources::from_reviewed(
+        browser_profiles::discover(&source_home, &inventory.candidates)?
+            .into_iter()
+            .map(|source| {
+                let profile = source.profile.clone();
+                (Arc::new(source), profile)
+            })
+            .collect(),
+    )?;
+    let plan = selected.plan("prepared-binding".into(), [3; 32])?;
+    let operation = "22222222-2222-4222-8222-222222222222".to_owned();
+    let staging_package = temp.path().join(format!("browser-{operation}.sealed"));
+    let expected = browser_transfer::export(
+        &selected,
+        &plan,
+        ExportRequest {
+            staging_parent: temp.path(),
+            package: &staging_package,
+            operation: &operation,
+            password: Zeroizing::new(b"browser transfer fixture secret".to_vec()),
+        },
+        &cancel,
+    )?;
+    let mut archive = browser_transfer::review(
+        &expected,
+        &plan,
+        &staging_package,
+        b"browser transfer fixture secret",
+        &cancel,
+    )?;
+    let grant = MediaGrant::open(&root)?;
+    grant.deliver_browser(&mut archive, &expected, &cancel)?;
+    grant.publish_browser_selection(setup_receipt, &expected, &cancel)?;
+
+    extract_and_retain("browser", &root, &out, &target)?;
+    let stored: browser_transfer::Expectation = serde_json::from_slice(&fs::read(
+        target.join("lib/tilo/prepared-browser/expectation.json"),
+    )?)?;
+    if stored != expected {
+        return Err("retained browser expectation differs from backend expectation".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn backend_produced_medium_selections_extract_and_retain() {
+    use imager_backend::setup::media_setup::DeliveryReceipt;
+    use std::path::PathBuf;
+
+    let setup_data = sealed();
+    let setup_receipt = DeliveryReceipt {
+        relative_path: PathBuf::from(".tilo-installer/prepared-setup.sealed"),
+        sealed_bytes: setup_data.len() as u64,
+        ciphertext_sha256: hex::encode(Sha256::digest(&setup_data)),
+    };
+    let failures: Vec<String> = [
+        check_backend_home_selection(&setup_receipt),
+        check_backend_applications_selection(&setup_receipt),
+        check_backend_browser_selection(&setup_receipt),
+    ]
+    .into_iter()
+    .filter_map(|result| result.err().map(|error| error.to_string()))
+    .collect();
+    assert!(
+        failures.is_empty(),
+        "backend-produced medium selections rejected by extractor: {failures:?}"
+    );
 }

@@ -1,8 +1,99 @@
 //! Pure validation of public transport metadata; no metadata grants source access.
 
+use prepared_setup_model::{ApplicationsExpectation, BrowserExpectation, HomeExpectation, Limits};
 use serde_json::Value;
 
 use super::Result;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PayloadExpectation {
+    Home(HomeExpectation),
+    Applications(ApplicationsExpectation),
+    Browser(BrowserExpectation),
+}
+
+impl PayloadExpectation {
+    pub fn operation(&self) -> &str {
+        match self {
+            Self::Home(e) => &e.operation,
+            Self::Applications(e) => &e.operation,
+            Self::Browser(e) => &e.operation,
+        }
+    }
+
+    pub fn filename(&self) -> &str {
+        match self {
+            Self::Home(e) => &e.filename,
+            Self::Applications(e) => &e.filename,
+            Self::Browser(e) => &e.filename,
+        }
+    }
+
+    pub fn setup_binding(&self) -> &str {
+        match self {
+            Self::Home(e) => &e.setup_binding,
+            Self::Applications(e) => &e.setup_binding,
+            Self::Browser(e) => &e.setup_binding,
+        }
+    }
+
+    pub fn sealed_bytes(&self) -> u64 {
+        match self {
+            Self::Home(e) => e.sealed_bytes,
+            Self::Applications(e) => e.sealed_bytes,
+            Self::Browser(e) => e.sealed_bytes,
+        }
+    }
+
+    pub fn plaintext_bytes(&self) -> u64 {
+        match self {
+            Self::Home(e) => e.plaintext_bytes,
+            Self::Applications(e) => e.plaintext_bytes,
+            Self::Browser(e) => e.plaintext_bytes,
+        }
+    }
+
+    pub fn entries(&self) -> usize {
+        match self {
+            Self::Home(e) => e.entries,
+            Self::Applications(e) => e.entries,
+            Self::Browser(e) => e.entries,
+        }
+    }
+
+    pub fn metadata_bytes(&self) -> usize {
+        match self {
+            Self::Home(e) => e.limits.metadata_bytes,
+            Self::Applications(e) => e.limits.metadata_bytes,
+            Self::Browser(e) => e.limits.metadata_bytes,
+        }
+    }
+
+    pub fn ciphertext_sha256(&self) -> &[u8; 32] {
+        match self {
+            Self::Home(e) => &e.ciphertext_sha256,
+            Self::Applications(e) => &e.ciphertext_sha256,
+            Self::Browser(e) => &e.ciphertext_sha256,
+        }
+    }
+
+    pub fn is_browser(&self) -> bool {
+        matches!(self, Self::Browser(_))
+    }
+
+    pub fn is_applications(&self) -> bool {
+        matches!(self, Self::Applications(_))
+    }
+
+    pub fn to_value(&self) -> Result<Value> {
+        match self {
+            Self::Home(e) => serde_json::to_value(e),
+            Self::Applications(e) => serde_json::to_value(e),
+            Self::Browser(e) => serde_json::to_value(e),
+        }
+        .map_err(|_| invalid("metadata JSON is invalid"))
+    }
+}
 
 fn invalid(_message: &str) -> std::io::Error {
     super::invalid()
@@ -71,105 +162,73 @@ fn canonical_identity(value: &str) -> bool {
         .is_ok_and(|id| !id.is_nil() && id.hyphenated().to_string() == value)
 }
 
-pub fn expectation(value: &Value, kind: &str) -> Result<()> {
-    let (purpose, prefix, logical) = match kind {
-        "home" => ("home", "home", "runtime_sockets"),
-        "applications" => ("flatpak_applications", "applications", "manifest_sha256"),
-        "browser" => ("browser_profiles", "browser", "plan_sha256"),
-        _ => return Err(invalid("unsupported portable payload kind")),
-    };
-    keys(
-        value,
-        &[
-            "schema",
-            "operation",
-            "purpose",
-            "filename",
-            "setup_binding",
-            "sealed_bytes",
-            "plaintext_bytes",
-            "entries",
-            "ciphertext_sha256",
-            "limits",
-            logical,
-        ],
-    )?;
-    let operation = text(value, "operation")?;
-    let binding = text(value, "setup_binding")?;
-    let limits = field(value, "limits")?;
-    keys(limits, &["plaintext_bytes", "entries", "metadata_bytes"])?;
+fn check_signed_and_sealed(
+    sealed_bytes: u64,
+    plaintext_bytes: u64,
+    entries: usize,
+    limits: Limits,
+) -> Result<()> {
     require(
-        number(value, "schema")? == 1
-            && text(value, "purpose")? == purpose
-            && (1..=96).contains(&operation.len())
-            && operation
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-            && text(value, "filename")? == format!("{prefix}-{operation}.sealed")
-            && (1..=256).contains(&binding.chars().count())
-            && !binding.chars().any(|c| c < ' ' || c == '\u{7f}'),
-        "portable Home receipt binding is invalid",
-    )?;
-    for key in ["sealed_bytes", "plaintext_bytes", "entries"] {
-        require(
-            number(value, key)? <= SIGNED_MAX,
-            "portable Home receipt length is invalid",
-        )?;
-    }
-    if kind == "home" {
-        require(
-            number(value, logical)? <= SIGNED_MAX,
-            "portable Home receipt length is invalid",
-        )?;
-    }
-    for key in ["plaintext_bytes", "entries", "metadata_bytes"] {
-        require(
-            (1..=SIGNED_MAX).contains(&number(limits, key)?),
-            "portable Home receipt limits are invalid",
-        )?;
-    }
-    let plain_limit = number(limits, "plaintext_bytes")?;
-    // Wider arithmetic preserves Python's unbounded intermediate calculations.
-    let bound = u128::from(plain_limit)
-        .checked_add(2048)
-        .and_then(|n| {
-            n.checked_add(
-                u128::from(plain_limit)
-                    .div_ceil(1_048_576)
-                    .checked_mul(256)?,
-            )
-        })
-        .ok_or_else(|| invalid("portable Home receipt bound overflows"))?;
-    let sealed = number(value, "sealed_bytes")?;
-    let entries_limit = number(limits, "entries")?;
-    require(
-        sealed >= 48
-            && u128::from(sealed) <= bound
-            && (1..=plain_limit).contains(&number(value, "plaintext_bytes")?)
-            && (1..=entries_limit).contains(&number(value, "entries")?)
-            && entries_limit <= 1_000_000
-            && (kind != "home" || number(value, "runtime_sockets")? <= entries_limit)
-            && number(limits, "metadata_bytes")? <= 512 * 1024 * 1024
-            && bytes(field(value, "ciphertext_sha256")?, false),
-        "portable Home receipt exceeds bounds",
-    )?;
-    if kind != "home" {
-        require(
-            staging_handoff_model::is_operation_id(operation),
-            "portable application operation is invalid",
-        )?;
-        require(
-            bytes(field(value, logical)?, false),
-            "portable application manifest digest is invalid",
-        )?;
-    }
-    require(
-        kind != "browser"
-            || (plain_limit <= 129 * 1024 * 1024
-                && entries_limit <= 128
-                && number(limits, "metadata_bytes")? <= 1024 * 1024),
-        "portable browser receipt exceeds fixed bounds",
+        (48..=SIGNED_MAX).contains(&sealed_bytes)
+            && plaintext_bytes <= SIGNED_MAX
+            && u64::try_from(entries).is_ok_and(|n| n <= SIGNED_MAX)
+            && limits.plaintext_bytes <= SIGNED_MAX
+            && u64::try_from(limits.entries).is_ok_and(|n| n <= SIGNED_MAX)
+            && u64::try_from(limits.metadata_bytes).is_ok_and(|n| n <= SIGNED_MAX),
+        "portable Home receipt length is invalid",
     )
+}
+
+pub fn expectation(value: &Value, kind: &str) -> Result<PayloadExpectation> {
+    match kind {
+        "home" => {
+            let parsed: HomeExpectation = serde_json::from_value(value.clone())
+                .map_err(|_| invalid("portable Home receipt differs"))?;
+            parsed
+                .validate()
+                .map_err(|_| invalid("portable Home receipt is invalid"))?;
+            check_signed_and_sealed(
+                parsed.sealed_bytes,
+                parsed.plaintext_bytes,
+                parsed.entries,
+                parsed.limits,
+            )?;
+            require(
+                parsed.kind.runtime_sockets <= SIGNED_MAX,
+                "portable Home receipt length is invalid",
+            )?;
+            Ok(PayloadExpectation::Home(parsed))
+        }
+        "applications" => {
+            let parsed: ApplicationsExpectation = serde_json::from_value(value.clone())
+                .map_err(|_| invalid("portable applications receipt differs"))?;
+            parsed
+                .validate()
+                .map_err(|_| invalid("portable applications receipt is invalid"))?;
+            check_signed_and_sealed(
+                parsed.sealed_bytes,
+                parsed.plaintext_bytes,
+                parsed.entries,
+                parsed.limits,
+            )?;
+            Ok(PayloadExpectation::Applications(parsed))
+        }
+        "browser" => {
+            let parsed: BrowserExpectation = serde_json::from_value(value.clone())
+                .map_err(|_| invalid("portable browser receipt differs"))?;
+            parsed
+                .validate()
+                .map_err(|_| invalid("portable browser receipt is invalid"))?;
+            check_signed_and_sealed(
+                parsed.sealed_bytes,
+                parsed.plaintext_bytes,
+                parsed.entries,
+                parsed.limits,
+            )?;
+            Ok(PayloadExpectation::Browser(parsed))
+        }
+        _ => Err(invalid("unsupported portable payload kind")),
+    }
 }
 
 pub fn receipt(value: &Value, size: u64, digest: &str) -> Result<()> {
@@ -430,32 +489,44 @@ pub fn authenticated_metadata(value: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prepared_setup_model::{Applications, Browser, Home};
     use serde_json::json;
 
     fn home() -> Value {
-        json!({
-            "schema": 1, "operation": "portable-home", "purpose": "home",
-            "filename": "home-portable-home.sealed", "setup_binding": "é".repeat(256),
-            "sealed_bytes": 48, "plaintext_bytes": 1, "entries": 1,
-            "ciphertext_sha256": vec![0; 32], "runtime_sockets": 0,
-            "limits": {"plaintext_bytes": 1, "entries": 1, "metadata_bytes": 1}
+        let operation = "portable-home".to_owned();
+        serde_json::to_value(HomeExpectation {
+            filename: HomeExpectation::filename(&operation).unwrap(),
+            operation,
+            setup_binding: "é".repeat(128),
+            sealed_bytes: 48,
+            plaintext_bytes: 1,
+            entries: 1,
+            ciphertext_sha256: [0; 32],
+            limits: Limits {
+                plaintext_bytes: 1,
+                entries: 1,
+                metadata_bytes: 1,
+            },
+            kind: Home { runtime_sockets: 0 },
         })
+        .unwrap()
     }
 
     tilo_test_env::scenario! {
         fn receipts_and_envelopes_are_closed_and_bounded;
 
-        phase portable_receipt_preserves_types_closed_fields_and_character_bound;
+        phase portable_receipt_preserves_types_closed_fields_and_byte_bound;
         {
             let value = home();
             assert!(expectation(&value, "home").is_ok());
             for (key, replacement) in [
-                ("schema", json!(true)),
+                ("sealed_bytes", json!(47)),
                 ("sealed_bytes", json!(48.0)),
                 ("entries", json!(-1)),
-                ("runtime_sockets", json!(2)),
                 ("ciphertext_sha256", json!(vec![256; 32])),
-                ("setup_binding", json!("é".repeat(257))),
+                ("setup_binding", json!("é".repeat(129))),
+                ("kind", json!({"runtime_sockets": 2})),
+                ("kind", json!({"runtime_sockets": 0, "extra": 1})),
             ] {
                 let mut bad = value.clone();
                 bad[key] = replacement;
@@ -465,6 +536,61 @@ mod tests {
             extra["extra"] = Value::Null;
             assert!(expectation(&extra, "home").is_err());
             assert!(expectation(&value, "unsupported").is_err());
+
+            // The retired flat shape is refused by the extractor.
+            let flat_home = json!({
+                "schema": 1, "operation": "portable-home", "purpose": "home",
+                "filename": "home-portable-home.sealed", "setup_binding": "binding",
+                "sealed_bytes": 48, "plaintext_bytes": 1, "entries": 1,
+                "ciphertext_sha256": vec![0; 32], "runtime_sockets": 0,
+                "limits": {"plaintext_bytes": 1, "entries": 1, "metadata_bytes": 1}
+            });
+            assert!(expectation(&flat_home, "home").is_err());
+
+            let app_op = "11111111-1111-4111-8111-111111111111".to_owned();
+            let mut apps = ApplicationsExpectation {
+                filename: ApplicationsExpectation::filename(&app_op).unwrap(),
+                operation: app_op,
+                setup_binding: "binding".into(),
+                sealed_bytes: 48,
+                plaintext_bytes: 1,
+                entries: 1,
+                ciphertext_sha256: [0; 32],
+                limits: Limits {
+                    plaintext_bytes: 1,
+                    entries: 1,
+                    metadata_bytes: 1,
+                },
+                kind: Applications {
+                    consumer_protocol: 2,
+                    manifest_sha256: [1; 32],
+                },
+            };
+            assert!(expectation(&serde_json::to_value(&apps).unwrap(), "applications").is_ok());
+            apps.kind.consumer_protocol = 3;
+            assert!(expectation(&serde_json::to_value(&apps).unwrap(), "applications").is_err());
+
+            let browser_op = "22222222-2222-4222-8222-222222222222".to_owned();
+            let mut browser = BrowserExpectation {
+                filename: BrowserExpectation::filename(&browser_op).unwrap(),
+                operation: browser_op,
+                setup_binding: "binding".into(),
+                sealed_bytes: 48,
+                plaintext_bytes: 1,
+                entries: 1,
+                ciphertext_sha256: [0; 32],
+                limits: Limits {
+                    plaintext_bytes: 1,
+                    entries: 1,
+                    metadata_bytes: 1,
+                },
+                kind: Browser {
+                    plan_sha256: [2; 32],
+                },
+            };
+            assert!(expectation(&serde_json::to_value(&browser).unwrap(), "browser").is_ok());
+            browser.limits.entries = 129;
+            assert!(expectation(&serde_json::to_value(&browser).unwrap(), "browser").is_err());
         }
 
         phase origin_and_receipt_have_distinct_identity_and_length_rules;

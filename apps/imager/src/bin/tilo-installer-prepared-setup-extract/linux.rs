@@ -136,12 +136,9 @@ mod cli {
     fn total_required(source: &str) -> Result<u128> {
         let mut total = 0u128;
         for kind in payload::KINDS {
-            if let Some(v) = payload::staged(source, kind)? {
+            if let Some(staged) = payload::staged(source, kind)? {
                 total = total
-                    .checked_add(payload::required(
-                        v.get("expectation").ok_or_else(invalid)?,
-                        kind,
-                    )?)
+                    .checked_add(payload::required(&staged.expected)?)
                     .ok_or_else(invalid)?;
             }
         }

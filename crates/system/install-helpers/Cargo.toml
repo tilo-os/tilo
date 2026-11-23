@@ -88,6 +88,9 @@ hex.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 # The staging handoff's JSON, with a repeated field refused.
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
+# Shared prepared-setup expectations validated by the native extractor without
+# linking the graphical Imager or onboarding crates.
+prepared-setup-model = { path = "../../session/prepared-setup-model", default-features = false }
 # The native prepared-setup preflight, so the extractor verifies the same
 # sidecar binding the Imager backend seals without linking the backend or its
 # peer transport.

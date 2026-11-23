@@ -63,7 +63,11 @@ pub fn validate_completed(source: &str, binding: &Value) -> Result<()> {
     }
     Ok(())
 }
-pub fn staged(source: &str, kind: &str) -> Result<Option<Value>> {
+pub struct Staged {
+    pub value: Value,
+    pub expected: validate::PayloadExpectation,
+}
+pub fn staged(source: &str, kind: &str) -> Result<Option<Staged>> {
     let (_, locator, _) = names(kind)?;
     let fd = match fs::directory(source) {
         Ok(fd) => fd,
@@ -93,7 +97,7 @@ pub fn staged(source: &str, kind: &str) -> Result<Option<Value>> {
     {
         return Err(invalid());
     }
-    validate::expectation(value.get("expectation").ok_or_else(invalid)?, kind)?;
+    let expected = validate::expectation(value.get("expectation").ok_or_else(invalid)?, kind)?;
     if fs::receipt(&fd, Some(fs::uid()), true)?.as_ref() != value.get("prepared_setup") {
         return Err(invalid());
     }
@@ -101,19 +105,20 @@ pub fn staged(source: &str, kind: &str) -> Result<Option<Value>> {
     if binding.get("kind").and_then(Value::as_str) == Some("completed_generation") {
         validate_completed(source, binding)?;
     }
-    Ok(Some(value))
+    Ok(Some(Staged { value, expected }))
 }
-pub fn package(parent: &File, expected: &Value, own: Option<u32>) -> Result<(File, Metadata)> {
-    let filename = expected
-        .get("filename")
-        .and_then(Value::as_str)
-        .ok_or_else(invalid)?;
+pub fn package(
+    parent: &File,
+    expected: &validate::PayloadExpectation,
+    own: Option<u32>,
+) -> Result<(File, Metadata)> {
+    let filename = expected.filename();
     let (mut fd, fixed) = match fs::open(parent, filename, libc::O_RDONLY, 0) {
         Ok(fd) => (fd, false),
         Err(e)
             if e.kind() == std::io::ErrorKind::NotFound
                 && own.is_none()
-                && expected.get("purpose").and_then(Value::as_str) == Some("browser_profiles") =>
+                && expected.is_browser() =>
         {
             (
                 fs::open(
@@ -128,10 +133,7 @@ pub fn package(parent: &File, expected: &Value, own: Option<u32>) -> Result<(Fil
         Err(e) => return Err(e),
     };
     let m = fd.metadata()?;
-    let size = expected
-        .get("sealed_bytes")
-        .and_then(Value::as_u64)
-        .ok_or_else(invalid)?;
+    let size = expected.sealed_bytes();
     let mut prefix = [0; 8];
     fd.read_exact(&mut prefix)?;
     fd.seek(SeekFrom::Start(0))?;
@@ -144,32 +146,15 @@ pub fn package(parent: &File, expected: &Value, own: Option<u32>) -> Result<(Fil
     }
     Ok((fd, m))
 }
-fn digest_expected(expected: &Value) -> Result<Vec<u8>> {
-    expected
-        .get("ciphertext_sha256")
-        .and_then(Value::as_array)
-        .ok_or_else(invalid)?
-        .iter()
-        .map(|n| {
-            n.as_u64()
-                .and_then(|v| u8::try_from(v).ok())
-                .ok_or_else(invalid)
-        })
-        .collect()
-}
 pub fn stream(
     fd: &File,
     before: &Metadata,
-    expected: &Value,
+    expected: &validate::PayloadExpectation,
     mut out: Option<&File>,
 ) -> Result<()> {
     (&*fd).seek(SeekFrom::Start(0))?;
-    let sealed = expected
-        .get("sealed_bytes")
-        .and_then(Value::as_u64)
-        .ok_or_else(invalid)?;
-    let fixed = expected.get("purpose").and_then(Value::as_str) == Some("browser_profiles")
-        && before.len() == SLOT;
+    let sealed = expected.sealed_bytes();
+    let fixed = expected.is_browser() && before.len() == SLOT;
     let mut remaining = sealed;
     let mut digest = Sha256::new();
     let mut buffer = vec![0; 65536].into_boxed_slice();
@@ -205,7 +190,7 @@ pub fn stream(
     }
     if (&*fd).read(buffer.get_mut(..1).ok_or_else(invalid)?)? != 0
         || fs::snapshot(before) != fs::snapshot(&fd.metadata()?)
-        || digest.finalize().as_slice() != digest_expected(expected)?
+        || digest.finalize().as_slice() != expected.ciphertext_sha256().as_slice()
     {
         return Err(invalid());
     }
@@ -214,7 +199,7 @@ pub fn stream(
 fn stream_completed(
     source: &str,
     binding: &Value,
-    expected: &Value,
+    expected: &validate::PayloadExpectation,
     kind: &str,
     mut out: Option<&File>,
 ) -> Result<()> {
@@ -228,10 +213,7 @@ fn stream_completed(
         .spawn()?;
     let mut pipe = child.stdout.take().ok_or_else(invalid)?;
     let result = (|| {
-        let size = expected
-            .get("sealed_bytes")
-            .and_then(Value::as_u64)
-            .ok_or_else(invalid)?;
+        let size = expected.sealed_bytes();
         let mut total = 0u64;
         let mut digest = Sha256::new();
         let mut prefix: Vec<u8> = Vec::new();
@@ -265,7 +247,7 @@ fn stream_completed(
         }
         if total != size
             || prefix != b"TILOMIG1"
-            || digest.finalize().as_slice() != digest_expected(expected)?
+            || digest.finalize().as_slice() != expected.ciphertext_sha256().as_slice()
         {
             return Err(invalid());
         }
@@ -281,76 +263,69 @@ fn stream_completed(
     }
     validate_completed(source, binding)
 }
-pub fn input(source: &str, value: &Value, kind: &str, out: Option<&File>) -> Result<()> {
-    let binding = value.get("binding").ok_or_else(invalid)?;
-    let expected = value.get("expectation").ok_or_else(invalid)?;
+pub fn input(source: &str, staged: &Staged, kind: &str, out: Option<&File>) -> Result<()> {
+    let binding = staged.value.get("binding").ok_or_else(invalid)?;
     if binding.get("kind").and_then(Value::as_str) == Some("completed_generation") {
-        return stream_completed(source, binding, expected, kind, out);
+        return stream_completed(source, binding, &staged.expected, kind, out);
     }
     if source.starts_with(&format!("{ROOT}/.completed-setup-")) {
         return Err(invalid());
     }
     media::with_root(binding, |root| {
-        let (fd, m) = package(root, expected, None)?;
+        let (fd, m) = package(root, &staged.expected, None)?;
         let snapshot = serde_json::to_value(fs::snapshot(&m)).map_err(|_| invalid())?;
-        if value.get("source_identity") != Some(&snapshot) {
+        if staged.value.get("source_identity") != Some(&snapshot) {
             return Err(invalid());
         }
-        stream(&fd, &m, expected, out)
+        stream(&fd, &m, &staged.expected, out)
     })
 }
-pub fn required(expected: &Value, kind: &str) -> Result<u128> {
-    let n = |k| expected.get(k).and_then(Value::as_u64).ok_or_else(invalid);
-    let meta = expected
-        .get("limits")
-        .and_then(|v| v.get("metadata_bytes"))
-        .and_then(Value::as_u64)
-        .ok_or_else(invalid)?;
-    let entries_bytes = u128::from(n("entries")?)
+pub fn required(expected: &validate::PayloadExpectation) -> Result<u128> {
+    let entries_bytes = u128::try_from(expected.entries())
+        .map_err(|_| invalid())?
         .checked_mul(8192)
         .ok_or_else(invalid)?;
-    u128::from(n("sealed_bytes")?)
+    let metadata_bytes = u128::try_from(expected.metadata_bytes()).map_err(|_| invalid())?;
+    u128::from(expected.sealed_bytes())
         .checked_add(
-            u128::from(n("plaintext_bytes")?)
-                .checked_mul(if kind == "applications" { 2 } else { 1 })
+            u128::from(expected.plaintext_bytes())
+                .checked_mul(if expected.is_applications() { 2 } else { 1 })
                 .ok_or_else(invalid)?,
         )
-        .and_then(|total| total.checked_add(u128::from(meta)))
+        .and_then(|total| total.checked_add(metadata_bytes))
         .and_then(|total| total.checked_add(entries_bytes))
         .and_then(|total| total.checked_add(16 * 1024 * 1024))
         .ok_or_else(invalid)
 }
 pub fn retain(source: &str, target: &str, kind: &str) -> Result<()> {
-    let Some(value) = staged(source, kind)? else {
+    let Some(staged) = staged(source, kind)? else {
         return Ok(());
     };
     let (_, _, ownership) = names(kind)?;
-    let expected = value.get("expectation").ok_or_else(invalid)?;
+    let expected = &staged.expected;
     let components = ["lib", "tilo", ownership];
     let destination = fs::chain(target, &components, fs::uid(), fs::gid())?;
-    let filename = expected
-        .get("filename")
-        .and_then(Value::as_str)
-        .ok_or_else(invalid)?;
+    let filename = expected.filename();
     if fs::exists(&destination, filename)? {
         let (fd, m) = package(&destination, expected, Some(fs::uid()))?;
         stream(&fd, &m, expected, None)?;
-        input(source, &value, kind, None)?;
+        input(source, &staged, kind, None)?;
     } else {
-        if u128::from(fs::capacity(&destination)?.0) < required(expected, kind)? {
+        if u128::from(fs::capacity(&destination)?.0) < required(expected)? {
             return Err(invalid());
         }
         let temp = fs::Temporary::new(&destination, fs::uid(), fs::gid())?;
-        input(source, &value, kind, Some(&temp.fd))?;
+        input(source, &staged, kind, Some(&temp.fd))?;
         temp.fd.sync_all()?;
         stream(&temp.fd, &temp.fd.metadata()?, expected, None)?;
         temp.publish(filename)?;
     }
     fs::verify_chain(target, &components, &destination, fs::uid())?;
+    let expected_json = expected.to_value()?;
     fs::publish_json(
         &destination,
         "expectation.json",
-        expected,
+        &expected_json,
         fs::uid(),
         fs::gid(),
     )
@@ -361,15 +336,13 @@ pub fn deliver_to(source: &str, home: &str, uid: u32, gid: u32, kind: &str) -> R
     fs::protected(&source_fd, fs::uid(), true)?;
     let components = [".local", "state", "tilo", ownership];
     let destination = fs::chain(home, &components, uid, gid)?;
-    let expected = fs::json_required(&source_fd, "expectation.json", 16384, Some(fs::uid()), true)?;
-    validate::expectation(&expected, kind)?;
+    let expected_raw =
+        fs::json_required(&source_fd, "expectation.json", 16384, Some(fs::uid()), true)?;
+    let expected = validate::expectation(&expected_raw, kind)?;
     if source_fd.metadata()?.dev() != destination.metadata()?.dev() {
         return Err(invalid());
     }
-    let filename = expected
-        .get("filename")
-        .and_then(Value::as_str)
-        .ok_or_else(invalid)?;
+    let filename = expected.filename();
     if fs::exists(&destination, filename)? {
         let (fd, m) = package(&destination, &expected, None)?;
         if m.mode() & 0o077 != 0 || (m.uid() != uid && m.uid() != fs::uid()) {
@@ -395,7 +368,8 @@ pub fn deliver_to(source: &str, home: &str, uid: u32, gid: u32, kind: &str) -> R
         fd.sync_all()?;
     }
     fs::verify_chain(home, &components, &destination, uid)?;
-    fs::publish_json(&destination, "expectation.json", &expected, uid, gid)?;
+    let expected_json = expected.to_value()?;
+    fs::publish_json(&destination, "expectation.json", &expected_json, uid, gid)?;
     let (fd, m) = package(&destination, &expected, Some(uid))?;
     stream(&fd, &m, &expected, None)?;
     destination.sync_all()?;
@@ -415,7 +389,7 @@ pub fn deliver_to(source: &str, home: &str, uid: u32, gid: u32, kind: &str) -> R
         fs::unlink(&source_fd, filename)?;
         source_fd.sync_all()?;
     }
-    Ok(expected)
+    Ok(expected_json)
 }
 fn unused_browser(root: &File) -> Result<()> {
     let child = fs::child(root, fs::DIRECTORY)?;
@@ -469,7 +443,7 @@ fn selections(
     devices: &[String],
     kind: &str,
     selection: &str,
-) -> Result<Vec<(Value, Value)>> {
+) -> Result<Vec<(Value, validate::PayloadExpectation)>> {
     let mut selections = Vec::new();
     for root in roots {
         let fd = fs::directory(root)?;
@@ -507,9 +481,8 @@ fn selections(
         {
             return Err(invalid());
         }
-        let expected = value.get(kind).ok_or_else(invalid)?;
-        validate::expectation(expected, kind)?;
-        selections.push((media::binding(root, devices)?, expected.clone()));
+        let expected = validate::expectation(value.get(kind).ok_or_else(invalid)?, kind)?;
+        selections.push((media::binding(root, devices)?, expected));
     }
     Ok(selections)
 }
@@ -530,16 +503,11 @@ pub fn stage(
         return Err(invalid());
     }
     let (selected, expected) = selections.first().ok_or_else(invalid)?;
+    let expected_json = expected.to_value()?;
     let mut found = Vec::new();
     for root in &unique {
         let fd = fs::directory(root)?;
-        let receipt_name = format!(
-            "{}.receipt.json",
-            expected
-                .get("operation")
-                .and_then(Value::as_str)
-                .ok_or_else(invalid)?
-        );
+        let receipt_name = format!("{}.receipt.json", expected.operation());
         let receipt = if fs::exists(&fd, &receipt_name)? {
             Some(fs::json_required(&fd, &receipt_name, 16384, None, false)?)
         } else if kind == "browser" && fs::exists(&fd, fs::DIRECTORY)? {
@@ -556,15 +524,7 @@ pub fn stage(
                 true,
                 true,
             )?;
-            if v.is_some()
-                && fs::exists(
-                    &fd,
-                    expected
-                        .get("filename")
-                        .and_then(Value::as_str)
-                        .ok_or_else(invalid)?,
-                )?
-            {
+            if v.is_some() && fs::exists(&fd, expected.filename())? {
                 return Err(invalid());
             }
             v
@@ -574,7 +534,7 @@ pub fn stage(
         let Some(receipt) = receipt else {
             continue;
         };
-        if receipt != *expected {
+        if validate::expectation(&receipt, kind)? != *expected {
             return Err(invalid());
         }
         let binding = media::binding(root, devices)?;
@@ -582,7 +542,7 @@ pub fn stage(
             return Err(invalid());
         }
         let (_, m) = package(&fd, expected, None)?;
-        found.push(json!({"schema":1,"binding":binding,"expectation":expected,"source_identity":fs::snapshot(&m),"prepared_setup":prepared}));
+        found.push(json!({"schema":1,"binding":binding,"expectation":expected_json,"source_identity":fs::snapshot(&m),"prepared_setup":prepared}));
     }
     if found.len() != 1 {
         return Err(invalid());

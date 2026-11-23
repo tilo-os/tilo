@@ -94,6 +94,7 @@ migration-sources = { path = "../../crates/import/migration-sources" }
 # The shared native preflight the prepared-setup extractor runs without the
 # installer backend, whose test-support dependency would cycle back here.
 tilo-handoff = { path = "../../crates/platform/tilo-handoff" }
+prepared-setup-model = { path = "../../crates/session/prepared-setup-model", default-features = false }
 staging-handoff-model = { path = "../staging-handoff-model" }
 uuid.workspace = true
 base64.workspace = true

@@ -1,5 +1,6 @@
 use super::{fs, payload};
-use serde_json::{Value, json};
+use prepared_setup_model::{Home, HomeExpectation, Limits};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
 
@@ -8,7 +9,23 @@ fn private(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 fn expectation(data: &[u8]) -> Value {
-    json!({"schema":1,"operation":"example-home","purpose":"home","filename":"home-example-home.sealed","setup_binding":"example setup","sealed_bytes":data.len(),"plaintext_bytes":10,"entries":1,"runtime_sockets":0,"ciphertext_sha256":Sha256::digest(data).to_vec(),"limits":{"plaintext_bytes":1024,"entries":10,"metadata_bytes":1024}})
+    let operation = "example-home".to_owned();
+    let expected = HomeExpectation {
+        filename: HomeExpectation::filename(&operation).unwrap(),
+        operation,
+        setup_binding: "example setup".into(),
+        sealed_bytes: data.len() as u64,
+        plaintext_bytes: 10,
+        entries: 1,
+        ciphertext_sha256: Sha256::digest(data).into(),
+        limits: Limits {
+            plaintext_bytes: 1024,
+            entries: 10,
+            metadata_bytes: 1024,
+        },
+        kind: Home { runtime_sockets: 0 },
+    };
+    serde_json::to_value(&expected).unwrap()
 }
 tilo_test_env::scenario! {
     fn the_production_handoff_retains_ciphertext_until_verified;
