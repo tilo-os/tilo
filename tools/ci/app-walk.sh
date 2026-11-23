@@ -52,6 +52,11 @@ if [[ $(id -u) == 0 ]]; then
     # The machine's authorities Settings reads: a system bus of the session's own, with the power
     # services a device's systemd starts on it.
     export TILO_SESSION_SYSTEM_BUS=1
+    # What checks the person's password at the lock screen, where the Tilo session on another
+    # distribution installs it: the session locks only where a password can be checked, so
+    # without it the screen never locks.
+    install -D -m 0755 "$build/bin/tilo-unlock-helper" /usr/libexec/tilo-unlock-helper
+    install -D -m 0644 dist/session/tilo-unlock.pam /etc/pam.d/tilo-unlock
 fi
 
 out=$(realpath -m "$out")

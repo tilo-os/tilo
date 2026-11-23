@@ -101,9 +101,12 @@ host_profile=nested
 # tilo-runtime is the agent's end of the session's MCP server
 # (`tilo-runtime --connect`), so a check that drives the session as an
 # admitted agent runs against the staged build without building its own.
+# tilo-unlock-helper is what checks the person's password at the lock screen,
+# the one a device installs: a check that runs the session as a machine's
+# account installs it where the session looks for it, and the session locks.
 host_bins=(tilo-session tilo-runtime tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
            tilo-model-gateway tilo-ush tilo-control tilolang-process tilolang nested-session-bus
-           tilo-quick-settings fs projector-stand-in fake-model-providers)
+           tilo-quick-settings fs projector-stand-in fake-model-providers tilo-unlock-helper)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
@@ -126,7 +129,8 @@ build_host() {
         -p tilo-fs --bin fs \
         -p projector-stand-in --bin projector-stand-in \
         -p fake-model-providers --bin fake-model-providers \
-        -p nested-session-bus --bin nested-session-bus || return 1
+        -p nested-session-bus --bin nested-session-bus \
+        -p tilo-unlock-helper --bin tilo-unlock-helper || return 1
     # The supervisor reads the session's own system store, the one nested-session.sh
     # installs the env-runtime into: a device's supervisor reads /usr/share/tilo-apps,
     # and without `dev-overrides` this one would read that path on the developer's
