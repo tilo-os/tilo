@@ -1135,13 +1135,15 @@ d-fabhsxf6 = Night light tile
 d-vr3zx6ry = Airplane tile
     .w-airplane-mode = Airplane mode
 
+d-72cehcnn = Mobile tile
+    .w-mobile-data = Mobile data
+
 d-ntsyqtrw = Power mode tile
     .w-power-saver = Power saver
     .w-balanced = Balanced
     .w-performance = Performance
 
 d-w3fe7tjv = Levels
-    .w-brightness = Brightness
     .w-unmute = Unmute
     .w-mute = Mute
     .w-volume = Volume
@@ -1154,8 +1156,18 @@ d-wvxjuiww = Sound section
 
 d-thduakjg = Network section
     .w-wi-fi = Wi-Fi
+    .w-wired-network = Wired network
+    .w-connected = Connected
+    .w-cable-unplugged = Cable unplugged
     .w-wi-fi-is-off = Wi-Fi is off
     .w-scanning-for-networks = Scanning for networks
+    .w-enter-the-password-for = Enter the password for { $password_for }
+    .w-password = Password
+    .w-join = Join
+    .w-cancel = Cancel
+    .w-hidden-network = Hidden network
+    .w-join-a-network-that-does-not = Join a network that does not broadcast its name
+    .w-network-name = Network name
     .w-saved-networks = Saved networks
 
 d-zjz5sskl = Bluetooth section

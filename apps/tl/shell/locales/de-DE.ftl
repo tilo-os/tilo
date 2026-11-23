@@ -737,7 +737,6 @@ d-s66oqjwe = Ruhe-Kachel
 
 d-w3fe7tjv = Pegel
     .w-volume = Lautstärke
-    .w-brightness = Helligkeit
 
 d-lcjohgdk = Akkulinie
 
