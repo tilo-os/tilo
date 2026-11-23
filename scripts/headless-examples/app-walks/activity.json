@@ -1,0 +1,116 @@
+{
+  "app": "activity",
+  "said": "Activity",
+  "family": "apps",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.activity",
+    "native": "activity"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Activity on what changed while the person was away",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "What's new",
+            "History",
+            "Replay"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "said": "Switch to History and narrow it by time, person and work",
+      "ops": [
+        {
+          "press": "History"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "Time",
+            "People",
+            "Browse by"
+          ]
+        },
+        {
+          "press": "All time"
+        },
+        {
+          "wait_for": "Today"
+        },
+        {
+          "press": "Today"
+        },
+        {
+          "wait_for": "actions"
+        }
+      ]
+    },
+    {
+      "id": "detail",
+      "said": "Select a work session and read what it did, with what can be done about it",
+      "ops": [
+        {
+          "press_any": [
+            "Select"
+          ]
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "Details"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "replay",
+      "said": "Replay the workspace change by change",
+      "ops": [
+        {
+          "press": "Replay"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "Checkpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same replay in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        },
+        {
+          "key": "Escape"
+        }
+      ]
+    }
+  ]
+}
