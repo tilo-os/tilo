@@ -1385,6 +1385,9 @@ mod tests {
             (999_999, "976.5 KiB"),
             (1_000_000, "976.5 KiB"),
             (1_048_576, "1.0 MiB"),
+            // Main printed `1.3 MiB` here because its step-by-step division loop kept only the
+            // last division's remainder; the exact value is 1.4004 MiB.
+            (1_468_415, "1.4 MiB"),
             (1_500_000, "1.4 MiB"),
             (1_073_741_824, "1.0 GiB"),
             (5_000_000_000, "4.6 GiB"),
