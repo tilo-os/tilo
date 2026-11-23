@@ -19027,7 +19027,6 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-relay",
- "postcard",
  "serde",
  "serde_json",
  "tempfile",
@@ -19037,6 +19036,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
+ "wire-frame",
  "workspace-hack",
  "zeroize",
 ]
