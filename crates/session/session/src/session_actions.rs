@@ -758,11 +758,11 @@ mod tests {
         .expect("an owner for this device's workspace");
         let workspace_id =
             tilo_desktop_model::WorkspaceId::parse(workspace).expect("a workspace id");
-        let governor = tilo_peer_state::owner::testing::enroll_interactive_governor_in(
+        let governor = tilo_peer_state::owner::testing::enroll_interactive_in(
             &owner, &device, &cert, workspace,
         )
         .expect("this device governs the workspace it hosts");
-        let host = governor.workspace_host().device_public_key;
+        let host = governor.device().device_public_key;
         let frames: Vec<Vec<u8>> = governor
             .outgoing()
             .map(|(bytes, _)| bytes.to_vec())
@@ -772,7 +772,7 @@ mod tests {
                 .receive(
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedServerDelta(host),
-                    postcard::from_bytes(&frame).expect("a publication is a message"),
+                    postcard::from_bytes(frame.as_slice()).expect("a publication is a message"),
                     std::time::SystemTime::now(),
                 )
                 .expect("the host admits the workspace's people");
