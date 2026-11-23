@@ -346,3 +346,125 @@ fn held_certified(
     let fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();
     (owner_a, fixture, a_key, b_key, a_cert)
 }
+
+/// Two devices write different role changes while offline, and the same
+/// membership is what they read once they exchange them.
+#[tokio::test]
+async fn two_devices_offline_role_changes_converge() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = key(1);
+    let a_key = key(2);
+    let b_key = key(3);
+    let a_cert = testing::certificate(&root, &a_key, "A");
+    let b_cert = testing::certificate(&root, &b_key, "B");
+    let owner_a = open_file(&directory.path().join("a.json")).unwrap();
+    let owner_b = open_file(&directory.path().join("b.json")).unwrap();
+    let fixture = TestWorkspace::new();
+    let workspace = fixture.workspace_id();
+    let fixture = testing::enroll_into(fixture, &owner_a, &a_key, &a_cert).unwrap();
+    let _fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();
+    let now = tilo_clock::wall();
+    let grant_action = |id: &str, person: [u8; 32]| {
+        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant {
+            grant: tilo_action_policy::Grant::new(
+                id,
+                tilo_action_policy::Grantee::person(hex::encode(person)),
+                tilo_action_policy::TreePath::workspace(workspace.to_string()),
+                tilo_action_policy::KindSet::READ,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(hex::encode(a_cert.user_public_key)),
+            ),
+        }
+    };
+    // A lets B grant: every device admits it.
+    let to_b = tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant {
+        grant: tilo_action_policy::Grant::new(
+            "fixture:grant-to-b",
+            tilo_action_policy::Grantee::person(hex::encode(b_cert.user_public_key)),
+            tilo_action_policy::roles::governance_action(
+                &workspace.to_string(),
+                tilo_action_policy::roles::governance::GRANT,
+            ),
+            tilo_action_policy::KindSet::OUTSIDE,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(hex::encode(a_cert.user_public_key)),
+        ),
+    };
+    owner_a
+        .commit_membership(workspace, &a_cert, &to_b, &a_key, now)
+        .await
+        .unwrap();
+    let change = owner_a
+        .with_current(workspace, |view| Ok(view.peer().workspace_message()))
+        .unwrap();
+    owner_b
+        .receive(
+            workspace,
+            TransportOrigin::ServerDelta(a_key.verifying_key().to_bytes()),
+            change,
+            now,
+        )
+        .unwrap();
+    // Offline, each grants a different person.
+    let x = key(4).verifying_key().to_bytes();
+    let y = key(5).verifying_key().to_bytes();
+    owner_a
+        .commit_membership(
+            workspace,
+            &a_cert,
+            &grant_action("fixture:grant-x", x),
+            &a_key,
+            now,
+        )
+        .await
+        .unwrap();
+    owner_b
+        .commit_membership(
+            workspace,
+            &b_cert,
+            &grant_action("fixture:grant-y", y),
+            &b_key,
+            now,
+        )
+        .await
+        .unwrap();
+    // They exchange what each wrote.
+    let from_b = owner_b
+        .with_current(workspace, |view| Ok(view.peer().workspace_message()))
+        .unwrap();
+    owner_a
+        .receive(
+            workspace,
+            TransportOrigin::ServerDelta(b_key.verifying_key().to_bytes()),
+            from_b,
+            now,
+        )
+        .unwrap();
+    let from_a = owner_a
+        .with_current(workspace, |view| Ok(view.peer().workspace_message()))
+        .unwrap();
+    owner_b
+        .receive(
+            workspace,
+            TransportOrigin::ServerDelta(a_key.verifying_key().to_bytes()),
+            from_a,
+            now,
+        )
+        .unwrap();
+    let grants = |owner: &NativeWorkspaceOwner| {
+        let mut ids: Vec<String> = owner
+            .with_current(workspace, |view| {
+                Ok(view.peer().governance().governed_policy()?.grants)
+            })
+            .unwrap()
+            .into_iter()
+            .map(|grant| grant.id.as_str().to_owned())
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(grants(&owner_a), grants(&owner_b), "the same membership");
+    let held = grants(&owner_a);
+    assert!(held.contains(&"fixture:grant-x".to_owned()), "{held:?}");
+    assert!(held.contains(&"fixture:grant-y".to_owned()), "{held:?}");
+}
