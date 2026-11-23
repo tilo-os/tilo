@@ -1405,7 +1405,7 @@ doc = false
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
-"tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "session-pages", "test-support"] }
+"tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "fixture-servers", "session-pages", "test-support"] }
 "tilo-x11-transfer" = { path = "../../../crates/session/x11-transfer", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
 "tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
@@ -2496,6 +2496,7 @@ doc = false
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
+"tilo-sandbox" = { path = "../../../crates/platform/tilo-sandbox", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
 "tilo-search" = { path = "../../../crates/sdk/search", default-features = false, features = ["disk"] }
@@ -4063,7 +4064,7 @@ doc = false
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
-"tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "session-pages", "test-support"] }
+"tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "fixture-servers", "session-pages", "test-support"] }
 "tilo-x11-transfer" = { path = "../../../crates/session/x11-transfer", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
 "tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
@@ -5153,6 +5154,7 @@ doc = false
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
+"tilo-sandbox" = { path = "../../../crates/platform/tilo-sandbox", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
 "tilo-search" = { path = "../../../crates/sdk/search", default-features = false, features = ["disk"] }
