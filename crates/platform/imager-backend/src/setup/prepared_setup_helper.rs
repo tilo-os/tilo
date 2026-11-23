@@ -142,10 +142,7 @@ fn arguments(args: impl IntoIterator<Item = OsString>) -> io::Result<BTreeMap<St
         {
             return Err(failed());
         }
-        let path = PathBuf::from(args.next().ok_or_else(failed)?);
-        if !path.is_absolute() {
-            return Err(failed());
-        }
+        let path = super::helper_arguments::strict_path(args.next().ok_or_else(failed)?, failed)?;
         values.insert(name.to_owned(), path);
     }
     if values.len()
