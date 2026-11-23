@@ -1,3 +1,7 @@
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the journal is the host's own file record")
+)]
 //! The record kept as an index and, per workspace, a snapshot with the journal
 //! of what each publication since changed ([`super::journal`]).
 //!

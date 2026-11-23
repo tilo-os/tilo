@@ -16,9 +16,7 @@ pub(crate) mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 mod history_content;
 mod history_keys;
-#[cfg(not(target_arch = "wasm32"))]
 mod journal;
-#[cfg(not(target_arch = "wasm32"))]
 mod journaled;
 pub(crate) mod limits;
 mod publication;

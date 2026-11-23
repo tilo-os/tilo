@@ -1,3 +1,7 @@
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the journal is the host's own file record")
+)]
 //! What a workspace's record became after its last snapshot: one entry per
 //! publication, appended and synced before the publication is installed.
 //!
