@@ -935,6 +935,9 @@ mod shared_desktop;
 #[path = "governed_workspaces/revocations.rs"]
 mod revocations;
 
+#[path = "governed_workspaces/copies_read.rs"]
+mod copies_read;
+
 #[path = "governed_workspaces/hard_stops.rs"]
 mod hard_stops;
 

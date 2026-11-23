@@ -146,6 +146,12 @@ pub(crate) const MOVE_SERVER: &str = "server.move";
 /// How many copies the workspace wants kept: key holders, which hold its
 /// keys and take its work, and stores, which keep its ciphertext.
 pub(crate) const SET_COPIES: &str = "copies.set";
+/// The devices keeping the workspace, as every member of it reads them: each
+/// one's device key, who it is of, and whether it holds the workspace's keys
+/// or a store of its ciphertext. The read beside [`SET_COPIES`]: choosing how
+/// many copies it wants is its owners', reading who keeps it is every
+/// member's.
+pub(crate) const READ_COPIES: &str = "copies.read";
 /// How much of the content the workspace's records name this server keeps
 /// none of yet: what is still only on its members' devices, so a device that
 /// held the last copy is switched off only once it says none.
@@ -216,7 +222,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 30] = [
+const VERBS: [Verb; 31] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -326,6 +332,15 @@ const VERBS: [Verb; 30] = [
         id: CONTENT_HELD,
         label: "Count the content still only on members' devices",
         check: CHOOSES_SERVERS,
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: READ_COPIES,
+        label: "List the devices keeping it",
+        // Who keeps a workspace is every member's to read, as the workspace they are in:
+        // reaching it at all is the check, as `machine.admit`'s is.
+        check: "",
         kind: ActionKind::Read,
         params: Vec::new,
     },
@@ -1995,6 +2010,7 @@ impl Workspaces {
             }
             ADD_MEMBER => self.governance_add_member(call).await,
             CONTENT_HELD => Ok(self.content_held(call.workspace).await),
+            READ_COPIES => self.read_copies(call.workspace).await,
             SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER | SET_COPIES => {
                 self.governance_hosts(action, call).await
             }
@@ -2622,6 +2638,21 @@ impl Workspaces {
             .await;
         let named = self.content_named(workspace).await;
         json!({ "workspace": workspace, "lacking": lacking, "named": named })
+    }
+
+    /// The devices keeping `workspace` ([`READ_COPIES`]): each one's device key, who it is of,
+    /// the name it goes by and whether it holds the workspace's keys or a store of its
+    /// ciphertext, with the copy status the workspace keeps of itself.
+    async fn read_copies(&self, workspace: &str) -> Result<Value, ActionCallError> {
+        let keeps = self
+            .keeping_devices(workspace)
+            .await
+            .map_err(|error| refused(&error))?;
+        let copies = self
+            .copies(workspace)
+            .await
+            .map_err(|error| refused(&error.to_string()))?;
+        Ok(json!({ "workspace": workspace, "keeps": keeps, "copies": copies }))
     }
 
     /// The workspace's wait list, taking an address off it, and mailing an
