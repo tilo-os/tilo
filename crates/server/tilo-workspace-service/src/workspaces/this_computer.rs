@@ -318,8 +318,28 @@ impl Workspaces {
 /// service on the same computer.
 #[must_use]
 pub fn workspace_models_at(service_root: &Path, workspace: &str) -> ProviderConfig {
-    provider_config(&super::person_asking::workspace_store_dir(
-        &service_root.join("workspaces"),
-        workspace,
-    ))
+    provider_config(&workspace_root_at(service_root, workspace))
+}
+
+/// Link `computer`'s choice into `workspace` as [`Workspaces::link_this_computer`] does, for a
+/// writer beside the workspace service keeping its state under `service_root` on the same
+/// computer: one that holds the directory but not the service.
+///
+/// # Errors
+/// The workspace's settings could not be written.
+pub fn link_this_computer_at(
+    service_root: &Path,
+    workspace: &str,
+    computer: &ProviderConfig,
+    how: Linking,
+) -> Result<bool, String> {
+    let root = workspace_root_at(service_root, workspace);
+    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    link(&root, computer, how)
+}
+
+/// Where the workspace service keeping its state under `service_root` keeps `workspace`'s
+/// settings.
+fn workspace_root_at(service_root: &Path, workspace: &str) -> std::path::PathBuf {
+    super::person_asking::workspace_store_dir(&service_root.join("workspaces"), workspace)
 }

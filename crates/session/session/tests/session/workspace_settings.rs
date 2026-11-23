@@ -676,14 +676,53 @@ fn settings_offer_a_model() {
         .expect("save the providers this device offers");
 }
 
+/// A session of a computer with an identity, which keeps its workspaces in `home`'s state: what
+/// the Agents tab reads a workspace's models from.
+fn session_keeping_workspaces(home: &mut tilo_test_env::TestHome) -> Session {
+    let identity = home.config().join("tilo/identity");
+    std::fs::create_dir_all(&identity).expect("the identity's directory");
+    let secrets = home.root().join("secrets");
+    home.env()
+        .set("TILO_IDENTITY_ROOT", &identity)
+        .set("TILO_SECRETS_DIR", &secrets);
+    tilo_identity::provisioning::create_person(
+        &identity,
+        &tilo_device_identity::IdentityPaths::under(&identity),
+        "Agents tab owner",
+        "Agents tab owner",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .expect("this computer's identity");
+    crate::common::headless(Options {
+        collab: false,
+        state: Some(home.state().to_path_buf()),
+        ..Options::default()
+    })
+}
+
+/// The model this device's Settings offer, linked into the workspace in front of `session` as
+/// this computer links its Agent models choice into each workspace it keeps: the workspace's own
+/// models, which the Agents tab offers.
+fn link_the_offered_model(state: &std::path::Path, session: &Session) {
+    let workspace = front_workspace(session);
+    let linked = tilo_workspace_service::workspaces::this_computer::link_this_computer_at(
+        &state.join("tilo").join("workspace-service"),
+        &workspace,
+        &agent_provider_config::ProviderConfig::load(),
+        tilo_workspace_service::workspaces::this_computer::Linking::Chosen,
+    )
+    .expect("the workspace's models are written");
+    assert!(linked, "the offered model becomes the workspace's");
+}
+
 /// The Agents tab shows an agent's answers, changes one, returns them to what its admission says,
 /// chooses its model and takes the agent out of the workspace.
 #[test]
 fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     let _settled = ui::motion::testing::settled();
-    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
-    let mut session = session();
+    let mut session = session_keeping_workspaces(&mut home);
     session.step(Duration::from_millis(1)).unwrap();
     // Nothing of Notes is open or held here: an installed app is answered for before an agent
     // ever reaches for it.
@@ -714,6 +753,8 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the row says who added it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
+    // This computer's choice reaches the workspace's models, which the review offers.
+    link_the_offered_model(home.state(), &session);
     press(&mut app, "ws-agents-review-helper");
     settle(&mut session, &mut app);
     let review = shown_review(&session);
@@ -1284,9 +1325,9 @@ fn make_agent(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>
 #[test]
 fn workspace_settings_makes_the_workspaces_agents() {
     let _settled = ui::motion::testing::settled();
-    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
-    let mut session = session();
+    let mut session = session_keeping_workspaces(&mut home);
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &[]);
     let workspace = front_workspace(&session);
@@ -1300,7 +1341,9 @@ fn workspace_settings_makes_the_workspaces_agents() {
         "the row says who added it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
-    // A member chooses the model it plans with, and the row says which.
+    // A member chooses the model it plans with, of the ones the workspace keeps once this
+    // computer's choice reached it, and the row says which.
+    link_the_offered_model(home.state(), &session);
     press(&mut app, "ws-agents-review-analyst");
     settle(&mut session, &mut app);
     press(&mut app, "ws-agent-use-local/sonnet");
