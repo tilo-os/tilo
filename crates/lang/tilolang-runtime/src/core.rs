@@ -167,10 +167,6 @@ pub struct Core {
     /// whose code makes the request. Until the host sets one, every request answers with a
     /// failure saying the host reaches no services.
     pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
-    /// Where `page.call` reaches (`Runtime::set_page`): the page the app's window shows, which
-    /// is the window's engine and not the app's. Until the host sets one, every call answers
-    /// with a failure saying no page is shown.
-    pub page: RefCell<Option<Box<dyn crate::page::PageHost>>>,
     /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
     /// and the chooser the person picks with. Until the host sets one, it holds no files.
     pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
@@ -393,7 +389,6 @@ impl Core {
             pdf: RefCell::new(Box::new(crate::pdf::NoPdf)),
             canvas: RefCell::new(Box::new(crate::canvas::NoCanvas)),
             web: RefCell::new(None),
-            page: RefCell::new(None),
             blobs: RefCell::new(None),
             fonts: RefCell::new(None),
             files: RefCell::new(None),
