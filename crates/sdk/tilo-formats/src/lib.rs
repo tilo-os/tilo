@@ -27,7 +27,7 @@ pub use dates::{
     weekday_name, weekday_short,
 };
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
-pub use shown::{sentence, shown};
+pub use shown::{day_of, duration_of, sentence, shown};
 pub use stored::{
     clock_from_text, clock_text, compact_date_from_text, compact_date_text,
     compact_moment_from_text, compact_moment_text, date_from_text, date_text, minute_from_text,

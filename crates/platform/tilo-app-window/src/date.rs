@@ -8,6 +8,7 @@
 
 use crate::{UiNode, Value};
 use jiff::civil::{Date, Time};
+use tilo_formats::{day_of, duration_of};
 use ui::LocalState;
 use ui::widget::{DateField, Decorator, Tone, Widget};
 
@@ -230,23 +231,6 @@ fn formatted(
         "duration" => duration_of(&text).map_or(text, ui::format::duration),
         _ => text,
     })
-}
-
-fn day_of(text: &str) -> Option<Date> {
-    tilo_failure::ignored!(
-        "a value that is not a day is shown as the text it is",
-        Date::strptime("%Y-%m-%d", text).ok()
-    )
-}
-
-fn duration_of(text: &str) -> Option<std::time::Duration> {
-    tilo_failure::ignored!(
-        "a value that is no number of seconds is shown as the text it is",
-        text.trim()
-            .parse::<u64>()
-            .ok()
-            .map(std::time::Duration::from_secs)
-    )
 }
 
 fn moment_of(text: &str) -> Option<jiff::Timestamp> {

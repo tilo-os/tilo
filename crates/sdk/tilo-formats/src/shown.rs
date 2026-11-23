@@ -67,8 +67,10 @@ pub fn sentence(
     }
 }
 
-/// The day the stored text `text` is: its date part.
-fn day_of(text: &str) -> Option<Date> {
+/// The day the stored text `text` is: its date part. Text that is not a day is `None`, and the
+/// caller shows it as the text it is.
+#[must_use]
+pub fn day_of(text: &str) -> Option<Date> {
     tilo_failure::ignored!(
         "a value that is not a day is shown as the text it is",
         Date::strptime("%Y-%m-%d", text).ok()
@@ -86,8 +88,9 @@ fn moment_of(text: &str, zone: i64) -> Option<DateTime> {
     )
 }
 
-/// The length of time the stored text `text` is, when it is one.
-fn duration_of(text: &str) -> Option<std::time::Duration> {
+/// The length of time the stored text `text` is, when it is one: a whole number of seconds.
+#[must_use]
+pub fn duration_of(text: &str) -> Option<std::time::Duration> {
     tilo_failure::ignored!(
         "a value that is no number of seconds is shown as the text it is",
         text.trim()
