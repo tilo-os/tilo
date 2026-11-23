@@ -3,7 +3,10 @@
   "said": "Settings",
   "family": "settings",
   "live": "rust",
-  "apps": "file-explorer",
+  "apps": "",
+  "packages": [
+    "files"
+  ],
   "rust": {
     "id": "so.tilo.settings",
     "native": "settings"

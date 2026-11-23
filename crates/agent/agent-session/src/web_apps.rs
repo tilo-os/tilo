@@ -17,7 +17,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         tilo_console::definition(),
         diffmerge::definition(),
         feeds::definition(),
-        file_explorer::page_definition(),
         hex_editor::definition(),
         maps::definition(),
         messages::definition(),

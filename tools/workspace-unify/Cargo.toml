@@ -356,9 +356,6 @@ doc = false
 "ff-0_13_1" = { package = "ff", version = "^0.13.1", default-features = false, features = ["alloc"] }
 "ff-0_14_0" = { package = "ff", version = "^0.14.0", default-features = false, features = ["alloc"] }
 "ffi-opaque-2_0_1" = { package = "ffi-opaque", version = "^2.0.1", default-features = false, features = [] }
-"file-explorer" = { path = "../../apps/file-explorer", default-features = false, features = ["default", "desktop", "samples"] }
-"file-explorer-model" = { path = "../../apps/file-explorer-model", default-features = false, features = [] }
-"file-explorer-model-wasm" = { path = "../../apps/file-explorer-model-wasm", default-features = false, features = [] }
 "filedescriptor-0_8_3" = { package = "filedescriptor", version = "^0.8.3", default-features = false, features = [] }
 "filetime-0_2_27" = { package = "filetime", version = "^0.2.27", default-features = false, features = [] }
 "firewall" = { path = "../../apps/firewall", default-features = false, features = ["samples"] }
@@ -2997,9 +2994,6 @@ doc = false
 "ff-0_13_1" = { package = "ff", version = "^0.13.1", default-features = false, features = ["alloc"] }
 "ff-0_14_0" = { package = "ff", version = "^0.14.0", default-features = false, features = ["alloc"] }
 "ffi-opaque-2_0_1" = { package = "ffi-opaque", version = "^2.0.1", default-features = false, features = [] }
-"file-explorer" = { path = "../../apps/file-explorer", default-features = false, features = ["default", "desktop", "samples"] }
-"file-explorer-model" = { path = "../../apps/file-explorer-model", default-features = false, features = [] }
-"file-explorer-model-wasm" = { path = "../../apps/file-explorer-model-wasm", default-features = false, features = [] }
 "filedescriptor-0_8_3" = { package = "filedescriptor", version = "^0.8.3", default-features = false, features = [] }
 "filetime-0_2_27" = { package = "filetime", version = "^0.2.27", default-features = false, features = [] }
 "firewall" = { path = "../../apps/firewall", default-features = false, features = ["samples"] }

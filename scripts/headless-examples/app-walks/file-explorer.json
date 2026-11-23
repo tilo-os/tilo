@@ -5,6 +5,11 @@
   "rust": {
     "id": "so.tilo.file-explorer"
   },
+  "apps": "word-processor",
+  "tl": {
+    "id": "so.tilo.file-explorer",
+    "package": "files"
+  },
   "steps": [
     {
       "id": "open",

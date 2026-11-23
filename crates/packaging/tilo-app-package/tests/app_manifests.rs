@@ -114,7 +114,6 @@ tilo_test_env::scenario! {
     // manifest; every app is named and described in both languages.
     {
         for (app, german) in [
-            ("file-explorer", "Dateien"),
             ("settings", "Einstellungen"),
             ("calendar", "Kalender"),
         ] {

@@ -217,7 +217,6 @@ done
 
 selected=()
 for app in $apps; do
-    [[ $app == files ]] && app=file-explorer
     if [[ ! -f $repo_root/apps/$app/tilo-app.toml ]]; then
         die "no app named $app under apps/"
     fi

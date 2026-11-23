@@ -30,7 +30,6 @@ pub const DEVICE_APP: &str = "so.tilo.device";
 /// package a view imports is one id.
 pub const CONTACTS_APP: &str = "so.tilo.contacts.directory";
 /// Files' app, whose folders and trees the session publishes.
-pub use tilo_app_id::apps::FILE_EXPLORER as FILES_APP;
 /// Settings' app, whose sections the session keeps and publishes.
 pub use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
 /// The app a workspace's own actions are published under: `use tilo.workspace`.
@@ -252,14 +251,6 @@ const PUBLISHED: &[Published] = &[
         kinds: &[],
         roots: VISION_ROOTS,
         files: &[include_str!("../../../services/vision/surface.json")],
-        described: false,
-    },
-    Published {
-        app: FILES_APP,
-        title: "Files",
-        kinds: &[],
-        roots: &[],
-        files: &[include_str!("../../../../apps/file-explorer/surface.toml")],
         described: false,
     },
     Published {

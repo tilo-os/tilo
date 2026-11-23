@@ -30,7 +30,6 @@ db-client-model-wasm = { path = "../../../apps/db-client-model-wasm" }
 diffmerge-model-wasm = { path = "../../../apps/diffmerge-model-wasm" }
 disk-usage-model-wasm = { path = "../../../apps/disk-usage-model-wasm" }
 disks-model-wasm = { path = "../../../apps/disks-model-wasm" }
-file-explorer-model-wasm = { path = "../../../apps/file-explorer-model-wasm" }
 firewall-model-wasm = { path = "../../../apps/firewall-model-wasm" }
 git-client-model-wasm = { path = "../../../apps/git-client-model-wasm" }
 hex-editor-model-wasm = { path = "../../../apps/hex-editor-model-wasm" }

@@ -4,7 +4,10 @@
  "family": "devices",
  "devices": ["laptop", "phone"],
  "live": "rust",
- "apps": "file-explorer tasks settings",
+ "apps": "tasks settings",
+ "packages": [
+   "files"
+ ],
  "rust": {},
  "tl": {"session_args": ["--shell", "screen"]},
  "steps": [

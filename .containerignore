@@ -21,7 +21,6 @@ os/external-assets/cache/
 os/shell
 os/fs
 os/terminal
-os/file-explorer
 os/tilo-greeter
 os/tilo-installer
 os/browser

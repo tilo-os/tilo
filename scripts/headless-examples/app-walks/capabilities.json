@@ -2,7 +2,7 @@
   "app": "capabilities",
   "said": "Every capability the shell and the apps publish",
   "live": "rust",
-  "apps": "code-editor word-processor chat settings tasks file-explorer browser terminal pdf-viewer activity photos calendar",
+  "apps": "code-editor word-processor chat settings tasks browser terminal pdf-viewer activity photos calendar",
   "packages": [
     "notes",
     "sheets",
@@ -12,7 +12,8 @@
     "tube",
     "agent",
     "today",
-    "board"
+    "board",
+    "files"
   ],
   "rust": {},
   "tl": {

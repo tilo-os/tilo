@@ -5011,81 +5011,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
-name = "file-explorer"
-version = "0.2.0"
-dependencies = [
- "accounts",
- "cloud-source",
- "ed25519-dalek 3.0.0",
- "file-explorer",
- "file-explorer-model",
- "fs-protocol",
- "fuser",
- "hex",
- "host-fs",
- "image",
- "iroh-blobs",
- "jiff",
- "runtime-dylib",
- "runtime-portal",
- "serde",
- "serde_json",
- "settings-model",
- "sha2 0.11.0",
- "taffy",
- "tar",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-archive",
- "tilo-archive-engine",
- "tilo-automation",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-cloud-files",
- "tilo-copy-lint",
- "tilo-files",
- "tilo-fs",
- "tilo-history",
- "tilo-mime",
- "tilo-paths",
- "tilo-pdf",
- "tilo-pdf-engine",
- "tilo-process",
- "tilo-test-env",
- "tilo-thumbnail",
- "tilo-user-identity",
- "tilo-vello",
- "tilo-winit",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "workspace-hack",
- "zip",
-]
-
-[[package]]
-name = "file-explorer-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "file-explorer-model-wasm"
-version = "0.1.0"
-dependencies = [
- "file-explorer-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17008,7 +16933,6 @@ dependencies = [
  "discord",
  "ed25519-dalek 3.0.0",
  "feeds",
- "file-explorer",
  "fs-content",
  "fs-protocol",
  "getrandom 0.4.3",
@@ -19897,7 +19821,6 @@ dependencies = [
  "diffmerge-model-wasm",
  "disk-usage-model-wasm",
  "disks-model-wasm",
- "file-explorer-model-wasm",
  "firewall-model-wasm",
  "git-client-model-wasm",
  "hex-editor-model-wasm",
@@ -27835,9 +27758,6 @@ dependencies = [
  "ff 0.13.1",
  "ff 0.14.0",
  "ffi-opaque",
- "file-explorer",
- "file-explorer-model",
- "file-explorer-model-wasm",
  "filedescriptor",
  "filetime",
  "find-msvc-tools",

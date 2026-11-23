@@ -3,7 +3,10 @@
   "said": "Quick settings",
   "family": "shell",
   "live": "rust",
-  "apps": "file-explorer chat settings terminal",
+  "apps": "chat settings terminal",
+  "packages": [
+    "files"
+  ],
   "rust": {},
   "tl": {
     "session_args": [

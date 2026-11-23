@@ -25,7 +25,6 @@ extern crate db_client_model_wasm;
 extern crate diffmerge_model_wasm;
 extern crate disk_usage_model_wasm;
 extern crate disks_model_wasm;
-extern crate file_explorer_model_wasm;
 extern crate firewall_model_wasm;
 extern crate git_client_model_wasm;
 extern crate hex_editor_model_wasm;

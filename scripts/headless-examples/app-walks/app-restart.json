@@ -3,7 +3,10 @@
   "said": "Files and Calendar keep what the person made",
   "family": "settings",
   "live": "rust",
-  "apps": "file-explorer calendar",
+  "apps": "calendar",
+  "packages": [
+    "files"
+  ],
   "rust": {
     "id": "so.tilo.calendar",
     "native": "calendar"

@@ -34,7 +34,6 @@ ROLES = {
     'prepared_extract': ('apps/imager', 'tilo-installer-prepared-setup-extract', 'bin', False),
     'control': ('crates/session/control-cli', 'tilo-control', 'bin', False),
     'launcher': ('crates/packaging/launcher', 'tilo-launcher', 'bin', False),
-    'files': ('apps/file-explorer', 'file-explorer', 'bin', False),
     'browser': ('apps/browser', 'browser', 'bin', False),
     'app_package': ('tools/tilo-app-package-cli', 'tilo-app-package', 'bin', False),
     'runtime_bundle': ('crates/packaging/runtime-bundle', 'tilo-runtime-bundle', 'bin', False),
