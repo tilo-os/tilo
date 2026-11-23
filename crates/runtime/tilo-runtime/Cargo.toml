@@ -181,7 +181,9 @@ launcher-macos = { path = "../../packaging/launcher-macos" }
 # The file chooser a confined app asks this runtime to show.
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 # The camera and microphone a confined app asks this runtime to capture.
-tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "microphone"] }
+tilo-capture = { path = "../../engines/tilo-capture", features = ["camera", "microphone"] }
+# The runtimes Tilo.app carries install through the one installer on first start.
+package-store = { path = "../../packaging/package-store", features = ["store"] }
 
 [dev-dependencies]
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }

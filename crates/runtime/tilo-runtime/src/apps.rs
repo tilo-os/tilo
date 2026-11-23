@@ -116,6 +116,10 @@ impl Apps {
             launcher_candidates(),
         );
         sockets.clone_into(&mut apps.sockets);
+        #[cfg(target_os = "macos")]
+        if let Some(catalog) = apps.catalog.as_ref() {
+            macos::install_carried_runtimes(catalog);
+        }
         apps.register_installed_surfaces();
         apps
     }

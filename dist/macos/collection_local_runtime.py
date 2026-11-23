@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Stage a pinned private macOS 27 helper payload, without signing or execution.
+"""Relocate a reviewed GStreamer closure beside the binary that loads it.
 
-This is deliberately separate from the general macOS 13 collection adapter.
-The payload is not an app, installable artifact, or redistribution approval.
+`tilolang` records the closure tilolang-app and GStreamer's scanner load from
+this Mac's Homebrew, refuses one that differs from the reviewed lists, and
+stages it as the tilolang runtime's libraries (`lib/gstreamer/`).
+`plan`/`stage`/`verify` stage the pinned private macOS 27 helper payload.
+Neither signs or executes what it stages.
 """
 from __future__ import annotations
 
@@ -19,7 +22,8 @@ import time
 
 from collection import check_receipt, digest, transaction, write_receipt
 from collection_native import machos, run, system_library
-from collection_runtime import bounded_hash, directory_entries, expand, image_info, regular_file, remaining, resolve_load, version
+from collection_runtime import (bounded_hash, directory_entries, expand, formula_evidence, image_info,
+                                regular_file, remaining, resolve_load, version)
 from collection_stages import bounded_build
 
 HERE = Path(__file__).resolve().parent
@@ -28,6 +32,10 @@ PLUGINS = {'libgstvpx.dylib', 'libgstaom.dylib', 'libgstrav1e.dylib',
 SHIM = 'Contents/Frameworks/libtilo-local-intl.dylib'
 LAUNCHER = 'Contents/MacOS/tilo-runtime'
 LIMIT = 1024**3
+HOMEBREW = Path('/opt/homebrew')
+# The tilolang runtime's libraries, under its bundle: the binary is `bin/tilolang-app`.
+GSTREAMER = 'lib/gstreamer'
+TILOLANG_SHIM = GSTREAMER + '/Frameworks/libtilo-local-intl.dylib'
 
 
 def checked_json(path, expected):
@@ -86,7 +94,7 @@ def inspect_inputs(profile, deadline):
     return result
 
 
-def relocation_map(images):
+def relocation_map(images, shim=SHIM):
     """Resolve each edge in helper and scanner contexts, refusing ambiguity."""
     intl = [key for key in images if Path(key).name == 'libintl.8.dylib']
     if len(intl) != 1:
@@ -115,7 +123,7 @@ def relocation_map(images):
                 resolved = targets.pop()
             if resolved not in images:
                 raise ValueError(f'dependency missing from pinned closure: {old}')
-            target = SHIM if resolved == intl[0] else images[resolved]['destination']
+            target = shim if resolved == intl[0] else images[resolved]['destination']
             changes.append([old, local_load(item['destination'], target)])
         item['changes'] = changes
     return intl[0]
@@ -132,10 +140,10 @@ def add_asset(assets, source, target, roots, deadline=None):
     assets[target] = {'source': str(path), 'sha256': bounded_hash(path, 16 * 1024**2, deadline), 'bytes': size}
 
 
-def resources(profile, deadline):
+def resources(profile, deadline, packages=18, into='Contents'):
     assets, prefixes = {}, {}
-    if len(profile['packages']) != 18:
-        raise ValueError('requires the reviewed 18-package profile')
+    if packages is not None and len(profile['packages']) != packages:
+        raise ValueError(f'requires the reviewed {packages}-package profile')
     for name, package in profile['packages'].items():
         root = Path(name).resolve(strict=True)
         if str(root) != name or root.name != package['version']:
@@ -145,12 +153,12 @@ def resources(profile, deadline):
             raise ValueError('unsafe package name')
         for path in directory_entries(root, 256, deadline):
             if path.name.lower().startswith(('license', 'licence', 'copying', 'copyright', 'authors', 'notice')) and path.is_file():
-                add_asset(assets, path, f'Contents/Resources/Notices/{key}/{path.name}', (root,), deadline)
+                add_asset(assets, path, f'{into}/Resources/Notices/{key}/{path.name}', (root,), deadline)
         # Component-level evidence where formula-wide COPYING describes tools.
         extras = {'glib': 'include/glib-2.0/glib/gtypes.h', 'gettext': 'include/libintl.h'}
         if key in extras:
             path = root / extras[key]
-            add_asset(assets, path, f'Contents/Resources/Notices/{key}/{path.name}', (root,), deadline)
+            add_asset(assets, path, f'{into}/Resources/Notices/{key}/{path.name}', (root,), deadline)
         if key not in {'glib', 'gstreamer'}:
             continue
         prefixes[key] = str(root / 'share/locale')
@@ -176,7 +184,7 @@ def resources(profile, deadline):
                 rel = path.relative_to(locale)
                 if len(rel.parts) != 3 or rel.parts[1] != 'LC_MESSAGES':
                     raise ValueError('unexpected locale layout')
-                add_asset(assets, path, f'Contents/Resources/locale/{rel}', (root,), deadline)
+                add_asset(assets, path, f'{into}/Resources/locale/{rel}', (root,), deadline)
                 found.add(path.name)
         if found != wanted:
             raise ValueError('missing required locale domain catalogs')
@@ -230,7 +238,7 @@ def compiler_environment():
     return env
 
 
-def compile_adapters(work, plan, guard):
+def compile_adapters(work, plan, guard, shim=SHIM, launcher=LAUNCHER):
     config = {'TILO_GST_LOCALE': plan['locale_prefixes']['gstreamer'],
               'TILO_GLIB_LOCALE': plan['locale_prefixes']['glib'],
               'TILO_INTL_NAME': Path(plan['intl']).name,
@@ -243,9 +251,12 @@ def compile_adapters(work, plan, guard):
     scratch.mkdir()
     header = scratch / 'local_runtime_config.h'
     header.write_text(''.join(f'#define {key} {json.dumps(value)}\n' for key, value in config.items()))
-    base = [guard, '/usr/bin/clang', '-arch', 'arm64', '-mmacosx-version-min=27.0',
-            '-Wall', '-Wextra', '-Werror', '-O2', '-I', scratch, '-Wl,-no_adhoc_codesign']
-    sources = [('local_runtime_intl.c', SHIM), ('local_runtime_launcher.c', LAUNCHER)]
+    base = [*([guard] if guard else []), '/usr/bin/clang', '-arch', 'arm64',
+            '-mmacosx-version-min=27.0', '-Wall', '-Wextra', '-Werror', '-O2', '-I', scratch,
+            '-Wl,-no_adhoc_codesign']
+    sources = [('local_runtime_intl.c', shim)]
+    if launcher:
+        sources.append(('local_runtime_launcher.c', launcher))
     if plan.get('app_launcher'):
         sources.append(('local_runtime_launcher.c', plan['app_launcher']))
     for source, target in sources:
@@ -256,7 +267,8 @@ def compile_adapters(work, plan, guard):
             name = Path(target).name
             command += ['-DTILO_LAUNCH_NAME=' + json.dumps(name),
                         '-DTILO_EXEC_NAME=' + json.dumps(name + '.real')]
-        if target == SHIM:
+        if target == shim:
+            (work / target).parent.mkdir(parents=True, exist_ok=True)
             command += ['-dynamiclib', '-Wl,-install_name,@loader_path/libtilo-local-intl.dylib',
                         '-Xlinker', '-reexport_library', '-Xlinker', plan['intl']]
         bounded_build(command, compiler_environment(), cwd=work, seconds=120)
@@ -264,11 +276,12 @@ def compile_adapters(work, plan, guard):
     # The re-export deliberately bypasses the shim, preventing recursion.
     original_id = plan['images'][plan['intl']]['slices']['arm64']['install_id']
     run(['/usr/bin/install_name_tool', '-change', original_id,
-         '@loader_path/' + Path(plan['intl']).name, work / SHIM])
+         '@loader_path/' + Path(plan['intl']).name, work / shim])
 
 
-def inspect_payload(work, plan, extra_code=()):
-    expected = {item['destination'] for item in plan['images'].values()} | {SHIM, LAUNCHER}
+def inspect_payload(work, plan, extra_code=(), shim=SHIM, launcher=LAUNCHER):
+    adapters = {shim, launcher} - {None}
+    expected = {item['destination'] for item in plan['images'].values()} | adapters
     if {str(p.relative_to(work)) for p in machos(work)} != expected | set(extra_code):
         raise ValueError('unexpected or missing payload code')
     records = {}
@@ -297,14 +310,16 @@ def inspect_payload(work, plan, extra_code=()):
                 after['filetype'] != before['filetype'] or
                 after['minimum_macos'] != before['minimum_macos']):
             raise ValueError('relocation changed more than declared load commands')
-    if records[SHIM]['slices']['arm64']['dependencies'].count(
+    if records[shim]['slices']['arm64']['dependencies'].count(
             {'kind': 'LC_REEXPORT_DYLIB', 'load': '@loader_path/' + Path(plan['intl']).name}) != 1:
         raise ValueError('missing explicit real-libintl re-export')
-    for relative, allowed in [(SHIM, {'@loader_path/' + Path(plan['intl']).name}), (LAUNCHER, set())]:
+    for relative, allowed in [(shim, {'@loader_path/' + Path(plan['intl']).name}), (launcher, set())]:
+        if relative is None:
+            continue
         arch = records[relative]['slices']['arm64']
         if {e['load'] for e in arch['dependencies'] if not system_library(e['load'])} != allowed:
             raise ValueError('unexpected adapter dependencies')
-        if arch['filetype'] != ('DYLIB' if relative == SHIM else 'EXECUTE'):
+        if arch['filetype'] != ('DYLIB' if relative == shim else 'EXECUTE'):
             raise ValueError('unexpected adapter image type')
     return records
 
@@ -341,16 +356,156 @@ def stage(out, plan, guard, resume=False):
                       'not_an_app_or_installer': True})
 
 
+def record_closure(binary, plugins, deadline):
+    """The images `binary` and GStreamer's plugin scanner load with `plugins`, by canonical path,
+    resolved in the context of both executables as the relocation is."""
+    gst = (HOMEBREW / 'opt/gstreamer').resolve(strict=True)
+    folder = gst / 'lib/gstreamer-1.0'
+    missing = sorted(name for name in plugins if not (folder / name).is_file())
+    if missing:
+        raise ValueError('reviewed plugins are not installed: ' + ', '.join(missing))
+    executables = [binary.resolve(strict=True),
+                   (gst / 'libexec/gstreamer-1.0/gst-plugin-scanner').resolve(strict=True)]
+    roots = executables + [(folder / name).resolve(strict=True) for name in sorted(plugins)]
+    images = {}
+
+    def facts(path):
+        if str(path) not in images:
+            if len(images) >= 512:
+                raise ValueError('closure image bound reached')
+            images[str(path)] = image_info(path, 'arm64', min(15, remaining(deadline)))
+        return images[str(path)]['slices']['arm64']
+
+    queue = [(root, executable) for root in roots
+             for executable in (executables if root not in executables else [root])]
+    seen = set()
+    while queue:
+        path, executable = queue.pop()
+        if (path, executable) in seen:
+            continue
+        seen.add((path, executable))
+        arch = facts(path)
+        bases = [expand(p, path, executable) for p in arch['rpaths']]
+        bases += [expand(p, executable, executable) for p in facts(executable)['rpaths']]
+        for edge in arch['dependencies']:
+            target = resolve_load(edge['load'], path, executable, bases, (HOMEBREW,))
+            if target:
+                queue.append((target, executable))
+    return roots, images
+
+
+def tilolang_closure(binary, out, plugins, libraries, packages):
+    """Stage `binary` (an arm64 tilolang-app) at `out/bin/` and the reviewed GStreamer closure it
+    and the scanner load at `out/lib/gstreamer/`, every load relative to its loader. Fails on an
+    image or package the reviewed lists do not name, or one they name that is missing."""
+    deadline = time.monotonic() + 300
+    roots, images = record_closure(Path(binary), plugins, deadline)
+    found = {Path(path).name for path in images} - {roots[0].name, roots[1].name} - set(plugins)
+    differences = []
+    if found != set(libraries):
+        differences.append('libraries: unreviewed '
+                           f'{sorted(found - set(libraries))}, missing {sorted(set(libraries) - found)}')
+    evidence = {}
+    for path in images:
+        if Path(path) == roots[0]:
+            continue
+        record = formula_evidence(Path(path), (HOMEBREW,), deadline)
+        if not record:
+            raise ValueError(f'no Homebrew package evidence for {Path(path).name}')
+        evidence[record['package_root']] = record
+    names = {Path(root).parent.name for root in evidence}
+    if names != set(packages) or len(names) != len(evidence):
+        differences.append('packages: unreviewed '
+                           f'{sorted(names - set(packages))}, missing {sorted(set(packages) - names)}')
+    if differences:
+        raise ValueError('the closure differs from the reviewed ' + '; '.join(differences))
+    for source, item in images.items():
+        path = Path(source)
+        item['destination'] = ('bin/' + path.name if path == roots[0] else
+                               GSTREAMER + '/Helpers/' + path.name if path == roots[1] else
+                               GSTREAMER + '/PlugIns/' + path.name if path in roots[2:] else
+                               GSTREAMER + '/Frameworks/' + path.name)
+    if len({item['destination'].casefold() for item in images.values()} | {TILOLANG_SHIM.casefold()}) != len(images) + 1:
+        raise ValueError('case-insensitive runtime filename collision')
+    intl = relocation_map(images, TILOLANG_SHIM)
+    assets, prefixes = resources({'packages': evidence}, deadline, packages=None, into=GSTREAMER)
+    media_assets(assets, evidence, prefixes['gstreamer'], deadline)
+    plan = {'images': images, 'assets': assets, 'locale_prefixes': prefixes, 'intl': intl,
+            'profile_sha256': hashlib.sha256(json.dumps(
+                {Path(k).name: v['sha256'] for k, v in images.items()}, sort_keys=True).encode()).hexdigest(),
+            'adapter_sources': {'local_runtime_intl.c': digest(HERE / 'local_runtime_intl.c')},
+            'extended_locale_catalogs': True, 'media_data': True}
+    out.mkdir(parents=True)
+    for source, item in plan['images'].items():
+        target = out / item['destination']
+        copy_checked(Path(source), target, item['sha256'])
+        target.chmod(0o755)
+        command = ['/usr/bin/install_name_tool']
+        for old, new in item['changes']:
+            command += ['-change', old, new]
+        arch = item['slices']['arm64']
+        for rpath in arch['rpaths']:
+            command += ['-delete_rpath', rpath]
+        if arch['install_id']:
+            command += ['-id', '@loader_path/' + target.name]
+        if len(command) > 1:
+            run(command + [target])
+    for relative, item in assets.items():
+        copy_checked(Path(item['source']), out / relative, item['sha256'])
+        (out / relative).chmod(0o644)
+    compile_adapters(out, plan, None, shim=TILOLANG_SHIM, launcher=None)
+    records = inspect_payload(out, plan, shim=TILOLANG_SHIM, launcher=None)
+    # What was reviewed and built, by name and hash, sealed with the runtime it describes.
+    receipt = {'images': {item['destination']: item['sha256'] for item in images.values()},
+               'packages': {Path(root).parent.name: {'version': record['version'],
+                                                     'receipt_sha256': record['receipt_sha256']}
+                            for root, record in evidence.items()},
+               'staged': {relative: facts['sha256'] for relative, facts in records.items()}}
+    (out / GSTREAMER / 'Resources/closure.json').write_text(json.dumps(receipt, indent=1, sort_keys=True))
+
+
+def media_assets(assets, evidence, gst_locale, deadline):
+    """Subtitles' dictionary and notice, the bundle's font configuration, and the plugin sets'
+    message catalogs."""
+    import collection_app_runtime as app
+    import collection_media_runtime as media
+    packages = {Path(root).parent.name: Path(root) for root in evidence}
+    for name, relative in media.DATA.items():
+        target = ('Resources/libthai/thbrk.tri' if name == 'libthai' else
+                  'Resources/Notices/libunibreak/LICENCE')
+        add_asset(assets, packages[name] / relative, f'{GSTREAMER}/{target}', (packages[name],), deadline)
+    config = HERE / 'local_media_fonts.conf'
+    add_asset(assets, config, GSTREAMER + '/Resources/fontconfig/fonts.conf', (HERE,), deadline)
+    locale = Path(gst_locale)
+    for messages in sorted(locale.glob('*/LC_MESSAGES')):
+        for domain in sorted(app.DOMAINS):
+            source = messages / (domain + '.mo')
+            if source.is_file() and not source.is_symlink():
+                add_asset(assets, source, f'{GSTREAMER}/Resources/locale/{source.relative_to(locale)}',
+                          (locale,), deadline)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('stage', choices=['plan', 'stage', 'verify'])
-    parser.add_argument('--profile', type=Path, required=True)
-    parser.add_argument('--profile-sha256', required=True)
+    parser.add_argument('stage', choices=['plan', 'stage', 'verify', 'tilolang'])
+    parser.add_argument('--profile', type=Path)
+    parser.add_argument('--profile-sha256')
+    parser.add_argument('--binary', type=Path)
     parser.add_argument('--out', type=Path)
     parser.add_argument('--compiler-guard', type=Path)
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args(argv)
     try:
+        if args.stage == 'tilolang':
+            import collection_media_runtime as media
+            if not args.binary or not args.out:
+                raise ValueError('tilolang takes --binary and --out')
+            tilolang_closure(args.binary, args.out, media.TILOLANG_PLUGINS,
+                             media.TILOLANG_LIBRARIES, media.TILOLANG_PACKAGES)
+            print(json.dumps({'status': 'staged', 'out': str(args.out)}))
+            return 0
+        if not args.profile or not args.profile_sha256:
+            raise ValueError('--profile and --profile-sha256 are required')
         plan = make_plan(args.profile, args.profile_sha256)
         if args.stage == 'plan':
             print(json.dumps(plan, indent=2, sort_keys=True))

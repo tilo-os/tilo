@@ -122,4 +122,8 @@ file="${package_id##*.}-$version-${arch//+/-}.tapp"
 mkdir -p "$out"
 "$bin_dir/tilo-app-package" split "$work/$file" --out "$out" >&2
 test -f "$out/$file"
+if [[ $platform == macos ]]; then
+    # Tilo.app carries the whole package and installs it on first start.
+    cp "$work/$file" "$out/whole-$file"
+fi
 printf '%s\n' "$out/$file"
