@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -38,12 +39,18 @@ mod agent_turns;
 mod agent_windows;
 #[path = "chat.rs"]
 mod chat;
+#[path = "customer_workspaces.rs"]
+mod customer_workspaces;
 #[path = "daemon_flows.rs"]
 mod daemon_flows;
 #[path = "device_actions.rs"]
 mod device_actions;
 #[path = "device_host.rs"]
 mod device_host;
+#[path = "device_writes.rs"]
+mod device_writes;
+#[path = "support/guests.rs"]
+mod guests;
 /// The one fixture a test reaches a device's daemon through.
 mod host;
 #[path = "hosted_agent_terminal.rs"]
@@ -54,6 +61,8 @@ mod hosted_mail_accounts;
 mod hosted_terminal_fresh_tab;
 #[path = "hosted_web_call.rs"]
 mod hosted_web_call;
+#[path = "joining.rs"]
+mod joining;
 #[path = "root_holder_login.rs"]
 mod root_holder_login;
 #[path = "runtime_daemon_process.rs"]
@@ -64,3 +73,7 @@ mod session_api_connect;
 mod tracker;
 #[path = "workspace_list.rs"]
 mod workspace_list;
+#[path = "workspace_members.rs"]
+mod workspace_members;
+#[path = "workspace_records.rs"]
+mod workspace_records;
