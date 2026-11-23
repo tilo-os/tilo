@@ -482,14 +482,17 @@ There are seven ways to add a device:
 - **One way to admit a member**: `workspace/members#admit`, on the one
   dispatch. An invitation's redemption, a crowd join and a member adding
   someone all call it. An invitation's bearer calls with the issuer's grant,
-  checked when it is used. One call is one change: the governance entry,
-  the spent invitation and the member's record together, or nothing.
+  checked when it is used. Issuing an invitation needs what redeeming it
+  needs, `member.add` for the role it gives, so no one holds an invitation
+  that can only fail. One call is one change: the governance entry, the
+  spent invitation and the member's record together, or nothing.
 - **One way to create a person**: one action on the device's daemon makes
   the root and founds the person's own workspace. First-run onboarding and
   the CLI both call it, and it needs a running daemon. The daemon works out
   the device's class: native on Tilo OS, foreign elsewhere. It keeps the root
   and the device key in its own store, and an OS account it serves is
-  admitted as its person.
+  admitted as its person, named by the account's display name until they
+  rename themselves.
 - **One way to add a device**: a ticket. `tilo device add` issues one and
   `tilo login <ticket>` uses it; the root certifies the new device. There are
   no tokens, codes or a join to wait on.
