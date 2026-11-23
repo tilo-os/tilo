@@ -807,7 +807,7 @@ impl Workspaces {
             crate::workspaces::servers::apply(
                 self,
                 crate::workspaces::servers::Servers::SET_WEB
-                    .with((hex::encode(device_key), served)),
+                    .with((crate::workspaces::servers::device_id(&device_key), served)),
             )
             .await
             .map_err(|error| refused(&error))?;

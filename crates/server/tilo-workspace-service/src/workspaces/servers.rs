@@ -1331,7 +1331,9 @@ async fn enter(
         .servers
         .get(&device_id(&cert.device_public_key))
         .cloned();
-    let endpoint_current = current.as_ref().is_some_and(|server| server.endpoint == endpoint);
+    let endpoint_current = current
+        .as_ref()
+        .is_some_and(|server| server.endpoint == endpoint);
     if !endpoint_current {
         let action = Servers::ENROLL_SERVER.with((
             hex::encode(cert.device_public_key),
@@ -1343,10 +1345,8 @@ async fn enter(
     if let Some(relay) = relay
         && current.is_none_or(|server| server.relay != relay)
     {
-        let action = Servers::SET_RELAY_URL.with((
-            hex::encode(cert.device_public_key),
-            relay.to_owned(),
-        ));
+        let action =
+            Servers::SET_RELAY_URL.with((device_id(&cert.device_public_key), relay.to_owned()));
         apply(workspaces, action).await?;
     }
     Ok(())
