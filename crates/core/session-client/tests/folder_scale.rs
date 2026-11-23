@@ -81,18 +81,19 @@ fn disk_bytes(path: &std::path::Path) -> u64 {
 
 async fn arrive(
     host: ServerAddress,
+    root: &SigningKey,
     server_cert: &tilo_user_identity::DeviceCert,
     workspace: &str,
     name: &str,
 ) -> Link {
-    let (root, key) = (new_key(), new_key());
+    let key = new_key();
     let (cert, entry) = entry_request(
         server_cert,
         workspace,
         &key,
         Entering {
             held: None,
-            root: Some(&root),
+            root: Some(root),
             label: "Browser",
             name,
             token: None,
@@ -129,16 +130,94 @@ struct Writer {
     bytes: usize,
     /// Records of the tree written, one per record a write changed.
     writes: usize,
+    /// The agents that write the files, each with the key its person certified for it.
+    agents: Vec<super::support::Device>,
+}
+
+/// What the person whose root is `root` lets their three agents do, as their Settings records
+/// it: write the workspace's files. An agent acts within that and within its person's own role.
+async fn grant_agents(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: &str,
+    root: &SigningKey,
+) {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let grants: Vec<Grant> = (0..3)
+        .map(|n| {
+            Grant::new(
+                format!("agent-{n}-files"),
+                Grantee::agent(format!("agent-{n}")),
+                TreePath::workspace(workspace).app(fs_protocol::tree::FILES_APP),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person(person.clone()),
+            )
+        })
+        .collect();
+    tilo_workspace_service::workspaces::fixtures::record_grants(workspaces, workspace, &grants)
+        .await;
+}
+
+/// Three agents of the person whose root is `root`, each with a key the root certified for it
+/// alone in `workspace`, as the person's device makes one for an agent it starts.
+fn agents(
+    root: &SigningKey,
+    workspace: tilo_server_protocol::WorkspaceId,
+) -> Vec<super::support::Device> {
+    (0..3)
+        .map(|n| {
+            let agent = format!("agent-{n}");
+            let scope =
+                tilo_user_identity::AgentScope::agent_in(*workspace.as_uuid().as_bytes(), &agent);
+            super::support::flow::agent_device(root, &agent, scope)
+        })
+        .collect()
 }
 
 impl Writer {
-    /// Write one file into `folder`, as the agent that wrote it.
+    /// Write one file into `folder`, as the agent that wrote it: its call signed with the key
+    /// its person certified for it, which every receiver checks the change against.
     fn file(&mut self, folder: u64, n: usize) {
-        let agent = tilo_actions::ActionInvoker::agent(format!("agent-{}", n % 3))
-            .named(Some(format!("Agent {}", n % 3)));
-        let _acting = tilo_fs::namespace::acting_as(Some(
-            tilo_actions::ActionContext::default().with_invoker(agent),
+        let id = format!("agent-{}", n % 3);
+        let signer = &self.agents[n % 3];
+        let mut request = tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: fs_protocol::tree::FILES_APP.into(),
+                address: tilo_actions::ActionAddress::new(
+                    fs_protocol::tree::TREE_KIND,
+                    fs_protocol::file_action::verbs::NEW_FILE,
+                ),
+            },
+            argument: tilo_actions::remote::InvokeArgument::default(),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                &self.workspace,
+                &request,
+                &signer.cert,
+                &signer.key,
+                tilo_clock::unix_now_ns(),
+            )
+            .unwrap(),
         ));
+        let person = tilo_actions::PersonId::from_root(signer.cert.user_public_key);
+        let agent = tilo_actions::ActionInvoker::admitted(
+            &tilo_actions::Acting::agent(id).agent_of(person),
+        )
+        .named(Some(format!("Agent {}", n % 3)));
+        let mut context = tilo_actions::ActionContext::default().with_invoker(agent);
+        context.source_invocation = Some(request.invocation);
+        context.signed = tilo_actions::remote::SignedCall::of(&request).map(Box::new);
+        let _acting = tilo_fs::namespace::acting_as(Some(context));
         self.namespace
             .create_file(
                 folder,
@@ -286,9 +365,9 @@ struct Window {
 }
 
 /// A host keeping a company's folder in a workspace every page that enters is an editor of.
-struct Folder<S> {
+struct Folder {
     /// The running server, kept for as long as the folder is used.
-    server: S,
+    server: super::support::TestHost,
     state: tempfile::TempDir,
     owner_device: super::support::Device,
     company: tilo_server_protocol::workspaces::WorkspaceSummary,
@@ -296,7 +375,7 @@ struct Folder<S> {
     page: ServerAddress,
 }
 
-async fn folder() -> Folder<impl Sized> {
+async fn folder() -> Folder {
     let (owner, _) = UserIdentity::generate("Owner", 1);
     let owner_device = enrol(
         &owner,
@@ -334,7 +413,7 @@ async fn folder() -> Folder<impl Sized> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
     let Folder {
-        server: _server,
+        server,
         state,
         owner_device,
         company,
@@ -342,8 +421,29 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
     } = folder().await;
     let reach = || page.clone();
     let index = route(&company.workspace, 0);
-    let writer_link = arrive(reach(), &owner_device.cert, &company.workspace, "Laptop").await;
-    let reader_link = arrive(reach(), &owner_device.cert, &company.workspace, "Page").await;
+    let writer_root = new_key();
+    grant_agents(
+        server.server.workspaces().unwrap(),
+        &company.workspace,
+        &writer_root,
+    )
+    .await;
+    let writer_link = arrive(
+        reach(),
+        &writer_root,
+        &owner_device.cert,
+        &company.workspace,
+        "Laptop",
+    )
+    .await;
+    let reader_link = arrive(
+        reach(),
+        &new_key(),
+        &owner_device.cert,
+        &company.workspace,
+        "Page",
+    )
+    .await;
     for link in [&writer_link, &reader_link] {
         link.send(Cmd::Join(company.workspace_id)).unwrap();
         link.send(Cmd::OpenRoute(index.clone())).unwrap();
@@ -351,6 +451,7 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
     }
     let mut writer = Writer {
         namespace: laptop_folder(&writer_link),
+        agents: agents(&writer_root, company.workspace_id),
         link: writer_link,
         workspace: company.workspace.clone(),
         sent: BTreeMap::new(),
@@ -548,7 +649,7 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
         .with_writer(std::io::stderr)
         .try_init();
     let Folder {
-        server: _server,
+        server,
         state: _state,
         owner_device,
         company,
@@ -557,8 +658,29 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
     let reach = || page.clone();
     let index = route(&company.workspace, 0);
     // Two people: one checks the repository out, the other keeps a record of their own.
-    let checkout = arrive(reach(), &owner_device.cert, &company.workspace, "Laptop").await;
-    let other = arrive(reach(), &owner_device.cert, &company.workspace, "Phone").await;
+    let checkout_root = new_key();
+    grant_agents(
+        server.server.workspaces().unwrap(),
+        &company.workspace,
+        &checkout_root,
+    )
+    .await;
+    let checkout = arrive(
+        reach(),
+        &checkout_root,
+        &owner_device.cert,
+        &company.workspace,
+        "Laptop",
+    )
+    .await;
+    let other = arrive(
+        reach(),
+        &new_key(),
+        &owner_device.cert,
+        &company.workspace,
+        "Phone",
+    )
+    .await;
     let theirs = route(&company.workspace, TreeChunk::MAX);
     for (link, record) in [(&checkout, &index), (&other, &theirs)] {
         link.send(Cmd::Join(company.workspace_id)).unwrap();
@@ -593,6 +715,7 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
     let began = Instant::now();
     let mut writer = Writer {
         namespace: laptop_folder(&checkout),
+        agents: agents(&checkout_root, company.workspace_id),
         link: checkout,
         workspace: company.workspace.clone(),
         sent: BTreeMap::new(),
@@ -621,7 +744,14 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
     let (other, mut took) = changing.await.unwrap();
 
     // A page that opens the folder afterwards finds every file of the checkout.
-    let reader_link = arrive(reach(), &owner_device.cert, &company.workspace, "Page").await;
+    let reader_link = arrive(
+        reach(),
+        &new_key(),
+        &owner_device.cert,
+        &company.workspace,
+        "Page",
+    )
+    .await;
     reader_link.send(Cmd::Join(company.workspace_id)).unwrap();
     reader_link.send(Cmd::OpenRoute(index.clone())).unwrap();
     super::support::wait_keyed(&reader_link, &index).await;

@@ -460,15 +460,16 @@ pub fn agent_device(root: &ed25519_dalek::SigningKey, label: &str, scope: AgentS
     let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
         getrandom::SysRng,
     ));
+    let now = tilo_clock::unix_now_ns();
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
         capabilities: DeviceCapabilities::agent_grant(scope),
-        issued_at_ns: 1,
+        // Issued a moment ago: an agent's grant lives at most its bounded lifetime from issue.
+        issued_at_ns: now.saturating_sub(1_000_000_000),
         expires_at_ns: Some(
-            tilo_clock::unix_now_ns()
-                .checked_add(1_800_000_000_000)
+            now.checked_add(1_800_000_000_000)
                 .expect("half an hour from now"),
         ),
         signature: [0; 64],
