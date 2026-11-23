@@ -526,6 +526,8 @@ pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
         return refuse("handoff profile carries fields outside the installer profile");
     };
     validate_profile(profile)?;
+    let mut sanitized_profile = profile.clone();
+    staging_handoff_model::drop_invalid_hostname(&mut sanitized_profile);
     let mut handoff = Handoff {
         operation_id: guid(field("operation_id"), "operation_id")?,
         host_os,
@@ -536,7 +538,7 @@ pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
         target_extent: extent(field("target_extent"), "target_extent", false)?,
         owned_boot_entry: entry,
         original_boot_order: order,
-        profile: profile.clone(),
+        profile: sanitized_profile,
         plan: None,
         migration: None,
     };

@@ -98,15 +98,7 @@ pub fn validate_stored_profile(
     validate_profile_with(profile, false)
 }
 
-pub fn drop_invalid_hostname(profile: &mut serde_json::Map<String, serde_json::Value>) {
-    if profile.get("hostname").is_some_and(|value| {
-        !value
-            .as_str()
-            .is_some_and(staging_handoff_model::valid_hostname)
-    }) {
-        profile.remove("hostname");
-    }
-}
+pub use staging_handoff_model::drop_invalid_hostname;
 
 pub fn profile_from_install(
     profile: &crate::model::InstallProfile,
@@ -365,7 +357,6 @@ mod tests {
         }
         for (pointer, value) in [
             ("/host_os", serde_json::json!("windows")),
-            ("/profile/hostname", serde_json::json!("bad host")),
             (
                 "/migration/operation_id",
                 serde_json::json!("different-operation"),
@@ -394,6 +385,18 @@ mod tests {
             );
             assert!(parse_live(&invalid).is_err(), "{pointer}");
         }
+
+        // Imager refuses an invalid hostname when building/validating, while read-back
+        // consumers (shared model and live helper) accept the handoff and drop the bad hostname.
+        let mut bad_host = decoded;
+        bad_host["profile"]["hostname"] = serde_json::json!("bad host");
+        let bad_host_bytes = serde_json::to_vec(&bad_host).unwrap();
+        assert!(Handoff::parse(&bad_host_bytes).is_err());
+        let parsed_shared = staging_handoff_model::Handoff::parse(&bad_host_bytes).unwrap();
+        assert!(!parsed_shared.profile.contains_key("hostname"));
+        let parsed_live = parse_live(&bad_host_bytes).unwrap();
+        assert!(parsed_live["profile"].get("hostname").is_none());
+        assert_eq!(parsed_live, serde_json::to_value(&parsed_shared).unwrap());
     }
 
     tilo_test_env::scenario! {

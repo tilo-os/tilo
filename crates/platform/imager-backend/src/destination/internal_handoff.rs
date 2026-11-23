@@ -183,15 +183,16 @@ pub mod tests {
             let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
             assert!(media_profile(&handoff).is_err());
 
-            // Invalid hostnames are refused at the handoff boundary itself, matching
-            // install-profile-model's DNS-label rule.
-            for invalid_hostname in ["bad host", "a\nb", "-host", "host-", "", &"h".repeat(64)] {
-                assert!(
-                    rejects(|v| v["profile"]["hostname"] = invalid_hostname.into())
-                        .contains("hostname"),
-                    "{invalid_hostname:?}"
-                );
-            }
+            let mut value = document();
+            value["profile"]["hostname"] = "bad host".into();
+            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let profile = media_profile(&handoff).unwrap();
+            assert!(profile.hostname.is_none());
+            assert!(
+                profile
+                    .repairs
+                    .contains(&crate::destination::media_profile::MediaProfileField::Hostname)
+            );
 
             // A profile field outside the handoff's lexical check (such as an unknown locale) is
             // flagged for repair by the media profile contract.
