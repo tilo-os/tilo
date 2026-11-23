@@ -197,6 +197,27 @@ check = "sdk-python"
                 dict(files, **{"t.toml": '[[check]]\nname = "other"\nrun = "true"\n'}), manifest)
             self.assertTrue(any("sdk-python" in problem for problem in problems), problems)
 
+    def test_a_templated_checks_instance_covers_the_suite_it_runs(self):
+        # A flow's check is an instance of t.toml's family (`flows/{flow}`), and the suite
+        # names the instance that runs it.
+        manifest = MANIFEST + '''
+[[covered]]
+suite = "os/tests/flow.sh"
+check = "flows/four-devices"
+'''
+        files = {
+            "os/tests/flow.sh": "true\n",
+            "t.toml": '[[check]]\nname = "flows/{flow}"\nrun = "bash os/tests/flow.sh {flow}"\n'
+                      'matrix = { flow = ["four-devices", "laptop-phone-server"] }\n',
+        }
+        self.assertEqual(self.audit(files, manifest), [])
+        with self.subTest(phase="an instance the matrix does not make"):
+            problems = self.audit(
+                dict(files, **{"os/tests/flow.sh": "true\n"}),
+                manifest.replace("flows/four-devices", "flows/none"))
+            self.assertTrue(any("is not a check t.toml runs for a change" in problem
+                                for problem in problems), problems)
+
     def test_an_unrequired_suite_names_the_t_check_that_executes_it(self):
         manifest = MANIFEST.replace('reason = "boots a VM"',
                                     'reason = "boots a VM"\ncheck = "vm"')

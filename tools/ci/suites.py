@@ -153,7 +153,7 @@ def parse(text: str) -> Manifest:
             covered[suite] = _path(entry["by"], f"{suite} covering suite")
         else:
             check = entry["check"]
-            if not isinstance(check, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", check):
+            if not isinstance(check, str) or CHECK_NAME.fullmatch(check) is None:
                 raise ValueError(f"{suite}: covering check must name a t.toml check")
             checks[suite] = check
     unrequired: dict[str, str] = {}
@@ -386,16 +386,50 @@ def always_run(root: Path) -> set[str]:
     return guarded
 
 
+def instances(root: Path, check: dict) -> set[str]:
+    """The check's name and every instance its matrix makes (`flows/four-devices`)."""
+    name = check.get("name")
+    if not isinstance(name, str) or not name:
+        return set()
+    names = {name}
+    matrix = check.get("matrix")
+    if not isinstance(matrix, dict):
+        return names
+    values: dict[str, tuple[str, ...]] = {}
+    for key, value in matrix.items():
+        if key == "set":
+            continue
+        if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+            values[key] = tuple(value)
+        elif isinstance(value, dict) and {"from_toml", "key"} <= set(value):
+            source = tomllib.loads((root / value["from_toml"]).read_text(encoding="utf-8"))
+            values[key] = tuple(
+                entry[value["key"]] for entry in source.get(value["key"], [])
+                if isinstance(entry, dict) and isinstance(entry.get(value["key"]), str))
+    for combination in itertools.product(*values.values()):
+        try:
+            names.add(name.format(**dict(zip(values, combination))))
+        except (KeyError, IndexError):
+            continue
+    return names
+
+
 def change_checks(root: Path) -> set[str]:
     """The checks t.toml runs for a change: its default ones and those it names `default = true`.
 
-    A check that only names an `on` runs there and when asked, so it checks no change.
+    A check that only names an `on` runs there and when asked, so it checks no change. A
+    templated name is listed as the template and as each instance its matrix makes, so a
+    suite names the instance that runs it.
     """
     declared = tomllib.loads((root / "t.toml").read_text(encoding="utf-8")).get("check", [])
-    return {
-        check["name"] for check in declared
-        if isinstance(check.get("name"), str) and check.get("default", "on" not in check) is not False
-    }
+    names: set[str] = set()
+    for check in declared:
+        if not isinstance(check.get("name"), str):
+            continue
+        if check.get("default", "on" not in check) is False:
+            continue
+        names |= instances(root, check)
+    return names
 
 
 def check_commands(root: Path) -> dict[str, str]:
@@ -413,27 +447,8 @@ def check_commands(root: Path) -> dict[str, str]:
         if not isinstance(name, str) or not name:
             continue
         command = check.get("run")
-        commands.setdefault(name, command if isinstance(command, str) else "")
-        matrix = check.get("matrix")
-        if not isinstance(matrix, dict):
-            continue
-        values: dict[str, tuple[str, ...]] = {}
-        for key, value in matrix.items():
-            if key == "set":
-                continue
-            if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
-                values[key] = tuple(value)
-            elif isinstance(value, dict) and {"from_toml", "key"} <= set(value):
-                source = tomllib.loads((root / value["from_toml"]).read_text(encoding="utf-8"))
-                values[key] = tuple(
-                    entry[value["key"]] for entry in source.get(value["key"], [])
-                    if isinstance(entry, dict) and isinstance(entry.get(value["key"]), str))
-        for combination in itertools.product(*values.values()):
-            try:
-                expanded = name.format(**dict(zip(values, combination)))
-            except (KeyError, IndexError):
-                continue
-            commands.setdefault(expanded, commands[name])
+        for expanded in instances(root, check):
+            commands.setdefault(expanded, command if isinstance(command, str) else "")
     return commands
 
 
