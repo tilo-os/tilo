@@ -30,7 +30,7 @@ use tilo_server_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32
 use tilo_server_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_server_lending, web_config};
+use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_server, web_config};
 use tilo_server::entry;
 
 mod bots;
@@ -1396,21 +1396,6 @@ pub(crate) async fn run(
     if let Some(agent) = &moderation {
         tracing::info!(model = agent.model(), "moderation agent loaded");
     }
-    // The same model looks over the reports the workspace's members write
-    // before they send them, asked through the workspace on their behalf.
-    let feedback_reviewer = moderation
-        .is_some()
-        .then(|| {
-            crate::persistent_moderation::WorkspaceReviewer::from_store(
-                &store,
-                persistent.moderation_model.as_deref(),
-            )
-        })
-        .transpose()?
-        .map(|reviewer| {
-            std::sync::Arc::new(reviewer)
-                as std::sync::Arc<dyn tilo_agent_session::FeedbackReviewer>
-        });
     let host = host_key(&state)?;
     let server_cert = enrol(
         &root,
@@ -1448,14 +1433,7 @@ pub(crate) async fn run(
         tilo_server::hosted_browser::keep_stand_in(&config.state_root, &root)
             .map_err(anyhow::Error::msg)?;
     }
-    let hosted = start_server_lending(
-        config,
-        identity,
-        &args.web,
-        &state,
-        crate::web_cli::Lent { feedback_reviewer },
-    )
-    .await?;
+    let hosted = start_server(config, identity, &args.web).await?;
     // Everything a start settles and begins, in one place: a step that fails
     // stops the server it was started on before the error goes up (the `match`
     // below).
@@ -1839,8 +1817,6 @@ pub(crate) async fn run(
         result = serve_operator(&context, &mut operator, invitations.as_mut(), owner_socket.as_ref()) => result,
         result = &mut shutdown => result,
     };
-    // Its agents' turns end first, while everything they work with is still up.
-    hosted.finish_turns().await;
     for runner in moderator
         .into_iter()
         .chain(runners)

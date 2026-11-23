@@ -467,7 +467,7 @@ fn a_further_device_reads_every_note_written_long_before_it_arrived() {
 
 async fn a_further_device_reads(process: tilo_clock::testing::OwnProcess) {
     let ada = TestUser::fresh("Ada");
-    let (_server, _issuer, hint) = notes_written_long_ago(&ada, process).await;
+    let (_server, _issuer, hint) = Box::pin(notes_written_long_ago(&ada, process)).await;
 
     let restored = ada.enrol("restored computer", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
@@ -505,7 +505,7 @@ fn an_invited_device_reads_every_note_written_long_before_it_joined() {
 
 async fn an_invited_device_reads(process: tilo_clock::testing::OwnProcess) {
     let ada = TestUser::fresh("Ada");
-    let (server, issuer, _hint) = notes_written_long_ago(&ada, process).await;
+    let (server, issuer, _hint) = Box::pin(notes_written_long_ago(&ada, process)).await;
     let hosted = server
         .server
         .workspaces()

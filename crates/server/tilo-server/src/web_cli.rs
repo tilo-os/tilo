@@ -167,86 +167,18 @@ pub struct WebArgs {
         requires = "session_device"
     )]
     pub session_env_out: Option<PathBuf>,
-    #[cfg(feature = "agents")]
-    #[command(flatten)]
-    pub agents: AgentArgs,
 }
 
-/// Agents on the host (feature `agents`).
-#[cfg(feature = "agents")]
-#[derive(clap::Args, Clone, Debug)]
-pub struct AgentArgs {
-    /// Serve workspace resources to pages and host the workspace's roster agents:
-    /// the host runs an action of a workspace record for whoever the workspace's
-    /// policy lets ask, such as a member linking their own account on the
-    /// workspace's Discord from their profile card.
-    #[arg(long)]
-    pub workspace_documents: bool,
-}
-
-#[cfg(feature = "agents")]
-impl AgentArgs {
-    fn options(
-        &self,
-        state_dir: PathBuf,
-    ) -> anyhow::Result<Option<tilo_server::agents::AgentOptions>> {
-        if !self.workspace_documents {
-            return Ok(None);
-        }
-        Ok(Some(tilo_server::agents::AgentOptions {
-            state_dir,
-            catalogue: None,
-            feedback_reviewer: None,
-            shell: None,
-            browsers: tilo_server::hosted_browser::HostedBrowsers::from_env()
-                .map_err(anyhow::Error::msg)?
-                .map(std::sync::Arc::new),
-        }))
-    }
-}
-
-/// The server, with its roster agents when `--workspace-documents` asked for them.
+/// The server, and its state's lock.
 pub struct HostedServer {
     pub server: Server,
-    #[cfg(feature = "agents")]
-    agents: Option<tilo_agent_session::AgentService>,
-    /// The agents it runs for the workspaces it governs.
-    #[cfg(feature = "agents")]
-    host_agents: Option<tokio::task::JoinHandle<()>>,
-    /// What lets those agents' turns end before it stops.
-    #[cfg(feature = "agents")]
-    draining: Option<tilo_workspace_service::agents::Draining>,
     /// Its state's lock, released once it stopped.
     _lock: tilo_server::state_lock::StateLock,
 }
 
-/// How long a stopping server waits for its agents' turns to end. A turn this cuts off says so in
-/// its reply; one that ends in time is never cut off by a restart.
-#[cfg(feature = "agents")]
-const TURN_DRAIN: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-
 impl HostedServer {
-    /// Begin no agent turn any more and wait until the turns going ended, at most
-    /// [`TURN_DRAIN`]: the first thing a server that is stopping does, while everything a turn
-    /// works with is still up.
-    pub async fn finish_turns(&self) {
-        #[cfg(feature = "agents")]
-        if let Some(draining) = &self.draining {
-            draining.finish(TURN_DRAIN).await;
-        }
-    }
-
-    /// Stop the roster agents (they resume on the next start), then the server.
+    /// Stop the server.
     pub async fn shutdown(self) {
-        self.finish_turns().await;
-        #[cfg(feature = "agents")]
-        if let Some(agents) = self.agents {
-            agents.shutdown();
-        }
-        #[cfg(feature = "agents")]
-        if let Some(host_agents) = self.host_agents {
-            host_agents.abort();
-        }
         self.server.shutdown().await;
     }
 }
@@ -258,46 +190,14 @@ fn announce_web_entry(cfg: &mut tilo_server::ServerConfig, args: &WebArgs) {
     }
 }
 
-/// Start the server; with `--workspace-documents`, serving records, events and roster agents,
-/// their grants kept under `state_root/agents`.
+/// Start the server.
 ///
 /// # Errors
-/// The server did not start, or the agent state could not be read.
-#[cfg_attr(
-    not(feature = "agents"),
-    allow(unused_variables, reason = "agents only")
-)]
+/// The server did not start, or its state is another's.
 pub async fn start_server(
-    cfg: tilo_server::ServerConfig,
-    identity: ServerIdentity,
-    args: &WebArgs,
-    state_root: &Path,
-) -> anyhow::Result<HostedServer> {
-    start_server_lending(cfg, identity, args, state_root, Lent::default()).await
-}
-
-/// What a host lends its workspaces besides serving their records.
-#[derive(Default)]
-pub struct Lent {
-    /// The model its workspaces' reporters may have look over their reports.
-    #[cfg(feature = "agents")]
-    pub feedback_reviewer: Option<std::sync::Arc<dyn tilo_agent_session::FeedbackReviewer>>,
-}
-
-/// [`start_server`], lending the workspaces what `lent` holds.
-///
-/// # Errors
-/// The server did not start, or the agent state could not be read.
-#[cfg_attr(
-    not(feature = "agents"),
-    allow(unused_variables, reason = "agents only")
-)]
-pub async fn start_server_lending(
     mut cfg: tilo_server::ServerConfig,
     identity: ServerIdentity,
     args: &WebArgs,
-    state_root: &Path,
-    lent: Lent,
 ) -> anyhow::Result<HostedServer> {
     if let Some(max) = env_count("TILO_SERVER_MAX_WORKSPACE_GRANTS") {
         cfg.max_workspace_grants = Some(max);
@@ -309,77 +209,13 @@ pub async fn start_server_lending(
         .or_else(|| args.packet_relay_url.clone());
     let lock =
         tilo_server::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
-    #[cfg(feature = "agents")]
-    let options = args.agents.options(state_root.join("agents"))?;
-    #[cfg(feature = "agents")]
-    if let Some(mut options) = options {
-        options.feedback_reviewer = lent.feedback_reviewer;
-        let shells = tilo_server::agents::host_shells(state_root.join("shells"))
-            .map_err(anyhow::Error::msg)?;
-        options.shell = Some(shells);
-        let browsers = options.browsers.clone();
-        let (server, agents, roster) =
-            tilo_server::agents::start_workspace_documents(cfg, identity, options)
-                .await
-                .context("start the server with workspace documents and roster agents")?;
-        let (draining, host_agents) = start_roster(&server, roster, browsers);
-        return Ok(HostedServer {
-            server,
-            agents: Some(agents),
-            host_agents,
-            draining,
-            _lock: lock,
-        });
-    }
     let server = Server::start(cfg, identity)
         .await
         .context("start the server")?;
     Ok(HostedServer {
         server,
-        #[cfg(feature = "agents")]
-        agents: None,
-        #[cfg(feature = "agents")]
-        host_agents: None,
-        #[cfg(feature = "agents")]
-        draining: None,
         _lock: lock,
     })
-}
-
-#[cfg(feature = "agents")]
-fn start_roster(
-    server: &Server,
-    roster: tilo_server::agents::RosterServices,
-    browsers: Option<std::sync::Arc<tilo_server::hosted_browser::HostedBrowsers>>,
-) -> (
-    Option<tilo_workspace_service::agents::Draining>,
-    Option<tokio::task::JoinHandle<()>>,
-) {
-    // The agents each workspace made to run here work around the clock, on the model their workspace linked.
-    // The devices this server placed itself: no agent reads as one of them for a person.
-    let placed = server.environments();
-    let started = server.workspaces().cloned().map(|workspaces| {
-        // What is judged for a person is counted on their assistant's day,
-        // and a question that waits for them reaches their log.
-        tilo_workspace_service::agents::telling::start(&workspaces);
-        tracing::info!(
-            "the workspaces' agents run on this host, each on the model its workspace linked"
-        );
-        let agents = tilo_workspace_service::agents::ServerAgents::with_sessions(
-            workspaces,
-            roster.actions,
-            std::sync::Arc::new(server.agent_link()),
-            roster.sessions,
-        )
-        .with_events(roster.events)
-        .with_initiative(roster.initiative)
-        .placing(browsers.map(|browsers| {
-            browsers as std::sync::Arc<dyn tilo_workspace_service::agents::windows::Windows>
-        }))
-        .knowing_placed(placed);
-        (agents.draining(), tokio::spawn(agents.run()))
-    });
-    started.unzip()
 }
 
 /// Hand `server` the key for Apple's push service that `args` name, where
@@ -996,7 +832,6 @@ pub async fn workspace(
             revocations: RevocationList::new(),
         },
         &args.web,
-        &state,
     )
     .await?;
     let server = &hosted.server;
@@ -1059,43 +894,6 @@ mod tests {
 
     fn key() -> SigningKey {
         SigningKey::from_bytes(&rand::random())
-    }
-
-    #[cfg(feature = "agents")]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn workspace_documents_starts_the_roster_with_the_deployed_flags() {
-        #[derive(clap::Parser)]
-        struct Command {
-            #[command(flatten)]
-            web: WebArgs,
-        }
-        let args =
-            <Command as clap::Parser>::try_parse_from(["workspace", "--workspace-documents"])
-                .unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let (root, device) = (key(), key());
-        let device_cert = enrol(&root, &device, "host", DeviceCapabilities::member()).unwrap();
-        let hosted = start_server(
-            tilo_server::ServerConfig {
-                state_root: state.path().join("server"),
-                identity_root: state.path().join("identity"),
-                packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-                ..Default::default()
-            },
-            ServerIdentity {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_signing_key: device,
-                device_cert,
-                revocations: RevocationList::new(),
-            },
-            &args.web,
-            state.path(),
-        )
-        .await
-        .unwrap();
-        assert!(hosted.host_agents.is_some());
-        assert!(hosted.agents.as_ref().unwrap().state_file().is_file());
-        hosted.shutdown().await;
     }
 
     #[test]
