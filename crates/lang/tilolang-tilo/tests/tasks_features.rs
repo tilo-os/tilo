@@ -630,14 +630,18 @@ fn a_tasks_work_records_its_budget_its_sessions_and_what_stopped_it() {
 #[test]
 fn an_imported_issue_keeps_its_origin_and_imports_once() {
     let (ada, root) = workspace();
-    let origin = record(
+    let origin = call(
         &ada,
-        "Origin",
-        &[
-            ("author", Value::text("Mia")),
-            ("source", Value::text("GitHub")),
-            ("url", some(Value::text("https://example.test/issues/7"))),
-            ("reference", some(Value::text("7"))),
+        "add_origin",
+        vec![
+            root.clone(),
+            Value::text("Mia"),
+            Value::text("GitHub"),
+            Value::text(""),
+            Value::text("https://example.test/issues/7"),
+            Value::text("7"),
+            none(),
+            none(),
         ],
     );
     let made = call(
