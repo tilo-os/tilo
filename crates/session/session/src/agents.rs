@@ -300,7 +300,7 @@ impl crate::Shared {
     /// Feed the agents every pass what their work is decided against: every workspace with the
     /// grants its people gave, and its conversations opened here. Who keeps each workspace's agents
     /// is read from the workspace's own record of them, as the broker admits an agent's session on,
-    /// and its actions are admitted as its person's grants say.
+    /// and its actions are admitted as the grants of the person it acts for say.
     pub(crate) fn feed_agents(&self) {
         // What moved in the workspaces' records, and what this session wrote into them, before
         // anything here reads them.

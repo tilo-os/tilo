@@ -180,10 +180,11 @@ fn apply_document_change(
 /// The person an agent acts for, when `caller` is one: an agent the host admitted as a member
 /// acting for its person, confined to a workspace.
 fn agent_person(caller: &Caller) -> Option<(&str, &str)> {
-    // A device's own agents, and an agent a person's device handed its session to, read nothing
-    // here; a roster agent answering a person's turn reads and changes what the person may, each
-    // read and change still decided at the record's node like every other caller's.
-    if !caller.acting().is_agent() || caller.is_device_agent() || caller.is_session_delegated() {
+    // An agent a person's device handed its session to reads nothing here. An agent acting under
+    // a key of its own, or a roster agent answering a person's turn, reads and changes what both
+    // its grants and its person's allow, each read and change decided at the record's node like
+    // every other caller's.
+    if !caller.acting().is_agent() || caller.is_session_delegated() {
         return None;
     }
     Some((caller.acting_for_person()?, caller.workspace()?))

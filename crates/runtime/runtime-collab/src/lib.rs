@@ -655,7 +655,7 @@ pub struct Invocation {
     pub context_json: String,
 }
 
-/// What an agent may spend on the day its keeper counts, and what it spent of it.
+/// What an agent may spend on the day the person it acts for counts, and what it spent of it.
 ///
 /// The day is the counting device's: the agent's own clock sits wherever its device is,
 /// and a day the counter has not reached yet is a day with nothing spent

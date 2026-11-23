@@ -139,6 +139,8 @@ struct Fixture {
     membership: crate::apps::test_support::WorkspaceTreeHandle,
     reads: Arc<dyn tilo_actions::remote::ResourceReads>,
     person: String,
+    /// The person's root key.
+    root: [u8; 32],
     workspace: String,
     /// The grant that admits the agent `scribe`.
     scribe: tilo_action_policy::GrantId,
@@ -156,7 +158,8 @@ fn fixture_with(owner: Owner) -> Fixture {
     let session =
         crate::apps::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
     let certificate = session.device();
-    let person = person_id_for_root(certificate.user_public_key);
+    let root = certificate.user_public_key;
+    let person = person_id_for_root(root);
     let mut workspace =
         crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(71), "Record reads");
     workspace.set_owner(person.clone());
@@ -198,6 +201,7 @@ fn fixture_with(owner: Owner) -> Fixture {
         membership,
         reads,
         person,
+        root,
         workspace: workspace_id,
         scribe,
         _scratch: scratch,
@@ -210,6 +214,16 @@ impl Fixture {
         Caller::local_agent(agent)
             .acting_for(self.person.clone())
             .in_workspace(self.workspace.clone())
+            .in_new_execution()
+    }
+
+    /// The agent `agent` under a key of its own its person's device holds for it, as an MCP
+    /// client of that device acts.
+    fn own_key_agent(&self, agent: &str) -> Caller {
+        Caller::delegated_agent(agent, self.root, [9; 32])
+            .in_workspace(self.workspace.clone())
+            .named(agent)
+            .held_to(Vec::new())
             .in_new_execution()
     }
 
@@ -235,12 +249,13 @@ tilo_test_env::scenario! {
     phase an_agent_reads_the_workspace_records;
     {
         let f = fixture();
-        let caller = f.agent("scribe");
-        assert_eq!(
-            f.read(&caller, NOTES, "").unwrap(),
-            ResourceCopy::Document(format!("{NOTES}/").into_bytes()),
-            "the workspace's Notes record, with no Notes window anywhere"
-        );
+        for caller in [f.agent("scribe"), f.own_key_agent("scribe")] {
+            assert_eq!(
+                f.read(&caller, NOTES, "").unwrap(),
+                ResourceCopy::Document(format!("{NOTES}/").into_bytes()),
+                "the workspace's Notes record, with no Notes window anywhere"
+            );
+        }
     }
 
     phase a_sealed_workspaces_record_this_device_holds_nothing_of_reads_as_none_yet;
@@ -273,12 +288,14 @@ tilo_test_env::scenario! {
     phase a_record_either_may_not_read_stays_unreadable;
     {
         let f = fixture();
-        let caller = f.agent("scribe");
-        // A record the workspace denies the agent: its person's authority does not widen it.
-        assert!(matches!(
-            f.read(&caller, NOTES, "private"),
-            Err(ActionCallError::Refused { .. })
-        ));
+        // A record the workspace denies the agent: its person's authority does not widen it,
+        // whether the agent is admitted for its person or acts under a key of its own.
+        for caller in [f.agent("scribe"), f.own_key_agent("scribe")] {
+            assert!(matches!(
+                f.read(&caller, NOTES, "private"),
+                Err(ActionCallError::Refused { .. })
+            ));
+        }
         // An agent the workspace grants nothing reads nothing, whatever its person may.
         assert!(f.read(&f.agent("idle"), NOTES, "").is_err());
         assert_eq!(
