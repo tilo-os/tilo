@@ -751,6 +751,13 @@ fn broker_services(
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
         action_offload,
+        // The person's desktop session: their workspaces' documents, governance and standing,
+        // reached through this device alone.
+        #[cfg(unix)]
+        shell: Some(Arc::new(super::shell::services(
+            parts.workspaces,
+            parts.apps,
+        ))),
         ..ProcessServices::default()
     })
 }
@@ -832,7 +839,7 @@ impl RuntimeServices for Daemon {
     }
 
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
-        host::launch(
+        let child = host::launch(
             command,
             app_id,
             &self.workspace,
@@ -841,7 +848,9 @@ impl RuntimeServices for Daemon {
                 identity: &self.identity_socket,
                 blobs: &self.blob_socket,
             },
-        )
+        )?;
+        self.apps.handed_connections(child.id(), app_id);
+        Ok(child)
     }
 
     fn media(&self) -> Option<Arc<dyn tilo_mcp::MediaReader>> {

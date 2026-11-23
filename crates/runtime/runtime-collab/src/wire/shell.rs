@@ -75,6 +75,9 @@ pub enum ShellCall {
     /// (`RemoteActionTarget::workspace_governance`) or the host's own operations. The request is
     /// `tilo_actions::remote::InvokeRequest` as JSON.
     Invoke { request: String },
+    /// The documents the device took a write to since this connection last asked, waited for
+    /// until there is one: the device's own writes, its apps' and every other device's alike.
+    Writes,
 }
 
 /// The daemon's answer to a [`ShellCall`].
@@ -95,8 +98,13 @@ pub enum ShellReply {
     /// refused one. `None` when the workspace has no serving device to ask: one the device keeps
     /// itself.
     Served(Option<Result<(), String>>),
-    /// A [`ShellCall::Invoke`] once it settled: `tilo_actions::InvocationUpdate` as JSON.
-    Invoked(String),
+    /// A [`ShellCall::Invoke`] once it settled: the value the action answered, as JSON, or why it
+    /// failed.
+    Invoked(Result<String, String>),
+    /// A [`ShellCall::Writes`]: each document written, as its workspace, app and record (`""` for
+    /// the app's primary). `None` when the device took more than it kept told, so the shell reads
+    /// everything it follows again.
+    Writes(Option<Vec<DocumentWritten>>),
 }
 
 /// What the device holds of one document, as `tilo_peer_state::workspace_documents::DocumentRead`.
@@ -115,6 +123,15 @@ pub enum ShellRead {
     Unchanged([u8; 32]),
     Absent,
     Pending,
+}
+
+/// A document the device took a write to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentWritten {
+    pub workspace: String,
+    pub app: String,
+    /// The record's id on the wire, `""` for the app's primary.
+    pub record: String,
 }
 
 /// A write the workspace took, as `tilo_peer_state::owner::AppWrite`.

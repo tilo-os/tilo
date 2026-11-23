@@ -90,10 +90,8 @@ impl WorkspaceView {
                     .map_err(|error| format!("the workspace list does not read: {error}"))?,
                 None => Vec::new(),
             };
-            let mut current = self.listed.lock_recover();
-            let changed = *current != listed;
-            *current = listed;
-            return Ok(changed);
+            let previous = std::mem::replace(&mut *self.listed.lock_recover(), listed.clone());
+            return Ok(previous != listed);
         }
         let workspace = workspace_of(resource)
             .and_then(WorkspaceId::parse)

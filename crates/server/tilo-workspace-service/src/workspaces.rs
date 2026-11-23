@@ -197,6 +197,7 @@ mod unattended;
 mod unbuildable_windows;
 pub use unattended::{Answer as PersonAnswer, AsksPeople};
 mod readings;
+pub mod standing;
 #[cfg(feature = "agents")]
 mod views;
 mod wait_list;

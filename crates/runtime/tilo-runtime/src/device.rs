@@ -40,6 +40,8 @@ mod person;
 pub mod processes;
 pub mod serve;
 pub mod services;
+#[cfg(unix)]
+mod shell;
 pub mod shortcuts;
 pub mod take_work;
 pub(crate) mod ticket;

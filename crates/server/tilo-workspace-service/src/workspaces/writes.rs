@@ -17,7 +17,8 @@ impl Workspaces {
     /// founding write when `founding` (the whole document, which the workspace must not hold
     /// yet), a change of it otherwise; the whole document when `snapshot` (a founding or a
     /// checkpoint of one the workspace holds), sealed under `sealed` where its documents are
-    /// sealed. Answers the write as this device's apps take a member's: their copies of the
+    /// sealed, or under the keys of the document's group this device reads when the writer names
+    /// none: a shell writes as the device and never holds the keys itself. Answers the write as this device's apps take a member's: their copies of the
     /// document follow it only once it is handed to them.
     ///
     /// # Errors
@@ -46,6 +47,17 @@ impl Workspaces {
         let drafting = crate::timing::start();
         let (mut request, author) = {
             let governed = crate::timing::said_if_long("the workspace's lock", state.lock()).await;
+            let picked = match sealed {
+                Some(_) => None,
+                None => self
+                    .sealing_keys(&governed, app, document)
+                    .await
+                    .map_err(|why| {
+                        tracing::debug!(%workspace, app, document, %why, "the write waits for its keys");
+                        WriteRefusal::Waiting(tilo_peer_state::MissingPrerequisite::PersistedMls)
+                    })?,
+            };
+            let sealed = sealed.or_else(|| picked.as_ref().map(|keys| &keys.keys));
             tilo_peer_state::owner::draft_local_write(
                 &governed.peer(),
                 governed.workspace(),

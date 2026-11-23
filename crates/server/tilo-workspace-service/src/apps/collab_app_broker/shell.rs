@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use runtime_collab::wire::Reply;
-use runtime_collab::wire::shell::{SHELL_MAGIC, ShellCall, ShellRead, ShellReply, ShellWrite};
+use runtime_collab::wire::shell::{
+    DocumentWritten, SHELL_MAGIC, ShellCall, ShellRead, ShellReply, ShellWrite,
+};
 use tilo_peer_state::workspace_documents::{DocumentRead, DocumentWriting};
 
 use crate::apps::shell::{ShellCaller, ShellPeer, ShellServices};
@@ -14,6 +16,9 @@ use crate::apps::shell::{ShellCaller, ShellPeer, ShellServices};
 pub(super) struct Shell {
     pub(super) caller: ShellCaller,
     pub(super) services: Arc<ShellServices>,
+    /// The writes the device took since the shell last asked, followed from the moment it
+    /// connected, so none falls between two asks.
+    pub(super) writes: Arc<tokio::sync::Mutex<crate::apps::shell::DocumentWrites>>,
 }
 
 /// Serve `stream`, which opened with the shell's marker, as the shell of the person its account
@@ -52,7 +57,12 @@ pub(super) async fn serve(
             return Ok(());
         }
     };
-    let (connection, outgoing) = super::wire::WireConnection::shell(Shell { caller, services });
+    let followed = Arc::new(tokio::sync::Mutex::new((services.document_writes)()));
+    let (connection, outgoing) = super::wire::WireConnection::shell(Shell {
+        caller,
+        services,
+        writes: followed,
+    });
     let (reader, writer) = stream.into_split();
     super::wire::serve(connection, outgoing, reader, writer)
         .await
@@ -147,17 +157,43 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
                 None => None,
             })
         }
+        ShellCall::Writes => ShellReply::Writes(next_writes(&shell.writes).await),
         ShellCall::Invoke { request } => {
             let request = serde_json::from_str(&request)
                 .map_err(|error| format!("the invocation does not read: {error}"))?;
-            let settled = services.actions.invoke(&shell.caller, request).await?;
-            ShellReply::Invoked(
-                serde_json::to_string(&settled)
-                    .map_err(|error| format!("an invocation's answer does not encode: {error}"))?,
-            )
+            let settled = services.actions.invoke(&shell.caller, request).await;
+            ShellReply::Invoked(settled.map(|value| value.to_string()))
         }
     };
     Ok(Reply::Shell(reply))
+}
+
+/// The writes `writes` took since it was last asked, waiting for the first; `None` once it missed
+/// some, so the shell reads again everything it follows.
+async fn next_writes(
+    writes: &tokio::sync::Mutex<crate::apps::shell::DocumentWrites>,
+) -> Option<Vec<DocumentWritten>> {
+    use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+    let told = |write: crate::workspaces::ResourceWrite| DocumentWritten {
+        workspace: write.workspace,
+        app: write.app,
+        record: write.record,
+    };
+    let mut writes = writes.lock().await;
+    let mut written = match writes.recv().await {
+        Ok(write) => vec![told(write)],
+        Err(RecvError::Lagged(_)) => return None,
+        // The device's service closed: nothing is written any more, and the shell's connection
+        // ends with it.
+        Err(RecvError::Closed) => return std::future::pending().await,
+    };
+    loop {
+        match writes.try_recv() {
+            Ok(write) => written.push(told(write)),
+            Err(TryRecvError::Lagged(_)) => return None,
+            Err(TryRecvError::Empty | TryRecvError::Closed) => return Some(written),
+        }
+    }
 }
 
 /// `read` as the wire carries it.

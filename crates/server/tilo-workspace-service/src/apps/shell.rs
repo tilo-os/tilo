@@ -14,7 +14,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::InvokeRequest;
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
 
@@ -49,8 +48,8 @@ pub trait ShellAccounts: Send + Sync {
     fn admit(&self, peer: ShellPeer) -> Result<ShellCaller, String>;
 }
 
-/// An action a shell invoked, once it settled.
-pub type ShellInvoked = Pin<Box<dyn Future<Output = Result<InvocationUpdate, String>> + Send>>;
+/// An action a shell invoked, once it settled: the value it answered, or why it failed.
+pub type ShellInvoked = Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>>;
 
 /// The actions a shell invokes as its person on this device.
 pub trait ShellActions: Send + Sync {
@@ -61,6 +60,9 @@ pub trait ShellActions: Send + Sync {
     fn invoke(&self, caller: &ShellCaller, request: InvokeRequest) -> ShellInvoked;
 }
 
+/// The writes a device takes to its workspaces' documents, as they come.
+pub type DocumentWrites = tokio::sync::broadcast::Receiver<crate::workspaces::ResourceWrite>;
+
 /// What a broker answers a person's shell with.
 #[derive(Clone)]
 pub struct ShellServices {
@@ -70,6 +72,9 @@ pub struct ShellServices {
     pub documents: Arc<dyn DeviceDocuments>,
     /// The device's documents, written as the device: signed and sealed with its key.
     pub writes: Arc<dyn DeviceWrites>,
+    /// Each write the device takes to a document of its workspaces
+    /// ([`crate::workspaces::Workspaces::document_writes`]): what a shell reads again by.
+    pub document_writes: Arc<dyn Fn() -> DocumentWrites + Send + Sync>,
     /// The workspaces' governance and the host's own operations.
     pub actions: Arc<dyn ShellActions>,
     /// The workspaces' standing ([`tilo_peer_state::workspace_view`]), watched as published resources.

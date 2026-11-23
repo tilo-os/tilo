@@ -996,3 +996,179 @@ fn a_configured_port_is_the_one_the_endpoint_binds() {
         "the endpoint binds the configured port: {bound:?}"
     );
 }
+
+const SHELL_TEST: &str = "device::services::tests::the_persons_shell_reaches_its_workspaces_through_the_daemon_and_an_app_is_never_the_shell";
+const SHELL_APP_HELPER: &str = "TILO_DAEMON_SHELL_APP_HELPER";
+
+/// The daemon's broker as `shell` asks it `call`, failing on any refusal.
+#[cfg(unix)]
+async fn shell_asks(
+    shell: &runtime_collab::ShellClient,
+    call: runtime_collab::wire::shell::ShellCall,
+) -> runtime_collab::wire::shell::ShellReply {
+    shell
+        .call(call)
+        .await
+        .unwrap_or_else(|error| panic!("the daemon answers its shell: {error:?}"))
+}
+
+#[cfg(unix)]
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    clippy::too_many_lines,
+    reason = "the daemon serves its profile for the whole scenario, read as one walk"
+)]
+fn the_persons_shell_reaches_its_workspaces_through_the_daemon_and_an_app_is_never_the_shell() {
+    use automerge::ReadDoc as _;
+    use runtime_collab::wire::shell::{ShellCall, ShellRead, ShellReply};
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+    let runtime = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    };
+    // Helper role: an app the daemon started, which opens a connection of its own to the broker
+    // and says it is the shell.
+    if let Some(socket) = std::env::var_os(SHELL_APP_HELPER) {
+        runtime().block_on(async {
+            let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let (shell, _) = runtime_collab::ShellClient::open(stream).await.unwrap();
+            let answer = shell.call(ShellCall::Workspaces).await;
+            assert!(
+                answer.is_err(),
+                "an app the daemon started is refused as the shell, not answered {answer:?}"
+            );
+        });
+        return;
+    }
+    let Some(root) = isolated_root(SHELL_TEST) else {
+        return;
+    };
+    let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    let socket = session.broker.app_socket().to_path_buf();
+    let workspace = session.workspace().to_owned();
+    runtime().block_on(async {
+        let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        let (shell, _) = runtime_collab::ShellClient::open(stream).await.unwrap();
+        // The person's workspaces, as the device holds them and as their standing reads.
+        let ShellReply::Workspaces(held) = shell_asks(&shell, ShellCall::Workspaces).await else {
+            panic!("the daemon lists the workspaces it holds");
+        };
+        assert!(
+            held.contains(&workspace),
+            "{workspace} is held here: {held:?}"
+        );
+        let listed = shell
+            .standing()
+            .snapshot(tilo_peer_state::workspace_view::LIST)
+            .await
+            .unwrap();
+        let listed: Vec<tilo_peer_state::workspace_view::Listed> =
+            serde_json::from_str(&listed.reading.expect("the workspace list reads")).unwrap();
+        assert!(
+            listed
+                .iter()
+                .any(|entry| entry.id == workspace && entry.own && entry.kept_here),
+            "the person's own workspace, kept here, stands in the list: {listed:?}"
+        );
+        // A write the shell sends with no keys: the daemon seals it with the group's keys and
+        // signs it as the device. It waits while the device takes the keys in.
+        let ShellReply::Is(holds) = shell_asks(
+            &shell,
+            ShellCall::Holds {
+                workspace: workspace.clone(),
+                app: DESKTOP_APP.to_owned(),
+                resource: DESKTOP_DOCUMENT.to_owned(),
+            },
+        )
+        .await
+        else {
+            panic!("the daemon says whether it holds the layout");
+        };
+        let mut layout = automerge::AutoCommit::new();
+        automerge::transaction::Transactable::put(&mut layout, automerge::ROOT, "front", "shell")
+            .unwrap();
+        let written = tilo_test_env::within("the daemon takes the shell's write", async {
+            loop {
+                let reply = shell_asks(
+                    &shell,
+                    ShellCall::Write {
+                        workspace: workspace.clone(),
+                        app: DESKTOP_APP.to_owned(),
+                        document: DESKTOP_DOCUMENT.to_owned(),
+                        readers: None,
+                        founding: !holds,
+                        snapshot: true,
+                        changes: layout.save(),
+                    },
+                )
+                .await;
+                match reply {
+                    ShellReply::Written(Ok(written)) => return written,
+                    ShellReply::Written(Err(refusal)) if refusal.contains("Waiting") => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    other => panic!("the daemon takes the shell's write: {other:?}"),
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            written.peer,
+            neighbour_wire::peer_handle(&session.workspaces.device_cert().device_public_key),
+            "the shell's write is signed as this device"
+        );
+        let ShellReply::Read(ShellRead::Whole { bytes, .. }) = shell_asks(
+            &shell,
+            ShellCall::Read {
+                workspace: workspace.clone(),
+                app: DESKTOP_APP.to_owned(),
+                resource: DESKTOP_DOCUMENT.to_owned(),
+                since: None,
+            },
+        )
+        .await
+        else {
+            panic!("the shell reads back the layout it wrote");
+        };
+        let read = automerge::AutoCommit::load(&bytes).unwrap();
+        assert_eq!(
+            read.get(automerge::ROOT, "front")
+                .unwrap()
+                .and_then(|(value, _)| value.into_string().ok())
+                .as_deref(),
+            Some("shell")
+        );
+        let peer = session
+            .workspaces
+            .peer(WorkspaceId::parse(&workspace).unwrap())
+            .unwrap();
+        assert!(
+            peer.publication()
+                .is_sealed_document(DESKTOP_APP, DESKTOP_DOCUMENT),
+            "the daemon sealed the shell's write with the layout's group keys"
+        );
+    });
+    // An app the daemon started is refused, though it runs as the same account.
+    let log = root.join("shell-app.log");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", SHELL_TEST, "--nocapture"])
+        .env(SHELL_APP_HELPER, &socket)
+        .env(tilo_test_env::hang::HANG_BOUND_ENV, helper_hang_bound())
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(std::fs::File::create(&log).unwrap()))
+        .stderr(Stdio::null());
+    let status = session
+        .launch("dev.tilo.pretender", command)
+        .unwrap()
+        .wait()
+        .unwrap();
+    let logs = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        status.success() && logs.contains("test result: ok. 1 passed"),
+        "the app's shell connection is refused: {logs}"
+    );
+}

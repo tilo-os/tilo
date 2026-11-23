@@ -91,6 +91,10 @@ pub struct Holder {
 /// How one workspace stands for the device's person: what the shell reads of it, decided by the
 /// daemon from the workspace it keeps.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is a separate fact the daemon reads off the workspace, read by name"
+)]
 pub struct WorkspaceReading {
     pub id: String,
     /// The workspace's one name, as its governance records it.

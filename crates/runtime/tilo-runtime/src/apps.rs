@@ -56,6 +56,9 @@ pub struct Apps {
     #[cfg(target_os = "linux")]
     launcher_candidates: Vec<PathBuf>,
     launched: Arc<Launched>,
+    /// The apps this runtime started on a host's behalf with their connections handed to them
+    /// (`crate::Host::launch`): apps the broker knows by those connections, never the shell.
+    handed: Launched,
     /// The apps this runtime's own process is the windowless endpoint of,
     /// by app and workspace.
     own: Mutex<std::collections::BTreeSet<(String, String)>>,
@@ -124,6 +127,7 @@ impl Apps {
             #[cfg(target_os = "linux")]
             launcher_candidates,
             launched: Arc::default(),
+            handed: Launched::default(),
             own: Mutex::default(),
             device_grants: tilo_peer_state::DeviceGrants::unkept(),
             grants: OnceLock::new(),
@@ -143,6 +147,25 @@ impl Apps {
         self.own
             .lock_recover()
             .remove(&(app.to_owned(), workspace.to_owned()));
+    }
+
+    /// Whether `pid` is an app this runtime started, or a process one of them started: the process
+    /// it launched or any of its descendants, and on Linux any process in an app's own scope,
+    /// which a reused pid never is.
+    pub(crate) fn started_as_app(&self, pid: u32) -> bool {
+        in_app_scope(pid)
+            || ancestry(pid)
+                .any(|process| self.launched.is_live(process) || self.handed.is_live(process))
+    }
+
+    /// Note `pid` as `app`, started with its connections handed to it: never the shell. Records
+    /// of processes gone since are let go.
+    pub(crate) fn handed_connections(&self, pid: u32, app: &str) {
+        self.handed
+            .0
+            .lock_recover()
+            .retain(|process, record| process_start_time(*process) == Some(record.start_time));
+        self.handed.record(pid, app, &self.workspace);
     }
 
     /// Whether `pid` is this runtime's own process serving `app` in
@@ -633,9 +656,70 @@ impl Launched {
         same && process_start_time(pid) == Some(recorded)
     }
 
+    /// Whether `pid` is still a process recorded here, whatever it was launched as.
+    fn is_live(&self, pid: u32) -> bool {
+        let recorded = self
+            .0
+            .lock_recover()
+            .get(&pid)
+            .map(|record| record.start_time);
+        recorded.is_some() && process_start_time(pid) == recorded
+    }
+
     /// Forget `pid`, once its process has been reaped.
     fn forget(&self, pid: u32) {
         self.0.lock_recover().remove(&pid);
+    }
+}
+
+/// `pid` and the processes it descends from, nearest first, up to (not including) the first
+/// process. Only `pid` itself where the system names no parents.
+fn ancestry(pid: u32) -> impl Iterator<Item = u32> {
+    /// Deeper than any process tree an app starts.
+    const MAX_DEPTH: usize = 64;
+    std::iter::successors(Some(pid), |process| parent_of(*process))
+        .take_while(|process| *process > 1)
+        .take(MAX_DEPTH)
+}
+
+/// The parent of process `pid` (`/proc/<pid>/stat` field 4), on Linux.
+fn parent_of(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, rest) = stat.rsplit_once(')')?;
+        rest.split_whitespace().nth(4 - 3)?.parse().ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Whether process `pid` runs in the scope the launcher gives every app it starts
+/// (`launcher::scope`): `app-tilo-<app>-<pid>.scope`.
+fn in_app_scope(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(cgroups) = std::fs::read_to_string(format!("/proc/{pid}/cgroup")) else {
+            return false;
+        };
+        cgroups
+            .lines()
+            .filter_map(|line| line.strip_prefix("0::"))
+            .flat_map(|path| path.split('/'))
+            .any(|unit| {
+                unit.starts_with(launcher::scope::UNIT_PREFIX)
+                    && std::path::Path::new(unit)
+                        .extension()
+                        .is_some_and(|extension| extension == "scope")
+            })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
     }
 }
 
