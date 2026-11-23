@@ -2462,8 +2462,7 @@ enrol_planned_server() {
   [ -x "$TILO_BIN" ] || die "the tilo command $TILO_BIN is missing"
   step "Joining this machine to one of your devices"
   TILO_IDENTITY_ROOT="$identity" XDG_STATE_HOME="$state" HOME="$state" \
-    "$TILO_BIN" login "$(tr -d '[:space:]' < "${TILO_TICKET:-/etc/tilo/ticket}")" \
-    --label "$HOSTNAME_VAL" 2>&1 \
+    "$TILO_BIN" login - --label "$HOSTNAME_VAL" < "${TILO_TICKET:-/etc/tilo/ticket}" 2>&1 \
     || die "this machine did not join your devices; its disk would need the recovery key at every boot"
   # The login wrote into the installed /var as root from this live medium; label every file with
   # the policy path it will have there, so the server's own account and session can read it.

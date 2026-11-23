@@ -158,7 +158,7 @@ fi
 # the identity and login it leaves on the volume from then on.
 install -d -m 0700 "$state_home"
 TILO_IDENTITY_ROOT="$identity_root" XDG_STATE_HOME="$state_home" HOME="$state_home" \
-    "$tilo_bin" login "$(tr -d '[:space:]' < "$ticket")" --label "$label" \
+    "$tilo_bin" login - --label "$label" < "$ticket" \
     || { echo "$no_identity" >&2; exit 1; }
 valid_device_certificate \
     || { echo "tilo-server-firstboot: the login left an unsafe device certificate" >&2; exit 1; }

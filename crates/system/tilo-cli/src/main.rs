@@ -365,7 +365,8 @@ enum Cmd {
                       A ticket works once, for 10 minutes, while that device waits for it.")]
     Login {
         /// The ticket `tilo device add` printed on one of your devices, or an invitation link
-        /// a member sent you, which joins their workspace over iroh.
+        /// a member sent you, which joins their workspace over iroh. `-` reads it from standard
+        /// input, so a script's ticket never shows in the process list.
         ticket: Option<String>,
         /// Instead: make a Tilo identity whose root this computer holds (or
         /// say it has one), and print its user public key. A host's operator
@@ -1386,7 +1387,25 @@ fn system_status(json: bool) -> Result<ExitCode> {
     Ok(code)
 }
 
-fn run(cli: Cli) -> Result<ExitCode> {
+/// `tilo login -`: the ticket from standard input, so a script's ticket never shows in the
+/// process list.
+fn ticket_from_stdin(cmd: &mut Cmd) -> Result<()> {
+    if let Cmd::Login {
+        ticket: Some(ticket),
+        ..
+    } = cmd
+        && ticket == "-"
+    {
+        let mut read = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut read)
+            .context("reading the ticket from standard input")?;
+        *ticket = read.split_whitespace().collect();
+    }
+    Ok(())
+}
+
+fn run(mut cli: Cli) -> Result<ExitCode> {
+    ticket_from_stdin(&mut cli.cmd)?;
     let spelling = tilo_control::front::Spelling::tilo();
     if let Some(logged_in) = login_without_a_tab(&cli) {
         return logged_in;
