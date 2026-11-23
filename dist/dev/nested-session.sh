@@ -204,7 +204,7 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/no-host-session-bus
 # check's machine has and a desktop's guest does not) runs a system bus of its
 # own, started below: never the desktop's the session may be running beside.
 serve_system_bus=0
-if [[ ${TILO_SESSION_SYSTEM_BUS:-} == 1 || $TILO_MACHINE == owned ]]; then
+if [[ ${TILO_SESSION_SYSTEM_BUS:-} == 1 || ${TILO_MACHINE:-} == owned ]]; then
     serve_system_bus=1
     export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$runtime/dbus/system_bus_socket
 else
