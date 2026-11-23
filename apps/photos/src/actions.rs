@@ -408,10 +408,10 @@ pub fn export_edited_content(
         .content
         .read(store)
         .ok_or_else(|| "the addressed photograph bytes are unavailable".to_string())?;
-    let original = crate::pixels::decode(&source)
+    let original = crate::decode_image(&source)
         .ok_or_else(|| "the addressed photograph bytes are not a supported image".to_string())?;
-    let rendered = crate::pixels::render(&original, edits.crop, edits.rotate_quarters);
-    let encoded = crate::pixels::encode_png(&rendered)
+    let rendered = edits.render(&original);
+    let encoded = crate::encode_png(&rendered)
         .ok_or_else(|| "the edited photograph could not be encoded".to_string())?;
     let hash = store.put(&encoded).map_err(|error| {
         tracing::warn!(%error, "photos: could not store an exported rendering");

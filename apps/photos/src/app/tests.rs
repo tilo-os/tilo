@@ -328,7 +328,7 @@ fn timeline_layout_stays_legible_justified_and_virtually_bounded() {
 fn a_photograph_decodes_off_the_frame_and_appears_when_it_lands() {
     let mut app = test_app();
     let mut doc = crate::test_doc::new_doc();
-    let bytes = pixels::encode_png(&shots_pattern(40, 20)).expect("the fixture encodes");
+    let bytes = crate::encode_png(&shots_pattern(40, 20)).expect("the fixture encodes");
     app.state().open_contents("picked.png", &bytes);
 
     sync_once(&mut app, &mut doc);
@@ -346,7 +346,7 @@ fn a_photograph_decodes_off_the_frame_and_appears_when_it_lands() {
         app.state()
             .original
             .as_ref()
-            .map(|(_, image)| (image.w, image.h)),
+            .map(|(_, image)| (image.width, image.height)),
         Some((40, 20))
     );
     assert!(app.state().has_image());
@@ -629,7 +629,7 @@ fn the_commands_are_the_window_bars_and_no_header_row_is_drawn() {
     for (width, library) in [(1_280.0, true), (1_280.0, false), (560.0, false)] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("header.png");
-        std::fs::write(&path, pixels::encode_png(&shots_pattern(40, 20)).unwrap()).unwrap();
+        std::fs::write(&path, crate::encode_png(&shots_pattern(40, 20)).unwrap()).unwrap();
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
         app.state().open_path(&path.to_string_lossy());
@@ -2155,7 +2155,7 @@ tilo_test_env::scenario! {
             std::sync::Arc::clone(&link),
         )));
         let mut doc = crate::test_doc::new_doc();
-        let picture = pixels::encode_png(&shots_pattern(16, 8)).unwrap();
+        let picture = crate::encode_png(&shots_pattern(16, 8)).unwrap();
         let hash = tilo_content::hash_bytes(&picture);
         let photo = LibraryPhoto::from_image(OpenImage::named("/library/later.png", 16, 8, &hash));
         let id = thumbnail_key(&photo.image);
@@ -2231,7 +2231,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         let app = test_app();
-        let picture = pixels::encode_png(&shots_pattern(16, 8)).unwrap();
+        let picture = crate::encode_png(&shots_pattern(16, 8)).unwrap();
         let stored = app.state().content.put(&picture).unwrap();
         let kept = ui::tilo_resource::Bytes::kept_as(&picture, &stored);
         let missing = tilo_content::hash_bytes(b"never stored");
@@ -2642,13 +2642,13 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
         let hash = app
             .state()
             .content
-            .put(&pixels::encode_png(&original).unwrap())
+            .put(&crate::encode_png(&original).unwrap())
             .unwrap();
         let open = OpenImage::new(
             "crop.png",
             400,
             200,
-            ui::tilo_resource::Bytes::kept_as(&pixels::encode_png(&original).unwrap(), &hash),
+            ui::tilo_resource::Bytes::kept_as(&crate::encode_png(&original).unwrap(), &hash),
         );
         let id = crate::test_doc::put_image(&mut doc, &open);
         let edits = crate::model::Edits {
@@ -2711,7 +2711,7 @@ tilo_test_env::scenario! {
 
     phase edited_content_effect_stores_and_returns_the_exact_transformed_png;
     {
-        let original = pixels::Rgba::new(
+        let original = DecodedImage::from_rgba(
             3,
             2,
             vec![
@@ -2720,7 +2720,7 @@ tilo_test_env::scenario! {
             ],
         )
         .expect("asymmetric source");
-        let source_png = pixels::encode_png(&original).expect("source PNG");
+        let source_png = crate::encode_png(&original).expect("source PNG");
         let store = tilo_content::ContentStore::memory();
         let source_hash = store.put(&source_png).expect("stage source content");
         let open = OpenImage::new(
@@ -2783,10 +2783,10 @@ tilo_test_env::scenario! {
         let stored = store
             .read(produced_hash)
             .expect("produced bytes are retrievable");
-        let decoded = pixels::decode(&stored).expect("produced PNG decodes");
+        let decoded = crate::decode_image(&stored).expect("produced PNG decodes");
         assert_eq!(
             decoded,
-            pixels::render(&original, edits.crop, edits.rotate_quarters)
+            edits.render(&original)
         );
         assert_eq!(
             crate::test_doc::photo(&doc, &resource_id).map(|photo| photo.image.hash()),
@@ -2808,12 +2808,8 @@ tilo_test_env::scenario! {
             .read(tilo_actions::content_hash(&output.resources[0]).expect("one content result"))
             .expect("produced bytes are retrievable");
         assert_eq!(
-            pixels::decode(&unedited).expect("produced PNG decodes"),
-            pixels::render(
-                &original,
-                crate::model::Edits::default().crop,
-                crate::model::Edits::default().rotate_quarters
-            ),
+            crate::decode_image(&unedited).expect("produced PNG decodes"),
+            crate::model::Edits::default().render(&original),
             "the export renders the edits the photograph has now"
         );
     }

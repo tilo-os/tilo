@@ -3,6 +3,8 @@
 //! the
 //! [`Album`]s that file them.
 
+use std::io::Read as _;
+
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Bytes, Collection, Id, JsonSchema, Model, Refusal, Set};
 
@@ -385,7 +387,7 @@ impl LibraryPhoto {
         if !valid_name(&self.image.name)
             || self.image.width == 0
             || self.image.height == 0
-            || dimensions > crate::pixels::MAX_DECODED_PIXELS
+            || dimensions > crate::MAX_DECODED_PIXELS
             || matches!(self.image.content, Bytes::Empty | Bytes::Inline(_))
         {
             return Err(Refusal::new(
@@ -598,6 +600,22 @@ impl Rect01 {
             && self.y + self.h <= 1.0
     }
 
+    /// The rect mapped from the turned view back into the original, so a crop taken from the
+    /// turned picture keeps naming the same region however many times it is turned.
+    #[must_use]
+    pub fn unrotated(&self, quarters: u8) -> Self {
+        let mut rect = self.clamped();
+        for _ in 0..(quarters % 4) {
+            rect = Self {
+                x: rect.y,
+                y: 1.0 - (rect.x + rect.w),
+                w: rect.h,
+                h: rect.w,
+            };
+        }
+        rect.clamped()
+    }
+
     #[must_use]
     pub fn clamped(&self) -> Self {
         let x = self.x.clamp(0.0, 1.0);
@@ -638,6 +656,20 @@ impl Edits {
         self.crop.is_full() && self.rotate_quarters.is_multiple_of(4)
     }
 
+    /// The photograph as these edits show it: the crop taken from the upright original, then
+    /// the turn. The codec does both operations on the pixels.
+    #[must_use]
+    pub fn render(&self, original: &crate::DecodedImage) -> crate::DecodedImage {
+        let cropped = if self.crop.is_full() {
+            original.clone()
+        } else {
+            original
+                .cropped_fraction(self.crop.x, self.crop.y, self.crop.w, self.crop.h)
+                .unwrap_or_else(|| original.clone())
+        };
+        cropped.turned(u32::from(self.rotate_quarters))
+    }
+
     /// Turn clockwise.
     #[must_use]
     pub fn rotated_right(&self) -> Self {
@@ -662,7 +694,7 @@ impl Edits {
     /// rotation, and is then composed onto whatever crop is already in force.
     #[must_use]
     pub fn cropped_from_view(&self, view_rect: Rect01) -> Self {
-        let in_original = crate::pixels::unrotate_rect(view_rect, self.rotate_quarters);
+        let in_original = view_rect.unrotated(self.rotate_quarters);
         Self {
             crop: self.crop.compose(in_original),
             ..*self
@@ -779,7 +811,13 @@ pub fn bytes_of(open: &OpenImage, store: &tilo_content::ContentStore) -> Option<
         return Some(bytes.to_vec());
     }
     let reference = open.content.reference()?;
-    crate::pixels::read_bounded(store.open(&reference)?, crate::pixels::MAX_ENCODED_BYTES)
+    let mut reader = store.open(&reference)?;
+    let limit = u64::try_from(crate::MAX_ENCODED_BYTES).unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    std::io::Read::take(&mut reader, limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= crate::MAX_ENCODED_BYTES).then_some(bytes)
 }
 
 /// A stored capture time as people read it: the ISO separator between the

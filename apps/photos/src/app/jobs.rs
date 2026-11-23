@@ -2,8 +2,9 @@
 //! the batched People scan. Each worker answers over a channel; these methods queue its jobs and
 //! fold its results back into the library.
 
+use crate::DecodedImage;
 use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
-use crate::pixels;
+
 use crate::strings::{tr, tr_args, tr_count, tr_with};
 use std::sync::mpsc::{Receiver, SyncSender};
 use tilo_content::ContentStore;
@@ -662,7 +663,7 @@ impl Photos {
                     generation,
                     id,
                     preview: state.ready().and_then(|preview| {
-                        pixels::Rgba::new(preview.width, preview.height, preview.rgba.clone())
+                        DecodedImage::from_rgba(preview.width, preview.height, preview.rgba.clone())
                     }),
                 }),
             }

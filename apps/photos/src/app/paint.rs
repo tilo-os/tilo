@@ -150,8 +150,8 @@ impl Photos {
         }
         let Some(image) = displayed_image_rect(
             viewer,
-            f64::from(rendered.rgba.w),
-            f64::from(rendered.rgba.h),
+            f64::from(rendered.rgba.width),
+            f64::from(rendered.rgba.height),
         ) else {
             return;
         };

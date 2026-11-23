@@ -57,7 +57,7 @@ fn share_copies_the_open_photographs_link() {
     let path = directory.path().join("lake.png");
     std::fs::write(
         &path,
-        crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap(),
+        crate::encode_png(&crate::shots_pattern(30, 20)).unwrap(),
     )
     .unwrap();
     let mut app =
@@ -82,7 +82,8 @@ fn photo_png(width: u32, height: u32) -> Vec<u8> {
     let rgba = (0..width * height * 4)
         .map(|index| u8::try_from(index % 251).expect("a byte"))
         .collect();
-    pixels::encode_png(&pixels::Rgba::new(width, height, rgba).expect("an image")).expect("a PNG")
+    crate::encode_png(&DecodedImage::from_rgba(width, height, rgba).expect("an image"))
+        .expect("a PNG")
 }
 
 #[test]

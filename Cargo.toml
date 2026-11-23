@@ -410,6 +410,7 @@ members = [
     "crates/platform/tilo-location",
     "crates/platform/tilo-system-resources",
     "crates/platform/tilo-image-codec",
+    "crates/platform/tilo-image-info",
     "crates/platform/tilo-keyboard-map",
     "crates/platform/tilo-locale",
     "crates/platform/tilo-accessibility-settings",

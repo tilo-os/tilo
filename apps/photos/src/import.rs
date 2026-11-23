@@ -6,13 +6,13 @@
 //! returns canonical `LibraryPhoto` values for the normal action boundary to
 //! commit. It never invents dates, locations, labels, people, or descriptions.
 
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_content::ContentStore;
+use tilo_image_codec::info::ImageInfo;
 
-use crate::model::{LibraryPhoto, LocationProvenance, OpenImage, PhotoLocation};
+use crate::model::{LibraryPhoto, OpenImage, PhotoLocation};
 use crate::strings::tr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,18 +55,13 @@ pub struct ImportProgress {
     pub current: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ExifMetadata {
-    pub captured_at: Option<String>,
-    pub orientation: Option<u16>,
-    pub location: Option<PhotoLocation>,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct IndexedPhoto {
     pub source: PathBuf,
     pub photo: LibraryPhoto,
-    pub exif: ExifMetadata,
+    /// What the file's own container states: its upright size, capture time, orientation and,
+    /// where the camera recorded one, its place.
+    pub exif: Option<ImageInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,15 +226,12 @@ pub fn index_file(
     {
         return Err(tr("photos-import-too-large"));
     }
-    let exif = read_exif(path).unwrap_or_default();
-    if cancelled.load(Ordering::Acquire) {
-        return Err(tr("photos-import-cancelled"));
-    }
     let bytes = read_bounded(path, options.limits.max_encoded_bytes)?;
     if cancelled.load(Ordering::Acquire) {
         return Err(tr("photos-import-cancelled"));
     }
-    let decoded = crate::pixels::decode(&bytes).ok_or_else(|| tr("photos-import-unsafe"))?;
+    let exif = tilo_image_codec::info::read(&bytes);
+    let decoded = crate::decode_image(&bytes).ok_or_else(|| tr("photos-import-unsafe"))?;
     let content = store
         .put(&bytes)
         .map(|reference| ui::tilo_resource::Bytes::kept_as(&bytes, &reference))
@@ -252,15 +244,20 @@ pub fn index_file(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| tr("photos-import-no-name"))?;
-    let open = OpenImage::new(&path.to_string_lossy(), decoded.w, decoded.h, content);
+    let open = OpenImage::new(
+        &path.to_string_lossy(),
+        decoded.width,
+        decoded.height,
+        content,
+    );
     let mut photo = LibraryPhoto::from_image(open);
     name.clone_into(&mut photo.image.name);
     photo.captured_at = exif
-        .captured_at
-        .as_deref()
+        .as_ref()
+        .and_then(|info| info.captured_at.as_deref())
         .and_then(crate::model::canonical_capture_at_value);
     if options.retain_exif_location {
-        photo.location.clone_from(&exif.location);
+        photo.location = exif.as_ref().and_then(location_of);
     }
     Ok(IndexedPhoto {
         source: path.to_path_buf(),
@@ -269,87 +266,18 @@ pub fn index_file(
     })
 }
 
-/// The most of a file EXIF is read from; photographs past it have no EXIF.
-const EXIF_READ_LIMIT: u64 = 256 * 1024 * 1024;
-
-#[must_use]
-pub fn read_exif(path: &Path) -> Option<ExifMetadata> {
-    let bytes = crate::files::read_native(path, EXIF_READ_LIMIT)?;
-    let mut reader = Cursor::new(bytes);
-    let exif = exif::Reader::new().read_from_container(&mut reader).ok()?;
-    let captured_at = [
-        exif::Tag::DateTimeOriginal,
-        exif::Tag::DateTimeDigitized,
-        exif::Tag::DateTime,
-    ]
-    .iter()
-    .find_map(|tag| ascii_field(exif.get_field(*tag, exif::In::PRIMARY)?));
-    let orientation = exif
-        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-        .and_then(short_field)
-        .filter(|value| (1..=8).contains(value));
-    let location = match (
-        gps_coordinate(&exif, exif::Tag::GPSLatitude, exif::Tag::GPSLatitudeRef),
-        gps_coordinate(&exif, exif::Tag::GPSLongitude, exif::Tag::GPSLongitudeRef),
-    ) {
-        (Some(latitude), Some(longitude)) => Some(PhotoLocation {
-            latitude,
-            longitude,
-            label: None,
-            provenance: LocationProvenance {
-                source: "exif".to_owned(),
-                scope: "shared".to_owned(),
-            },
-        }),
-        _ => None,
-    };
-    Some(ExifMetadata {
-        captured_at,
-        orientation,
-        location,
+/// The place an image's own metadata states, when it states both coordinates: EXIF's own
+/// provenance, since this device only carries the container's word for it.
+fn location_of(info: &ImageInfo) -> Option<PhotoLocation> {
+    Some(PhotoLocation {
+        latitude: info.latitude?,
+        longitude: info.longitude?,
+        label: None,
+        provenance: crate::model::LocationProvenance {
+            source: "exif".to_owned(),
+            scope: "shared".to_owned(),
+        },
     })
-}
-
-fn gps_coordinate(exif: &exif::Exif, value_tag: exif::Tag, ref_tag: exif::Tag) -> Option<f64> {
-    let field = exif.get_field(value_tag, exif::In::PRIMARY)?;
-    let exif::Value::Rational(values) = &field.value else {
-        return None;
-    };
-    let [degrees, minutes, seconds, ..] = values.as_slice() else {
-        return None;
-    };
-    if degrees.denom == 0 || minutes.denom == 0 || seconds.denom == 0 {
-        return None;
-    }
-    let magnitude = f64::from(degrees.num) / f64::from(degrees.denom)
-        + f64::from(minutes.num) / f64::from(minutes.denom) / 60.0
-        + f64::from(seconds.num) / f64::from(seconds.denom) / 3600.0;
-    let reference = ascii_field(exif.get_field(ref_tag, exif::In::PRIMARY)?)?;
-    let signed = match reference.as_str() {
-        "N" | "E" => magnitude,
-        "S" | "W" => -magnitude,
-        _ => return None,
-    };
-    signed.is_finite().then_some(signed)
-}
-
-fn ascii_field(field: &exif::Field) -> Option<String> {
-    let exif::Value::Ascii(values) = &field.value else {
-        return None;
-    };
-    let value = values.first()?;
-    let text = std::str::from_utf8(value)
-        .ok()?
-        .trim_matches(char::from(0))
-        .trim();
-    (!text.is_empty()).then_some(text.to_owned())
-}
-
-fn short_field(field: &exif::Field) -> Option<u16> {
-    let exif::Value::Short(values) = &field.value else {
-        return None;
-    };
-    values.first().copied()
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
@@ -634,12 +562,16 @@ mod tests {
     tilo_test_env::scenario! {
         fn imports_keep_source_bytes_with_real_exif_upright_dimensions;
 
-        phase exif_reader_has_no_synthetic_fallback_for_a_plain_png;
+        phase a_plain_image_states_its_size_and_nothing_it_does_not_know;
         {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("plain.png");
             png(&path);
-            assert!(read_exif(&path).is_none());
+            let info = tilo_image_codec::info::read(&fs::read(&path).unwrap()).expect("a PNG states its size");
+            assert_eq!((info.width, info.height), (2, 1));
+            assert_eq!(info.captured_at, None);
+            assert_eq!(info.orientation, None);
+            assert_eq!((info.latitude, info.longitude), (None, None));
         }
 
         phase import_keeps_addressed_source_bytes_but_resources_upright_dimensions;
@@ -658,7 +590,10 @@ mod tests {
             )
             .expect("index oriented JPEG");
 
-            assert_eq!(indexed.exif.orientation, Some(6));
+            assert_eq!(
+                indexed.exif.as_ref().and_then(|info| info.orientation),
+                Some(6)
+            );
             assert_eq!(
                 (indexed.photo.image.width, indexed.photo.image.height),
                 (2, 3)

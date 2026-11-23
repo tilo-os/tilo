@@ -129,6 +129,100 @@ impl DecodedImage {
         }
     }
 
+    /// The pixels turned the way the container's EXIF orientation says they are shown; an
+    /// orientation outside 1 to 8 leaves them as stored.
+    #[must_use]
+    pub fn upright(self, orientation: u16) -> Self {
+        if orientation == 1 || !(1..=8).contains(&orientation) {
+            return self;
+        }
+        let swaps_axes = orientation >= 5;
+        let (width, height) = if swaps_axes {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        };
+        let mut rgba = vec![0_u8; self.rgba.len()];
+        for y in 0..height {
+            for x in 0..width {
+                let (source_x, source_y) = match orientation {
+                    2 => (self.width.saturating_sub(1).saturating_sub(x), y),
+                    3 => (
+                        self.width.saturating_sub(1).saturating_sub(x),
+                        self.height.saturating_sub(1).saturating_sub(y),
+                    ),
+                    4 => (x, self.height.saturating_sub(1).saturating_sub(y)),
+                    5 => (y, x),
+                    6 => (y, self.height.saturating_sub(1).saturating_sub(x)),
+                    7 => (
+                        self.width.saturating_sub(1).saturating_sub(y),
+                        self.height.saturating_sub(1).saturating_sub(x),
+                    ),
+                    _ => (self.width.saturating_sub(1).saturating_sub(y), x),
+                };
+                let source = u64::from(source_y)
+                    .saturating_mul(u64::from(self.width))
+                    .saturating_add(u64::from(source_x))
+                    .saturating_mul(4);
+                let destination = u64::from(y)
+                    .saturating_mul(u64::from(width))
+                    .saturating_add(u64::from(x))
+                    .saturating_mul(4);
+                let (Ok(source), Ok(destination)) =
+                    (usize::try_from(source), usize::try_from(destination))
+                else {
+                    continue;
+                };
+                let (Some(source), Some(destination)) = (
+                    self.rgba.get(source..source.saturating_add(4)),
+                    rgba.get_mut(destination..destination.saturating_add(4)),
+                ) else {
+                    continue;
+                };
+                destination.copy_from_slice(source);
+            }
+        }
+        Self {
+            rgba,
+            width,
+            height,
+        }
+    }
+
+    /// The region `x`, `y`, `width` and `height` name, each as a fraction of the picture, taken
+    /// as pixels; `None` for one that is not finite or has no area.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the fractions are clamped to 0..=1 first, and the pixels are inside the picture"
+    )]
+    #[must_use]
+    pub fn cropped_fraction(&self, x: f64, y: f64, width: f64, height: f64) -> Option<Self> {
+        if ![x, y, width, height].iter().all(|value| value.is_finite())
+            || width <= 0.0
+            || height <= 0.0
+            || self.width == 0
+            || self.height == 0
+        {
+            return None;
+        }
+        let left = (x.clamp(0.0, 1.0) * f64::from(self.width))
+            .floor()
+            .min(f64::from(self.width.saturating_sub(1))) as u32;
+        let top = (y.clamp(0.0, 1.0) * f64::from(self.height))
+            .floor()
+            .min(f64::from(self.height.saturating_sub(1))) as u32;
+        let across = (width.clamp(0.0, 1.0) * f64::from(self.width))
+            .round()
+            .max(1.0)
+            .min(f64::from(self.width.saturating_sub(left))) as u32;
+        let down = (height.clamp(0.0, 1.0) * f64::from(self.height))
+            .round()
+            .max(1.0)
+            .min(f64::from(self.height.saturating_sub(top))) as u32;
+        self.cropped(left, top, across.max(1), down.max(1))
+    }
+
     /// The image scaled to `width` by `height` with a triangle filter, so a large
     /// reduction keeps its detail.
     #[must_use]

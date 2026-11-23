@@ -501,7 +501,7 @@ impl ResourceApp for PhotosShell {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
             return Vec::new();
         };
-        let Some((width, height)) = crate::pixels::size(file.bytes()) else {
+        let Some((width, height)) = crate::image_size(file.bytes()) else {
             tracing::warn!(
                 name = file.name(),
                 "photos: the launched file is not an image"

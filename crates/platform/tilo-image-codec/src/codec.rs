@@ -100,6 +100,34 @@ pub fn decode_now(bytes: &[u8], max_dimension: Option<u32>) -> Result<DecodedIma
     })
 }
 
+/// [`decode`], the pixels turned the way the container's EXIF orientation says they are shown,
+/// as a viewer shows a photograph the camera stored sideways.
+///
+/// # Errors
+///
+/// As [`decode`].
+pub async fn decode_upright(
+    bytes: &[u8],
+    max_dimension: Option<u32>,
+) -> Result<DecodedImage, DecodeError> {
+    let decoded = decode(bytes, max_dimension).await?;
+    Ok(decoded.upright(crate::info::orientation(bytes).unwrap_or(1)))
+}
+
+/// [`decode_now`] with the container's EXIF orientation applied; [`decode_upright`] is the one
+/// to use.
+///
+/// # Errors
+///
+/// As [`decode`].
+pub fn decode_upright_now(
+    bytes: &[u8],
+    max_dimension: Option<u32>,
+) -> Result<DecodedImage, DecodeError> {
+    let decoded = decode_now(bytes, max_dimension)?;
+    Ok(decoded.upright(crate::info::orientation(bytes).unwrap_or(1)))
+}
+
 pub async fn encode(image: &DecodedImage, encoding: Encoding) -> Result<Vec<u8>, EncodeError> {
     let expected = (image.width as usize)
         .checked_mul(image.height as usize)

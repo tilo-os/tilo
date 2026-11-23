@@ -27,7 +27,7 @@ fn published(doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
 use tilo_actions::api::{self, ActionAddress};
 
 fn photograph() -> Vec<u8> {
-    photos::pixels::encode_png(&photos::shots_pattern(900, 600)).expect("the pattern encodes")
+    photos::encode_png(&photos::shots_pattern(900, 600)).expect("the pattern encodes")
 }
 
 const SQUARE_900X600: [f64; 4] = [0.166_667, 0.0, 0.666_667, 1.0];
@@ -244,9 +244,9 @@ tilo_test_env::scenario! {
             .content
             .read(content)
             .expect("the content the address names is in this machine's store");
-        let decoded = photos::pixels::decode(&fetched).expect("and it decodes to a picture");
+        let decoded = photos::decode_image(&fetched).expect("and it decodes to a picture");
         assert_eq!(
-            (decoded.w, decoded.h),
+            (decoded.width, decoded.height),
             (900, 600),
             "the address resolved to bytes that are not the photograph it names"
         );

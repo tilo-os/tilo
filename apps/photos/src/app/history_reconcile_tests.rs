@@ -317,7 +317,7 @@ tilo_test_env::scenario! {
         let path = tmp.path().join("import.png");
         std::fs::write(
             &path,
-            pixels::encode_png(&crate::shots_pattern(4, 3)).unwrap(),
+            crate::encode_png(&crate::shots_pattern(4, 3)).unwrap(),
         )
         .unwrap();
         let invocation = tilo_actions::InvocationId::new();
@@ -402,7 +402,7 @@ tilo_test_env::scenario! {
     {
         let mut doc = crate::test_doc::new_doc();
         let store = ContentStore::memory();
-        let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
+        let bytes = crate::encode_png(&crate::shots_pattern(6, 4)).unwrap();
         let open = OpenImage::new(
             "existing.png",
             6,
@@ -441,7 +441,7 @@ tilo_test_env::scenario! {
     {
         let mut doc = crate::test_doc::new_doc();
         let store = ContentStore::memory();
-        let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
+        let bytes = crate::encode_png(&crate::shots_pattern(6, 4)).unwrap();
         let open = OpenImage::new(
             "same.png",
             6,

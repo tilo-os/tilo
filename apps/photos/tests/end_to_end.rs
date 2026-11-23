@@ -18,7 +18,7 @@ use vello::kurbo::Rect;
 
 use automerge::{AutoCommit, ROOT};
 use photos::model::{Album, Edits, PhotoLibrary, Rect01};
-use photos::pixels::{self, Rgba};
+use photos::{DecodedImage, decode_image, encode_png};
 use photos::{PhotosApp, shots_pattern};
 use ui::tilo_resource::{Fields as _, Resource as _};
 
@@ -150,10 +150,10 @@ impl Harness {
     }
 }
 
-fn staged(dir: &std::path::Path, w: u32, h: u32) -> (String, Rgba) {
+fn staged(dir: &std::path::Path, w: u32, h: u32) -> (String, DecodedImage) {
     let img = shots_pattern(w, h);
     let path = dir.join("harbour.png");
-    std::fs::write(&path, pixels::encode_png(&img).unwrap()).unwrap();
+    std::fs::write(&path, encode_png(&img).unwrap()).unwrap();
     (path.to_string_lossy().into_owned(), img)
 }
 
@@ -410,7 +410,7 @@ tilo_test_env::scenario! {
         hz.frame_until_shown();
 
         let before = hz.app().state().edited_pixels().expect("rendered").clone();
-        assert_eq!((before.w, before.h), (300, 200));
+        assert_eq!((before.width, before.height), (300, 200));
 
         let turned = hz.edits().rotated_right();
         hz.set_edits(turned);
@@ -422,10 +422,10 @@ tilo_test_env::scenario! {
             .edited_pixels()
             .expect("re-rendered")
             .clone();
-        assert_eq!((after.w, after.h), (200, 300), "the axes did not swap");
-        assert_ne!(after.bytes, before.bytes, "the buffer is unchanged");
+        assert_eq!((after.width, after.height), (200, 300), "the axes did not swap");
+        assert_ne!(after.rgba, before.rgba, "the buffer is unchanged");
 
-        let (sw, sh) = (before.w, before.h);
+        let (sw, sh) = (before.width, before.height);
         let mut checked = 0;
         for (sx, sy) in [(0, 0), (sw - 1, 0), (0, sh - 1), (sw - 1, sh - 1), (37, 61)] {
             let want = before.pixel(sx, sy).unwrap();
@@ -440,11 +440,11 @@ tilo_test_env::scenario! {
         }
         assert_eq!(checked, 5);
 
-        let brightness = |img: &Rgba, fx: f64, fy: f64| {
+        let brightness = |img: &DecodedImage, fx: f64, fy: f64| {
             let p = img
                 .pixel(
-                    ((f64::from(img.w) - 1.0) * fx) as u32,
-                    ((f64::from(img.h) - 1.0) * fy) as u32,
+                    ((f64::from(img.width) - 1.0) * fx) as u32,
+                    ((f64::from(img.height) - 1.0) * fy) as u32,
                 )
                 .unwrap();
             u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
@@ -464,7 +464,7 @@ tilo_test_env::scenario! {
         hz.frame_until_shown();
 
         let before = hz.app().state().edited_pixels().expect("rendered").clone();
-        assert_eq!((before.w, before.h), (400, 400));
+        assert_eq!((before.width, before.height), (400, 400));
 
         let e = Edits::default().cropped_from_view(Rect01 {
             x: 0.5,
@@ -481,9 +481,9 @@ tilo_test_env::scenario! {
             .edited_pixels()
             .expect("re-rendered")
             .clone();
-        assert_eq!((after.w, after.h), (200, 200), "the crop did not resize");
+        assert_eq!((after.width, after.height), (200, 200), "the crop did not resize");
         assert!(
-            after.bytes.len() < before.bytes.len(),
+            after.rgba.len() < before.rgba.len(),
             "the cropped buffer is not smaller"
         );
         assert_eq!(
@@ -513,15 +513,15 @@ tilo_test_env::scenario! {
         hz.set_edits(e);
         hz.frame();
         assert_ne!(
-            hz.app().state().edited_pixels().unwrap().bytes,
-            original.bytes
+            hz.app().state().edited_pixels().unwrap().rgba,
+            original.rgba
         );
 
         hz.set_edits(Edits::default());
         hz.frame();
         assert_eq!(
-            hz.app().state().edited_pixels().unwrap().bytes,
-            original.bytes,
+            hz.app().state().edited_pixels().unwrap().rgba,
+            original.rgba,
             "reset did not restore the original"
         );
     }
@@ -554,15 +554,15 @@ tilo_test_env::scenario! {
             .expect("re-rendered")
             .clone();
         assert!(
-            after.w < 400 && after.h < 400,
+            after.width < 400 && after.height < 400,
             "cropping to a 2x view did not shrink the image: {}x{}",
-            after.w,
-            after.h
+            after.width,
+            after.height
         );
         assert!(
-            (i64::from(after.w) - 200).abs() <= 12,
+            (i64::from(after.width) - 200).abs() <= 12,
             "expected about half the width, got {}",
-            after.w
+            after.width
         );
     }
 }
@@ -636,12 +636,12 @@ tilo_test_env::scenario! {
             .expect("nothing was copied");
         assert_eq!(
             (got.0, got.1),
-            (shown.w as usize, shown.h as usize),
+            (shown.width as usize, shown.height as usize),
             "the clipboard got a different size from what is on screen"
         );
-        assert_eq!(got.2, shown.bytes, "the clipboard got different pixels");
+        assert_eq!(got.2, shown.rgba, "the clipboard got different pixels");
         assert_ne!(
-            got.2, original.bytes,
+            got.2, original.rgba,
             "the clipboard got the unedited original"
         );
         assert_eq!(
@@ -674,10 +674,10 @@ tilo_test_env::scenario! {
 
         let written = std::fs::read(&out).unwrap();
         assert_eq!(&written[1..4], b"PNG", "that is not a PNG");
-        let back = pixels::decode(&written).expect("the saved file does not decode");
-        assert_eq!((back.w, back.h), (shown.w, shown.h));
+        let back = decode_image(&written).expect("the saved file does not decode");
+        assert_eq!((back.width, back.height), (shown.width, shown.height));
         assert_eq!(
-            back.bytes, shown.bytes,
+            back.rgba, shown.rgba,
             "the saved pixels differ from the shown ones"
         );
     }
@@ -782,7 +782,7 @@ tilo_test_env::scenario! {
             .expect("re-rendered")
             .clone();
         assert_eq!(
-            (after.w, after.h),
+            (after.width, after.height),
             (200, 400),
             "invoking the published action did not rotate the pixels"
         );
@@ -848,7 +848,7 @@ tilo_test_env::scenario! {
             .expect("re-rendered")
             .clone();
         assert_eq!(
-            (after.w, after.h),
+            (after.width, after.height),
             (200, 200),
             "cropping by address did not resize the exported pixels"
         );
@@ -1098,7 +1098,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_photograph_is_kept_sealed_and_a_member_opens_it() {
-    let bytes = pixels::encode_png(&shots_pattern(300, 200)).expect("the pattern encodes");
+    let bytes = encode_png(&shots_pattern(300, 200)).expect("the pattern encodes");
     let writer = tilo_content::ContentStore::memory_in_workspace().sealing();
     let dispatch = ui::framework::testing::dispatcher("so.tilo.photos");
     let app = PhotosApp::with_content(writer.clone()).with_dispatcher(dispatch.clone());

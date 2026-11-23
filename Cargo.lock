@@ -12529,7 +12529,6 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "image",
- "kamadak-exif",
  "photos",
  "runtime-dylib",
  "serde",
@@ -12541,6 +12540,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-files",
+ "tilo-image-codec",
  "tilo-ocr",
  "tilo-paths",
  "tilo-reference",
@@ -19853,9 +19853,19 @@ dependencies = [
  "imagesize",
  "js-sys",
  "send_wrapper",
+ "tilo-image-info",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-image-info"
+version = "0.1.0"
+dependencies = [
+ "imagesize",
+ "kamadak-exif",
  "workspace-hack",
 ]
 

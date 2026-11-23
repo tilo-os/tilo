@@ -48,7 +48,8 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tilo-ocr = { path = "../../crates/media/ocr" }
-kamadak-exif = "0.6.1"
+# The shared codec: decode, the container's orientation, crop, turn, scale and encode.
+tilo-image-codec = { version = "0.1.0", path = "../../crates/platform/tilo-image-codec" }
 
 [dev-dependencies]
 # Tests build their image fixtures.

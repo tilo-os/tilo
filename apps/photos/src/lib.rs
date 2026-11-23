@@ -27,7 +27,6 @@ pub mod import;
 pub mod library_analysis;
 pub mod model;
 pub mod people;
-pub mod pixels;
 pub mod places;
 pub mod reference;
 pub mod resource;
@@ -37,8 +36,46 @@ pub mod search;
 pub mod strings;
 mod timeline_projection;
 
+pub use tilo_image_codec::DecodedImage;
+
 pub use app::PhotosApp;
 pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
+
+/// The most a photograph's encoded bytes may be: the bound an import, an open and a save read
+/// under, so a mistaken file cannot exhaust the session.
+pub const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
+
+/// The most pixels a photograph may decode to. RGBA8 needs four bytes a pixel, so this caps one
+/// picture at about 128 MiB, and a second buffer while an edit applies stays bounded too.
+pub const MAX_DECODED_PIXELS: u64 = 32 * 1024 * 1024;
+
+/// `bytes` decoded as the upright picture a viewer shows: the codec turns the pixels the way the
+/// container's EXIF orientation says they are shown.
+pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
+    tilo_image_codec::decode_upright_now(bytes, None).ok()
+}
+
+/// [`decode_image`] away from the calling thread: a photograph decoded by the session's runtime.
+pub async fn decode_image_async(bytes: &[u8]) -> Option<DecodedImage> {
+    tilo_image_codec::decode_upright(bytes, None).await.ok()
+}
+
+/// The upright size `bytes` state, when they are an image this app opens within its bounds.
+pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() > MAX_ENCODED_BYTES {
+        return None;
+    }
+    tilo_image_codec::sniff(bytes)?;
+    let info = tilo_image_codec::info::read(bytes)?;
+    let (width, height) = (info.width, info.height);
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    (width != 0 && height != 0 && pixels <= MAX_DECODED_PIXELS).then_some((width, height))
+}
+
+/// `image` encoded as a PNG: what an edited photograph is saved, copied and exported as.
+pub fn encode_png(image: &DecodedImage) -> Option<Vec<u8>> {
+    tilo_image_codec::encode_now(image, tilo_image_codec::Encoding::Png).ok()
+}
 
 pub fn camera_import_photo(
     media_id: &str,
@@ -52,11 +89,11 @@ pub fn camera_import_photo(
     let bytes = store
         .read(reference)
         .ok_or_else(|| crate::strings::tr("photos-camera-error-not-here"))?;
-    if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
+    if bytes.is_empty() || bytes.len() > MAX_ENCODED_BYTES {
         return Err(crate::strings::tr("photos-camera-error-integrity"));
     }
-    let image = pixels::size(&bytes)
-        .ok_or_else(|| crate::strings::tr("photos-camera-error-unsupported"))?;
+    let image =
+        image_size(&bytes).ok_or_else(|| crate::strings::tr("photos-camera-error-unsupported"))?;
     Ok(model::LibraryPhoto::from_image(OpenImage::new(
         name,
         image.0,
@@ -80,7 +117,7 @@ mod camera_import_tests {
     use tilo_content::ContentStore;
     use ui::tilo_resource::Replica;
 
-    use super::{camera_import_photo, pixels};
+    use super::{DecodedImage, camera_import_photo, encode_png};
     use crate::model::PhotoLibrary;
 
     tilo_test_env::scenario! {
@@ -88,8 +125,8 @@ mod camera_import_tests {
 
         phase camera_import_verifies_bytes_and_imports_one_content_addressed_photo;
         {
-            let rgba = pixels::Rgba::new(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
-            let bytes = pixels::encode_png(&rgba).expect("fixture png");
+            let rgba = DecodedImage::from_rgba(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
+            let bytes = encode_png(&rgba).expect("fixture png");
             let store = ContentStore::memory();
             let hash = store.put(&bytes).expect("fixture content");
             let media_id = format!("media:blake3:{hash}");

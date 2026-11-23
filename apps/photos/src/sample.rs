@@ -8,7 +8,7 @@ use ui::tilo_resource::{Id, Invoke};
 use crate::model::{
     Album, Edits, LibraryPhoto, LocationProvenance, OpenImage, PhotoLibrary, PhotoLocation, Rect01,
 };
-use crate::pixels;
+use crate::{DecodedImage, encode_png};
 
 #[allow(
     clippy::many_single_char_names,
@@ -20,7 +20,7 @@ use crate::pixels;
     reason = "the buffer this builds is always exactly w*h*4 bytes, and every \
               call site passes a fixed non-zero w/h"
 )]
-pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
+pub fn shots_pattern(w: u32, h: u32) -> DecodedImage {
     let mut bytes = Vec::with_capacity((w as usize) * (h as usize) * 4);
     for y in 0..h {
         for x in 0..w {
@@ -53,7 +53,7 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
             bytes.extend_from_slice(&[r, g, b, 255]);
         }
     }
-    pixels::Rgba::new(w, h, bytes).expect("generated pattern is well formed")
+    DecodedImage::from_rgba(w, h, bytes).expect("generated pattern is well formed")
 }
 
 #[allow(
@@ -61,9 +61,9 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
     clippy::indexing_slicing,
     reason = "chunks_exact_mut(4) proves each RGBA pixel has the indexed channels"
 )]
-pub fn shots_pattern_variant(w: u32, h: u32, variant: u8) -> pixels::Rgba {
+pub fn shots_pattern_variant(w: u32, h: u32, variant: u8) -> DecodedImage {
     let mut image = shots_pattern(w, h);
-    for pixel in image.bytes.chunks_exact_mut(4) {
+    for pixel in image.rgba.chunks_exact_mut(4) {
         let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
         match variant % 5 {
             0 => {}
@@ -201,7 +201,7 @@ fn gallery() -> &'static [Sample] {
                 _ => (720, 960),
             };
             let mut pattern = shots_pattern_variant(width, height, variant as u8);
-            if let Some(first) = pattern.bytes.first_mut() {
+            if let Some(first) = pattern.rgba.first_mut() {
                 *first = variant as u8;
             }
             let mut sample = sample(&format!("{name}.png"), &pattern)?;
@@ -235,13 +235,13 @@ fn gallery() -> &'static [Sample] {
     })
 }
 
-fn sample(name: &str, pattern: &pixels::Rgba) -> Option<Sample> {
-    let bytes = pixels::encode_png(pattern)?;
+fn sample(name: &str, pattern: &DecodedImage) -> Option<Sample> {
+    let bytes = encode_png(pattern)?;
     let reference = tilo_content::hash_bytes(&bytes);
     let image = OpenImage::new(
         name,
-        pattern.w,
-        pattern.h,
+        pattern.width,
+        pattern.height,
         ui::tilo_resource::Bytes::kept_as(&bytes, &reference),
     );
     Some(Sample {

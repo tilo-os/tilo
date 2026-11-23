@@ -23,8 +23,8 @@ use ui::widget::{
     ScrollMetrics, ScrollRegion, TextInput, TextInputKind, Widget,
 };
 
+use crate::DecodedImage;
 use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary, Rect01};
-use crate::pixels::{self, Rgba};
 use crate::strings::{tr, tr_args};
 use crate::timeline_projection::TimelineProjection;
 use ui::ArgValue;
@@ -115,7 +115,7 @@ fn timeline_row_height(theme: &Theme, density: u8) -> f64 {
 struct ThumbnailResult {
     generation: u64,
     id: String,
-    preview: Option<Rgba>,
+    preview: Option<DecodedImage>,
 }
 
 struct AnalysisResult {
@@ -388,7 +388,7 @@ enum CanvasState {
     Ready,
 }
 
-type DecodedPixels = Arc<std::sync::Mutex<Vec<(String, Option<Rgba>)>>>;
+type DecodedPixels = Arc<std::sync::Mutex<Vec<(String, Option<DecodedImage>)>>>;
 
 #[derive(Clone, PartialEq)]
 struct LiveContent {
@@ -398,7 +398,7 @@ struct LiveContent {
 struct Rendered {
     identity: String,
     edits: Edits,
-    rgba: Rgba,
+    rgba: DecodedImage,
 }
 
 #[derive(Clone, Debug)]
@@ -424,7 +424,7 @@ pub struct Photos {
     content: ContentStore,
     #[cfg(test)]
     last_library_action: Option<ui::tilo_resource::Invoke<PhotoLibrary>>,
-    original: Option<(String, Rgba)>,
+    original: Option<(String, DecodedImage)>,
     original_identity: Option<String>,
     decoding: Option<String>,
     decoded: DecodedPixels,
@@ -988,12 +988,12 @@ impl Photos {
     }
 
     pub fn open_contents(&mut self, name: &str, bytes: &[u8]) {
-        let bytes = (bytes.len() <= pixels::MAX_ENCODED_BYTES).then_some(bytes);
+        let bytes = (bytes.len() <= crate::MAX_ENCODED_BYTES).then_some(bytes);
         self.open_bytes(name, bytes);
     }
 
     fn open_bytes(&mut self, path: &str, bytes: Option<&[u8]>) {
-        let Some((width, height)) = bytes.and_then(pixels::size) else {
+        let Some((width, height)) = bytes.and_then(crate::image_size) else {
             self.notice = Some(tr("photos-open-failed"));
             return;
         };
@@ -1024,7 +1024,7 @@ impl Photos {
         self.original.as_ref().map(|(p, _)| p.as_str())
     }
 
-    pub fn edited_pixels(&self) -> Option<&Rgba> {
+    pub fn edited_pixels(&self) -> Option<&DecodedImage> {
         self.rendered.as_ref().map(|r| &r.rgba)
     }
 
@@ -1096,10 +1096,12 @@ impl Photos {
 
     pub fn visible_rect(&self) -> Rect01 {
         match (self.viewer.as_ref(), self.rendered.as_ref()) {
-            (Some(v), Some(rendered)) => {
-                visible_image_rect(v, f64::from(rendered.rgba.w), f64::from(rendered.rgba.h))
-                    .unwrap_or(Rect01::FULL)
-            }
+            (Some(v), Some(rendered)) => visible_image_rect(
+                v,
+                f64::from(rendered.rgba.width),
+                f64::from(rendered.rgba.height),
+            )
+            .unwrap_or(Rect01::FULL),
             _ => Rect01::FULL,
         }
     }
@@ -1109,9 +1111,9 @@ impl Photos {
             return false;
         };
         let ok = self.copy.watch(ui::clipboard_copy_image(
-            img.w as usize,
-            img.h as usize,
-            &img.bytes,
+            img.width as usize,
+            img.height as usize,
+            &img.rgba,
         ));
         self.notice = Some(if ok {
             tr("photos-copied")
@@ -1164,7 +1166,7 @@ impl Photos {
     }
 
     fn edited_png(&self) -> Option<Vec<u8>> {
-        self.edited_pixels().and_then(pixels::encode_png)
+        self.edited_pixels().and_then(crate::encode_png)
     }
 
     pub fn suggested_save_name(open: &OpenImage) -> String {
@@ -1412,7 +1414,7 @@ impl Photos {
             return;
         }
 
-        let rgba = pixels::render(original, edits.crop, edits.rotate_quarters);
+        let rgba = edits.render(original);
         let image = to_peniko(&rgba);
         self.viewer = Some(ImageViewer::new(image));
         self.structure_dirty = true;
@@ -1429,7 +1431,7 @@ impl Photos {
         let wake = ui::WakeHandle::new();
         let landed = key.clone();
         ui::rt::app().spawn_then(
-            async move { pixels::decode_async(&bytes).await },
+            async move { crate::decode_image_async(&bytes).await },
             move |pixels| {
                 decoded
                     .lock()
@@ -1441,7 +1443,7 @@ impl Photos {
         self.decoding = Some(key);
     }
 
-    fn take_decoded(&self) -> Vec<(String, Option<Rgba>)> {
+    fn take_decoded(&self) -> Vec<(String, Option<DecodedImage>)> {
         std::mem::take(
             &mut *self
                 .decoded
@@ -1683,8 +1685,8 @@ fn bound(
     }
 }
 
-fn to_peniko(img: &Rgba) -> ImageData {
-    pixels::to_peniko(img)
+fn to_peniko(img: &DecodedImage) -> ImageData {
+    ui::raster::rgba8(img.rgba.clone(), img.width, img.height)
 }
 
 fn decode_key(open: &OpenImage) -> String {
@@ -1732,7 +1734,7 @@ fn capture_day(captured_at: &str) -> String {
 }
 
 fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
-    crate::files::read_native(std::path::Path::new(path), pixels::MAX_ENCODED_BYTES as u64)
+    crate::files::read_native(std::path::Path::new(path), crate::MAX_ENCODED_BYTES as u64)
 }
 
 impl Photos {

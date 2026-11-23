@@ -1160,7 +1160,7 @@ fn save_without_a_path_writes_a_copy_where_the_chooser_answers() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("harbour.png");
     let image = crate::shots_pattern(32, 24);
-    std::fs::write(&path, crate::pixels::encode_png(&image).unwrap()).unwrap();
+    std::fs::write(&path, crate::encode_png(&image).unwrap()).unwrap();
     let (services, recorder) = ui::process::ProcessServices::recording();
     let _host = ui::process::enter(&services);
     let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
@@ -1171,8 +1171,8 @@ fn save_without_a_path_writes_a_copy_where_the_chooser_answers() {
     let requests = recorder.pick_requests();
     assert_eq!(requests.len(), 1, "Save asks the chooser once");
     assert_eq!(requests[0].suggested_name(), Some("harbour-edited.png"));
-    let back = crate::pixels::decode(&std::fs::read(&chosen).unwrap()).expect("a PNG");
-    assert_eq!(back.bytes, image.bytes, "the copy holds the shown pixels");
+    let back = crate::decode_image(&std::fs::read(&chosen).unwrap()).expect("a PNG");
+    assert_eq!(back.rgba, image.rgba, "the copy holds the shown pixels");
 }
 
 #[test]
@@ -1182,7 +1182,7 @@ fn history_entries_render_as_the_apps_sentences() {
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("lake.png");
-    let png = crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap();
+    let png = crate::encode_png(&crate::shots_pattern(30, 20)).unwrap();
     std::fs::write(&path, &png).unwrap();
     let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
     let lake = app.state().all_photos().next().unwrap().id.clone();

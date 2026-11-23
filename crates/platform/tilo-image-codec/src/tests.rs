@@ -251,3 +251,140 @@ fn pixels_crop_turn_scale_and_grey() {
         "outside paints nothing"
     );
 }
+
+fn ramp(width: u32, height: u32) -> DecodedImage {
+    let mut rgba = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            rgba.extend_from_slice(&[u8::try_from(x).unwrap(), u8::try_from(y).unwrap(), 0, 255]);
+        }
+    }
+    DecodedImage::from_rgba(width, height, rgba).unwrap()
+}
+
+fn coordinates(image: &DecodedImage) -> Vec<(u8, u8)> {
+    (0..image.height)
+        .flat_map(|y| {
+            (0..image.width).map(move |x| {
+                let pixel = image.pixel(x, y).expect("a coordinate is in bounds");
+                (pixel[0], pixel[1])
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn the_containers_orientation_turns_pixels_to_the_upright_picture() {
+    let source = ramp(3, 2);
+    let cases = [
+        (
+            1,
+            (3, 2),
+            vec![(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)],
+        ),
+        (
+            2,
+            (3, 2),
+            vec![(2, 0), (1, 0), (0, 0), (2, 1), (1, 1), (0, 1)],
+        ),
+        (
+            3,
+            (3, 2),
+            vec![(2, 1), (1, 1), (0, 1), (2, 0), (1, 0), (0, 0)],
+        ),
+        (
+            4,
+            (3, 2),
+            vec![(0, 1), (1, 1), (2, 1), (0, 0), (1, 0), (2, 0)],
+        ),
+        (
+            5,
+            (2, 3),
+            vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)],
+        ),
+        (
+            6,
+            (2, 3),
+            vec![(0, 1), (0, 0), (1, 1), (1, 0), (2, 1), (2, 0)],
+        ),
+        (
+            7,
+            (2, 3),
+            vec![(2, 1), (2, 0), (1, 1), (1, 0), (0, 1), (0, 0)],
+        ),
+        (
+            8,
+            (2, 3),
+            vec![(2, 0), (2, 1), (1, 0), (1, 1), (0, 0), (0, 1)],
+        ),
+    ];
+    for (orientation, dimensions, expected) in cases {
+        let upright = source.clone().upright(orientation);
+        assert_eq!(
+            (upright.width, upright.height),
+            dimensions,
+            "orientation {orientation}"
+        );
+        assert_eq!(coordinates(&upright), expected, "orientation {orientation}");
+    }
+    for invalid in [0, 9, u16::MAX] {
+        assert_eq!(source.clone().upright(invalid), source, "{invalid}");
+    }
+
+    // The orientation is read from real JPEG bytes, and the pixels decode upright from them.
+    for orientation in 1..=8 {
+        let jpeg = jpeg_with_orientation(orientation);
+        assert_eq!(crate::info::orientation(&jpeg), Some(orientation));
+        let upright = now(decode_upright(&jpeg, None)).expect("decode a tagged JPEG");
+        let expected = if orientation >= 5 { (2, 3) } else { (3, 2) };
+        assert_eq!(
+            (upright.width, upright.height),
+            expected,
+            "orientation {orientation}"
+        );
+    }
+    for orientation in [0, 9, u16::MAX] {
+        let jpeg = jpeg_with_orientation(orientation);
+        assert_eq!(crate::info::orientation(&jpeg), None, "{orientation}");
+        let upright = now(decode_upright(&jpeg, None)).expect("decode despite metadata");
+        assert_eq!((upright.width, upright.height), (3, 2), "{orientation}");
+    }
+    assert_eq!(
+        now(decode_upright(&fixture(image::ImageFormat::Png), None))
+            .expect("an untagged PNG decodes"),
+        now(decode(&fixture(image::ImageFormat::Png), None)).expect("decodes as stored"),
+        "no orientation leaves the pixels as stored"
+    );
+}
+
+/// A 3x2 JPEG whose EXIF states `orientation`.
+fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
+    use image::ImageEncoder as _;
+
+    let rgb = vec![
+        255, 0, 0, 0, 255, 0, 0, 0, 255, // first row
+        255, 255, 0, 0, 255, 255, 255, 0, 255, // second row
+    ];
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95)
+        .write_image(&rgb, 3, 2, image::ExtendedColorType::Rgb8)
+        .expect("encode a test JPEG");
+    assert_eq!(&jpeg[..2], &[0xff, 0xd8]);
+
+    let mut payload = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0".to_vec();
+    let [low, high] = orientation.to_le_bytes();
+    payload.extend_from_slice(&[
+        0x12, 0x01, // Orientation tag
+        0x03, 0x00, // SHORT
+        0x01, 0x00, 0x00, 0x00, // one value
+        low, high, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // no next IFD
+    ]);
+    let segment_length = u16::try_from(payload.len().saturating_add(2)).expect("small segment");
+    let mut tagged = Vec::with_capacity(jpeg.len().saturating_add(payload.len()).saturating_add(4));
+    tagged.extend_from_slice(&jpeg[..2]);
+    tagged.extend_from_slice(&[0xff, 0xe1]);
+    tagged.extend_from_slice(&segment_length.to_be_bytes());
+    tagged.extend_from_slice(&payload);
+    tagged.extend_from_slice(&jpeg[2..]);
+    tagged
+}
