@@ -1090,6 +1090,9 @@ d-gke2gvrj = Banner full
     .w-open = Open
 
 d-wh7n4fhq = Banner row
+    .w-answer = Answer
+    .w-decline = Decline
+    .w-snooze = Snooze
     .w-read = Read
     .w-dismiss = Dismiss
 
@@ -1222,6 +1225,11 @@ d-wvxjuiww = Sound section
     .w-mute-the-microphone = Mute the microphone
     .w-microphone = Microphone
     .w-playing-here = Playing here
+    .w-playing = Playing
+    .w-paused = Paused
+    .w-unmute = Unmute { $application }
+    .w-mute = Mute { $application }
+    .w-play-through = Play { $application } through
     .w-recording-here = Recording here
 
 d-thduakjg = Network section
@@ -1273,7 +1281,20 @@ d-ycck5awo = Power row
 
 d-u2tma44r = Devices section
     .w-devices = Devices
+    .w-here-now = Here now
+    .w-away = Away
     .w-nearby-send = Nearby Send
+    .w-offers-this-keep-it-in = { $peer } offers this; keep it in { $name }
+    .w-offers-this = { $peer } offers this
+    .w-keep-it = Keep it
+    .w-no-folder-here-takes-the-file = No folder here takes the file
+    .w-turn-down = Turn down
+    .w-stop = Stop
+    .w-it-did-not-finish = It did not finish
+    .w-try-again = Try again
+    .w-kept-here = Kept here
+    .w-sent = Sent
+    .w-turned-down = Turned down
     .w-no-devices-in-reach = No devices in reach
 
 d-niotqkfd = Bluetooth hand off
@@ -1282,6 +1303,10 @@ d-niotqkfd = Bluetooth hand off
 d-2abiywd2 = Controls editor
     .w-customise-the-panel = Customise the panel
     .w-panel-controls = Panel controls
+    .w-move-to-the-front = Move { $control_label } to the front
+    .w-hide = Hide { $control_label }
+    .w-not-on-the-panel = Not on the panel
+    .w-show = Show { $control_label }
     .w-reset-the-panel = Reset the panel
 
 d-6rjhuenw = Emoji card
