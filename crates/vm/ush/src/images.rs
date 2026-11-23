@@ -194,12 +194,14 @@ impl Images for StoreImages {
     }
 
     fn is_local(&self, id: &PackageId) -> bool {
-        // `tree` serves the user's materialised copy; a system image has
-        // none until its first use imports it.
+        // Whether using the image needs no import: this account holds a copy, or
+        // a system store serves the image's tree where it lies (which never
+        // fetches).
         self.store
             .user()
             .image(*id)
             .is_ok_and(|meta| meta.is_some())
+            || package_store::serves_in_place(&self.store, id).unwrap_or(false)
     }
 
     fn check_tool(&self, tool: &PackageId, runtime: &PackageId) -> Result<(), String> {
@@ -564,8 +566,14 @@ mod tests {
             }
         }
 
-        phase a_system_runtime_is_local_only_once_its_first_use_imported_it;
+        phase a_system_runtime_is_local_where_it_lies_and_needs_no_import;
         {
+            // A tmpfs is a filesystem that is not itself an overlay, so the
+            // system's tree is the one an environment stacks: nothing is
+            // imported, and the image is local from the start.
+            let Ok(system) = tempfile::tempdir_in("/dev/shm") else {
+                return;
+            };
             let dir = tempfile::tempdir().unwrap();
             let runtime = seal(
                 &dir.path().join("runtime"),
@@ -573,8 +581,7 @@ mod tests {
                 None,
                 &SigningIdentity::generate(),
             );
-            let system = dir.path().join("system");
-            PackageStore::at(&system)
+            PackageStore::at(system.path())
                 .install_image(
                     full(&runtime).as_slice(),
                     |_| Ok(Admission::default()),
@@ -583,15 +590,23 @@ mod tests {
                 .unwrap();
             let images = StoreImages::new(
                 Store::new(PackageStore::at(dir.path().join("user")))
-                    .with_system(package_store::Layout::new(&system)),
+                    .with_system(package_store::Layout::new(system.path())),
             );
 
-            assert!(!images.is_local(&runtime.meta.id));
+            assert!(images.is_local(&runtime.meta.id), "no import is needed");
             let tree = images.tree(&runtime.meta.id).unwrap();
-            assert!(tree.starts_with(dir.path().join("user")), "{tree:?}");
+            assert_eq!(
+                tree,
+                package_store::Layout::new(system.path()).payload(runtime.meta.id),
+                "the system's own tree, where it lies"
+            );
             assert!(tree.join("usr/bin/bash").is_file());
             assert!(images.is_local(&runtime.meta.id));
             assert_eq!(images.tree(&runtime.meta.id).unwrap(), tree);
+            assert!(
+                !images.store.user().layout().payload(runtime.meta.id).exists(),
+                "nothing was copied into this account's store"
+            );
         }
     }
 

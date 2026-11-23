@@ -720,7 +720,7 @@ pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf,
         tree: source,
         host,
     } = store.resolve(*id)?;
-    if host.is_none() && is_a_system_tree(store, *id)? && sits_outside_any_overlay(&source) {
+    if served_where_it_lies(store, *id, (&source, host.as_ref()))? {
         // The image's own tree is where an environment can read it already:
         // serving it in place saves writing and publishing a copy for this
         // account. Its bytes, links and modes are checked against the signed
@@ -744,6 +744,37 @@ pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf,
     })?;
     verify_local_tree(&meta, &local)?;
     Ok(local)
+}
+
+/// Whether image `id` needs no copy into this account's store: the tree of a
+/// system image is served where the image keeps it
+/// ([`local_materialized_tree`]'s in-place answer). A store that holds no copy
+/// answers `false`: asking never fetches, so a caller may ask about any image.
+///
+/// # Errors
+///
+/// A publisher trust or store error, as [`local_materialized_tree`].
+pub fn serves_in_place(store: &Store, id: &PackageId) -> Result<bool, MaterializeError> {
+    if !is_a_system_tree(store, *id)? {
+        return Ok(false);
+    }
+    let resolved = store.resolve(*id)?;
+    Ok(served_where_it_lies(
+        store,
+        *id,
+        (&resolved.tree, resolved.host.as_ref()),
+    )?)
+}
+
+/// Whether image `id`, whose `tree` and `host` stand-ins a store holds, is served
+/// where that store keeps it: a plain directory on a filesystem that is not
+/// itself an overlay, with no bytes left to host files.
+fn served_where_it_lies(
+    store: &Store,
+    id: PackageId,
+    (tree, host): (&std::path::Path, Option<&HostSources>),
+) -> Result<bool, StoreError> {
+    Ok(host.is_none() && is_a_system_tree(store, id)? && sits_outside_any_overlay(tree))
 }
 
 /// Whether image `id` is one a system store holds: a tree the image already has,
