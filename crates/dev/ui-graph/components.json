@@ -2872,6 +2872,40 @@
       }
     },
     {
+      "name": "LevelMeter",
+      "doc": "How loud an audio input is right now, as a bar that follows the sound and keeps a falling peak: the component opens the device's meter itself while it runs.",
+      "props": [
+        {
+          "name": "source",
+          "doc": "The audio device's name, as the sound resource publishes it (the node name).",
+          "type": "text",
+          "required": true,
+          "data": true
+        },
+        {
+          "name": "output",
+          "doc": "Whether the source is a sink to meter (the volume a speaker plays) rather than a microphone to read.",
+          "type": "bool"
+        },
+        {
+          "name": "running",
+          "doc": "Whether the meter is being read now: it opens only while this is true.",
+          "type": "bool"
+        },
+        {
+          "name": "label",
+          "doc": "Its spoken name.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "ProgressBar",
+        "label": "label"
+      }
+    },
+    {
       "name": "Link",
       "doc": "A hyperlink: primary ink with an underline, opening what it names when pressed.",
       "props": [

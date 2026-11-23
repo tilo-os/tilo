@@ -1052,7 +1052,6 @@ sound-notice-test-err = Could not test the { $channel } speaker: { $error }
 sound-notice-mic-stopped = Microphone test stopped; no audio was saved.
 sound-notice-mic-none = No microphone is connected.
 sound-notice-mic-started = Microphone level test started for eight seconds.
-sound-notice-mic-err = Could not test the microphone: { $error }
 sound-notice-device-err = Output device could not be changed: { $error }
 
 sound-notice-out-device = Audio output device changed.
