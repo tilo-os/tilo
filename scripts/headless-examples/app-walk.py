@@ -2090,6 +2090,8 @@ def family_of(name: str) -> list[tuple[Path, dict]]:
     and then by name. Empty when no walk names that family."""
     found = []
     for path in sorted(WALKS.glob("*.json")):
+        if path == MOVED:
+            continue
         spec = json.loads(path.read_text())
         if spec.get("family") == name:
             found.append((spec.get("order", 50), path.stem, path, spec))
@@ -2100,13 +2102,15 @@ def checks() -> list[str]:
     """What t runs, one check each: every family, and every walk in none."""
     names = set()
     for path in WALKS.glob("*.json"):
+        if path == MOVED:
+            continue
         spec = json.loads(path.read_text())
         names.add(spec.get("family") or path.stem)
     return sorted(names)
 
 
 def walks() -> list[str]:
-    return sorted(path.stem for path in WALKS.glob("*.json"))
+    return sorted(path.stem for path in WALKS.glob("*.json") if path != MOVED)
 
 
 def main() -> int:

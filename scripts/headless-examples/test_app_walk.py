@@ -17,7 +17,11 @@ _spec.loader.exec_module(walk)
 
 
 def steps():
+    """Every step file in `app-walks/`: the walks themselves, not the record
+    of where a capability went, which `compare` reads as data."""
     for path in sorted((HERE / "app-walks").glob("*.json")):
+        if path == walk.MOVED:
+            continue
         yield path, json.loads(path.read_text())
 
 
@@ -255,6 +259,33 @@ class HoldingTheCapabilitiesToMain(unittest.TestCase):
         before = self.catalogue("so.tilo.tasks tasks.task#check")
         now = self.catalogue("so.tilo.tasks tasks.task#check", "so.tilo.tasks tasks.task#snooze")
         self.assertEqual(walk.compare(now, before)["regressions"], [])
+
+
+class TheRecordOfWhereACapabilityWent(unittest.TestCase):
+    """`app-walks/moved.json`: the change that moved or deleted a capability
+    names its new place and a test that drives it there. A key without both
+    would silence a regression the walk should still report."""
+
+    def test_every_moved_capability_names_a_place_and_a_test(self):
+        record = walk.moved()
+        self.assertTrue(record, "the record of moved capabilities is written")
+        for key, place in record.items():
+            with self.subTest(key=key):
+                self.assertRegex(key, r"^\S+ \S+#\S+$")
+                self.assertIsInstance(place, dict)
+                self.assertRegex(place.get("to", ""), r"^\S+ \S+#\S+$")
+                self.assertRegex(place.get("test", ""), r"^[^:]+:\d+$")
+
+    def test_every_named_test_is_in_the_repository(self):
+        repo = HERE.parents[1]
+        for key, place in walk.moved().items():
+            with self.subTest(key=key):
+                path, line = place["test"].rsplit(":", 1)
+                where = repo / path
+                self.assertTrue(where.is_file(), f"{path} does not exist")
+                self.assertLessEqual(
+                    int(line), len(where.read_text().splitlines()),
+                    f"{path}:{line} is past the end")
 
 
 class NamingAControl(unittest.TestCase):
