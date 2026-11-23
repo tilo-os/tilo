@@ -318,7 +318,7 @@ impl<T: AsyncRead + AsyncWrite> DescriptorStreamSource for T {
 #[cfg(test)]
 static CHILD_SPAWNS: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn spawning() -> std::sync::RwLockReadGuard<'static, ()> {
     CHILD_SPAWNS.read_recover()
 }

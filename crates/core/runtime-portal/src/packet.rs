@@ -1,6 +1,7 @@
 //! Typed packets on a connected `SOCK_SEQPACKET` socket: one postcard value per
 //! packet, with the descriptors the value names carried beside it as
-//! `SCM_RIGHTS`. On Windows a packet is a message on a message-mode pipe, and
+//! `SCM_RIGHTS`. macOS has no local packet sockets, so there a packet is framed
+//! on a stream socket (`packet::stream`). On Windows a packet is a message on a message-mode pipe, and
 //! the handles it carries are duplicated into the process at the other end
 //! (`packet::windows`).
 //!
@@ -26,6 +27,8 @@ use std::io;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+#[cfg(all(unix, not(target_os = "linux")))]
+mod stream;
 #[cfg(windows)]
 mod windows;
 
@@ -168,7 +171,7 @@ fn send<T: Packet>(socket: &Descriptor, message: &T) -> io::Result<()> {
                 .iter()
                 .map(|fd| unsafe { BorrowedFd::borrow_raw(*fd) })
                 .collect();
-            crate::message::send_bytes(socket.as_fd(), &packet, &fds)
+            send_raw(socket.as_fd(), &packet, &fds)
         }
     }
     #[cfg(not(any(unix, windows)))]
@@ -186,7 +189,7 @@ fn send<T: Packet>(socket: &Descriptor, message: &T) -> io::Result<()> {
     )
 )]
 fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
         let mut buffer = vec![0_u8; MAX_PACKET];
@@ -196,6 +199,14 @@ fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> 
             return Ok(None);
         };
         decode(buffer.get(..length).unwrap_or_default(), fds).map(Some)
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        use std::os::fd::AsFd as _;
+        let Some((bytes, fds)) = stream::receive(socket.as_fd(), wait)? else {
+            return Ok(None);
+        };
+        decode(&bytes, fds).map(Some)
     }
     #[cfg(windows)]
     {
@@ -209,6 +220,26 @@ fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> 
         let _ = (socket, wait);
         Err(unsupported())
     }
+}
+
+/// `packet` on `socket` as one packet, as it is, with `fds` beside it.
+#[cfg(unix)]
+pub(crate) fn send_raw(
+    socket: std::os::fd::BorrowedFd<'_>,
+    packet: &[u8],
+    fds: &[std::os::fd::BorrowedFd<'_>],
+) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    return crate::message::send_bytes(socket, packet, fds);
+    #[cfg(not(target_os = "linux"))]
+    stream::send(socket, packet, fds)
+}
+
+/// Whether the peer behind `socket` closed its end. Never waits.
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(crate) fn hung_up(socket: &Descriptor) -> bool {
+    use std::os::fd::AsFd as _;
+    stream::hung_up(socket.as_fd())
 }
 
 /// The message `bytes` hold, with the descriptors `fds` in the fields that name them. A packet
@@ -360,10 +391,10 @@ pub mod optional_fd {
     }
 }
 
-/// A connected pair of packet sockets.
+/// A connected pair of packet sockets (on macOS, of stream sockets that carry packets).
 ///
 /// # Errors
-/// The system's error, or [`io::ErrorKind::Unsupported`] off Linux and Windows.
+/// The system's error, or [`io::ErrorKind::Unsupported`] off Unix and Windows.
 pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
     #[cfg(target_os = "linux")]
     {
@@ -375,16 +406,18 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
             None,
         )?)
     }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    return stream::pair();
     #[cfg(windows)]
     return windows::pair();
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(unix, windows)))]
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "packet socket pairs are made on Linux and Windows only",
+        "packet socket pairs are made on Unix and Windows only",
     ))
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used, reason = "test fixtures")]
 mod tests {
     use super::*;
@@ -456,13 +489,13 @@ mod tests {
             use std::os::fd::AsFd as _;
             let (a, b) = pair().unwrap();
             let bytes = postcard::to_stdvec(&(1_u32, "name")).unwrap();
-            crate::message::send_bytes(a.as_fd(), &bytes, &[]).unwrap();
+            send_raw(a.as_fd(), &bytes, &[]).unwrap();
             assert_eq!(Message::receive(&b).unwrap_err().kind(), io::ErrorKind::InvalidData);
             let (_end, extra) = connection();
             let plain = postcard::to_stdvec(&(0_u32, "hello")).unwrap();
-            crate::message::send_bytes(a.as_fd(), &plain, &[extra.as_fd()]).unwrap();
+            send_raw(a.as_fd(), &plain, &[extra.as_fd()]).unwrap();
             assert_eq!(Message::receive(&b).unwrap_err().kind(), io::ErrorKind::InvalidData);
-            crate::message::send_bytes(a.as_fd(), b"\xff", &[]).unwrap();
+            send_raw(a.as_fd(), b"\xff", &[]).unwrap();
             assert!(Message::receive(&b).is_err(), "no message");
         }
 
@@ -473,7 +506,7 @@ mod tests {
             // A build from before the link carried a version: the message's own bytes, no
             // version first.
             let old = postcard::to_stdvec(&Message::Plain("hello".into())).unwrap();
-            crate::message::send_bytes(a.as_fd(), &old, &[]).unwrap();
+            send_raw(a.as_fd(), &old, &[]).unwrap();
             let error = Message::receive(&b).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
             assert!(error.to_string().contains("no version"), "{error}");
@@ -481,7 +514,7 @@ mod tests {
             // whoever reads it knows which side updates.
             let mut newer = vec![0xFF, VERSION.saturating_add(1)];
             newer.extend(postcard::to_stdvec(&Message::Plain("hello".into())).unwrap());
-            crate::message::send_bytes(a.as_fd(), &newer, &[]).unwrap();
+            send_raw(a.as_fd(), &newer, &[]).unwrap();
             let error = Message::receive(&b).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
             assert!(

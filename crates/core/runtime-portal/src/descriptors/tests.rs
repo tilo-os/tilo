@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::MetadataExt as _;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};

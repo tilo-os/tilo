@@ -17,8 +17,9 @@
 //!   or access arrives on its link, and it says when an instance ended
 //!   ([`FromProcess::Ended`]) and, last, why it exits ([`FromProcess::Exiting`]).
 //!
-//! The Linux session and the Windows device start processes this way ([`spawn`]); a Windows link
-//! is a message pipe whose handles go down to the process alone (`crate::packet`).
+//! The Linux session and the device on Linux, macOS and Windows start processes this way
+//! ([`spawn`]); a Windows link is a message pipe whose handles go down to the process alone, and a
+//! macOS link a stream socket its packets are framed on (`crate::packet`).
 
 use std::io;
 
@@ -663,7 +664,7 @@ pub fn try_clone(link: &Descriptor) -> io::Result<Descriptor> {
 /// share the link.
 #[must_use]
 pub fn take() -> Option<Descriptor> {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let fd = crate::service_fd(SERVICE)?;
@@ -699,12 +700,12 @@ pub fn take() -> Option<Descriptor> {
             .ok()
             .map(Descriptor::from_starter)
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(unix, windows)))]
     None
 }
 
 /// `link`, handed as descriptor 0, at a descriptor of its own, with `/dev/null` at 0.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn off_stdin(link: Descriptor) -> io::Result<Descriptor> {
     use std::os::fd::{AsRawFd as _, IntoRawFd as _};
     let moved = link.try_clone()?;
@@ -751,9 +752,9 @@ pub fn spawn(mut command: std::process::Command) -> io::Result<(Descriptor, Chil
 /// instead of waiting unread in a process that no longer reads it.
 ///
 /// # Errors
-/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux and Windows.
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Unix and Windows.
 pub fn close(link: &Descriptor) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         Ok(rustix::net::shutdown(link, rustix::net::Shutdown::Both)?)
     }
@@ -761,12 +762,12 @@ pub fn close(link: &Descriptor) -> io::Result<()> {
     {
         link.stream().shutdown(std::net::Shutdown::Both)
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = link;
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "only the Linux session links its processes",
+            "processes are linked on Unix and Windows only",
         ))
     }
 }
@@ -789,11 +790,15 @@ pub fn hung_up(link: &Descriptor) -> bool {
                 .intersects(PollFlags::RDHUP | PollFlags::HUP | PollFlags::ERR)
         })
     }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        crate::packet::hung_up(link)
+    }
     #[cfg(windows)]
     {
         link.stream().hung_up()
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = link;
         false
@@ -813,7 +818,7 @@ pub fn take_serves(link: &Descriptor) -> io::Result<bool> {
     Ok(serves)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used, reason = "test fixtures")]
 mod tests {
     use super::*;
