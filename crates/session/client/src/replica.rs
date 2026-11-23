@@ -149,7 +149,8 @@ impl Store for PageWorkspaces {
 
     fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
         let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
-        if let Some(bytes) = self.runs.lock_recover().get(&name).cloned().flatten() {
+        let kept = self.runs.lock_recover().get(&name).cloned().flatten();
+        if let Some(bytes) = kept {
             return Ok(bytes);
         }
         self.store
