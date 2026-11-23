@@ -46,9 +46,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -76,6 +79,145 @@ FILE_CHOOSER = "so.tilo.file-chooser"
 FILE_CHOOSER_STEP = f"{FILE_CHOOSER}.step"
 FILE_CHOOSER_QUESTION = "portal.file-chooser"
 FILE_CHOOSER_RESOURCE = "file-chooser.request"
+
+# The stand-in mail server a walk adds a mail account against: the address's own
+# domain, the server names a mail program works out from it, the ports it asks
+# them on, and the address it takes. The tree's stand-in serves them
+# (crates/platform/account-probe/examples/mail_stand_in.rs), staged the way the
+# lounge's mail stories stage one
+# (os/containers/tilo-lounge/stories/shell/mail_provider.py).
+MAIL_DOMAIN = "story.tilo.test"
+MAIL_ADDRESS = f"lab@{MAIL_DOMAIN}"
+MAIL_NAMES = [MAIL_DOMAIN, f"imap.{MAIL_DOMAIN}", f"smtp.{MAIL_DOMAIN}"]
+MAIL_IMAP = f"127.0.0.1:993"
+MAIL_SMTP = f"127.0.0.1:465"
+MAIL_PASSWORD = "walks-stand-in"
+MAIL_CA_BUNDLES = (
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ssl/cert.pem",
+)
+
+
+def at_path(value, path: str):
+    """What `path` reads in `value`: a dotted walk into dicts and lists (`#len`
+    for how many a list or dict holds), the way the desktop's state is read."""
+    path, _, measure = path.partition("#")
+    at = value
+    for key in path.split("."):
+        at = at.get(key) if isinstance(at, dict) else (
+            at[int(key)] if isinstance(at, list) and key.isdigit() else None)
+    if measure == "len":
+        return len(at) if isinstance(at, (list, dict)) else None
+    return at
+
+
+class MailStandIn:
+    """The tree's stand-in mail server, run beside the walk's session as the
+    provider of the address a mail account is added against: the server names in
+    `/etc/hosts`, its IMAP and SMTP sockets on the ports a mail program asks a
+    domain's own servers on, and its certificate in the machine's trust bundles,
+    which is what the session's own connection checks it against. Root stages
+    it, as the lounge's stories stage a mail provider, and takes it out again
+    when the walk ends."""
+
+    def __init__(self, out: Path, password: str = MAIL_PASSWORD):
+        self.dir = out
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.password = password
+        self.password_file = self.dir / "password"
+        self.certificate = self.dir / "certificate.pem"
+        self.log = self.dir / "stand-in.log"
+        self.proc: subprocess.Popen | None = None
+        self.hosts = Path("/etc/hosts")
+        self.hosts_before: bytes | None = None
+        # Each bundle the certificate joined, and what it held before.
+        self.trusted: list[tuple[Path, bytes]] = []
+
+    def binary(self) -> Path:
+        for candidate in (os.environ.get("TILO_MAIL_STAND_IN"),
+                          str(BUILD / "bin/mail-stand-in")):
+            if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+                return Path(candidate)
+        raise Failed("no stand-in mail server to run: the nested-session build stages it as "
+                     "bin/mail-stand-in, or name it with TILO_MAIL_STAND_IN")
+
+    def stage(self) -> dict:
+        if os.geteuid() != 0:
+            raise Failed("staging the mail provider takes root: /etc/hosts, the trust "
+                         "bundles and the mail ports (the walk's check runs as root)")
+        self.password_file.write_text(self.password + "\n")
+        self.password_file.chmod(0o600)
+        self.name_itself()
+        try:
+            self.start()
+            self.trust()
+        except BaseException:
+            self.stop()
+            raise
+        return {"address": MAIL_ADDRESS, "password": self.password,
+                "imap": MAIL_IMAP, "smtp": MAIL_SMTP, "log": str(self.log)}
+
+    def name_itself(self) -> None:
+        self.hosts_before = self.hosts.read_bytes()
+        block = ["", "# a walk's mail provider, at this machine's own loopback"]
+        block += [f"127.0.0.1 {name}" for name in MAIL_NAMES]
+        self.hosts.write_bytes(self.hosts_before + ("\n".join(block) + "\n").encode())
+
+    def start(self) -> None:
+        argv = [str(self.binary()), "--login", MAIL_ADDRESS,
+                "--password-file", str(self.password_file),
+                "--write-certificate", str(self.certificate),
+                "--imap", MAIL_IMAP, "--smtp", MAIL_SMTP]
+        for name in MAIL_NAMES:
+            argv += ["--name", name]
+        with self.log.open("w") as said:
+            self.proc = subprocess.Popen(argv, stdout=said, stderr=subprocess.STDOUT,
+                                         start_new_session=True)
+
+        def serving() -> str | None:
+            text = self.log.read_text(errors="replace") if self.log.is_file() else ""
+            if "mail stand-in: IMAP at" in text:
+                return text
+            if self.proc is not None and self.proc.poll() is not None:
+                raise Failed(f"the stand-in mail server exited: {text[-1500:]}")
+            return None
+
+        until_value("the stand-in mail server to answer", serving, 60, 0.1)
+
+    def trust(self) -> None:
+        certificate = self.certificate.read_bytes()
+        present = [Path(path) for path in MAIL_CA_BUNDLES if Path(path).exists()]
+        if not present:
+            raise Failed(f"this machine has no CA bundle among {MAIL_CA_BUNDLES}")
+        for path in present:
+            bundle = path.resolve()
+            before = bundle.read_bytes()
+            self.trusted.append((bundle, before))
+            bundle.write_bytes(before + b"\n" + certificate)
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                self.proc.wait(15)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                self.proc.wait(5)
+        self.proc = None
+        if self.hosts_before is not None:
+            with contextlib.suppress(OSError):
+                self.hosts.write_bytes(self.hosts_before)
+            self.hosts_before = None
+        for bundle, before in self.trusted:
+            with contextlib.suppress(OSError):
+                bundle.write_bytes(before)
+        self.trusted.clear()
 
 
 def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
@@ -312,6 +454,10 @@ class Walk:
         self.steps: list[dict] = []
         self.window: dict | None = None
         self.appearance: dict | None = None
+        # The stand-in mail server a step started, stopped when the walk ends.
+        self.mail: MailStandIn | None = None
+        # The frames a step's window drew when its `window_frames` first ran.
+        self.frames_seen: dict[str, int] = {}
 
     def targets(self) -> list[dict]:
         """The controls the desktop offers now, as the walk records them where a
@@ -1005,6 +1151,98 @@ class Walk:
             self.session.restart()
         return {"restarted": value, "took_ms": round((time.monotonic() - began) * 1000)}
 
+    def op_restart_app(self, value) -> dict:
+        """Quit the app `value` (a directory name or its id, `true` for this
+        walk's own app) and open it again through the desktop's launcher: the
+        cold start a person meets when an app crashes, which must still show
+        what they made."""
+        ident = self.v["id"] if value is True else (
+            value if "." in value else real_apps.app_id(value))
+        began = time.monotonic()
+        window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+        if window is not None:
+            self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
+                                {"tab": str(window["tab"])})
+            until_value(f"the window of {ident} to go",
+                        lambda: all(w.get("app_id") != ident for w in self.session.windows()), 60)
+        self.session.launch(ident, 120)
+        return {"restarted": ident, "took_ms": round((time.monotonic() - began) * 1000)}
+
+    def op_window_frames(self, value) -> dict:
+        """How many frames the window of `value` (a directory name or id, `true`
+        for this walk's own app) has drawn, called twice in one step: the second
+        call waits for the window to draw again after the ops between them, which
+        is what a person sees when a choice reaches an open window without
+        reopening it. A window that does not draw again is the step's finding."""
+        ident = self.v["id"] if value is True else (
+            value if "." in value else real_apps.app_id(value))
+
+        def frames() -> int | None:
+            window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+            return None if window is None else window.get("frames")
+
+        drawn = frames()
+        if drawn is None:
+            raise Failed(f"no window of {ident} to count the frames of")
+        before = self.frames_seen.get(ident)
+        if before is None:
+            self.frames_seen[ident] = drawn
+            return {"frames": drawn}
+        until_value(f"the window of {ident} to draw again",
+                    lambda: (lambda n: n if n is not None and n > before else None)(frames()),
+                    20, 0.05)
+        self.frames_seen[ident] = frames()
+        return {"frames": frames(), "drew_again": True}
+
+    def op_scroll(self, value) -> dict:
+        """Turn the wheel where the control `at` names, or the middle of the app's
+        window without one: `{"dy": -400}` turns the page down, as a wheel does,
+        and `{"dy": 400, "at": "Appearance"}` turns it back up over that row."""
+        dy = float(value["dy"])
+        at = value.get("at")
+        if at:
+            target = until_value(f"the control {at!r}", lambda: control(self.session, at))
+            x, y, w, h = target["rect"]
+            x, y = x + w / 2, y + h / 2
+        else:
+            window = self.window_of()
+            if window is None or window.get("rect") is None:
+                raise Failed(f"no window of {self.v['id']} to scroll in")
+            left, top, wide, high = window["rect"]
+            x, y = left + wide / 2, top + high / 2
+        self.session.control({"op": "scroll", "x": x, "y": y, "dy": dy})
+        return {"scrolled": dy, "at": at}
+
+    def op_mail_stand_in(self, value) -> dict:
+        """Start the tree's stand-in mail server and stage it as the provider of
+        the address a mail account is added against (`lab@story.tilo.test`, its
+        `imap.` and `smtp.` servers on this machine): one made-up login and three
+        made-up messages, a certificate this machine trusts. `value` may name
+        the password (`{"password": ...}`); it is stopped when the walk ends. A
+        session already running reads the trust bundles it started with, so a
+        step that adds an account after this one restarts the session."""
+        if self.mail is None:
+            self.mail = MailStandIn(self.out / "mail-stand-in")
+        return self.mail.stage()
+
+    def op_read(self, value) -> dict:
+        """Call a read action and hold what it answered to the choices a person
+        made: `{"do": [provider, resource, action, args?], "is": {"theme":
+        "dark"}}` requires each dotted path into the answer's value to read the
+        value given (`#len` for how many it lists). A read that is refused, or
+        answers something else, is the step's finding."""
+        call = value["do"]
+        provider, resource, action = (pick(item, self.variant) for item in call[:3])
+        args = pick(call[3], self.variant) if len(call) > 3 else None
+        answer = value_of(self.session.invoke(provider, resource, action, args))
+        wanted = {path: pick(each, self.variant) for path, each in value["is"].items()}
+        wrong = {path: at_path(answer, path) for path, each in wanted.items()
+                 if at_path(answer, path) != each}
+        if wrong:
+            raise Failed(f"{resource}#{action} answered {json.dumps(wrong)} for "
+                         f"{json.dumps({k: wanted[k] for k in wrong})}")
+        return {"read": f"{resource}#{action}", "is": wanted}
+
     def op_theme(self, value) -> dict:
         self.set_dark(bool(value))
         return {"theme": "dark" if value else "light"}
@@ -1118,6 +1356,7 @@ class Walk:
             # there. The step says what the person is doing; the version says how.
             ops = ops[self.variant]
         self.catalogued = None
+        self.frames_seen = {}
         try:
             for op in ops:
                 record["ops"].append({**op, "found": self.op(op)})
@@ -1193,6 +1432,11 @@ class Walk:
                     found["windows"] = self.session.windows()
             except Failed:
                 pass
+            if self.mail is not None:
+                # The provider a step staged is the run's, not the session's: it
+                # goes with the walk, and the machine's own files are put back.
+                self.mail.stop()
+                self.mail = None
             if not self.shared:
                 self.session.stop()
         return found

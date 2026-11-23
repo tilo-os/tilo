@@ -323,5 +323,70 @@ class AValuePerVersion(unittest.TestCase):
             walk.pick({"rust": "new-note"}, "tl")
 
 
+class ReadingAnAnswer(unittest.TestCase):
+    def test_a_dotted_path_reads_through_dicts_and_lists(self):
+        answer = {"theme": "dark", "fonts": {"faces": ["a", "b"]}, "rows": [{"id": 7}]}
+        self.assertEqual(walk.at_path(answer, "theme"), "dark")
+        self.assertEqual(walk.at_path(answer, "fonts.faces.1"), "b")
+        self.assertEqual(walk.at_path(answer, "rows.0.id"), 7)
+
+    def test_a_len_path_counts_what_it_lists(self):
+        self.assertEqual(walk.at_path({"rows": [1, 2, 3]}, "rows#len"), 3)
+        self.assertEqual(walk.at_path({"rows": []}, "rows#len"), 0)
+
+    def test_a_path_that_is_not_there_reads_none(self):
+        self.assertIsNone(walk.at_path({"theme": "dark"}, "mode"))
+        self.assertIsNone(walk.at_path({"theme": "dark"}, "theme.deeper"))
+        self.assertIsNone(walk.at_path("dark", "theme"))
+
+
+class CountingAnOpenWindowsFrames(unittest.TestCase):
+    """A choice reaches an app that is already open on its next frame; a window
+    that keeps its old frame is a person looking at what did not change."""
+
+    class Session:
+        def __init__(self, app_id="so.tilo.settings"):
+            self.app_id = app_id
+            self.drawn = 4
+
+        def windows(self):
+            return [{"app_id": self.app_id, "frames": self.drawn}]
+
+    def walker(self, session):
+        spec = {"rust": {"id": "so.tilo.settings"}}
+        return walk.Walk(spec, "rust", Path("/nonexistent-out"), Path("/nonexistent-state"),
+                         session=session)
+
+    def briefly(self):
+        """The walk's waits cut to a tenth of a second: nothing in this test can
+        take the twenty a window has to draw again."""
+        original = walk.until_value
+        walk.until_value = lambda what, check, deadline=30.0, step=0.1: original(
+            what, check, 0.3, 0.02)
+        return original
+
+    def test_two_calls_report_the_frames_and_whether_the_window_drew_again(self):
+        session = self.Session()
+        walker = self.walker(session)
+        self.assertEqual(walker.op_window_frames(True), {"frames": 4})
+        session.drawn = 5
+        self.assertEqual(walker.op_window_frames(True), {"frames": 5, "drew_again": True})
+
+    def test_a_window_that_does_not_draw_again_is_the_finding(self):
+        session = self.Session()
+        walker = self.walker(session)
+        walker.op_window_frames(True)
+        original = self.briefly()
+        try:
+            with self.assertRaises(walk.Failed):
+                walker.op_window_frames(True)
+        finally:
+            walk.until_value = original
+
+    def test_a_window_that_is_not_open_cannot_be_counted(self):
+        with self.assertRaises(walk.Failed):
+            self.walker(self.Session(app_id="so.tilo.notes")).op_window_frames(True)
+
+
 if __name__ == "__main__":
     unittest.main()

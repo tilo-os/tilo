@@ -622,6 +622,11 @@ class Session:
         self._launch_out = Path(out).resolve() if out else self.state
         self.state.mkdir(parents=True, exist_ok=True)
         self.tag = tag
+        # What this session was started with: a restart brings the same session
+        # back — its apps, the tapps it installed and the arguments it was given
+        # — so a person who signs in again meets the desktop they had.
+        self._started_with = {"apps": apps, "tapps": tapps, "env": env,
+                              "session_args": session_args, "out": self._launch_out}
         # The launcher has errexit enabled and writes its progress before
         # starting the desktop. A stale handle on a VM's shared output mount
         # can make one of those writes exit the launcher. Keep its open log
@@ -698,7 +703,8 @@ class Session:
 
     def restart(self) -> "Session":
         self.stop()
-        return self.start(fresh=False, tag=f"{self.tag}-again")
+        return self.start(fresh=False, tag=f"{self.tag}-again",
+                          **getattr(self, "_started_with", {}))
 
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
