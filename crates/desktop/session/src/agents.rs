@@ -336,3 +336,153 @@ pub(crate) fn agent_recipient(kept: Option<(String, String)>) -> ui::floating_su
         None => Recipient::new_agent(crate::i18n::t("session-agent-name")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tilo_broker_core::services::AgentRoster as _;
+    use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+
+    use super::*;
+    use crate::daemon_fixture::TestDaemon;
+
+    /// The workspace the person works in, where nobody set an agent up yet.
+    const STUDIO: &str = "8b0e8f5e-6c1f-4f4e-9d4a-1f2e3d4c5b6a";
+    /// The MCP client whose agent the person approves.
+    const CLIENT: &str = "claude-code";
+
+    /// A headless session at the daemon `daemon`, its tree one workspace of the person's: the
+    /// workspace's list of its agents is read and changed there, as a desktop's is.
+    fn session(state: &std::path::Path, daemon: &TestDaemon) -> crate::Session {
+        let person = hex::encode(daemon.certificate().user_public_key);
+        let mut session = crate::Session::headless(
+            crate::Options {
+                person: person.clone(),
+                presentation: ui::headless::fixture_runner_inputs,
+                collab: false,
+                state: Some(state.to_path_buf()),
+                shell_link: Some(daemon.shell_link()),
+                ..crate::Options::default()
+            },
+            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        )
+        .expect("a session");
+        let mut studio = Workspace::new(
+            WorkspaceId::parse(STUDIO).expect("a workspace id"),
+            "Studio",
+        );
+        studio.set_owner(person);
+        session.handle().replace_tree(Layout {
+            active: studio.id(),
+            workspaces: vec![studio],
+            ..Layout::default()
+        });
+        session
+    }
+
+    /// The id, name and MCP client of every agent the workspace's list holds at `daemon`.
+    fn held(daemon: &TestDaemon, workspace: &str) -> Vec<(String, String, Option<String>)> {
+        let record = collab_types::workspace_document_id(KIND);
+        let Some(bytes) = tilo_rt::app()
+            .block_on(
+                daemon
+                    .workspaces()
+                    .resource_document(workspace, OWNER, &record),
+            )
+            .expect("the daemon reads the workspace")
+        else {
+            return Vec::new();
+        };
+        let doc = automerge::AutoCommit::load(&bytes).expect("a document");
+        let reader = tilo_resource::Reader::<Record>::read(&doc).expect("the list of agents reads");
+        reader
+            .state()
+            .agents
+            .iter()
+            .map(|agent| {
+                (
+                    agent.id.0.clone(),
+                    agent.name.clone(),
+                    agent.mcp_client.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// The MCP server tells a connection it may join as soon as the session answers it the
+    /// person's agent member for its client, and the connection joins the broker on a thread of
+    /// its own, at once. So the answer itself lists the member where the broker reads who works in
+    /// the workspace: a member added to the workspace's list is the person's in the broker's
+    /// roster when the call returns, with no pass of the session in between. On a machine no agent
+    /// worked on, that is the first client the person approves.
+    #[test]
+    fn a_clients_agent_member_is_listed_for_the_broker_when_the_mcp_server_answers() {
+        let _settled = ui::motion::testing::settled();
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let state = tempfile::tempdir().expect("a state directory");
+        let daemon = TestDaemon::start();
+        let workspace = WorkspaceId::parse(STUDIO).expect("a workspace id");
+        daemon.found(workspace, "Studio");
+        let person = hex::encode(daemon.certificate().user_public_key);
+        let session = session(state.path(), &daemon);
+        let roster = session.shared.agents.roster();
+        assert!(
+            roster.listed(STUDIO).is_empty(),
+            "nobody set an agent up in this workspace yet"
+        );
+
+        // Before any pass: what the MCP server answers is all the broker has when the connection
+        // joins.
+        let (member, name) = session
+            .shared
+            .mcp_member(STUDIO, CLIENT)
+            .expect("the person's agent member for the client is added");
+        let listed = roster.listed(STUDIO);
+        assert_eq!(listed.len(), 1, "one member for the client: {listed:?}");
+        assert_eq!(listed[0].id, member);
+        assert_eq!(
+            listed[0].acts_for, person,
+            "the broker lists the member {} as the person's before its client is told it may \
+             join",
+            member
+        );
+        assert_eq!(
+            name, CLIENT,
+            "the workspace names the member for its client"
+        );
+
+        // The same client again is the same member, found and still listed: no second one.
+        assert_eq!(
+            session.shared.mcp_member(STUDIO, CLIENT),
+            Ok((member.clone(), name.clone()))
+        );
+        assert_eq!(
+            roster.listed(STUDIO).len(),
+            1,
+            "one member for the client, whichever connection it comes in on"
+        );
+        let recorded = held(&daemon, STUDIO);
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the workspace's list holds one: {recorded:?}"
+        );
+        assert_eq!(recorded[0].0, member);
+        assert_eq!(recorded[0].2.as_deref(), Some(CLIENT));
+
+        // The passes that follow read the list again and keep the one listing: the member the MCP
+        // server answered for stays the broker's, and no second row for it appears.
+        tilo_test_env::wait_until("the workspace's list is read again", || {
+            session.shared.feed_agents();
+            roster.listed(STUDIO).len() == 1
+        });
+        let listed = roster.listed(STUDIO);
+        assert_eq!(listed.len(), 1, "one member after the pass: {listed:?}");
+        assert_eq!(listed[0].id, member);
+        assert_eq!(listed[0].acts_for, person);
+        assert_eq!(
+            held(&daemon, STUDIO).len(),
+            1,
+            "and one agent in the workspace's list"
+        );
+    }
+}

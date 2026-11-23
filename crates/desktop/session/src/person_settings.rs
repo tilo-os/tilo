@@ -320,3 +320,223 @@ fn placements<'a>(written: impl IntoIterator<Item = &'a Value>) -> Value {
     )
     .to_value()
 }
+
+#[cfg(test)]
+mod tests {
+    use tilo_action_policy::PersonId;
+    use tilo_desktop_model::WorkspaceId;
+    use tilo_resource::Reader;
+
+    use settings_store::SettingsSource as _;
+
+    use super::*;
+    use crate::daemon_fixture::TestDaemon;
+
+    /// A settings store this test's device keeps, installed as the process's, as a session's is.
+    fn installed(dir: &std::path::Path) -> Arc<settings_store::Store> {
+        let store = settings_store::Store::open(dir).expect("a settings store");
+        let source: Arc<dyn settings_store::SettingsSource> = Arc::clone(&store);
+        settings_store::install_source(Some(source));
+        store
+    }
+
+    fn wake() -> tilo_service::Wake {
+        Arc::new(|| {})
+    }
+
+    /// A JSON object as a settings section.
+    fn section(values: Value) -> Map<String, Value> {
+        values.as_object().cloned().expect("a section is an object")
+    }
+
+    /// The person's settings as `daemon` holds them, once it holds any.
+    fn recorded(daemon: &TestDaemon, workspace: &str) -> Option<BTreeMap<String, Value>> {
+        let bytes = tilo_rt::app()
+            .block_on(daemon.workspaces().resource_document(
+                workspace,
+                person::APP,
+                person::RESOURCE,
+            ))
+            .expect("the daemon reads the workspace")?;
+        let doc = automerge::AutoCommit::load(&bytes).expect("a document");
+        let reader = Reader::<Resource>::read(&doc).expect("the person's settings read");
+        Some(values(reader.state()))
+    }
+
+    /// The workspace whose only member is the person, founded at `daemon`.
+    fn persons(daemon: &TestDaemon) -> ([u8; 32], String) {
+        let person = daemon.certificate().user_public_key;
+        let workspace = persons_workspace(&person);
+        daemon.found(
+            WorkspaceId::parse(&workspace).expect("the person's workspace has an id"),
+            "Person",
+        );
+        (person, workspace)
+    }
+
+    /// What the person holds travels to their other devices: each section of theirs, none of this
+    /// machine's, and an app's entry as one value.
+    #[test]
+    fn only_the_persons_sections_travel_and_an_apps_entry_travels_whole() {
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let dir = tempfile::tempdir().expect("a settings directory");
+        let store = installed(dir.path());
+        // What this device kept before it had the person's resource: the sections that are the
+        // person's, and ones that are this machine's alone.
+        store
+            .update_section(
+                "appearance",
+                section(serde_json::json!({"mode": "dark", "wallpaper": "dunes"})),
+            )
+            .expect("this device's appearance is kept");
+        store
+            .update_section(
+                settings_model::APP_PERSONAL_SECTION,
+                section(serde_json::json!({"so.tilo.monitor": {"confirm_kill": true}})),
+            )
+            .expect("an app's entry is kept");
+        store
+            .update_section(
+                settings_model::APP_DEVICE_LOCAL_SECTION,
+                section(serde_json::json!({"so.tilo.monitor": {"device": 1}})),
+            )
+            .expect("this machine's entry is kept");
+        store
+            .update_section("power", section(serde_json::json!({"lock_minutes": 1})))
+            .expect("this machine's power is kept");
+
+        let daemon = TestDaemon::start();
+        let (person, workspace) = persons(&daemon);
+        let shell = daemon.shell();
+        let wake = wake();
+        let settings = PersonSettings::default();
+        let theirs = tilo_test_env::wait_for("the person's settings to reach their record", || {
+            let _ = settings.sync(&shell, &person, &wake);
+            recorded(&daemon, &workspace)
+                .filter(|theirs| theirs.contains_key("tilo.appearance.mode"))
+        });
+
+        let mut keys: Vec<&str> = theirs.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "tilo.app_personal.so.tilo.monitor",
+                "tilo.appearance.mode",
+                "tilo.appearance.wallpaper",
+            ],
+            "this device's sections stay on it"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                theirs
+                    .get("tilo.app_personal.so.tilo.monitor")
+                    .expect("the app's entry travelled")
+            )
+            .expect("the entry's value"),
+            serde_json::json!({"confirm_kill": true}),
+            "an app's entry is one value, as it travels"
+        );
+        let document = store.load();
+        assert_eq!(
+            document["power"]["lock_minutes"], 1,
+            "the machine keeps its power"
+        );
+        assert_eq!(
+            document[settings_model::APP_DEVICE_LOCAL_SECTION]["so.tilo.monitor"],
+            serde_json::json!({"device": 1}),
+            "the machine keeps its own sections"
+        );
+        assert_eq!(document["appearance"]["mode"], "dark");
+    }
+
+    /// A setting one device sets reaches the person's resource, and another of their devices reads
+    /// it there: the change names the person, is made on their own device, and needs no
+    /// invocation because nobody else asked for it.
+    #[test]
+    fn a_device_sets_a_setting_and_the_persons_other_devices_see_it() {
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let dir = tempfile::tempdir().expect("a settings directory");
+        let _store = installed(dir.path());
+        let daemon = TestDaemon::start();
+        let (person, workspace) = persons(&daemon);
+        let shell = daemon.shell();
+        let wake = wake();
+        let settings = PersonSettings::default();
+        // This device follows the person's resource, and has read it.
+        tilo_test_env::wait_until("the person's settings are followed", || {
+            let _ = settings.sync(&shell, &person, &wake);
+            settings
+                .followed
+                .borrow()
+                .as_ref()
+                .is_some_and(|followed| followed.held() == Some(true))
+        });
+
+        // This device sets a setting the person holds, as the settings' own setter does.
+        settings_store::appearance::MODE
+            .set(Some("light".to_owned()))
+            .expect("the setting is written");
+
+        // Another of the person's devices follows the resource and reads what this one set.
+        let other = FollowedResource::<Resource>::follow(
+            &shell,
+            (&workspace, person::APP, person::RESOURCE),
+            PersonId::from_root(person).as_str(),
+            None,
+            Arc::clone(&wake),
+        );
+        tilo_test_env::wait_until("another device reads the setting this one set", || {
+            other
+                .get()
+                .leaves
+                .get("tilo.appearance.mode")
+                .is_some_and(|text| {
+                    serde_json::from_str::<Value>(text).ok() == Some(serde_json::json!("light"))
+                })
+        });
+
+        let bytes = tilo_rt::app()
+            .block_on(daemon.workspaces().resource_document(
+                &workspace,
+                person::APP,
+                person::RESOURCE,
+            ))
+            .expect("the daemon reads the workspace")
+            .expect("the person's settings are written");
+        let doc = automerge::AutoCommit::load(&bytes).expect("a document");
+        let context = doc
+            .get_changes(&[])
+            .into_iter()
+            .rev()
+            .find_map(|change| {
+                change
+                    .message()
+                    .and_then(tilo_actions::ActionContext::from_change_message)
+            })
+            .expect("the person's settings keep the history of what set them");
+        let invoker = context
+            .invoker
+            .as_ref()
+            .expect("the change names who set it");
+        assert_eq!(
+            invoker.acting.person_id(),
+            Some(PersonId::from_root(person).as_str()),
+            "the device's write is its person's"
+        );
+        assert!(
+            invoker.device.is_none(),
+            "made on the person's own device, for nobody else"
+        );
+        assert_eq!(
+            tilo_server_protocol::invocation::verify_recorded(
+                &context,
+                &workspace,
+                &tilo_user_identity::RevocationList::new(),
+                u64::MAX,
+            ),
+            Ok(None),
+            "a person's own change carries no invocation and needs none"
+        );
+    }
+}

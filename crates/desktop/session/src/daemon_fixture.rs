@@ -41,6 +41,10 @@ pub(crate) struct TestDaemon {
     feed: tilo_session_client::daemon_documents::DaemonWritesFeed,
     shell: tilo_session_client::daemon_documents::DaemonShell,
     view: Arc<WorkspaceView>,
+    /// Where the daemon answers the person's shell.
+    socket: std::path::PathBuf,
+    /// The links the daemon made for the shells it starts.
+    links: Arc<ShellLinks>,
     _dir: tempfile::TempDir,
 }
 
@@ -63,6 +67,9 @@ impl TestDaemon {
             .block_on(async { tilo_workspace_service::resource_actions::register(&workspaces) })
             .expect("the runtime runs");
         let links = Arc::new(ShellLinks::default());
+        let actions = Arc::new(Governance {
+            workspaces: workspaces.clone(),
+        });
         let services = ProcessServices {
             shell: Some(Arc::new(ShellServices {
                 links: Arc::clone(&links),
@@ -73,7 +80,7 @@ impl TestDaemon {
                     let workspaces = workspaces.clone();
                     move || workspaces.document_writes()
                 }),
-                actions: Arc::new(NoActions),
+                actions,
                 standing: Arc::new(NoStanding),
                 workspaces,
             })),
@@ -112,6 +119,8 @@ impl TestDaemon {
             feed: tilo_session_client::daemon_documents::DaemonWritesFeed::start(&shell),
             shell,
             view,
+            socket,
+            links,
             _dir: dir,
         }
     }
@@ -199,6 +208,22 @@ impl TestDaemon {
     pub(crate) fn attach(&self, layouts: &Layouts) {
         self.attach_as(layouts, &self.reads(), &self.writes());
     }
+
+    /// The shell link the daemon made for the session, opened and handed over, as
+    /// [`crate::Options::shell_link`] takes it for a session in this process: the daemon's
+    /// workspace resources, people and settings are then the session's own.
+    pub(crate) fn shell_link(&self) -> std::os::fd::OwnedFd {
+        use std::io::Write as _;
+        let mut link = std::os::unix::net::UnixStream::connect(&self.socket)
+            .expect("the daemon answers on its socket");
+        let secret = self.links.make(ShellCaller {
+            person: self.cert.user_public_key,
+        });
+        let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
+        opening.extend_from_slice(&secret);
+        link.write_all(&opening).expect("the link opens");
+        std::os::fd::OwnedFd::from(link)
+    }
 }
 
 /// A shell link the daemon on `socket` made for its person and handed the session, opened.
@@ -224,14 +249,87 @@ fn link(
         .expect("the runtime runs")
 }
 
-/// The daemon's actions, which no test of the documents asks.
-struct NoActions;
+/// The daemon's one dispatch, as its person's shell reaches it: the device action service, which
+/// carries out the workspaces' governance (their agents included) as this device, exactly as the
+/// daemon does in a running session.
+struct Governance {
+    workspaces: Workspaces,
+}
 
-impl ShellActions for NoActions {
-    fn dispatch(&self, _: &ShellCaller, _: Option<String>) -> ShellDispatch {
-        Box::pin(std::future::ready(Err(
-            "the test's daemon answers no actions".to_owned(),
-        )))
+impl ShellActions for Governance {
+    fn dispatch(&self, caller: &ShellCaller, workspace: Option<String>) -> ShellDispatch {
+        let workspaces = self.workspaces.clone();
+        let shell = *caller;
+        Box::pin(std::future::ready({
+            let cert = workspaces.device_cert();
+            if shell.person != cert.user_public_key {
+                Err("this device acts for its own person only".to_owned())
+            } else {
+                let person = tilo_actions::remote::Caller::authenticated(
+                    cert.user_public_key,
+                    cert.device_public_key,
+                );
+                let caller = match workspace {
+                    Some(workspace) => person.in_workspace(workspace),
+                    None => person,
+                };
+                let provider: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> =
+                    Arc::new(GovernanceCall { workspaces });
+                Ok((provider, caller))
+            }
+        }))
+    }
+}
+
+/// What the daemon answers a shell's governance calls: the device action service, asked as the
+/// device's person in the workspace the call names.
+struct GovernanceCall {
+    workspaces: Workspaces,
+}
+
+impl tilo_actions::remote::ActionProvider for GovernanceCall {
+    fn query(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+    > {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::UnknownAction,
+        ))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        let workspace =
+            tilo_actions::remote::workspace_governance_operation(&request.target.address)
+                .map(|(workspace, _)| workspace.to_owned());
+        let Some(workspace) = workspace else {
+            return tilo_actions::remote::Pending::ready(Err(
+                tilo_actions::remote::ActionCallError::UnknownAction,
+            ));
+        };
+        let cert = self.workspaces.device_cert();
+        let caller = tilo_actions::remote::Caller::authenticated(
+            cert.user_public_key,
+            cert.device_public_key,
+        )
+        .in_workspace(workspace);
+        self.workspaces.device_actions().invoke(&caller, request)
+    }
+
+    fn observe(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
     }
 }
 
