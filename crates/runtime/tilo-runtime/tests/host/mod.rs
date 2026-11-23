@@ -372,24 +372,72 @@ pub struct Key {
 impl Key {
     /// `GET path`: the status and the JSON answered.
     pub async fn get(&self, path: &str) -> (u16, Value) {
-        self.send("GET", path, b"").await
+        self.request("GET", path, &[], b"").await
     }
 
     /// `POST path` with `body`: the status and the JSON answered.
     pub async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
-        self.send("POST", path, body.to_string().as_bytes()).await
+        self.request("POST", path, &[], body.to_string().as_bytes())
+            .await
     }
 
-    async fn send(&self, method: &str, path: &str, body: &[u8]) -> (u16, Value) {
-        let answer = self
-            .direct
-            .answer(
-                method,
-                path,
-                &[("content-type".into(), "application/json".into())],
-                body,
-            )
-            .await;
+    /// `GET path`: the status and the bytes answered whole.
+    pub async fn bytes(&self, path: &str) -> (u16, Vec<u8>) {
+        let answer = self.direct.answer("GET", path, &[], b"").await;
+        match answer.body {
+            tilo_api::direct::AnswerBody::Whole(bytes) => (answer.status, bytes.to_vec()),
+            tilo_api::direct::AnswerBody::Stream(chunks) => {
+                let mut whole = Vec::new();
+                while let Some(chunk) = chunks.next().await {
+                    whole.extend_from_slice(&chunk);
+                }
+                (answer.status, whole)
+            }
+        }
+    }
+
+    /// `method path` as a stream of server-sent events, a chunk at a time.
+    pub async fn stream(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> tilo_api::direct::Chunks {
+        let mut all = vec![("accept".to_owned(), "text/event-stream".to_owned())];
+        all.extend(
+            headers
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+        );
+        let answer = self.direct.answer(method, path, &all, body).await;
+        match answer.body {
+            tilo_api::direct::AnswerBody::Stream(chunks) => chunks,
+            tilo_api::direct::AnswerBody::Whole(bytes) => panic!(
+                "{} is not a stream: {}",
+                answer.status,
+                String::from_utf8_lossy(&bytes)
+            ),
+        }
+    }
+
+    /// `method path` with `headers` and `body`: the status and the JSON answered.
+    pub async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> (u16, Value) {
+        let headers: Vec<(String, String)> = if headers.is_empty() {
+            vec![("content-type".into(), "application/json".into())]
+        } else {
+            headers
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect()
+        };
+        let answer = self.direct.answer(method, path, &headers, body).await;
         let value = match answer.body {
             tilo_api::direct::AnswerBody::Whole(bytes) if bytes.is_empty() => Value::Null,
             tilo_api::direct::AnswerBody::Whole(bytes) => serde_json::from_slice(&bytes)
@@ -402,10 +450,27 @@ impl Key {
     /// The MCP tool `name` with `arguments` (naming the `workspace` it acts in), as the key's
     /// agent calls it: its `tools/call` result.
     pub async fn tool(&self, name: &str, arguments: &Value) -> Value {
+        self.tool_calling(name, arguments, Value::Null).await
+    }
+
+    /// [`Self::tool`], its typed answer: what the API's read of a resource answers from.
+    pub async fn tool_structured(&self, name: &str, arguments: &Value) -> Value {
+        self.tool_calling(
+            name,
+            arguments,
+            json!({"so.tilo.mcp": {"structured": true}}),
+        )
+        .await
+    }
+
+    async fn tool_calling(&self, name: &str, arguments: &Value, meta: Value) -> Value {
+        let mut params = json!({"name": name, "arguments": arguments});
+        if !meta.is_null() {
+            params["_meta"] = meta;
+        }
         let answer = self
             .direct
-            .mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                        "params": {"name": name, "arguments": arguments}}))
+            .mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}))
             .await
             .unwrap();
         answer["result"].clone()
@@ -421,16 +486,37 @@ pub struct Agent {
 impl Agent {
     /// The MCP tool `name` with `arguments`: its `tools/call` result.
     pub async fn tool(&self, name: &str, arguments: &Value) -> Value {
+        self.tool_calling(name, arguments, Value::Null).await
+    }
+
+    /// [`Self::tool`], its typed answer: what the API's read of a resource answers from.
+    pub async fn tool_structured(&self, name: &str, arguments: &Value) -> Value {
+        self.tool_calling(
+            name,
+            arguments,
+            json!({"so.tilo.mcp": {"structured": true}}),
+        )
+        .await
+    }
+
+    async fn tool_calling(&self, name: &str, arguments: &Value, meta: Value) -> Value {
+        let mut params = json!({"name": name, "arguments": arguments});
+        if !meta.is_null() {
+            params["_meta"] = meta;
+        }
+        let answer = self.ask("tools/call", params).await;
+        answer["result"].clone()
+    }
+
+    /// The MCP request `method` with `params`, answered whole.
+    pub async fn ask(&self, method: &str, params: Value) -> Value {
         let id = self
             .calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let answer = self
-            .session
-            .handle(json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
-                          "params": {"name": name, "arguments": arguments}}))
+        self.session
+            .handle(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .await
-            .unwrap();
-        answer["result"].clone()
+            .unwrap()
     }
 }
 
