@@ -23,10 +23,11 @@ pub const RESOURCE_READS_FOR_AGENTS: &str = "only a person, an app acting for it
      acting for the person who admitted it, reads records outside their app; a session a person's \
      device handed to an agent reads nothing here";
 
-/// One record of a workspace, by its app (the id whose records it is) and its id there (empty for
-/// the app's record of the workspace).
+/// One record of a workspace, by the workspace it is in, its app (the id whose records it is) and
+/// its id there (empty for the app's record of the workspace).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ResourceAddress {
+    pub workspace: String,
     pub app: String,
     pub record: String,
 }
@@ -46,7 +47,9 @@ pub enum ResourceCopy {
 
 /// A provider's API for reading records outside their app.
 pub trait ResourceReads: Send + Sync {
-    /// The record `address` of `caller`'s workspace, as `caller` may read it now.
+    /// The record `address`, in the workspace it names, as `caller` may read it now: decided at
+    /// that workspace's record node with the caller's actor, whichever workspace the caller's
+    /// connection was admitted to.
     ///
     /// # Errors
     ///
@@ -222,6 +225,7 @@ pub fn readings_of(
                 ask.address.record.clone()
             };
             let address = ResourceAddress {
+                workspace: ask.address.workspace.clone(),
                 app: ask.address.app.clone(),
                 record,
             };
@@ -344,6 +348,7 @@ fn serve_readings(
     let deadline = super::wait::deadline(read.wait_ms.unwrap_or(0));
     let ask = [ResourceAsk {
         address: ResourceAddress {
+            workspace: read.workspace,
             app: read.app,
             record: read.record,
         },
@@ -543,6 +548,7 @@ mod tests {
     fn ask(record: &str, joined: bool) -> ResourceAsk {
         ResourceAsk {
             address: ResourceAddress {
+                workspace: "w".into(),
                 app: "so.tilo.chat".into(),
                 record: record.into(),
             },

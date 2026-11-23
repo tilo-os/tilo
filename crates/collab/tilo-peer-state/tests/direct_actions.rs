@@ -778,6 +778,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
                 correlation: 5,
                 on_behalf_of: None,
                 read: tilo_actions::remote::ResourceReadRequest {
+                    workspace: WORKSPACE.into(),
                     app: "test.app".into(),
                     record: "tab:1".into(),
                     joined: false,

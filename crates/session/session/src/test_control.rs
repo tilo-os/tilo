@@ -983,20 +983,6 @@ fn resource_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     let Some(app) = request.get("app").and_then(Json::as_str) else {
         return refusal("parse_error", "`resource_read` takes `app` and `records`");
     };
-    let asks: Vec<ResourceAsk> = request
-        .get("records")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Json::as_str)
-        .map(|record| ResourceAsk {
-            address: ResourceAddress {
-                app: app.to_owned(),
-                record: record.to_owned(),
-            },
-            joined: false,
-        })
-        .collect();
     let workspace = request.get("workspace").and_then(Json::as_str).map_or_else(
         || {
             ctx.scope.as_ref().map_or_else(
@@ -1006,6 +992,21 @@ fn resource_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
         },
         str::to_owned,
     );
+    let asks: Vec<ResourceAsk> = request
+        .get("records")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Json::as_str)
+        .map(|record| ResourceAsk {
+            address: ResourceAddress {
+                workspace: workspace.clone(),
+                app: app.to_owned(),
+                record: record.to_owned(),
+            },
+            joined: false,
+        })
+        .collect();
     let after = request.get("after").and_then(Json::as_str);
     let deadline = wait_deadline(request.get("wait_ms").and_then(Json::as_u64));
     let Some(reads) = actions.host.resource_reads() else {

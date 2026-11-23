@@ -1550,11 +1550,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let Some(reads) = self.host().resource_reads() else {
             return json!({"err": tilo_actions::remote::RESOURCE_READS_UNAVAILABLE});
         };
+        let caller = self.execution_caller();
         let address = tilo_actions::remote::ResourceAddress {
+            workspace: caller.workspace().unwrap_or_default().to_owned(),
             app: app.to_owned(),
             record: record.to_owned(),
         };
-        let caller = self.execution_caller();
         let command = command.clone();
         // The store answers under the workspace's lock, and the API's sessions share one runtime.
         let read =

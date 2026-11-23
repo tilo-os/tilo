@@ -199,6 +199,7 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
     let read = records.read(
         &Caller::local_person("person"),
         &ResourceAddress {
+            workspace: "workspace".to_owned(),
             app: "so.tilo.chat".to_owned(),
             record: String::new(),
         },

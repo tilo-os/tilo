@@ -1603,6 +1603,24 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority f
         self.admitted(workspace, cert)
     }
 
+    /// This device governs the workspace founded on it, and no other.
+    fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+        let Ok(held) = self.held() else {
+            return false;
+        };
+        device.is_none_or(|device| *device == held.device_cert().device_public_key)
+            && held
+                .founded()
+                .is_some_and(|founded| founded.to_string() == workspace.to_string())
+    }
+
+    /// The device's own certificate, which it reads the workspace founded on it under.
+    fn own_device(&self) -> Option<DeviceCert> {
+        let held = self.held().ok()?;
+        held.founded()?;
+        Some(held.device_cert().clone())
+    }
+
     fn authorize_join(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
         let now = self
             .policy_time

@@ -1641,8 +1641,10 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 reason: RESOURCE_READS_UNAVAILABLE.into(),
             })
         })?;
+        // The invocation's workspace is the one its read names: a caller in none reads nothing.
         let ask = ResourceAsk {
             address: ResourceAddress {
+                workspace: self.caller.workspace().unwrap_or_default().to_owned(),
                 app: app.to_owned(),
                 record: record.to_owned(),
             },

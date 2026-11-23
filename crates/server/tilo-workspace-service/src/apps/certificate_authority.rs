@@ -34,6 +34,12 @@ pub trait CertificateAuthority: Send + Sync {
     fn governs(&self, _workspace: Uuid, _device: Option<&[u8; 32]>) -> bool {
         false
     }
+    /// The certificate this host's own device holds, which it acts under itself before anyone
+    /// signs in here: in the workspace founded on it, the one it governs ([`Self::governs`] with
+    /// `None`). `None` on a host whose device does not act as itself.
+    fn own_device(&self) -> Option<tilo_user_identity::DeviceCert> {
+        None
+    }
     /// Local SDK admission may additionally require a current enrollment record.
     ///
     /// # Errors

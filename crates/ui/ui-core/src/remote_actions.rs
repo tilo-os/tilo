@@ -550,7 +550,8 @@ impl RemoteActions {
         }
     }
 
-    /// Read a record of the window's workspace through the record API, as a request of its own or
+    /// Read the record `read` names, in the workspace it names (the window's, for a record of
+    /// its own workspace), through the record API, as a request of its own or
     /// continuing `on_behalf_of`, an invocation the provider delivered here: the provider decides it as that
     /// invocation's caller.
     #[must_use]
@@ -577,7 +578,7 @@ impl RemoteActions {
         answer
     }
 
-    /// Keep a record of the window's workspace current: `read` as the provider answers it now, and
+    /// Keep the record `read` names current: `read` as the provider answers it now, and
     /// again after every write to it, for as long as the returned handle lives. Each read is the
     /// provider's to decide, as [`Self::read_resource`]'s is: a reader that may no longer read the
     /// record is told so and shown nothing more.

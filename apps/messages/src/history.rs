@@ -386,7 +386,10 @@ impl HistoryView {
             .filter(|me| !me.is_empty() && me != peer)
             .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
         let peer = PersonId::parse(peer).map_err(|_| CATALOG.t("messages-history-unavailable"))?;
+        let workspace = ui::framework::reference::workspace()
+            .map_err(|_| CATALOG.t("messages-history-unavailable"))?;
         let read = ui::tilo_actions::remote::ResourceReadRequest {
+            workspace,
             app: CHAT.into(),
             record: CHAT_MESSAGES.into(),
             joined: true,

@@ -31,8 +31,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 tilo_actions::remote::RESOURCE_READS_UNAVAILABLE
             )
         })?;
+        let caller = self.execution_caller();
         let asks = [ResourceAsk {
             address: ResourceAddress {
+                workspace: caller.workspace().unwrap_or_default().to_owned(),
                 app: app.to_owned(),
                 record: record.to_owned(),
             },
@@ -42,7 +44,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let deadline = tilo_clock::now()
             .checked_add(std::time::Duration::from_millis(wait))
             .unwrap_or_else(tilo_clock::time::Instant::now);
-        let caller = self.execution_caller();
         // The owner captures each record on this thread's behalf, and the wait holds it.
         let readings = tokio::task::spawn_blocking(move || {
             read_resources(reads.as_ref(), &caller, &asks, after.as_deref(), deadline)

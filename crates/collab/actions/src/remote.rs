@@ -1544,8 +1544,8 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<Box<ConfirmedInvocation>, ActionCallError>,
     },
-    /// Read a record of the caller's workspace through the one record API
-    /// ([`ResourceReads`]), decided as every reader of it is; continuing
+    /// Read a record of the workspace `read` names through the one record API
+    /// ([`ResourceReads`]), decided there as every reader of it is; continuing
     /// `on_behalf_of`, an invocation the provider delivered to the caller, it is
     /// that invocation's caller's read.
     ResourceRead {
@@ -1608,6 +1608,9 @@ pub enum RemoteActionMessage {
 /// `after` or `wait_ms` passed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceReadRequest {
+    /// The workspace the record is in: part of its address, so a read is decided at that
+    /// workspace's record node, never by which workspace the connection was admitted to.
+    pub workspace: String,
     /// The app whose record it is.
     pub app: String,
     /// Its id there; empty for the app's record of the workspace.

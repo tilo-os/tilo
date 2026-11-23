@@ -975,6 +975,7 @@ fn reader(holds: bool) -> (Arc<Records>, RemoteActions) {
 /// Tasks' record of the workspace, as a window of another app names it.
 fn tasks() -> ResourceReadRequest {
     ResourceReadRequest {
+        workspace: "workspace".into(),
         app: "so.tilo.tasks".into(),
         record: String::new(),
         joined: false,

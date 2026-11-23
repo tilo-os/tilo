@@ -269,6 +269,12 @@ impl ServiceWorkspaces {
         self.copies().members_held()
     }
 
+    /// The workspace founded here, which the service governs, once it is: on a computer with no
+    /// login, the one whose records the device reads as itself.
+    pub(crate) fn founded(&self) -> Option<WorkspaceId> {
+        self.own.get().copied()
+    }
+
     /// Whether this profile holds `workspace` as a member copy.
     pub(crate) fn holds(&self, workspace: WorkspaceId) -> bool {
         let copies = self.copies().clone();

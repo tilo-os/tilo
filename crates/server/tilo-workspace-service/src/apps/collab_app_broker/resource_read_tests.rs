@@ -17,7 +17,7 @@ use crate::apps::services::{
     ProcessServices,
 };
 use crate::apps::test_support::{
-    Grantee, Grants as _, KindSet, TreePath, WorkspaceId, WorkspaceTree,
+    Grantee, Grants as _, KindSet, Role, TreePath, WorkspaceId, WorkspaceTree,
 };
 
 const NOTES: &str = "so.tilo.notes";
@@ -142,6 +142,11 @@ struct Fixture {
     /// The person's root key.
     root: [u8; 32],
     workspace: String,
+    /// Another person's workspace the person is a viewer of, which keeps its private Notes
+    /// record from them.
+    shared: String,
+    /// A workspace the person is no member of.
+    elsewhere: String,
     /// The grant that admits the agent `scribe`.
     scribe: tilo_action_policy::GrantId,
     _scratch: tempfile::TempDir,
@@ -178,8 +183,21 @@ fn fixture_with(owner: Owner) -> Fixture {
         &TreePath::root().app(NOTES).resource("private"),
         KindSet::READ,
     );
+    let mut shared =
+        crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(72), "Shared");
+    shared.set_owner("someone else");
+    shared.admit(person.clone(), Role::Viewer);
+    shared.deny(
+        Grantee::person(person.clone()),
+        &TreePath::root().app(NOTES).resource("private"),
+        KindSet::READ,
+    );
+    let mut elsewhere =
+        crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(73), "Elsewhere");
+    elsewhere.set_owner("someone else");
+    let (shared_id, elsewhere_id) = (shared.id().to_string(), elsewhere.id().to_string());
     let mut tree = WorkspaceTree::default();
-    tree.desktop.workspaces.push(workspace);
+    tree.desktop.workspaces.extend([workspace, shared, elsewhere]);
     let membership = tree.shared();
     let owner = Arc::new(owner);
     let origin = Arc::new(Origin::default());
@@ -203,6 +221,8 @@ fn fixture_with(owner: Owner) -> Fixture {
         person,
         root,
         workspace: workspace_id,
+        shared: shared_id,
+        elsewhere: elsewhere_id,
         scribe,
         _scratch: scratch,
     }
@@ -233,13 +253,102 @@ impl Fixture {
         app: &str,
         record: &str,
     ) -> Result<ResourceCopy, ActionCallError> {
-        self.reads.read(
-            caller,
-            &ResourceAddress {
-                app: app.to_owned(),
-                record: record.to_owned(),
-            },
-        )
+        read_in(self.reads.as_ref(), caller, (&self.workspace, app, record))
+    }
+}
+
+/// `caller`'s read of `record` of `app` in `workspace`, through the record API.
+fn read_in(
+    reads: &dyn tilo_actions::remote::ResourceReads,
+    caller: &Caller,
+    (workspace, app, record): (&str, &str, &str),
+) -> Result<ResourceCopy, ActionCallError> {
+    reads.read(
+        caller,
+        &ResourceAddress {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            record: record.to_owned(),
+        },
+    )
+}
+
+/// What a read of a record it may not read is answered: refused, or not let in at all.
+fn not_read(read: &Result<ResourceCopy, ActionCallError>) -> bool {
+    matches!(
+        read,
+        Err(ActionCallError::Refused { reason }) if reason == tilo_actions::remote::RESOURCE_READ_REFUSED
+    ) || matches!(read, Err(ActionCallError::NotPermitted))
+}
+
+/// This device as its certificate authority names it before anyone signs in: it governs the
+/// workspace founded on it, and acts there under its own certificate.
+struct ThisDevice {
+    founded: uuid::Uuid,
+    certificate: tilo_user_identity::DeviceCert,
+}
+
+impl crate::apps::certificate_authority::CertificateAuthority for ThisDevice {
+    fn authorize(&self, _: uuid::Uuid, _: &tilo_user_identity::DeviceCert) -> Result<(), String> {
+        Ok(())
+    }
+    fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+        device.is_none() && workspace == self.founded
+    }
+    fn own_device(&self) -> Option<tilo_user_identity::DeviceCert> {
+        Some(self.certificate.clone())
+    }
+}
+
+/// A device nobody signed in on yet: the workspace founded on it, and another workspace whose
+/// owner is the same person its certificate names, which it did not found.
+struct BeforeSignIn {
+    reads: Arc<dyn tilo_actions::remote::ResourceReads>,
+    owner: Arc<Owner>,
+    /// The person the device's own certificate names.
+    device: String,
+    founded: String,
+    other: String,
+    _scratch: tempfile::TempDir,
+}
+
+fn before_sign_in() -> BeforeSignIn {
+    let scratch = tempfile::tempdir().unwrap();
+    let session =
+        crate::apps::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
+    let certificate = session.device();
+    let device = person_id_for_root(certificate.user_public_key);
+    let mut founded =
+        crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(81), "Home");
+    founded.set_owner(device.clone());
+    let mut other =
+        crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(82), "Elsewhere");
+    other.set_owner(device.clone());
+    let (founded_id, other_id) = (founded.id().to_string(), other.id().to_string());
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.extend([founded, other]);
+    let membership = tree.shared();
+    let owner = Arc::new(Owner::default());
+    let services = ProcessServices {
+        committed_documents: Some(Arc::clone(&owner) as Arc<dyn NativeDocumentReads>),
+        native_certificates: Some(Arc::new(ThisDevice {
+            founded: uuid::Uuid::parse_str(&founded_id).unwrap(),
+            certificate,
+        })),
+        ..membership.services()
+    };
+    let broker = AppBrokerState::test_broker_with_authority(membership.authority(), services);
+    let reads = broker
+        .state()
+        .resource_reads()
+        .expect("before sign-in the device reads under its own certificate");
+    BeforeSignIn {
+        reads,
+        owner,
+        device,
+        founded: founded_id,
+        other: other_id,
+        _scratch: scratch,
     }
 }
 
@@ -390,6 +499,7 @@ tilo_test_env::scenario! {
             .in_workspace(f.workspace.clone())
             .in_new_execution();
         let address = ResourceAddress {
+            workspace: f.workspace.clone(),
             app: NOTES.to_owned(),
             record: String::new(),
         };
@@ -410,6 +520,100 @@ tilo_test_env::scenario! {
             .in_workspace(f.workspace.clone())
             .in_new_execution();
         assert!(f.reads.watch(&alone, &address, &wake).is_err());
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_read_is_decided_in_the_workspace_its_address_names;
+
+    phase a_person_reads_another_workspace_as_that_workspace_allows;
+    {
+        let f = fixture();
+        // A connection admitted to the person's own workspace, naming others.
+        let person = Caller::local_person(f.person.clone())
+            .in_workspace(f.workspace.clone())
+            .in_new_execution();
+        assert_eq!(
+            read_in(f.reads.as_ref(), &person, (&f.shared, NOTES, "")).unwrap(),
+            ResourceCopy::Document(format!("{NOTES}/").into_bytes()),
+            "a workspace they are a viewer of is read as it allows them"
+        );
+        assert!(
+            f.read(&person, NOTES, "private").is_ok(),
+            "their own workspace lets them read its private record"
+        );
+        let kept = read_in(f.reads.as_ref(), &person, (&f.shared, NOTES, "private"));
+        assert!(
+            not_read(&kept),
+            "the shared workspace keeps the same record's id from them: decided there, not by \
+             the workspace the connection was admitted to: {kept:?}"
+        );
+        let foreign = read_in(f.reads.as_ref(), &person, (&f.elsewhere, NOTES, ""));
+        assert!(not_read(&foreign), "a workspace they are no member of: {foreign:?}");
+    }
+
+    phase the_admitted_workspace_widens_nothing_for_an_agent;
+    {
+        let f = fixture();
+        // The agent reads its own workspace, and nothing of one its grants do not reach,
+        // though its person may read there.
+        let scribe = f.agent("scribe");
+        assert!(f.read(&scribe, NOTES, "").is_ok());
+        let shared = read_in(f.reads.as_ref(), &scribe, (&f.shared, NOTES, ""));
+        assert!(not_read(&shared), "{shared:?}");
+        assert_eq!(
+            f.owner.captures.load(Ordering::Acquire),
+            1,
+            "only the allowed read was captured"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn before_sign_in_the_device_reads_the_workspace_founded_on_it;
+
+    phase an_app_on_the_device_reads_the_founded_workspace_as_the_device;
+    {
+        let d = before_sign_in();
+        // Settings on this device, with nobody signed in to act for.
+        let settings = Caller::local_app("so.tilo.settings")
+            .in_workspace(d.founded.clone())
+            .in_new_execution();
+        assert_eq!(
+            read_in(d.reads.as_ref(), &settings, (&d.founded, NOTES, "devices/d1/settings/display"))
+                .unwrap(),
+            ResourceCopy::Document(format!("{NOTES}/devices/d1/settings/display").into_bytes()),
+            "the founded workspace's record, read under the device's own certificate"
+        );
+        let device = Caller::local_person(d.device.clone()).in_workspace(d.founded.clone());
+        assert!(read_in(d.reads.as_ref(), &device, (&d.founded, NOTES, "")).is_ok());
+    }
+
+    phase no_other_workspace_is_read_before_sign_in;
+    {
+        let d = before_sign_in();
+        // The other workspace's owner is the device's own person, so its grants would allow the
+        // read: it is refused because nobody signed in, and the device founded only its own.
+        for caller in [
+            Caller::local_app("so.tilo.settings").in_workspace(d.founded.clone()),
+            Caller::local_person(d.device.clone()).in_workspace(d.other.clone()),
+        ] {
+            let read = read_in(d.reads.as_ref(), &caller, (&d.other, NOTES, ""));
+            assert!(not_read(&read), "{read:?}");
+        }
+        // Nothing reads as this device but what runs on it: no agent, and no other person.
+        let agent = Caller::local_agent("scribe")
+            .acting_for(d.device.clone())
+            .in_workspace(d.founded.clone());
+        assert!(read_in(d.reads.as_ref(), &agent, (&d.founded, NOTES, "")).is_err());
+        let stranger = Caller::local_person("someone else").in_workspace(d.founded.clone());
+        let read = read_in(d.reads.as_ref(), &stranger, (&d.founded, NOTES, ""));
+        assert!(not_read(&read), "{read:?}");
+        assert_eq!(
+            d.owner.captures.load(Ordering::Acquire),
+            0,
+            "nothing was captured"
+        );
     }
 }
 
