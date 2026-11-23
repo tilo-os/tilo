@@ -24,6 +24,7 @@ mod composer;
 mod discussion;
 mod done_days;
 mod engines;
+mod feedback_picker;
 mod fixtures;
 mod foreign;
 mod gallery;
