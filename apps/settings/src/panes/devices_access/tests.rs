@@ -5,7 +5,8 @@ use super::*;
 
 use ui::prelude::TestApp;
 use ui::tilo_actions::remote::{
-    ActionCallError, Caller, Completer, InvocationReceipt, InvokeRequest, device_tickets,
+    ActionCallError, Caller, Completer, InvocationReceipt, InvokeRequest, ResourceAddress,
+    ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, device_tickets,
 };
 
 use crate::resource::SettingsShell;
@@ -29,34 +30,175 @@ fn sample() -> AccessSample {
 const MINUTE: i64 = 60_000;
 const DAY: i64 = 86_400_000;
 
-#[derive(Default)]
 struct RecordingHost {
     asked: std::sync::Mutex<Vec<InvokeRequest>>,
-    listed: std::sync::Mutex<serde_json::Value>,
     sheet: std::sync::Mutex<Sheet>,
     /// What the MCP server answers of the person's agents. None answers
     /// here until a test says what.
     served: std::sync::Mutex<Option<serde_json::Value>>,
     /// The actions this host refuses whoever asks, after noting the ask.
     refused: std::sync::Mutex<Vec<ui::tilo_actions::remote::RemoteActionTarget>>,
-    /// The reads of its lists this host keeps current, once it does
-    /// ([`Self::keep_current`]). Without, it answers each list once, as a
-    /// host that cannot say when one changes.
-    current: std::sync::Mutex<Option<Current>>,
+    /// The person's records, as the record API reads them.
+    records: std::sync::Arc<PersonRecords>,
 }
 
-/// The reads a host keeps current.
-#[derive(Default)]
-struct Current {
-    /// Each open read, and the list it reads.
-    reads: Vec<(
-        ui::tilo_actions::InvocationId,
-        ui::tilo_actions::remote::RemoteActionTarget,
-    )>,
-    /// How often a list changed.
-    changes: u64,
-    /// Who waits to hear of the next change.
-    waiting: Vec<Completer<()>>,
+/// The records of the person's own workspace this host keeps, built from the
+/// devices a test lists as the page shows them: each certified by the
+/// person's root, as every device of theirs is.
+struct PersonRecords {
+    root: ed25519_dalek::SigningKey,
+    /// The devices, each as a row of the page reads it.
+    listed: std::sync::Mutex<serde_json::Value>,
+    /// Who waits to hear the records change.
+    waiting: std::sync::Mutex<Vec<ResourceWake>>,
+    /// How often the page asked for the record of the person's devices.
+    devices_asked: std::sync::atomic::AtomicUsize,
+}
+
+impl PersonRecords {
+    fn person(&self) -> [u8; 32] {
+        self.root.verifying_key().to_bytes()
+    }
+
+    /// The device the page is shown on: the one the list marks current.
+    fn this_device(&self) -> [u8; 32] {
+        let listed = self.listed.lock().unwrap();
+        let this = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|device| device["current"] == true)
+            .expect("one device is this one");
+        key_bytes(this["key_hex"].as_str().unwrap())
+    }
+
+    /// The person's devices record: each listed device's certificate, signed
+    /// by their root, with the name, agent, mark and facts the list shows.
+    fn devices(&self) -> serde_json::Value {
+        let listed = self.listed.lock().unwrap();
+        let mut devices = serde_json::Map::new();
+        for (at, device) in listed.as_array().unwrap().iter().enumerate() {
+            let key = device["key_hex"].as_str().unwrap();
+            let ns = |field: &str| {
+                device[field]
+                    .as_i64()
+                    .map(|ms| u64::try_from(ms.max(0)).unwrap() * 1_000_000)
+            };
+            let mut cert = tilo_user_identity::DeviceCert {
+                user_public_key: self.person(),
+                device_public_key: key_bytes(key),
+                device_label: device["label"].as_str().unwrap().to_owned(),
+                capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                issued_at_ns: ns("issued_ms").unwrap_or(0),
+                expires_at_ns: ns("expires_ms"),
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, &self.root).unwrap();
+            let mut facts = serde_json::Map::new();
+            if let Some(seen) = device["last_active_ms"].as_i64() {
+                facts.insert("seen".into(), hex::encode(seen.to_le_bytes()).into());
+            }
+            devices.insert(
+                key.to_owned(),
+                serde_json::json!({"k": format!("{at:04}"), "v": {
+                    "certificate": hex::encode(postcard::to_allocvec(&cert).unwrap()),
+                    "name": device["label"],
+                    "agent": device["agent"],
+                    "revoked": device["revoked"].as_bool().unwrap_or(false),
+                    "facts": facts,
+                }}),
+            );
+        }
+        serde_json::json!({ "devices": devices })
+    }
+
+    /// Which browser each tab key is a tab of.
+    fn tab_groups(&self) -> serde_json::Value {
+        let listed = self.listed.lock().unwrap();
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|device| {
+                Some((
+                    format!("tab:{}", device["key_hex"].as_str()?),
+                    device["browser"].as_str()?.into(),
+                ))
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    }
+
+    /// Who is in the person's workspace: the person, on each device the list
+    /// shows online.
+    fn here(&self) -> serde_json::Value {
+        let listed = self.listed.lock().unwrap();
+        let online: Vec<&serde_json::Value> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|device| device["online"] == true)
+            .map(|device| &device["key_hex"])
+            .collect();
+        serde_json::json!({ "here": [{"who": hex::encode(self.person()), "name": "Ada",
+            "kind": "person", "devices": online}] })
+    }
+
+    /// Change the devices, and tell whoever reads the records.
+    fn change(&self, change: impl FnOnce(&mut serde_json::Value)) {
+        change(&mut self.listed.lock().unwrap());
+        for wake in std::mem::take(&mut *self.waiting.lock().unwrap()) {
+            wake.wake();
+        }
+    }
+}
+
+impl ResourceReads for PersonRecords {
+    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
+        use tilo_server_protocol::devices::{DEVICES, TAB_GROUPS};
+        if address.workspace != tilo_action_policy::roles::person_workspace_id(&self.person()) {
+            return Err(ActionCallError::Refused {
+                reason: "not the person's workspace".into(),
+            });
+        }
+        let value = match (address.app.as_str(), address.record.as_str()) {
+            read if read == DEVICES => self.devices(),
+            read if read == TAB_GROUPS => self.tab_groups(),
+            (ui::tilo_actions::remote::PRESENCE, "") => self.here(),
+            _ => return Ok(ResourceCopy::Absent),
+        };
+        Ok(ResourceCopy::reading(value, None))
+    }
+
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: ResourceReadRequest,
+    ) -> ui::tilo_actions::remote::Pending<ui::tilo_actions::remote::RemoteActionMessage> {
+        if (read.app.as_str(), read.record.as_str()) == tilo_server_protocol::devices::DEVICES {
+            self.devices_asked
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        ui::tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    fn watch(
+        &self,
+        _: &Caller,
+        _: &ResourceAddress,
+        wake: &ResourceWake,
+    ) -> Result<(), ActionCallError> {
+        self.waiting.lock().unwrap().push(wake.clone());
+        Ok(())
+    }
+}
+
+fn key_bytes(key: &str) -> [u8; 32] {
+    let mut bytes = [0; 32];
+    hex::decode_to_slice(key, &mut bytes).unwrap();
+    bytes
 }
 
 /// How the session's shell answers an ask to open one of its sheets.
@@ -90,34 +232,36 @@ impl RecordingHost {
     fn new(listed: serde_json::Value) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             asked: std::sync::Mutex::default(),
-            listed: std::sync::Mutex::new(listed),
             sheet: std::sync::Mutex::default(),
             served: std::sync::Mutex::default(),
             refused: std::sync::Mutex::default(),
-            current: std::sync::Mutex::default(),
+            records: std::sync::Arc::new(PersonRecords {
+                root: ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
+                listed: std::sync::Mutex::new(listed),
+                waiting: std::sync::Mutex::default(),
+                devices_asked: std::sync::atomic::AtomicUsize::new(0),
+            }),
         })
     }
 
-    /// Keep every list current from now on: each read of one stays open, and
-    /// is sent what it lists whenever [`Self::change`] changes it.
-    fn keep_current(&self) {
-        *self.current.lock().unwrap() = Some(Current::default());
+    /// This device is the one the list marks current, of the person whose
+    /// root certified every device listed: what the identity service tells
+    /// an app.
+    fn sign_in(&self) {
+        ui::local_identity::install_source(Some(std::sync::Arc::new(
+            ui::local_identity::FixedIdentity(ui::local_identity::LocalIdentity {
+                group_public_key: self.records.person(),
+                display_name: "Ada".into(),
+                avatar_color: [0; 3],
+                device_public_key: Some(self.records.this_device()),
+            }),
+        )));
     }
 
-    /// Change the person's devices as this host lists them, and tell whoever
-    /// reads a list it keeps current.
+    /// Change the person's devices as their record has them, and tell
+    /// whoever follows it.
     fn change(&self, change: impl FnOnce(&mut serde_json::Value)) {
-        change(&mut self.listed.lock().unwrap());
-        let waiting = match &mut *self.current.lock().unwrap() {
-            Some(current) => {
-                current.changes = current.changes.saturating_add(1);
-                std::mem::take(&mut current.waiting)
-            }
-            None => Vec::new(),
-        };
-        for told in waiting {
-            told.complete(());
-        }
+        self.records.change(change);
     }
 
     fn shell(&self, sheet: Sheet) {
@@ -198,21 +342,7 @@ impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
                 }
             };
         }
-        if request.target == device_tickets::target(device_tickets::LIST)
-            && let Some(current) = &mut *self.current.lock().unwrap()
-        {
-            // A read this host keeps current: admitted, and answered with
-            // each state of the list from here on.
-            current.reads.push((invocation, request.target.clone()));
-            self.asked.lock().unwrap().push(request);
-            return ui::tilo_actions::remote::Pending::ready(Ok(InvocationReceipt {
-                invocation,
-                status: ui::tilo_actions::remote::ReceiptStatus::Accepted,
-            }));
-        }
-        let value = if request.target == device_tickets::target(device_tickets::LIST) {
-            serde_json::json!({ "devices": self.listed.lock().unwrap().clone() })
-        } else if request.target == mcp_server::target(mcp_server::SERVER) {
+        let value = if request.target == mcp_server::target(mcp_server::SERVER) {
             let answer = self.served.lock().unwrap().clone();
             let Some(answer) = answer else {
                 return ui::tilo_actions::remote::Pending::ready(Err(
@@ -242,49 +372,22 @@ impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
     fn observe(
         &self,
         _: &Caller,
-        id: &ui::tilo_actions::InvocationId,
+        _: &ui::tilo_actions::InvocationId,
     ) -> Option<ui::tilo_actions::remote::InvocationState> {
-        let sequence = self.current.lock().unwrap().as_ref().and_then(|current| {
-            current.reads.iter().find(|(read, _)| read == id)?;
-            Some(current.changes.saturating_add(1))
-        })?;
-        let value = serde_json::json!({ "devices": self.listed.lock().unwrap().clone() });
-        Some(ui::tilo_actions::remote::InvocationState::new(
-            *id,
-            ui::tilo_actions::InvocationUpdate::Item {
-                invocation: *id,
-                sequence,
-                value,
-            },
-        ))
-    }
-
-    fn next_change(
-        &self,
-        _: &Caller,
-        id: &ui::tilo_actions::InvocationId,
-    ) -> Option<ui::tilo_actions::remote::Pending<()>> {
-        let (told, change) = ui::tilo_actions::remote::pending();
-        self.current.lock().unwrap().as_mut().and_then(|current| {
-            current
-                .reads
-                .iter()
-                .any(|(read, _)| read == id)
-                .then(|| current.waiting.push(told))
-        })?;
-        Some(change)
+        None
     }
 
     fn cancel(
         &self,
         _: &Caller,
-        id: &ui::tilo_actions::InvocationId,
+        _: &ui::tilo_actions::InvocationId,
     ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
     {
-        if let Some(current) = &mut *self.current.lock().unwrap() {
-            current.reads.retain(|(read, _)| read != id);
-        }
         ui::tilo_actions::remote::Pending::ready(Ok(()))
+    }
+
+    fn resource_reads(&self) -> Option<std::sync::Arc<dyn ResourceReads>> {
+        Some(self.records.clone())
     }
 }
 
@@ -311,9 +414,13 @@ fn record(now: i64) -> serde_json::Value {
 }
 
 fn model_on(host: &std::sync::Arc<RecordingHost>) -> (AccessModel, ui::RemoteActions) {
+    host.sign_in();
     let remote = ui::RemoteActions::with_provider(host.clone(), Caller::local_person("owner"));
     let mut model = AccessModel::listed(&remote);
-    model.poll(&remote);
+    tilo_test_env::wait_until("the person's devices to be read", || {
+        model.poll(&remote);
+        model.devices_read.answered
+    });
     (model, remote)
 }
 
@@ -431,7 +538,7 @@ tilo_test_env::scenario! {
         assert_eq!(model.list_note(), None, "the lists read");
     }
 
-    phase removing_an_agent_revokes_its_key_and_reads_the_list_again;
+    phase removing_an_agent_revokes_its_key_and_its_row_follows_the_record;
     {
         en();
         let host = RecordingHost::new(record(0));
@@ -445,9 +552,6 @@ tilo_test_env::scenario! {
             }
         );
         model.act(&remote, &removal, None).unwrap();
-        let listed_before = host
-            .asked_at(&device_tickets::target(device_tickets::LIST))
-            .len();
         model.poll(&remote);
         let revoked = host.asked_at(&device_tickets::target(device_tickets::REVOKE));
         assert_eq!(
@@ -465,12 +569,17 @@ tilo_test_env::scenario! {
             .find(|request| request.target == device_tickets::target(device_tickets::REVOKE))
             .unwrap();
         assert_eq!(revoke.confirmation, Some(Confirmation::Confirmed));
-        assert!(
-            host.asked_at(&device_tickets::target(device_tickets::LIST))
-                .len()
-                > listed_before,
-            "the list is read again after the removal"
-        );
+        host.change(|listed| {
+            for device in listed.as_array_mut().unwrap() {
+                if device["key_hex"] == LAPTOP_AGENT {
+                    device["revoked"] = true.into();
+                }
+            }
+        });
+        tilo_test_env::wait_until("the agent to leave the list", || {
+            model.poll(&remote);
+            model.agents().is_empty()
+        });
     }
 
     phase a_browsers_tabs_are_one_entry_removed_together;
@@ -674,6 +783,7 @@ fn this_device_and_an_agent() -> serde_json::Value {
 /// answering what the page asks of the session.
 fn window_on(host: &std::sync::Arc<RecordingHost>) -> TestApp<SettingsShell> {
     en();
+    host.sign_in();
     let served = host.clone();
     crate::area::replace_in_next_window(move |context| {
         DevicesAccessArea::new(
@@ -765,16 +875,11 @@ tilo_test_env::scenario! {
     phase a_second_press_in_the_same_page_asks_the_shell_again;
     // A person who closed the sheet, or added one device and wants to add
     // another, presses the same button again without loading the page anew:
-    // on a page, whose lists are kept current, and where they are asked for
-    // again and again.
+    // on a page whose lists are followed.
     {
         for (button, _, sheet, _) in sheets() {
-            for kept_current in [true, false] {
-                let shell = if kept_current {
-                    a_list_kept_current(now())
-                } else {
-                    a_full_list(now())
-                };
+            {
+                let shell = a_full_list(now());
                 let mut app = window_on_a_full_list(&shell);
                 for press in 1..=3 {
                     app.harness()
@@ -794,7 +899,7 @@ tilo_test_env::scenario! {
                     assert_eq!(
                         shell.asked_at(&session_actions::target(sheet)).len(),
                         press,
-                        "{button}: press {press} asks for its sheet (lists kept current: {kept_current})"
+                        "{button}: press {press} asks for its sheet"
                     );
                 }
             }
@@ -1379,18 +1484,11 @@ tilo_test_env::scenario! {
     }
 }
 
-/// [`a_full_list`] on a host that keeps its lists current, as a page's does:
-/// each list is read once and sent again whenever it changes.
-fn a_list_kept_current(now: i64) -> std::sync::Arc<RecordingHost> {
-    let host = a_full_list(now);
-    host.keep_current();
-    host
-}
-
-/// How often the host was asked for the person's devices.
+/// How often the page asked for the record of the person's devices.
 fn times_listed(host: &RecordingHost) -> usize {
-    host.asked_at(&device_tickets::target(device_tickets::LIST))
-        .len()
+    host.records
+        .devices_asked
+        .load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// The controls the page offers for the entry `key` now, by name.
@@ -1446,7 +1544,7 @@ tilo_test_env::scenario! {
     // on it: a device approved on the shell's own card, or on another
     // device, was listed only by a page loaded again.
     {
-        let host = a_list_kept_current(now());
+        let host = a_full_list(now());
         let mut app = window_on_a_full_list(&host);
         let phone = format!("settings.device:{}", key(0x77));
         assert!(published_row(&mut app, &phone).is_none());
@@ -1472,19 +1570,12 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_list_its_host_keeps_current_is_asked_for_on_no_timer;
+    phase the_followed_record_is_asked_for_on_no_timer;
     {
         en();
-        let host = a_list_kept_current(0);
+        let host = a_full_list(0);
         let (model, _remote) = model_on(&host);
-        assert_eq!(model.devices_read.kept, Kept::Current);
         assert_eq!(model.wakes_in(), None, "nothing wakes the page to ask again");
-        // A host that cannot say when its list changes is asked again while
-        // the page is open, as before.
-        let once = RecordingHost::new(record(0));
-        let (model, _remote) = model_on(&once);
-        assert_eq!(model.devices_read.kept, Kept::Once);
-        assert!(model.wakes_in().is_some_and(|wait| wait <= 4000));
     }
 
     phase a_removed_device_says_so_until_the_list_shows_it_gone;
@@ -1492,7 +1583,7 @@ tilo_test_env::scenario! {
     // longer: the row stayed, still offering Cancel and Remove, so the
     // removal read as one that failed.
     {
-        let host = a_list_kept_current(now());
+        let host = a_full_list(now());
         let mut app = window_on_a_full_list(&host);
         remove_the_other_computer(&mut app, &host);
         let offered = offered_for(&mut app, OTHER_COMPUTER);
@@ -1517,29 +1608,12 @@ tilo_test_env::scenario! {
         });
         assert!(!says_removing(&mut app));
         assert!(offered_for(&mut app, OTHER_COMPUTER).is_empty());
-        assert_eq!(times_listed(&host), 1, "the host said so itself");
-    }
-
-    phase a_host_that_answers_its_list_once_is_read_again_after_the_removal;
-    // As the session of a computer answers: the removal is done when it
-    // answers, and the list read after it no longer names the device.
-    {
-        let host = a_full_list(now());
-        let mut app = window_on_a_full_list(&host);
-        let listed_before = times_listed(&host);
-        host.change(the_other_computer_is_revoked);
-        remove_the_other_computer(&mut app, &host);
-        tilo_test_env::wait_until("the removed computer to leave the list", || {
-            app.settle();
-            published_row(&mut app, &computer_row_id()).is_none()
-        });
-        assert!(!says_removing(&mut app));
-        assert_eq!(times_listed(&host), listed_before + 1);
+        assert_eq!(times_listed(&host), 1, "the record said so itself");
     }
 
     phase a_removal_the_host_refuses_leaves_the_row_as_it_was;
     {
-        let host = a_list_kept_current(now());
+        let host = a_full_list(now());
         host.refused.lock().unwrap().push(revoke());
         let mut app = window_on_a_full_list(&host);
         remove_the_other_computer(&mut app, &host);
@@ -1653,7 +1727,7 @@ tilo_test_env::scenario! {
     phase a_removal_the_host_took_and_never_showed_gone_stops_saying_so;
     {
         en();
-        let host = a_list_kept_current(0);
+        let host = a_full_list(0);
         let (mut model, remote) = model_on(&host);
         model.now_ms = Some(1_000);
         model
@@ -1679,6 +1753,6 @@ tilo_test_env::scenario! {
             !model.leaves(OTHER_COMPUTER),
             "the row shows what the list says"
         );
-        assert_eq!(times_listed(&host), 1, "and the host is not asked again");
+        assert_eq!(times_listed(&host), 1, "and the record is not asked for again");
     }
 }

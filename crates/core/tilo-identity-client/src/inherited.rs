@@ -29,6 +29,11 @@ pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
         total_shares: metadata.total_shares(),
         share_index: metadata.share_index(),
         single_device: metadata.is_single_device(),
+        // The service signs as this device: its signing key is this device's key.
+        device_public_key: metadata
+            .device_certificate()
+            .is_some()
+            .then(|| metadata.signing_public_key()),
     })
 }
 

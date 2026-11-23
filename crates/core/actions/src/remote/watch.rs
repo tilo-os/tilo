@@ -28,8 +28,9 @@ pub struct Here {
     pub devices: Vec<String>,
 }
 
-/// What a provider that keeps no roster answers a read of who is here.
-pub const HERE_UNAVAILABLE: &str = "this provider keeps no roster of who is in the workspace";
+/// The resource who is in a workspace is, read as every resource is (its record `""`, the
+/// workspace's own): `{"here": [Here]}`, read once or followed, and never stored.
+pub const PRESENCE: &str = "tilo.presence";
 
 /// The window a member works in, as their presence names it to everyone in the workspace.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

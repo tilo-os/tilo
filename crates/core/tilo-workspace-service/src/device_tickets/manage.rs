@@ -1,12 +1,11 @@
 //! The person's devices, as every device of theirs names and revokes them: the `devices` actions
-//! [`RENAME`] and [`REVOKE`], answered the same by a computer's daemon and by its desktop, and
-//! [`LIST`], which Settings asks its desktop. Their devices are the record of the person's own
-//! workspace ([`person_workspace::devices`]), which this device holds and every device of theirs
-//! reads and writes; a list of them reads that record and joins who is here for online. A
-//! revocation is signed by the person's root on the device that holds it and marked in the
-//! record, and the marked record is what every host refuses the device by.
+//! [`RENAME`] and [`REVOKE`], answered the same by a computer's daemon and by its desktop. Their
+//! devices are the record of the person's own workspace ([`person_workspace::devices`]), which
+//! this device holds and every device of theirs reads and writes; a list of them reads that record
+//! and joins who is here for online. A revocation is signed by the person's root on the device
+//! that holds it and marked in the record, and the marked record is what every host refuses the
+//! device by.
 //!
-//! [`LIST`]: tilo_actions::remote::device_tickets::LIST
 //! [`RENAME`]: tilo_actions::remote::device_tickets::RENAME
 //! [`REVOKE`]: tilo_actions::remote::device_tickets::REVOKE
 
@@ -18,39 +17,6 @@ use crate::workspaces::person_workspace::devices::{DEVICES, Devices, Listed};
 use crate::workspaces::{Workspaces, person_workspace};
 
 impl TicketServer {
-    /// The person's devices as Settings lists them: `{"devices": [FleetDevice]}`, joined from the
-    /// records of their own workspace and who is present in it, as every list of them is
-    /// ([`tilo_server_protocol::devices::fleet`]).
-    ///
-    /// # Errors
-    /// This device has no identity yet, or holds no record of the person's devices.
-    pub async fn list(&self) -> Result<Value, String> {
-        use tilo_server_protocol::devices::{FleetRecords, TAB_GROUPS, fleet, record_value};
-        let (cert, _) = self.0.issuer.device()?;
-        let workspaces = self.record()?;
-        let own = person_workspace::workspace_id(&workspaces);
-        let mut records = Vec::new();
-        for record in [
-            DEVICES,
-            TAB_GROUPS,
-            tilo_server_protocol::workspaces::IDENTITY_LIST,
-        ] {
-            records.push(read_record(&workspaces, &own, record).await?);
-        }
-        let [devices, tab_groups, listed] =
-            <[Value; 3]>::try_from(records).map_err(|_| "three records were read".to_owned())?;
-        let mut here = Vec::new();
-        crate::workspaces::PresentDevices::attach(&workspaces, &own, &mut here);
-        let records = FleetRecords {
-            devices: record_value(&devices),
-            tab_groups: record_value(&tab_groups),
-            workspaces: record_value(&listed),
-        };
-        Ok(json!({
-            "devices": fleet(&cert.user_public_key, &cert.device_public_key, &records, &here),
-        }))
-    }
-
     /// Call the device `args` names what `name` says, in every list: the record of the person's
     /// own workspace takes the name.
     ///
@@ -152,31 +118,6 @@ impl TicketServer {
             "This computer does not hold your devices' record yet: ask again in a moment.".into()
         })
     }
-}
-
-/// The record `(app, record)` of `workspace` as every reader is answered it (`{"records"}`).
-async fn read_record(
-    workspaces: &Workspaces,
-    workspace: &str,
-    (app, record): (&str, &str),
-) -> Result<Value, String> {
-    use tilo_actions::remote::{Caller, HeldCopies, ResourceAddress, ResourceAsk};
-    let mut held = HeldCopies::default();
-    if let Some(bytes) = person_workspace::document_on(workspaces, workspace, (app, record)).await?
-    {
-        held.0.insert(record.to_owned(), bytes);
-    }
-    held.readable(
-        &Caller::local_system(),
-        &[ResourceAsk {
-            address: ResourceAddress {
-                workspace: workspace.to_owned(),
-                app: app.to_owned(),
-                record: record.to_owned(),
-            },
-            joined: false,
-        }],
-    )
 }
 
 /// The device `key` of `person`'s, as the record `workspaces` holds lists it.

@@ -1,8 +1,10 @@
-//! The person's devices, as every device of theirs answers the `devices` actions.
+//! The person's devices, as every device of theirs lists them: the record of their own workspace
+//! and who is there, both followed, joined as every list of them is
+//! ([`tilo_server_protocol::devices::fleet`]); and the `devices` actions that name and revoke one.
 
 use ui::icons::Icon;
 use ui::tilo_actions::remote::device_tickets::{self, FleetDevice, KeyKind};
-use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
+use ui::tilo_actions::remote::{Confirmation, InvokeArgument, PRESENCE, ResourceReadRequest};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceView {
@@ -65,11 +67,6 @@ pub fn device_icon(label: &str) -> Icon {
     }
 }
 
-/// Where the person's devices are listed.
-pub(crate) fn listed() -> ui::tilo_actions::remote::RemoteActionTarget {
-    device_tickets::target(device_tickets::LIST)
-}
-
 pub(crate) fn revoke(
     remote: &ui::RemoteActions,
     device: &[u8; 32],
@@ -102,36 +99,126 @@ pub(crate) fn rename(
     )
 }
 
-pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView>, String> {
-    let listed: Vec<FleetDevice> = serde_json::from_value(
-        value
-            .and_then(|mut value| value.get_mut("devices").map(serde_json::Value::take))
-            .unwrap_or(serde_json::Value::Array(Vec::new())),
-    )
-    .map_err(|_| "the device list the host answered is not readable".to_string())?;
-    listed
-        .into_iter()
-        .map(|device| {
-            let mut key = [0; 32];
-            hex::decode_to_slice(&device.key_hex, &mut key)
-                .map_err(|_| "the host answered a malformed device key".to_string())?;
-            Ok(DeviceView {
-                label: device.label,
-                key,
-                fingerprint: device.fingerprint,
-                current: device.current,
-                revoked: device.revoked,
-                kind: device.kind,
-                browser: device.browser,
-                agent: device.agent,
-                issued_ms: device.issued_ms,
-                expires_ms: device.expires_ms,
-                last_active_ms: device.last_active_ms,
-                online: device.online,
-                workspace: device.workspace,
-            })
-        })
-        .collect()
+/// The reads of the person's devices this page follows, joined.
+#[derive(Default)]
+pub(crate) struct FleetRead {
+    /// The person, and this device among theirs, as this device's identity names them.
+    who: Option<([u8; 32], [u8; 32])>,
+    /// Their devices, their tab groups, their list of workspaces, and who is in their own
+    /// workspace: each followed, and read again as it changes.
+    reads: Vec<ui::FollowedRead>,
+    seen: Vec<u64>,
+    /// Whether the list has been read once, or failed to be.
+    pub(crate) answered: bool,
+    pub(crate) error: Option<String>,
+}
+
+impl FleetRead {
+    /// Follow the person's devices from now on, as this device's identity names the person.
+    pub(crate) fn follow(&mut self, remote: &ui::RemoteActions) {
+        use tilo_server_protocol::devices::{DEVICES, TAB_GROUPS};
+        let identity = ui::local_identity::load();
+        let Some((person, this)) = identity
+            .and_then(|identity| Some((identity.group_public_key, identity.device_public_key?)))
+        else {
+            self.answered = true;
+            self.error = Some("this device does not know whose it is yet".to_owned());
+            return;
+        };
+        let own = tilo_action_policy::roles::person_workspace_id(&person);
+        let follow = |(app, record): (&str, &str)| {
+            remote.follow_resource(
+                None,
+                ResourceReadRequest {
+                    workspace: own.clone(),
+                    app: app.to_owned(),
+                    record: record.to_owned(),
+                    joined: false,
+                    after: None,
+                    wait_ms: None,
+                },
+            )
+        };
+        self.reads = vec![
+            follow(DEVICES),
+            follow(TAB_GROUPS),
+            follow(tilo_server_protocol::workspaces::IDENTITY_LIST),
+            follow((PRESENCE, "")),
+        ];
+        self.seen = vec![0; self.reads.len()];
+        self.who = Some((person, this));
+    }
+
+    /// What the reads answered since the last look: the devices as they are now, or why there are
+    /// none. `None` while nothing new came, or the devices are not read yet.
+    pub(crate) fn take(&mut self) -> Option<Result<Vec<DeviceView>, String>> {
+        use tilo_server_protocol::devices::{FleetRecords, fleet, here_in, record_value};
+        let (person, this) = self.who?;
+        let revisions: Vec<u64> = self
+            .reads
+            .iter()
+            .map(|read| read.call().revision())
+            .collect();
+        if revisions == self.seen {
+            return None;
+        }
+        self.seen = revisions;
+        // The devices record decides the list; the others add to it, and one this reader may not
+        // read, or that no one has written yet, adds nothing. The list waits for every read, so
+        // it never shows a device offline only because presence answered last.
+        let mut values = Vec::new();
+        for (at, read) in self.reads.iter().enumerate() {
+            match read.call().get() {
+                ui::Arrival::Ready(value) => values.push(value),
+                ui::Arrival::Failed(error) if at == 0 => {
+                    let error = error.to_string();
+                    self.answered = true;
+                    self.error = Some(error.clone());
+                    return Some(Err(error));
+                }
+                ui::Arrival::Failed(_) => values.push(serde_json::Value::Null),
+                ui::Arrival::Pending { .. } => {
+                    self.seen.clear();
+                    return None;
+                }
+            }
+        }
+        let [devices, tab_groups, workspaces, here] =
+            <[serde_json::Value; 4]>::try_from(values).ok()?;
+        let records = FleetRecords {
+            devices: record_value(&devices),
+            tab_groups: record_value(&tab_groups),
+            workspaces: record_value(&workspaces),
+        };
+        self.answered = true;
+        self.error = None;
+        Some(Ok(fleet(&person, &this, &records, &here_in(&here))
+            .into_iter()
+            .map(view)
+            .collect()))
+    }
+}
+
+/// `device` as a row of the page shows it.
+fn view(device: FleetDevice) -> DeviceView {
+    let mut key = [0; 32];
+    // The join lists a device by the key its root certified, so it is always one.
+    let _ = hex::decode_to_slice(&device.key_hex, &mut key);
+    DeviceView {
+        label: device.label,
+        key,
+        fingerprint: device.fingerprint,
+        current: device.current,
+        revoked: device.revoked,
+        kind: device.kind,
+        browser: device.browser,
+        agent: device.agent,
+        issued_ms: device.issued_ms,
+        expires_ms: device.expires_ms,
+        last_active_ms: device.last_active_ms,
+        online: device.online,
+        workspace: device.workspace,
+    }
 }
 
 /// What a settled host call answered, or why it did not.

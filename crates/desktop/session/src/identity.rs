@@ -94,6 +94,8 @@ fn read_present() -> Present {
             group_public_key: metadata.group_public_key,
             display_name: metadata.display_name,
             avatar_color: metadata.avatar_color,
+            device_public_key: crate::sync::device_identity()
+                .map(|identity| identity.device_cert.device_public_key),
         }),
         photo: metadata
             .profile_photo

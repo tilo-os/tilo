@@ -302,6 +302,7 @@ pub fn this_computer_with_an_identity(
             group_public_key: person,
             display_name: "Ada".to_owned(),
             avatar_color: [40, 80, 120],
+            device_public_key: None,
         },
     ))));
     (root, person)

@@ -9,13 +9,21 @@
 //! device (an app, the person signed in here, an agent acting for them) reads by the grants the
 //! apps this device serves decide for it. Any other caller's read goes whole to the app action
 //! server this host was given, when it was given one.
+//!
+//! Who is in a workspace ([`PRESENCE`]) is read here too, as the resource it is: what the
+//! workspace's roster names, with the devices each is present on as presence on this device hears
+//! them. It is never stored, so a held read of it looks again every [`PRESENCE_LOOK`].
 
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionCallError, Caller, RESOURCE_READ_REFUSED, ResourceAddress, ResourceCopy,
+    ActionCallError, Caller, PRESENCE, RESOURCE_READ_REFUSED, ResourceAddress, ResourceCopy,
     ResourceReadRequest, ResourceReads, ResourceWake,
 };
+
+/// How often a held read of who is here looks again: presence is heard, not written, so no write
+/// wakes it.
+const PRESENCE_LOOK: std::time::Duration = std::time::Duration::from_secs(2);
 
 use super::{WeakWorkspaces, Workspaces};
 
@@ -136,7 +144,17 @@ impl RecordReads {
         if let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
             && let Some(certificate) = Self::certificate(&workspaces, caller, &address.workspace)
         {
-            Self::may_read(&workspaces, &certificate, address)?;
+            // A member's device sees who else is there; an agent only where its scope reaches.
+            if address.app != PRESENCE {
+                Self::may_read(&workspaces, &certificate, address)?;
+            } else if certificate
+                .capabilities
+                .agent
+                .as_ref()
+                .is_some_and(|scope| !scope.reaches(&address.workspace))
+            {
+                return Err(refused());
+            }
             return Ok(Route::Certified(workspaces));
         }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
@@ -144,6 +162,29 @@ impl RecordReads {
             return Ok(Route::Inside(broker));
         }
         self.served.clone().map(Route::Served).ok_or_else(refused)
+    }
+
+    /// Who is in `address`'s workspace now, as `route` hears it for `caller`: `{"here": [Here]}`.
+    fn presence(
+        route: Route,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Result<ResourceCopy, ActionCallError> {
+        let here = match route {
+            Route::Certified(workspaces) => {
+                let mut here = Vec::new();
+                super::PresentDevices::attach(&workspaces, &address.workspace, &mut here);
+                Some(here)
+            }
+            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+            Route::Inside(broker) => broker.here(&caller.clone().in_workspace(&address.workspace)),
+            Route::Served(served) => return served.read(caller, address),
+        };
+        let here = here.ok_or_else(refused)?;
+        Ok(ResourceCopy::reading(
+            serde_json::json!({ "here": here }),
+            None,
+        ))
     }
 }
 
@@ -153,7 +194,11 @@ impl ResourceReads for RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
-        let workspaces = match self.route(caller, address)? {
+        let route = self.route(caller, address)?;
+        if address.app == PRESENCE {
+            return Self::presence(route, caller, address);
+        }
+        let workspaces = match route {
             Route::Certified(workspaces) => workspaces,
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
             Route::Inside(broker) => return broker.read_record(caller, address),
@@ -215,7 +260,19 @@ impl ResourceReads for RecordReads {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
-        let workspaces = match self.route(caller, address)? {
+        let route = self.route(caller, address)?;
+        if address.app == PRESENCE && !matches!(route, Route::Served(_)) {
+            // Nothing is written when someone comes or goes: the read looks again shortly.
+            let wake = wake.clone();
+            let _ = std::thread::Builder::new()
+                .name("presence-look".into())
+                .spawn(move || {
+                    std::thread::sleep(PRESENCE_LOOK);
+                    wake.wake();
+                });
+            return Ok(());
+        }
+        let workspaces = match route {
             Route::Certified(workspaces) => workspaces,
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
             Route::Inside(broker) => return broker.watch_record(caller, address, wake),

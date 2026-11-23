@@ -155,6 +155,10 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The integration suites read the account store and the runtime's files back.
 hex.workspace = true
+# The devices tests certify each listed device by a test root, as the record keeps it.
+ed25519-dalek.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+tilo-user-identity = { path = "../../crates/core/tilo-user-identity" }
 runtime-fs = { package = "tilo-fs-client", path = "../../crates/core/tilo-fs-client" }
 account-credentials = { path = "../../crates/integrations/account-credentials" }
 # The platform adapter the native runner feeds, for the live-bus benchmark.

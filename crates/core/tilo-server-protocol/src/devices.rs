@@ -41,6 +41,17 @@ pub fn record_value(readings: &serde_json::Value) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+/// Who is here, from a read of who is in a workspace ([`tilo_actions::remote::PRESENCE`]): nobody
+/// when the read answered no one.
+#[must_use]
+pub fn here_in(readings: &serde_json::Value) -> Vec<Here> {
+    record_value(readings)
+        .get("here")
+        .cloned()
+        .and_then(|here| serde_json::from_value(here).ok())
+        .unwrap_or_default()
+}
+
 /// The values of the records [`fleet`] joins, as the record API reads them from the person's
 /// own workspace.
 #[derive(Clone, Debug, Default)]
@@ -57,7 +68,7 @@ pub struct FleetRecords {
 /// here now (`here`), whose devices are online. `this` is the device the list is shown on.
 ///
 /// A device is listed when `person`'s root signed its certificate: an entry another root signed,
-/// or whose certificate does not read, is left out.
+/// kept under another key, or whose certificate does not read, is left out.
 #[must_use]
 pub fn fleet(
     person: &[u8; 32],
@@ -89,7 +100,9 @@ pub fn fleet(
             };
             let cert: tilo_user_identity::DeviceCert =
                 postcard::from_bytes(&hex::decode(text("certificate")?).ok()?).ok()?;
+            // Each device is kept under its own key, which its certificate names.
             if cert.user_public_key != *person
+                || *key != hex::encode(cert.device_public_key)
                 || tilo_user_identity::verify_device_cert(&cert).is_err()
             {
                 return None;

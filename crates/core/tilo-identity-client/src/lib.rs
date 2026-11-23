@@ -64,6 +64,9 @@ pub struct IdentityMetadata {
     pub total_shares: u16,
     pub share_index: u16,
     pub single_device: bool,
+    /// The key of the device this record is read on, when the identity service certified it:
+    /// what a list of the person's devices marks as this one.
+    pub device_public_key: Option<[u8; 32]>,
 }
 
 /// Non-secret facts about a portable backup that was written and verified.

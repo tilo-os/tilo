@@ -33,6 +33,7 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
             group_public_key: [1; 32],
             display_name: String::new(),
             avatar_color: [0; 3],
+            device_public_key: None,
         },
     ))));
     let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
@@ -116,6 +117,7 @@ fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
             group_public_key: [1; 32],
             display_name: String::new(),
             avatar_color: [0; 3],
+            device_public_key: None,
         },
     ))));
     let source: Arc<dyn settings_store::SettingsSource> = Arc::new(

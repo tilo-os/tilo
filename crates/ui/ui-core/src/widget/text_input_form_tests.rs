@@ -606,6 +606,7 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
             group_public_key: [1; 32],
             display_name: String::new(),
             avatar_color: [0; 3],
+            device_public_key: None,
         },
     ))));
     let source: Arc<dyn settings_store::SettingsSource> = Arc::new(

@@ -1,5 +1,5 @@
 //! The person's devices on this desktop: a ticket for a new computer (Settings' "Add a device",
-//! `tilo machine add`), and the list, names and revocations Settings' devices page asks for, answered
+//! `tilo machine add`), and the names and revocations Settings' devices page asks for, answered
 //! through the one ticket server every device of the person's runs
 //! ([`tilo_workspace_service::device_tickets`]).
 //!
@@ -206,16 +206,6 @@ fn descriptor(action: &str) -> ActionDescriptor {
         "The device's key, 64 hexadecimal characters, as the list of devices answers it.",
     );
     let (label, description, kind, contract, params) = match action {
-        wire::LIST => (
-            "Your devices",
-            "List your devices: which is this one, which are online, and which you took back.",
-            OperationKind::View,
-            ActionContract {
-                result: object(&["devices"]),
-                ..ActionContract::view()
-            },
-            Vec::new(),
-        ),
         wire::RENAME => (
             "Rename a device",
             "Name one of your devices in every list of them.",
@@ -288,7 +278,7 @@ fn descriptor(action: &str) -> ActionDescriptor {
 }
 
 /// The device actions this desktop answers.
-const ACTIONS: [&str; 4] = [wire::ISSUE, wire::LIST, wire::RENAME, wire::REVOKE];
+const ACTIONS: [&str; 3] = [wire::ISSUE, wire::RENAME, wire::REVOKE];
 
 /// What a refused or failed device action answers.
 fn refused(message: impl Into<String>) -> tilo_actions::ActionFailure {
@@ -301,7 +291,7 @@ fn refused(message: impl Into<String>) -> tilo_actions::ActionFailure {
 }
 
 impl DeviceTickets {
-    /// Answer the person's devices from now on (a ticket for a new computer, the list, names and
+    /// Answer the person's devices from now on (a ticket for a new computer, names and
     /// revocations), admitted by the grants of Settings' app, for the person at this device alone.
     pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
         providers.provide(wire::PROVIDER, APP_ID, Reach::ThisDevice, self);
@@ -353,7 +343,6 @@ impl Admits for DeviceTickets {
         let tickets = self.tickets.clone();
         runtime.spawn(async move {
             let answer = match action {
-                wire::LIST => tickets.list().await,
                 wire::RENAME => tickets.rename(&args).await,
                 wire::REVOKE => tickets.revoke(&args).await,
                 // A planned machine's ticket lasts as long as its medium may sit on a shelf, and

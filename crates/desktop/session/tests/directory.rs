@@ -267,6 +267,7 @@ fn a_device(
             group_public_key: cert.user_public_key,
             display_name: "Ada".to_owned(),
             avatar_color: [40, 80, 120],
+            device_public_key: None,
         },
     ))));
     root
@@ -617,6 +618,7 @@ fn expired_throwaway_identity(
             group_public_key: aged.user_public_key,
             display_name: "Ada".to_owned(),
             avatar_color: [40, 80, 120],
+            device_public_key: None,
         },
     ))));
     (hex::encode(aged.user_public_key), paths)

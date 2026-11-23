@@ -24,6 +24,9 @@ pub struct LocalIdentity {
     pub display_name: String,
     /// Avatar colour as sRGB bytes.
     pub avatar_color: [u8; 3],
+    /// The key of this device, when its identity service certified it: which of the person's
+    /// devices is this one.
+    pub device_public_key: Option<[u8; 32]>,
 }
 
 /// Resolves the local person's identity. Not memoised by callers: a process
@@ -183,6 +186,7 @@ impl RuntimeIdentity {
             group_public_key: id.group_public_key,
             display_name: id.display_name,
             avatar_color: id.avatar_color,
+            device_public_key: id.device_public_key,
         })
     }
 }
@@ -233,6 +237,7 @@ mod name_tests {
                 group_public_key: [7; 32],
                 display_name: name.into(),
                 avatar_color: [200, 40, 90],
+                device_public_key: None,
             }))));
         };
         person("  Throwaway test identity ");

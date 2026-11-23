@@ -695,8 +695,6 @@ impl AppBrokerState {
             // Nor does it wait for another device's workspace to change.
             | RemoteActionMessage::ChangedRequest { .. }
             | RemoteActionMessage::SurfaceRequest { .. } => None,
-            // Who is here it reads as the person using it, as a list of their devices does.
-            RemoteActionMessage::HereRequest { .. } => Some(person.clone()),
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -710,7 +708,6 @@ impl AppBrokerState {
             | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::ChangedResponse { .. }
-            | RemoteActionMessage::HereResponse { .. }
             | RemoteActionMessage::SurfaceResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };

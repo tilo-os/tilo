@@ -33,6 +33,7 @@ fn installed(key: [u8; 32]) -> FixedIdentity {
         group_public_key: key,
         display_name: "Ada".into(),
         avatar_color: [10, 20, 30],
+        device_public_key: None,
     })
 }
 

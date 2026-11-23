@@ -1298,6 +1298,7 @@ fn metadata_from_record(record: ondisk::IdentityRecord) -> IdentityMetadata {
         single_device,
         display_name: record.display_name,
         avatar_color: record.avatar_color,
+        device_public_key: None,
     }
 }
 

@@ -446,6 +446,7 @@ mod tests {
                     group_public_key: [key; 32],
                     display_name: String::new(),
                     avatar_color: [0; 3],
+                    device_public_key: None,
                 },
             ))
         };

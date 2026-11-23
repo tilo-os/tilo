@@ -82,6 +82,7 @@ fn this_computer(
             group_public_key: cert.user_public_key,
             display_name: "Ada".to_owned(),
             avatar_color: [40, 80, 120],
+            device_public_key: None,
         },
     ))));
     (root, device, cert)

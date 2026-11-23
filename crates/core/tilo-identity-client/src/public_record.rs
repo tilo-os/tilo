@@ -55,6 +55,8 @@ pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAva
         total_shares: identity.total_shares,
         share_index: identity.share_index,
         single_device: identity.single_device,
+        // A record read off disk names no device.
+        device_public_key: None,
     })
 }
 

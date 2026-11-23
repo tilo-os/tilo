@@ -7,7 +7,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
 use ui::tilo_actions::remote::mcp_server::{self, Grant, Reach, Server};
-use ui::tilo_actions::remote::{Confirmation, InvokeArgument, RemoteActionTarget, session_actions};
+use ui::tilo_actions::remote::{Confirmation, InvokeArgument, session_actions};
 use ui::tilo_resource::{self, Effect as _};
 use ui::widget::{
     Button, ButtonRole, Column, Container, DisclosureGroup, DisclosureRow, Element, ListRow, Row,
@@ -379,102 +379,6 @@ struct Pending {
     leaving: Option<u64>,
 }
 
-/// How a host answers one of the page's lists.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Kept {
-    /// Not answered yet.
-    #[default]
-    Unanswered,
-    /// The host keeps the read current and sends each change of the list on
-    /// it: it is never asked again.
-    Current,
-    /// The host answered once and cannot say when the list changes.
-    Once,
-    /// Nothing here answers the list.
-    Nowhere,
-}
-
-/// One of the page's lists, as its host answers it.
-#[derive(Default)]
-struct Listed {
-    /// The read of it: a host that keeps it current sends each change of the
-    /// list on it, one that answers once ends it with its answer.
-    read: Option<ui::Followed>,
-    seen: u64,
-    kept: Kept,
-    /// Whether the read asked last is still to be answered.
-    awaited: bool,
-    answered: bool,
-    error: Option<String>,
-    /// When it was asked last, ms since the epoch.
-    asked_ms: i64,
-}
-
-impl Listed {
-    /// Read the list at `target` from now on. The read this replaces ends.
-    fn ask(&mut self, remote: &ui::RemoteActions, target: RemoteActionTarget, now: i64) {
-        self.read = Some(remote.follow(target, InvokeArgument::None));
-        self.seen = 0;
-        self.awaited = true;
-        self.asked_ms = now;
-    }
-
-    /// What the host answered since the last look: the list as it is now, or
-    /// why there is none.
-    fn take(&mut self) -> Option<Result<Option<serde_json::Value>, String>> {
-        use ui::tilo_actions::InvocationUpdate;
-        use ui::tilo_actions::remote::ActionCallError;
-        let call = self.read.as_ref()?.call();
-        let revision = call.revision();
-        if revision == self.seen {
-            return None;
-        }
-        self.seen = revision;
-        let (kept, answer) = match call.get() {
-            ui::Arrival::Ready(InvocationUpdate::Item { value, .. }) => {
-                (Kept::Current, Ok(Some(value)))
-            }
-            ui::Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => {
-                (Kept::Once, Ok(output.value))
-            }
-            ui::Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
-                (Kept::Once, Err(error.message))
-            }
-            ui::Arrival::Ready(InvocationUpdate::Cancelled { .. }) => (
-                Kept::Once,
-                Err("the host stopped before it answered".to_owned()),
-            ),
-            ui::Arrival::Failed(
-                error @ (ActionCallError::UnknownAction | ActionCallError::Unavailable { .. }),
-            ) => (Kept::Nowhere, Err(error.to_string())),
-            ui::Arrival::Failed(error) => (Kept::Once, Err(error.to_string())),
-            ui::Arrival::Ready(
-                InvocationUpdate::Accepted { .. } | InvocationUpdate::Progress { .. },
-            )
-            | ui::Arrival::Pending { .. } => return None,
-        };
-        self.kept = kept;
-        self.awaited = false;
-        self.answered = true;
-        self.error = answer.as_ref().err().cloned();
-        Some(answer)
-    }
-
-    /// How long until a host that answered once is asked again, in ms: `None`
-    /// for a list that is not asked again, or whose answer is still awaited.
-    fn asked_again_in(&self, now: i64) -> Option<u64> {
-        if self.kept != Kept::Once || self.awaited {
-            return None;
-        }
-        u64::try_from(
-            ASK_AGAIN_MS
-                .saturating_sub(now.saturating_sub(self.asked_ms))
-                .max(0),
-        )
-        .ok()
-    }
-}
-
 /// Something the person took back here that the lists still name.
 struct Leaving {
     id: u64,
@@ -486,7 +390,7 @@ struct Leaving {
 
 pub struct AccessModel {
     devices: Vec<DeviceView>,
-    devices_read: Listed,
+    devices_read: crate::device_fleet::FleetRead,
     api: Server,
     api_followed: Option<ui::Followed>,
     api_seen: u64,
@@ -498,11 +402,6 @@ pub struct AccessModel {
     now_ms: Option<i64>,
 }
 
-/// How often a list is asked for again where its host answered it once and
-/// cannot say when it changes. A host that keeps the read current, as a
-/// page's does for the person's devices, is never asked again.
-const ASK_AGAIN_MS: i64 = 4000;
-
 /// How long a row says it is being removed once the host took the removal
 /// and its list still names it: after that the row shows what the list says.
 const LEAVING_SHOWN_MS: i64 = 10_000;
@@ -512,10 +411,7 @@ impl AccessModel {
         let mut model = Self::empty();
         model.api_followed =
             Some(remote.follow(mcp_server::target(mcp_server::SERVER), InvokeArgument::None));
-        let now = model.now();
-        model
-            .devices_read
-            .ask(remote, crate::device_fleet::listed(), now);
+        model.devices_read.follow(remote);
         model
     }
 
@@ -531,7 +427,7 @@ impl AccessModel {
     fn empty() -> Self {
         Self {
             devices: Vec::new(),
-            devices_read: Listed::default(),
+            devices_read: crate::device_fleet::FleetRead::default(),
             api: Server::default(),
             api_followed: None,
             api_seen: 0,
@@ -548,13 +444,11 @@ impl AccessModel {
     }
 
     /// How long until the open page has something to do that nothing tells
-    /// it of, in ms: asking a host that answered a list once again, or
-    /// showing a row the host never showed gone as its list has it. `None`
-    /// where every list is kept current and nothing is being removed.
+    /// it of, in ms: showing a row the host never showed gone as its list has
+    /// it. `None` while nothing is being removed: the lists are followed.
     fn wakes_in(&self) -> Option<u64> {
         let now = self.now();
-        let shown = self
-            .leaving
+        self.leaving
             .iter()
             .filter_map(|leaving| leaving.taken_ms)
             .filter_map(|taken| {
@@ -564,11 +458,7 @@ impl AccessModel {
                         .max(0),
                 )
                 .ok()
-            });
-        [self.devices_read.asked_again_in(now)]
-            .into_iter()
-            .flatten()
-            .chain(shown)
+            })
             .min()
     }
 
@@ -724,22 +614,9 @@ impl AccessModel {
         let mut changed = self.poll_api();
         changed |= self.take_lists();
         let now = self.now();
-        // A host that answered a list once cannot say when it changes: it is
-        // asked again while the page is open. One that keeps the read
-        // current says so itself, and is never asked again.
-        if self.pending.is_empty() && self.devices_read.asked_again_in(now) == Some(0) {
-            self.devices_read
-                .ask(remote, crate::device_fleet::listed(), now);
-        }
-        if self.settle_pending(now) {
-            // What the person did here changed a list: a host that answered
-            // it once is asked for it again now.
-            if self.devices_read.kept == Kept::Once {
-                self.devices_read
-                    .ask(remote, crate::device_fleet::listed(), now);
-            }
-            changed = true;
-        }
+        // What the person did here changes the record, which the followed
+        // read shows when it lands.
+        changed |= self.settle_pending(now);
         // A removal the host took and never showed gone: its row shows what
         // the list says again, so the person can see it and try once more.
         let marked = self.leaving.len();
@@ -757,12 +634,9 @@ impl AccessModel {
         let mut changed = false;
         let before = (self.devices_read.answered, self.devices_read.error.clone());
         if let Some(answer) = self.devices_read.take() {
-            match answer.and_then(crate::device_fleet::devices) {
-                Ok(devices) => {
-                    changed |= self.devices != devices;
-                    self.devices = devices;
-                }
-                Err(error) => self.devices_read.error = Some(error),
+            if let Ok(devices) = answer {
+                changed |= self.devices != devices;
+                self.devices = devices;
             }
             changed |= before != (true, self.devices_read.error.clone());
             changed |= self.listed_anew();
