@@ -45,7 +45,7 @@ impl domain::AppDirectory for Directory {
     /// The packages installed on this computer; else, and on a page, which keeps none of its own,
     /// the fleet's apps that run here: on a page those its workspace's server serves it.
     fn installed_apps(&self) -> Vec<String> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_os = "linux")]
         if let Some(lists) = crate::app_icons::app_lists()
             && !lists.named.is_empty()
         {

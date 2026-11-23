@@ -598,7 +598,7 @@ fn native_content_dir(backend: &BackendArgs, workspace: uuid::Uuid) -> Option<Pa
 }
 
 #[cfg(not(target_os = "linux"))]
-fn native_content_dir(backend: &BackendArgs, _workspace: uuid::Uuid) -> Option<PathBuf> {
+fn native_content_dir(_backend: &BackendArgs, _workspace: uuid::Uuid) -> Option<PathBuf> {
     None
 }
 

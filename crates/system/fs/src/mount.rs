@@ -4,8 +4,11 @@
 use super::{
     AclHandle, Arc, BackendArgs, Config, Heuristics, Hydrator, IdentityKey, KeptTree, MountOption,
     Mutex, Namespace, PathBuf, QuickFS, Result, ServedSocket, SessionACL, StopSignals,
-    mount_point_owner, native_config, parse_owner, run_native, session_supervisor,
+    mount_point_owner, parse_owner, session_supervisor,
 };
+/// The native backend is Linux's: other platforms serve the mount through FUSE.
+#[cfg(target_os = "linux")]
+use super::{native_config, run_native};
 
 /// FUSE worker threads: `TILO_FS_FUSE_THREADS` when set, else one per CPU between 2 and 16.
 fn fuse_worker_threads() -> usize {
