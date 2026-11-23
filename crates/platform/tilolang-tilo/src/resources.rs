@@ -1964,19 +1964,22 @@ impl ResourceStore {
     }
 
     /// Whether the items of the collection `field` of `holder` share their holder with those
-    /// of another of its collections of the same type: each then says which it stands in.
+    /// of another of its collections of the same type, or with a record of that type a field of
+    /// it holds: each then says which it stands in.
     fn shares_holder(&self, holder: &str, field: &str) -> bool {
         let kinds = self.inner.kinds.borrow();
         let Some(entry) = kinds.get(holder) else {
             return false;
         };
-        let Some(items) = entry.fields.get(field).map(|entry| &entry.items) else {
+        let placed = |entry: &kinds::FieldEntry| -> Vec<TypeId> {
+            entry.items.iter().chain(&entry.held).cloned().collect()
+        };
+        let Some(mine) = entry.fields.get(field).map(placed) else {
             return false;
         };
-        entry
-            .fields
-            .iter()
-            .any(|(other, entry)| other != field && entry.items.iter().any(|ty| items.contains(ty)))
+        entry.fields.iter().any(|(other, entry)| {
+            other != field && placed(entry).iter().any(|ty| mine.contains(ty))
+        })
     }
 
     /// Mark `held` as standing in the collection `field` of a resource of the type `holder`,
@@ -2405,6 +2408,26 @@ impl ResourceStore {
                 self.remove_tree(txn, &at.item(&item_of(&id), ty))?;
             }
         }
+        // The records its fields hold go with it.
+        let held: Vec<(FieldId, TypeId)> = self
+            .inner
+            .kinds
+            .borrow()
+            .get(&at.ty)
+            .map(|entry| {
+                entry
+                    .fields
+                    .iter()
+                    .filter_map(|(id, field)| Some((id.clone(), field.held.clone()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (field, ty) in held {
+            let child = at.item(&tilolang_runtime::held::held_id(at, &field), ty);
+            if self.type_of_id(&child.id_string()).is_some() {
+                self.remove_tree(txn, &child)?;
+            }
+        }
         let id = id_of(at);
         // The kind it is stored as: the one it publishes now, else the one an earlier version
         // stored it as.
@@ -2673,6 +2696,47 @@ impl ResourceStore {
         Ok(at.item(item, ty))
     }
 
+    /// Makes `item` the item `item_id` of `at`'s `field`: at `index` among the others, or, for a
+    /// record the field holds, as the field's one item, which has no order among others.
+    fn insert(
+        &self,
+        txn: Txn,
+        at: &ResourceRef,
+        field: &str,
+        item: &NewResource,
+        index: Option<usize>,
+        item_id: &str,
+    ) -> Result<(), StoreError> {
+        let id = id_of(at);
+        let holds = self
+            .field(&at.ty, field)
+            .is_some_and(|entry| entry.held.is_some());
+        let order = if holds {
+            None
+        } else {
+            let order = self.insert_key(at, field, index, None)?;
+            let collection = (id.clone(), field.to_owned());
+            self.txn_mut(txn, |state| match index {
+                None => state.last_keys.insert(collection, order.clone()),
+                Some(_) => state.last_keys.remove(&collection),
+            })?;
+            Some(order)
+        };
+        let mut held = self.new_held(item, Some(id), order)?;
+        self.stand_in(&mut held, &at.ty, field);
+        let edits = self.initial_edits(&item.ty, &mut held);
+        let child = at.item(item_id, item.ty.clone());
+        self.write(txn, &id_of(&child), Some(held), |dirty| {
+            dirty.put = true;
+            dirty.edits.extend(edits);
+        })?;
+        self.inner.made.borrow_mut().push(child.clone());
+        self.inner.wrote.borrow_mut().made = true;
+        self.touch(txn, at, field, !holds)?;
+        self.touch(txn, &child, ANY_FIELD, false)?;
+        Ok(())
+    }
+
     /// [`Store::apply`] of a mutation of a collection or an outbox: `None` for a write of a
     /// field.
     fn apply_structure(
@@ -2692,24 +2756,7 @@ impl ResourceStore {
                 let item_id = given
                     .clone()
                     .unwrap_or_else(|| self.fresh(&format!("{}-", short(&item.ty))));
-                let order = self.insert_key(at, field, *index, None)?;
-                let collection = (id.clone(), field.clone());
-                self.txn_mut(txn, |state| match index {
-                    None => state.last_keys.insert(collection, order.clone()),
-                    Some(_) => state.last_keys.remove(&collection),
-                })?;
-                let mut held = self.new_held(item, Some(id), Some(order))?;
-                self.stand_in(&mut held, &at.ty, field);
-                let edits = self.initial_edits(&item.ty, &mut held);
-                let child = at.item(&item_id, item.ty.clone());
-                self.write(txn, &id_of(&child), Some(held), |dirty| {
-                    dirty.put = true;
-                    dirty.edits.extend(edits);
-                })?;
-                self.inner.made.borrow_mut().push(child.clone());
-                self.inner.wrote.borrow_mut().made = true;
-                self.touch(txn, at, field, true)?;
-                self.touch(txn, &child, ANY_FIELD, false)?;
+                self.insert(txn, at, field, item, *index, &item_id)?;
                 Ok(Some(Applied::Item(item_id)))
             }
             Mutation::CollRemove { field, item } => {

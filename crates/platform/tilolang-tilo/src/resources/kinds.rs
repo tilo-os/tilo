@@ -29,6 +29,10 @@ pub struct FieldEntry {
     /// The types a collection's items may be of: one, or each case of a union. Empty for a
     /// field that is no collection.
     pub items: Vec<TypeId>,
+    /// The record type the field holds when its resource is made without it: an item of the
+    /// holder placed under the field, with no order key ([`tilolang_runtime::held`]). `None` for
+    /// any other field.
+    pub held: Option<TypeId>,
     /// What the index holds of it on a resource made without it: the default the type declares,
     /// else its type's own (`false`, `0`, no text, none). `None` for a field with no default or
     /// none the index holds.
@@ -157,6 +161,8 @@ impl Kinds {
                 },
                 _ => Vec::new(),
             };
+            let held = tilolang_runtime::held::held_key(kind, &ty, field.default.is_some())
+                .and_then(|key| self.type_id(key));
             let initial = match kind {
                 FieldKind::Register | FieldKind::Text => self.initial(&ty, field.default.as_ref()),
                 _ => None,
@@ -169,6 +175,7 @@ impl Kinds {
                     ty,
                     kind,
                     items,
+                    held,
                     initial,
                 },
             );
