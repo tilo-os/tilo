@@ -1065,4 +1065,6 @@ mod directory;
 #[cfg(test)]
 mod lifecycle;
 #[cfg(test)]
+mod made_from;
+#[cfg(test)]
 mod routing;

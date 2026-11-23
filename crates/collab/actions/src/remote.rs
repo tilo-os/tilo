@@ -637,6 +637,18 @@ pub struct InvokeRequest {
 }
 
 impl InvokeRequest {
+    /// The resource this call is made from, as its caller named it in its arguments
+    /// ([`crate::params::FROM_ARGUMENT`]): what the resources it makes are made from, and what
+    /// a turn it starts answers. The dispatch admits a call made from a resource only for a
+    /// caller who may read that resource.
+    #[must_use]
+    pub fn made_from(&self) -> Option<crate::params::MadeFrom> {
+        let InvokeArgument::Json(arguments) = &self.argument else {
+            return None;
+        };
+        crate::params::MadeFrom::from_json(arguments.get(crate::params::FROM_ARGUMENT)?)
+    }
+
     /// What the agent's harness calls the session this request was sent in ("Release prep"), as
     /// the client's agent-session group says it: display only, the name people see the agent by
     /// ([`Caller::in_named_session`]). `None` when the client named no session.
