@@ -183,6 +183,126 @@ pub enum NetworkAction {
     #[effect(kind = "outside")]
     #[effect(own_device, icon = "plane", keywords = "airplane mode, flight mode")]
     ToggleAirplaneMode,
+    /// Set how a saved network gets its IPv4 address: automatically, or the
+    /// addresses, gateway and name servers given.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "network",
+        keywords = "ip address, static ip, dhcp, gateway",
+        on = SavedNetworkRow
+    )]
+    SetNetworkIpv4 {
+        #[param("The saved network, by its id")]
+        profile: String,
+        #[param("Whether the network hands out the address")]
+        automatic: bool,
+        #[param("The addresses with their prefix (192.168.1.20/24), when not automatic")]
+        addresses: Vec<String>,
+        #[param("The gateway, when not automatic")]
+        gateway: Option<String>,
+        #[param("Name servers of its own; none takes the network's")]
+        dns: Vec<String>,
+    },
+    /// Set how a saved network gets its IPv6 address.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "network",
+        keywords = "ipv6, static ip, slaac",
+        on = SavedNetworkRow
+    )]
+    SetNetworkIpv6 {
+        #[param("The saved network, by its id")]
+        profile: String,
+        #[param("automatic, manual, link-local or disabled")]
+        method: String,
+        #[param("The addresses with their prefix (2001:db8::10/64), when manual")]
+        addresses: Vec<String>,
+        #[param("The gateway, when manual")]
+        gateway: Option<String>,
+        #[param("Name servers of its own; none takes the network's")]
+        dns: Vec<String>,
+    },
+    /// Set the name servers a saved network uses; none takes the network's.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "globe",
+        keywords = "dns, name server",
+        on = SavedNetworkRow
+    )]
+    SetNetworkDns {
+        #[param("The saved network, by its id")]
+        profile: String,
+        #[param("The name servers")]
+        servers: Vec<String>,
+    },
+    /// Change how a saved network is used: whether it is metered, the
+    /// hardware address this device shows it, its proxy, its priority and
+    /// whether its name is hidden. What is left out stays as it is.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "settings",
+        keywords = "metered, mac address, proxy, priority, hidden",
+        on = SavedNetworkRow
+    )]
+    SetNetworkPolicy {
+        #[param("The saved network, by its id")]
+        profile: String,
+        #[param("automatic, metered or unmetered")]
+        metered: Option<String>,
+        #[param("The hardware address it is shown: permanent, random or stable")]
+        mac_address: Option<String>,
+        #[param("Its proxy: none, automatic or manual")]
+        proxy: Option<String>,
+        #[param("The proxy's configuration address (automatic) or host:port (manual)")]
+        proxy_address: Option<String>,
+        #[param("Whether only the browser uses the proxy")]
+        browser_only: Option<bool>,
+        #[param("Which saved network wins when several are in reach: higher first")]
+        priority: Option<i64>,
+        #[param("Whether the Wi-Fi network keeps its name hidden")]
+        hidden: Option<bool>,
+    },
+    /// Change who a work or school network knows this device as, and the
+    /// certificate it checks the network with.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "id-card",
+        keywords = "802.1x, enterprise, identity, certificate",
+        on = SavedNetworkRow
+    )]
+    SetEnterpriseIdentity {
+        #[param("The saved network, by its id")]
+        profile: String,
+        #[param("The identity")]
+        identity: String,
+        #[param("The CA certificate's path; empty when the network is not checked")]
+        ca_certificate: String,
+    },
+    /// Change the password a saved Wi-Fi network joins with.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "key",
+        keywords = "wifi password",
+        on = SavedNetworkRow
+    )]
+    SetWifiPassword {
+        #[param("The saved network, by its id")]
+        profile: String,
+        #[param(secret, "The network's password")]
+        password: String,
+    },
 }
 
 /// The `bluetooth` resource's actions.
@@ -306,6 +426,35 @@ pub enum VpnAction {
     ForgetVpn {
         #[param("The profile, by its id")]
         profile: String,
+    },
+    /// Change a VPN profile. What is left out stays as it is.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "shield",
+        keywords = "vpn settings, endpoint, allowed ips, mtu",
+        on = VpnProfileRow
+    )]
+    EditVpn {
+        #[param("The profile, by its id")]
+        profile: String,
+        #[param("What the profile is called")]
+        name: Option<String>,
+        #[param("Whether it connects by itself")]
+        autoconnect: Option<bool>,
+        #[param("Whether all traffic goes through it")]
+        all_traffic: Option<bool>,
+        #[param("Name servers it uses")]
+        dns: Option<Vec<String>>,
+        #[param("The largest packet in bytes; 0 chooses it automatically")]
+        mtu: Option<u32>,
+        #[param("The server it connects to, host:port")]
+        endpoint: Option<String>,
+        #[param("The addresses sent through it")]
+        allowed_ips: Option<Vec<String>>,
+        #[param("Seconds between keepalives; 0 sends none")]
+        keepalive: Option<u32>,
     },
 }
 

@@ -90,6 +90,41 @@ pub enum Change {
     ForgetVpn {
         profile: String,
     },
+    /// Change a VPN profile; what the patch leaves out stays.
+    EditVpn {
+        profile: String,
+        patch: os_actions::network_settings::VpnProfilePatch,
+    },
+    /// How a saved network gets its IPv4 address.
+    Ipv4 {
+        profile: String,
+        config: os_actions::IpConfiguration,
+    },
+    /// How a saved network gets its IPv6 address.
+    Ipv6 {
+        profile: String,
+        config: os_actions::network_settings::Ipv6Configuration,
+    },
+    /// The name servers a saved network uses.
+    Dns {
+        profile: String,
+        servers: Vec<String>,
+    },
+    /// How a saved network is used; what the patch leaves out stays.
+    Policy {
+        profile: String,
+        patch: os_actions::ConnectionPolicyPatch,
+    },
+    /// Who a work or school network knows this device as.
+    Identity {
+        profile: String,
+        identity: os_actions::network_settings::EnterpriseIdentity,
+    },
+    /// The password a saved Wi-Fi network joins with.
+    WifiPassword {
+        profile: String,
+        password: String,
+    },
 }
 
 /// What the device reads now.
@@ -335,6 +370,25 @@ impl Device for OsDevice {
                 os_actions::network_settings::import_vpn_text(kind, name, text).map(|_| ())
             }
             Change::ForgetVpn { profile } => os_actions::delete_vpn_connection_uuid(profile),
+            Change::EditVpn { profile, patch } => {
+                os_actions::network_settings::configure_vpn_profile(profile, patch)
+            }
+            Change::Ipv4 { profile, config } => os_actions::configure_ipv4(profile, config),
+            Change::Ipv6 { profile, config } => {
+                os_actions::network_settings::configure_ipv6(profile, config)
+            }
+            Change::Dns { profile, servers } => {
+                os_actions::network_settings::configure_dns(profile, servers)
+            }
+            Change::Policy { profile, patch } => {
+                os_actions::configure_connection_policy_patch(profile, patch)
+            }
+            Change::Identity { profile, identity } => {
+                os_actions::network_settings::configure_enterprise_identity(profile, identity)
+            }
+            Change::WifiPassword { profile, password } => {
+                os_actions::network_settings::set_wifi_profile_password(profile, password)
+            }
         }
     }
 }

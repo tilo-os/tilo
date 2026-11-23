@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use os_actions::network_settings::{
-    EnterpriseIdentity, Ipv6Configuration, VpnPlugin, VpnProfilePatch, VpnProfileSettings,
-    WifiLinkDetails,
+    EnterpriseIdentity, Ipv6Configuration, Ipv6Method, VpnPlugin, VpnProfilePatch,
+    VpnProfileSettings, WifiLinkDetails,
 };
 use os_actions::{
     ConnectivityState, EnterpriseWifiConfiguration, HotspotConfiguration, IpConfiguration,
@@ -983,12 +983,92 @@ pub(crate) trait NetworkService: Send + Sync {
 
 struct DeviceNetwork;
 
-/// Turn one of the device's switches on or off through the session's connectivity service, whose
-/// actions Quick Settings, a script and an agent call too: it checks the radios show the change.
-fn switch(resource: &str, action: &str, on: bool) -> Result<(), String> {
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("on".into(), on.into());
+/// The session's connectivity resources: the device's network, its VPNs and the hotspot.
+const NETWORK: &str = "network";
+const VPN: &str = "vpn";
+const TETHERING: &str = "tethering";
+
+/// One saved network's own entry, whose actions take the network from it.
+fn saved(uuid: &str) -> String {
+    format!("saved-network:{uuid}")
+}
+
+/// One VPN profile's own entry, whose actions take the profile from it.
+fn vpn_profile(uuid: &str) -> String {
+    format!("vpn-profile:{uuid}")
+}
+
+/// Ask the session's connectivity service to carry out `action` of `resource` with `arguments`:
+/// the actions Quick Settings, a script and an agent call too. The answer comes once the device
+/// made the change, or with why it did not.
+fn ask(resource: &str, action: &str, arguments: serde_json::Value) -> Result<(), String> {
+    let serde_json::Value::Object(arguments) = arguments else {
+        return Err(format!("{action} takes its arguments as an object"));
+    };
     ui::collaboration::SessionResource::invoke_without_watching(resource, action, &arguments)
+}
+
+/// `patch` as the arguments of `set-network-policy`: what it leaves out stays.
+fn policy_arguments(patch: &os_actions::ConnectionPolicyPatch) -> serde_json::Value {
+    let mut arguments = serde_json::Map::new();
+    if let Some(metered) = patch.metered {
+        let metered = match metered {
+            os_actions::MeteredPolicy::Automatic => "automatic",
+            os_actions::MeteredPolicy::Metered => "metered",
+            os_actions::MeteredPolicy::Unmetered => "unmetered",
+        };
+        arguments.insert("metered".into(), metered.into());
+    }
+    if let Some(mac) = patch.mac {
+        let mac = match mac {
+            os_actions::MacPolicy::Permanent => "permanent",
+            os_actions::MacPolicy::Random => "random",
+            os_actions::MacPolicy::Stable => "stable",
+        };
+        arguments.insert("mac_address".into(), mac.into());
+    }
+    if let Some(proxy) = &patch.proxy {
+        let (kind, address) = match (&proxy.automatic_url, &proxy.manual) {
+            (Some(url), _) => ("automatic", Some(url)),
+            (None, Some(server)) => ("manual", Some(server)),
+            (None, None) => ("none", None),
+        };
+        arguments.insert("proxy".into(), kind.into());
+        if let Some(address) = address {
+            arguments.insert("proxy_address".into(), address.as_str().into());
+        }
+        arguments.insert("browser_only".into(), proxy.browser_only.into());
+    }
+    if let Some(priority) = patch.priority {
+        arguments.insert("priority".into(), priority.into());
+    }
+    if let Some(hidden) = patch.hidden {
+        arguments.insert("hidden".into(), hidden.into());
+    }
+    serde_json::Value::Object(arguments)
+}
+
+/// `patch` as the arguments of `edit-vpn`: what it leaves out stays, and a cleared MTU or
+/// keepalive is 0.
+fn vpn_arguments(patch: &VpnProfilePatch) -> serde_json::Value {
+    let mut arguments = serde_json::Map::new();
+    let mut put = |name: &str, value: Option<serde_json::Value>| {
+        if let Some(value) = value {
+            arguments.insert(name.into(), value);
+        }
+    };
+    put("name", patch.name.clone().map(Into::into));
+    put("autoconnect", patch.autoconnect.map(Into::into));
+    put("all_traffic", patch.all_traffic.map(Into::into));
+    put("dns", patch.dns.clone().map(Into::into));
+    put("mtu", patch.mtu.map(|mtu| mtu.unwrap_or(0).into()));
+    put("endpoint", patch.endpoint.clone().map(Into::into));
+    put("allowed_ips", patch.allowed_ips.clone().map(Into::into));
+    put(
+        "keepalive",
+        patch.keepalive.map(|seconds| seconds.unwrap_or(0).into()),
+    );
+    serde_json::Value::Object(arguments)
 }
 
 impl NetworkService for DeviceNetwork {
@@ -1039,46 +1119,116 @@ impl NetworkService for DeviceNetwork {
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
-        use os_actions::network_settings as nm;
+        use serde_json::json;
         crate::device_read::off_ui_thread();
         match change {
-            NetworkChange::Wifi(on) => switch("network", "set-wifi", *on),
-            NetworkChange::Wired(on) => switch("network", "set-wired", *on),
+            NetworkChange::Wifi(on) => ask(NETWORK, "set-wifi", json!({ "on": on })),
+            NetworkChange::Wired(on) => ask(NETWORK, "set-wired", json!({ "on": on })),
             NetworkChange::Radio(Radio::Airplane, on) => {
-                switch("network", "set-airplane-mode", *on)
+                ask(NETWORK, "set-airplane-mode", json!({ "on": on }))
             }
-            NetworkChange::Radio(Radio::Hotspot, on) => switch("tethering", "set-hotspot", *on),
-            NetworkChange::Autoconnect { uuid, on, .. } => {
-                os_actions::set_network_autoconnect(uuid, *on)
+            NetworkChange::Radio(Radio::Hotspot, on) => {
+                ask(TETHERING, "set-hotspot", json!({ "on": on }))
             }
+            NetworkChange::Autoconnect { uuid, on, .. } => ask(
+                NETWORK,
+                "set-network-autoconnect",
+                json!({ "profile": uuid, "on": on }),
+            ),
             NetworkChange::Wake { uuid, on } => {
                 let status = host_network_wake(uuid, Some(*on))?;
                 status.problem.map_or(Ok(()), Err)
             }
-            NetworkChange::Forget { uuid, .. } => os_actions::forget_network_profile(uuid),
-            NetworkChange::Hotspot(config) => os_actions::configure_hotspot(config),
-            NetworkChange::Ipv4 { uuid, config, .. } => os_actions::configure_ipv4(uuid, config),
-            NetworkChange::Ipv6 { uuid, config, .. } => nm::configure_ipv6(uuid, config),
-            NetworkChange::Dns { uuid, servers, .. } => nm::configure_dns(uuid, servers),
+            NetworkChange::Forget { uuid, .. } => ask(&saved(uuid), "forget-network", json!({})),
+            NetworkChange::Hotspot(config) => ask(
+                TETHERING,
+                "configure-hotspot",
+                json!({
+                    "name": config.ssid,
+                    "password": config.password,
+                    "band": match config.band {
+                        os_actions::HotspotBand::Automatic => "automatic",
+                        os_actions::HotspotBand::TwoPointFourGhz => "two-point-four",
+                        os_actions::HotspotBand::FiveGhz => "five",
+                    },
+                }),
+            ),
+            NetworkChange::Ipv4 { uuid, config, .. } => ask(
+                &saved(uuid),
+                "set-network-ipv4",
+                json!({
+                    "automatic": config.automatic,
+                    "addresses": config.addresses,
+                    "gateway": config.gateway,
+                    "dns": config.dns,
+                }),
+            ),
+            NetworkChange::Ipv6 { uuid, config, .. } => ask(
+                &saved(uuid),
+                "set-network-ipv6",
+                json!({
+                    "method": match config.method {
+                        Ipv6Method::Automatic => "automatic",
+                        Ipv6Method::Manual => "manual",
+                        Ipv6Method::LinkLocal => "link-local",
+                        Ipv6Method::Disabled => "disabled",
+                    },
+                    "addresses": config.addresses,
+                    "gateway": config.gateway,
+                    "dns": config.dns,
+                }),
+            ),
+            NetworkChange::Dns { uuid, servers, .. } => ask(
+                &saved(uuid),
+                "set-network-dns",
+                json!({ "servers": servers }),
+            ),
             NetworkChange::Policy { uuid, patch, .. } => {
-                os_actions::configure_connection_policy_patch(uuid, patch)
+                ask(&saved(uuid), "set-network-policy", policy_arguments(patch))
             }
-            NetworkChange::Identity { uuid, identity, .. } => {
-                nm::configure_enterprise_identity(uuid, identity)
-            }
-            NetworkChange::Password { uuid, password, .. } => {
-                nm::set_wifi_profile_password(uuid, password)
-            }
-            NetworkChange::Connect { ssid, password } => {
-                os_actions::connect_wifi(ssid, password.as_deref().map(String::as_str))
-            }
-            NetworkChange::JoinHidden { ssid, password } => {
-                nm::connect_hidden_wifi(ssid, password.as_deref().map(String::as_str))
-            }
+            NetworkChange::Identity { uuid, identity, .. } => ask(
+                &saved(uuid),
+                "set-enterprise-identity",
+                json!({
+                    "identity": identity.identity,
+                    "ca_certificate": identity.ca_certificate,
+                }),
+            ),
+            NetworkChange::Password { uuid, password, .. } => ask(
+                &saved(uuid),
+                "set-wifi-password",
+                json!({ "password": password.as_str() }),
+            ),
+            NetworkChange::Connect {
+                ssid,
+                password: Some(password),
+            } => ask(
+                NETWORK,
+                "connect-wifi",
+                json!({ "network": ssid, "password": password.as_str() }),
+            ),
+            NetworkChange::Connect {
+                ssid,
+                password: None,
+            } => ask(NETWORK, "join-wifi", json!({ "network": ssid })),
+            NetworkChange::JoinHidden { ssid, password } => ask(
+                NETWORK,
+                "connect-hidden-wifi",
+                json!({
+                    "network": ssid,
+                    "password": password.as_deref().map(String::as_str),
+                }),
+            ),
             NetworkChange::Enterprise { config, password } => join_enterprise(config, password),
-            NetworkChange::Vpn { uuid, on, .. } => os_actions::set_vpn_connection_uuid(uuid, *on),
-            NetworkChange::VpnProfile { uuid, patch, .. } => nm::configure_vpn_profile(uuid, patch),
-            NetworkChange::VpnDelete { uuid, .. } => os_actions::delete_vpn_connection_uuid(uuid),
+            NetworkChange::Vpn { uuid, on, .. } => {
+                ask(VPN, "set-vpn", json!({ "profile": uuid, "on": on }))
+            }
+            NetworkChange::VpnProfile { uuid, patch, .. } => {
+                ask(&vpn_profile(uuid), "edit-vpn", vpn_arguments(patch))
+            }
+            NetworkChange::VpnDelete { uuid, .. } => {
+                ask(&vpn_profile(uuid), "forget-vpn", json!({}))
+            }
         }
     }
 

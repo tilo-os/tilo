@@ -35,7 +35,7 @@ pub mod model;
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_actions::{ApiError, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
@@ -169,20 +169,30 @@ impl Connectivity {
         }
     }
 
-    /// Make `change` on the worker, then read the device back.
+    /// Make `change` on the worker, then read the device back. Whoever asked
+    /// hears whether the device made it once it is read back, as the reading
+    /// shows it.
     fn start(&mut self, part: Part, action: &str, change: Change) -> Started {
         self.status(part).0.push(action.to_owned());
         let action = action.to_owned();
+        let (answer, answered) = tilo_actions::remote::pending();
         self.worker.run(move |device| {
             let result = device.change(&change);
+            let readings = Box::new(device.read());
+            answer.complete(
+                result
+                    .clone()
+                    .map(|()| ActionOutput::default())
+                    .map_err(ApiError::Failed),
+            );
             Landed::Changed {
                 part,
                 action,
                 result,
-                readings: Box::new(device.read()),
+                readings,
             }
         });
-        Started::Accepted
+        Started::Later(answered)
     }
 
     fn network(&mut self, action: NetworkAction) -> Result<Started, ApiError> {
@@ -261,6 +271,79 @@ impl Connectivity {
             NetworkAction::SetMobileRoaming { on } => Change::MobileRoaming(on),
             NetworkAction::SetAirplaneMode { on } => Change::Airplane(on),
             NetworkAction::ToggleAirplaneMode => Change::Airplane(!network.airplane_mode),
+            NetworkAction::SetNetworkIpv4 {
+                profile,
+                automatic,
+                addresses,
+                gateway,
+                dns,
+            } => Change::Ipv4 {
+                profile,
+                config: os_actions::IpConfiguration {
+                    automatic,
+                    addresses,
+                    gateway: given(gateway),
+                    dns,
+                },
+            },
+            NetworkAction::SetNetworkIpv6 {
+                profile,
+                method,
+                addresses,
+                gateway,
+                dns,
+            } => Change::Ipv6 {
+                profile,
+                config: os_actions::network_settings::Ipv6Configuration {
+                    method: ipv6_method(&method)?,
+                    addresses,
+                    gateway: given(gateway),
+                    dns,
+                },
+            },
+            NetworkAction::SetNetworkDns { profile, servers } => Change::Dns { profile, servers },
+            NetworkAction::SetNetworkPolicy {
+                profile,
+                metered,
+                mac_address,
+                proxy,
+                proxy_address,
+                browser_only,
+                priority,
+                hidden,
+            } => Change::Policy {
+                profile,
+                patch: os_actions::ConnectionPolicyPatch {
+                    metered: metered.as_deref().map(metered_policy).transpose()?,
+                    mac: mac_address.as_deref().map(mac_policy).transpose()?,
+                    proxy: proxy
+                        .as_deref()
+                        .map(|kind| proxy_configuration(kind, given(proxy_address), browser_only))
+                        .transpose()?,
+                    priority: priority
+                        .map(|priority| {
+                            i32::try_from(priority).map_err(|_| {
+                                ApiError::InvalidArguments(format!("{priority} is not a priority"))
+                            })
+                        })
+                        .transpose()?,
+                    hidden,
+                },
+            },
+            NetworkAction::SetEnterpriseIdentity {
+                profile,
+                identity,
+                ca_certificate,
+            } => Change::Identity {
+                profile,
+                identity: os_actions::network_settings::EnterpriseIdentity {
+                    identity,
+                    ca_certificate,
+                },
+            },
+            NetworkAction::SetWifiPassword { profile, password } => {
+                Change::WifiPassword { profile, password }
+            }
         };
         Ok(self.start(Part::Network, id, change))
     }
@@ -285,6 +368,29 @@ impl Connectivity {
             VpnAction::SetVpn { profile, on } => Change::Vpn { profile, on },
             VpnAction::ImportVpn { kind, name, text } => Change::ImportVpn { kind, name, text },
             VpnAction::ForgetVpn { profile } => Change::ForgetVpn { profile },
+            VpnAction::EditVpn {
+                profile,
+                name,
+                autoconnect,
+                all_traffic,
+                dns,
+                mtu,
+                endpoint,
+                allowed_ips,
+                keepalive,
+            } => Change::EditVpn {
+                profile,
+                patch: os_actions::network_settings::VpnProfilePatch {
+                    name,
+                    autoconnect,
+                    all_traffic,
+                    dns,
+                    mtu: mtu.map(|mtu| (mtu != 0).then_some(mtu)),
+                    endpoint,
+                    allowed_ips,
+                    keepalive: keepalive.map(|seconds| (seconds != 0).then_some(seconds)),
+                },
+            },
         };
         self.start(Part::Vpn, id, change)
     }
@@ -343,6 +449,74 @@ fn proxy(server: Option<String>) -> Result<Option<String>, ApiError> {
         Err(ApiError::InvalidArguments(format!(
             "{server} is not a proxy as host:port"
         )))
+    }
+}
+
+/// The IPv6 method `method` names.
+fn ipv6_method(method: &str) -> Result<os_actions::network_settings::Ipv6Method, ApiError> {
+    use os_actions::network_settings::Ipv6Method;
+    match method {
+        "automatic" => Ok(Ipv6Method::Automatic),
+        "manual" => Ok(Ipv6Method::Manual),
+        "link-local" => Ok(Ipv6Method::LinkLocal),
+        "disabled" => Ok(Ipv6Method::Disabled),
+        _ => Err(ApiError::InvalidArguments(format!(
+            "{method} is not an IPv6 method: automatic, manual, link-local or disabled"
+        ))),
+    }
+}
+
+/// Whether a network is metered, as `metered` names it.
+fn metered_policy(metered: &str) -> Result<os_actions::MeteredPolicy, ApiError> {
+    match metered {
+        "automatic" => Ok(os_actions::MeteredPolicy::Automatic),
+        "metered" => Ok(os_actions::MeteredPolicy::Metered),
+        "unmetered" => Ok(os_actions::MeteredPolicy::Unmetered),
+        _ => Err(ApiError::InvalidArguments(format!(
+            "{metered} is not automatic, metered or unmetered"
+        ))),
+    }
+}
+
+/// The hardware address a network is shown, as `mac` names it.
+fn mac_policy(mac: &str) -> Result<os_actions::MacPolicy, ApiError> {
+    match mac {
+        "permanent" => Ok(os_actions::MacPolicy::Permanent),
+        "random" => Ok(os_actions::MacPolicy::Random),
+        "stable" => Ok(os_actions::MacPolicy::Stable),
+        _ => Err(ApiError::InvalidArguments(format!(
+            "{mac} is not permanent, random or stable"
+        ))),
+    }
+}
+
+/// A network's proxy: none, the configuration at `address` (automatic), or
+/// the server `address` as host:port (manual).
+fn proxy_configuration(
+    kind: &str,
+    address: Option<String>,
+    browser_only: Option<bool>,
+) -> Result<os_actions::ProxyConfiguration, ApiError> {
+    let browser_only = browser_only.unwrap_or_default();
+    let needed = |address: Option<String>| {
+        address
+            .ok_or_else(|| ApiError::InvalidArguments(format!("a {kind} proxy needs its address")))
+    };
+    match kind {
+        "none" => Ok(os_actions::ProxyConfiguration::default()),
+        "automatic" => Ok(os_actions::ProxyConfiguration {
+            automatic_url: Some(needed(address)?),
+            manual: None,
+            browser_only,
+        }),
+        "manual" => Ok(os_actions::ProxyConfiguration {
+            automatic_url: None,
+            manual: proxy(Some(needed(address)?))?,
+            browser_only,
+        }),
+        _ => Err(ApiError::InvalidArguments(format!(
+            "{kind} is not a proxy: none, automatic or manual"
+        ))),
     }
 }
 
@@ -581,6 +755,16 @@ fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '
                 NetworkAction::FORGET_NETWORK,
                 [("profile", profile.id.clone().into())],
             );
+        for action in [
+            NetworkAction::SET_NETWORK_IPV4,
+            NetworkAction::SET_NETWORK_IPV6,
+            NetworkAction::SET_NETWORK_DNS,
+            NetworkAction::SET_NETWORK_POLICY,
+            NetworkAction::SET_ENTERPRISE_IDENTITY,
+            NetworkAction::SET_WIFI_PASSWORD,
+        ] {
+            bindings = bindings.bind(action, [("profile", profile.id.clone().into())]);
+        }
         if profile.proxy.is_some() {
             bindings = bindings.bind(
                 NetworkAction::SET_NETWORK_PROXY,
@@ -694,6 +878,10 @@ pub fn vpn_resource(vpn: &Vpn) -> ResourceSpec {
             )
             .bind(
                 VpnAction::FORGET_VPN,
+                [("profile", profile.id.clone().into())],
+            )
+            .bind(
+                VpnAction::EDIT_VPN,
                 [("profile", profile.id.clone().into())],
             );
         Some(

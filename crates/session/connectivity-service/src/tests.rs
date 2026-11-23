@@ -355,9 +355,18 @@ fn wifi_switches_and_joins_from_the_network_resource() {
     let started = service
         .invoke(NETWORK, "set-wifi", &arguments(json!({"on": false})))
         .expect("taken");
-    assert_eq!(started, Started::Accepted);
+    let Started::Later(answered) = started else {
+        panic!("a change is answered once the device made it: {started:?}");
+    };
     assert_eq!(read(&service, NETWORK)["pending"], json!(["set-wifi"]));
     service.settle();
+    assert!(
+        matches!(
+            answered.wait_timeout(std::time::Duration::from_secs(5)),
+            Ok(Some(Ok(_)))
+        ),
+        "whoever asked hears the change was made"
+    );
     let network = read(&service, NETWORK);
     assert_eq!(network["wifi"]["on"], json!(false));
     assert_eq!(network["pending"], json!([]));
