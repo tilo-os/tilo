@@ -12,7 +12,6 @@
 use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -93,7 +92,7 @@ fn act(socket: &Path, path: &str, args: &str) -> Result<(), String> {
     let line = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"tilo_do","arguments":{{"path":"{path}","args":{args}}}}}}}"#
     );
-    let mut stream = UnixStream::connect(socket).map_err(|error| {
+    let mut stream = tilo_socket::connect(socket).map_err(|error| {
         format!(
             "Tilo's daemon is not answering at {}: {error}",
             socket.display()

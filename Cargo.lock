@@ -12070,6 +12070,7 @@ dependencies = [
  "tempfile",
  "tilo-auth",
  "tilo-paths",
+ "tilo-socket",
  "workspace-hack",
  "zeroize",
 ]
