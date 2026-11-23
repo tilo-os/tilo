@@ -24,7 +24,7 @@ pub fn read_from(
 ) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
     let max_bytes: u64 = max_bytes.try_into().map_err(|_| invalid_bound())?;
-    let bound = max_bytes.checked_add(1).ok_or_else(invalid_bound)?;
+    let bound = max_bytes.saturating_add(1);
     let mut bytes = Vec::new();
     reader.take(bound).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max_bytes {
@@ -142,6 +142,10 @@ mod tests {
             io::ErrorKind::FileTooLarge
         );
         assert_eq!(non_empty.bytes_read, 1);
+
+        let mut max_bound = CountingReader::new(&b"abc"[..]);
+        assert_eq!(super::read_from(&mut max_bound, u64::MAX).unwrap(), b"abc");
+        assert_eq!(max_bound.bytes_read, 3);
 
         // A file that grows after its metadata reported a smaller size is still refused without
         // reading more than one byte past the limit.
