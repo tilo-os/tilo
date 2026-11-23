@@ -33,15 +33,13 @@ impl std::fmt::Display for InstallRefusal {
 }
 
 /// Whether `id` is an application id Flatpak can only read as one.
+///
+/// Differs from [`tilo_app_id::AppId::parse`] only by refusing a leading `-`,
+/// so an id can never be parsed as a `flatpak` command-line flag.
 #[must_use]
 pub fn valid_app_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 255
-        && !id.starts_with('-')
-        && id.contains('.')
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL.forbid_leading_hyphen();
+    GRAMMAR.matches(id)
 }
 
 /// The `flatpak` argument lists that install `app_id`, in order, given what
@@ -319,5 +317,37 @@ mod tests {
             ),
             Err(InstallRefusal::UntrustedUserSource)
         );
+    }
+
+    #[test]
+    fn flathub_app_ids_refuse_leading_hyphen_and_empty_segments() {
+        let longest = format!("a.{}", "b".repeat(253));
+        let too_long = format!("a.{}", "b".repeat(254));
+        for (id, expected) in [
+            ("org.gnome.Chess", true),
+            ("com.spotify.Client", true),
+            ("org.example.My_App-2", true),
+            (longest.as_str(), true),
+            (too_long.as_str(), false),
+            ("", false),
+            ("chess", false),
+            ("-org.gnome.Chess", false),
+            ("--all.flag", false),
+            ("--delete-data", false),
+            (".org.gnome", false),
+            ("org.gnome.", false),
+            ("org..Chess", false),
+            ("..", false),
+            ("org.x/../y", false),
+            ("org.example Chat", false),
+            ("org.example.n\u{f6}tes", false),
+        ] {
+            assert_eq!(valid_app_id(id), expected, "{id:?}");
+            assert_eq!(
+                uninstall_commands(id, Installation::User).is_ok(),
+                expected,
+                "{id:?}"
+            );
+        }
     }
 }
