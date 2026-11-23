@@ -92,9 +92,12 @@ impl TurnHistory {
                          as one run.",
                     )
                 };
+                let mut contract = tilo_actions::ActionContract::default();
+                // A turn's own: no person picks it from a list.
+                contract.set_audience(tilo_actions::contract::Audience::Agents);
                 CatalogueRow::for_action(
                     PROVIDER.to_owned(),
-                    CHAT.to_owned(),
+                    PROVIDER.to_owned(),
                     tilo_actions::ActionDescriptor {
                         did: None,
                         state: tilo_actions::ActionState::default(),
@@ -108,7 +111,7 @@ impl TurnHistory {
                         description: Some(description.to_owned()),
                         locus: tilo_actions::ExecutionLocus::ClientLocal,
                         kind: tilo_actions::OperationKind::Effect,
-                        contract: tilo_actions::ActionContract::default(),
+                        contract,
                         input: tilo_actions::InputSpec::None,
                         params: Vec::new(),
                         view: None,
