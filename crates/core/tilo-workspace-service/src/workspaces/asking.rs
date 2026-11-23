@@ -259,7 +259,7 @@ impl Workspaces {
 
     /// Answer `request`, a person's `<record>#resolve`, as `caller`: its receipt once the call
     /// it answers is admitted again or ended.
-    pub(crate) fn resolve_asked(
+    pub fn resolve_asked(
         &self,
         caller: &Caller,
         request: &InvokeRequest,

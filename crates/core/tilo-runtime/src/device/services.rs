@@ -122,6 +122,9 @@ pub struct Daemon {
     tickets: Arc<Tickets>,
     /// Every invocation this device was asked for, however it was asked.
     invocations: Arc<Invocations>,
+    /// The calls of the device's dispatch that wait for their person's yes, each as its asked
+    /// record in the one store the workspaces here keep theirs in too.
+    asked: Arc<super::asked::DeviceAsked>,
     /// The device this daemon is, as the API it serves locally acts.
     key: SigningKey,
     cert: DeviceCert,
@@ -768,6 +771,12 @@ impl Daemon {
             broker.state().serve_invocations(Arc::clone(&invocations));
         }
         workspaces.serve_invocations(Arc::clone(&invocations));
+        stage("reading the calls that wait for the person");
+        let asked = super::asked::DeviceAsked::new(
+            asked_store(&workspaces)?,
+            Arc::clone(&invocations),
+            admits_again(&broker, &workspaces, &actor),
+        );
         // An action an agent makes for the person, which asks for
         // confirmation, is put to them in the runtime's native prompt.
         // Elsewhere nobody here answers, and such an action is refused.
@@ -852,6 +861,7 @@ impl Daemon {
             _kept: kept,
             tickets,
             invocations,
+            asked,
             key: identity.key.clone(),
             cert: identity.cert,
             account: Mutex::new(None),
@@ -868,6 +878,117 @@ impl Daemon {
         }
         Ok(daemon)
     }
+}
+
+/// What admits the run that asked a call which waited across the daemon's restart afresh: an
+/// agent's, for the same agent under the key this device keeps for it, on the person's admission
+/// here. Each call of the run is checked as every call is.
+fn admits_again(
+    broker: &BrokerHandle,
+    workspaces: &Arc<ServiceWorkspaces>,
+    actor: &str,
+) -> super::asked::Admits {
+    let (broker, workspaces, actor) = (
+        broker.app_action_broker(),
+        Arc::clone(workspaces),
+        actor.to_owned(),
+    );
+    Box::new(move |run| {
+        let super::asked::Run::Agent {
+            workspace,
+            agent,
+            name,
+        } = run;
+        let broker = broker
+            .as_ref()
+            .ok_or("the action broker is unavailable")?;
+        let (admitting, named, actor) =
+            (Arc::clone(&workspaces), workspace.clone(), actor.clone());
+        let admission =
+            block_on_owned(async move { admitting.admit_execution(&named, &actor).await })?;
+        let caller = admission.caller();
+        let (Some(person), Some(workspace)) = (caller.acting().person_id(), caller.workspace())
+        else {
+            return Err("the admitted run names no person's workspace".to_owned());
+        };
+        let (signer, agent) = this_device()
+            .and_then(|keys| AgentSigner::grant(keys, workspace, (agent, name), person))
+            .map_err(|error| error.to_string())?;
+        admission
+            .check(workspaces.copies())
+            .map_err(|refusal| refusal.to_string())?;
+        let provider: Arc<dyn ActionProvider + Send + Sync> = Arc::new(AdmittedAgain {
+            provider: Arc::new(Signed::new(broker.device_host(), Some(signer))),
+            _admission: admission,
+        });
+        Ok((provider, agent))
+    })
+}
+
+/// A run admitted again for a call that waited across the daemon's restart, kept for as long as
+/// its call is read.
+struct AdmittedAgain {
+    provider: Arc<dyn ActionProvider + Send + Sync>,
+    _admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
+}
+
+impl ActionProvider for AdmittedAgain {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        self.provider.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.provider.invoke(caller, request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        self.provider.observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        self.provider.next_change(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        self.provider.cancel(caller, id)
+    }
+}
+
+/// The one store of the calls here that wait for a person's yes: each kept in its workspace's
+/// record of its asked calls, so what waited before the daemon started again waits again, and
+/// answered through the workspaces here, which write the grant an approve gives.
+fn asked_store(
+    workspaces: &Arc<ServiceWorkspaces>,
+) -> io::Result<Arc<tilo_actions::remote::asked::AskedStore>> {
+    let asked = Arc::new(tilo_actions::remote::asked::AskedStore::default());
+    let copies = workspaces.copies().clone();
+    let runtime = tilo_rt::app().handle().clone();
+    asked.grants_through(copies.asked_grants(runtime.clone()));
+    let kept = {
+        let copies = copies.clone();
+        block_on_owned(async move { copies.asked_kept().await })
+    };
+    let keeping = {
+        let _entered = runtime.enter();
+        copies.asked_keeping()
+    };
+    asked
+        .keep_through(keeping, kept)
+        .map_err(io::Error::other)?;
+    copies.keep_asked_in(&asked);
+    Ok(asked)
 }
 
 /// `person`'s own workspace, at the id their key names.
@@ -1270,6 +1391,7 @@ impl Daemon {
             policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
             tickets: Arc::clone(&self.tickets),
             invocations: Arc::clone(&self.invocations),
+            asked: Arc::clone(&self.asked),
             who_is_here: Arc::clone(&self.who_is_here),
         })
     }
@@ -1286,6 +1408,7 @@ pub(super) struct PersonDispatch {
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     tickets: Arc<Tickets>,
     invocations: Arc<Invocations>,
+    asked: Arc<super::asked::DeviceAsked>,
     who_is_here: Arc<who_is_here::WhoIsHere>,
 }
 
@@ -1324,6 +1447,7 @@ impl PersonDispatch {
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
+            asked: Some(Arc::clone(&self.asked)),
         })
     }
 
@@ -1396,6 +1520,7 @@ impl Daemon {
             // another device in ([`RuntimeActionProvider::is_the_person`]).
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
+            asked: Some(Arc::clone(&self.asked)),
         })
     }
 }
@@ -2043,6 +2168,9 @@ pub struct RuntimeActionProvider {
     /// The device's record of every invocation it was asked for: what following, waiting on and
     /// stopping one asks, wherever the call came in.
     invocations: Arc<Invocations>,
+    /// Where an agent's call refused for want of its person's yes waits for them, and where
+    /// their answer is admitted: `None` for a host that keeps none, whose such calls are refused.
+    asked: Option<Arc<super::asked::DeviceAsked>>,
 }
 
 struct AdmittedRuntimeSession {
@@ -2264,6 +2392,7 @@ impl RuntimeActionProvider {
             })),
             tickets: self.tickets.clone(),
             invocations: Arc::clone(&self.invocations),
+            asked: self.asked.clone(),
         };
         Ok((run, caller))
     }
@@ -2686,9 +2815,25 @@ impl ActionProvider for RuntimeActionProvider {
         if let Some(answered) = self.invocations.answer(caller, &request, &origin_writes) {
             return answered;
         }
+        // An approve only the device hands back: one a caller writes into its own call is
+        // refused whole, nothing of it run.
+        if let Err(forged) = tilo_actions::remote::asked::admit_frame(
+            self.asked.as_ref().map(|asked| asked.store()),
+            &request,
+        ) {
+            return Pending::ready(Err(forged));
+        }
         if let Some(session) = &self.session {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
+            }
+            // A person's answer to a question that waits for them, as the run admitted them: an
+            // agent answers nobody's, its own least.
+            if tilo_actions::remote::asked::is_resolve(&request.target) {
+                return self
+                    .workspaces
+                    .copies()
+                    .resolve_asked(session.acting(), &request);
             }
             // What an agent asks shown goes on its person's layout, where their devices show it.
             if session.agent.is_some()
@@ -2704,6 +2849,19 @@ impl ActionProvider for RuntimeActionProvider {
                 )
             {
                 return shown;
+            }
+            // An agent's call waits for its person's yes as its asked record; the person's own
+            // is answered where they pressed it.
+            if let (Some(asked), Some(agent)) = (&self.asked, &session.agent)
+                && let (Some(id), Some(name)) = (agent.acting().agent_id(), agent.agent_called())
+            {
+                let run = super::asked::Run::Agent {
+                    workspace: self.workspace.clone(),
+                    agent: id.to_owned(),
+                    name: name.to_owned(),
+                };
+                let route = (Arc::clone(&session.provider), agent.clone());
+                return asked.send(run, caller, route, request);
             }
             let runs_as = session.acting().clone();
             let invocation = request.invocation;
@@ -3381,6 +3539,7 @@ pub(super) fn action_provider(
         session: None,
         tickets: None,
         invocations: Arc::clone(invocations),
+        asked: None,
     })
 }
 
