@@ -212,7 +212,9 @@ impl Invocations {
             recorded.ended_ms = Some(tilo_clock::unix_now_ms());
         }
         recorded.state = state;
-        Some(recorded.clone())
+        let recorded = recorded.clone();
+        drop(kept);
+        Some(recorded)
     }
 
     /// What resolves when `id` next changes, at the provider it runs at.
