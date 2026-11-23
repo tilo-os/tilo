@@ -109,11 +109,14 @@ impl ThisDevice {
     }
 
     /// Return once a person's certificate names this device's key, so the daemon opens the
-    /// person's workspaces on it.
-    pub(crate) fn until_claimed(&self) {
+    /// person's workspaces on it: `true` then, and `false` when the daemon was told to stop first.
+    pub(crate) fn until_claimed(&self, stop: &super::serve::Stop) -> bool {
         while !self.claimed() {
-            std::thread::sleep(LOOKING);
+            if stop.wait(LOOKING) {
+                return false;
+            }
         }
+        true
     }
 }
 

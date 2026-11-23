@@ -903,3 +903,95 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     assert_eq!(who(ADA)["person"], Value::Null);
     assert_eq!(status(ADA)["workspace"], "");
 }
+
+/// An app that is its own computer's daemon runs it in its process, and may stop it and start it
+/// again there: each start answers on its native endpoint at once, and each stop closes it and
+/// lets go of the device, so the next start takes the device again.
+#[test]
+fn a_daemon_in_this_process_stops_and_starts_again_on_its_device() {
+    use io::{BufRead as _, Write as _};
+    use std::os::unix::fs::DirBuilderExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let private = |path: &std::path::Path| {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .unwrap();
+    };
+    let (home, run, profile, credentials) = (
+        dir.path().join("home"),
+        dir.path().join("run"),
+        dir.path().join("profile"),
+        dir.path().join("credentials"),
+    );
+    for path in [&home, &run, &profile, &credentials] {
+        private(path);
+    }
+    // A device handed a ticket it cannot spend waits for its person, answering its own actions.
+    std::fs::write(
+        credentials.join(crate::device::unclaimed::TICKET_CREDENTIAL),
+        "not a ticket",
+    )
+    .unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", &home)
+        .set("XDG_RUNTIME_DIR", &run)
+        .set("TILO_IDENTITY_ROOT", dir.path().join("identity"))
+        .set("CREDENTIALS_DIRECTORY", &credentials)
+        .remove("TILO_RUNTIME_PROFILE");
+    for start in ["first", "again"] {
+        let running = super::Running::start(&profile).unwrap();
+        let socket = running.native_socket().to_owned();
+        let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = io::BufReader::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        writeln!(
+            writer,
+            "{}",
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "tilo_do", "arguments": {"path": "devices#info"}}})
+        )
+        .unwrap();
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("the device answers at once");
+        let info: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_ne!(info["result"]["isError"], true, "{start} start: {info}");
+        // `tilo status` asks the same endpoint what the device holds, as a connection's first
+        // line too.
+        let status = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        status
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        writeln!(
+            &status,
+            "{}",
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": tilo_api::daemon::PEER_STATUS})
+        )
+        .unwrap();
+        let mut line = String::new();
+        io::BufReader::new(&status)
+            .read_line(&mut line)
+            .expect("the device says what it holds");
+        let peer: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            peer["result"]["pid"],
+            std::process::id(),
+            "{start} start: {peer}"
+        );
+        running.stop().unwrap();
+        assert!(
+            !socket.exists(),
+            "the {start} start's endpoint is gone once it stopped"
+        );
+        assert!(
+            std::os::unix::net::UnixStream::connect(&socket).is_err(),
+            "nothing answers there after the {start} start stopped"
+        );
+    }
+}

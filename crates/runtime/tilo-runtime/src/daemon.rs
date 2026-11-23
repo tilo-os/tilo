@@ -132,45 +132,151 @@ fn running(profile: &Path) -> io::Result<Status> {
     }
 }
 
-/// Start this computer's daemon over `profile` and serve it: the native endpoint the apps and
-/// `--connect` reach, and the device as [`crate::device::hold`] serves it. The executable
-/// prepares its profile environment before entering this function; reusable serving code never
-/// mutates it.
+/// Start this computer's daemon over `profile` and serve it until it is told to stop
+/// ([`Running`]). The executable prepares its profile environment before entering this function;
+/// reusable serving code never mutates it.
+///
+/// # Errors
+/// The daemon could not start, or it could not serve.
 pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
-    validate_profile(profile)?;
-    let device = crate::device::unclaimed::ThisDevice::lock()?;
-    // Who each connection is: root and this daemon's own account act as the device, and under
-    // the system unit the people signed in act as themselves.
-    tilo_api::daemon::admission::install(tilo_api::daemon::admission::Admission::new(
-        rustix::process::geteuid().as_raw(),
-        tilo_api::daemon::system_daemon(),
-    ));
-    // The native endpoint answers from boot, before anyone's certificate names this device and
-    // while its person's services start: the device's own actions first, the person's once they
-    // run. This process has the device's lock, so only it removes a stale endpoint.
-    let path = native_socket(profile)?;
-    let listener = tilo_files::native::private::bind_socket(&path)?;
-    if tilo_api::daemon::system_daemon() {
-        use std::os::unix::fs::PermissionsExt as _;
-        // Every account reaches it; the admission decides what each is answered.
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))?;
+    Running::start_serving(profile, dev)?.wait()
+}
+
+/// This computer's daemon running in this process: the native endpoint the apps and `--connect`
+/// reach, and the device as [`crate::device::hold`] serves it. The `tilo-runtime` executable runs
+/// one for its life; an app that is its own computer's daemon (Android's) runs one beside its
+/// windows, and may stop it and start it again.
+pub struct Running {
+    native: PathBuf,
+    stop: crate::device::serve::Stop,
+    /// A duplicate of the native endpoint's listener: shutting it down ends its thread's accept.
+    listener: UnixListener,
+    accepting: Option<std::thread::JoinHandle<()>>,
+    serving: Option<std::thread::JoinHandle<io::Result<()>>>,
+}
+
+impl Running {
+    /// Start the daemon over `profile`, returning once its native endpoint is bound: it answers
+    /// the device's own actions at once, and its person's once their services run, which they
+    /// start on a thread of the daemon's.
+    ///
+    /// # Errors
+    /// The profile is not a private absolute directory, another daemon has this device, or the
+    /// native endpoint cannot be bound.
+    pub fn start(profile: &Path) -> io::Result<Self> {
+        Self::start_serving(profile, false)
     }
-    let native = Arc::new(Native::new(
-        device.answers(),
-        crate::seats::peer_uid,
-        tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw()),
-    ));
-    {
-        let native = Arc::clone(&native);
-        std::thread::Builder::new()
-            .name("tilo-native".into())
-            .spawn(move || {
-                if let Err(error) = native.accept(&listener) {
-                    tracing::error!(%error, "the native endpoint stopped taking connections");
-                }
-            })?;
+
+    /// [`Self::start`], serving builds under development too when `dev`.
+    fn start_serving(profile: &Path, dev: bool) -> io::Result<Self> {
+        validate_profile(profile)?;
+        let device = crate::device::unclaimed::ThisDevice::lock()?;
+        // Who each connection is: root and this daemon's own account act as the device, and
+        // under the system unit the people signed in act as themselves.
+        tilo_api::daemon::admission::install(tilo_api::daemon::admission::Admission::new(
+            rustix::process::geteuid().as_raw(),
+            tilo_api::daemon::system_daemon(),
+        ));
+        // The native endpoint answers from boot, before anyone's certificate names this device
+        // and while its person's services start: the device's own actions first, the person's
+        // once they run. This process has the device's lock, so only it removes a stale endpoint.
+        let path = native_socket(profile)?;
+        let listener = tilo_files::native::private::bind_socket(&path)?;
+        if tilo_api::daemon::system_daemon() {
+            use std::os::unix::fs::PermissionsExt as _;
+            // Every account reaches it; the admission decides what each is answered.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))?;
+        }
+        let native = Arc::new(Native::new(
+            device.answers(),
+            crate::seats::peer_uid,
+            tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw()),
+        ));
+        let accepting = {
+            let native = Arc::clone(&native);
+            let listener = listener.try_clone()?;
+            std::thread::Builder::new()
+                .name("tilo-native".into())
+                .spawn(move || {
+                    if let Err(error) = native.accept(&listener) {
+                        tracing::debug!(%error, "the native endpoint stopped taking connections");
+                    }
+                })?
+        };
+        tracing::info!("answering this device's actions on its native endpoint");
+        let stop = crate::device::serve::Stop::default();
+        let serving = {
+            let (profile, stop) = (profile.to_owned(), stop.clone());
+            std::thread::Builder::new()
+                .name("tilo-daemon".into())
+                .spawn(move || serve_device(&profile, dev, device, &native, &stop))?
+        };
+        Ok(Self {
+            native: path,
+            stop,
+            listener,
+            accepting: Some(accepting),
+            serving: Some(serving),
+        })
     }
-    tracing::info!("answering this device's actions on its native endpoint");
+
+    /// Where the daemon's native endpoint listens.
+    #[must_use]
+    pub fn native_socket(&self) -> &Path {
+        &self.native
+    }
+
+    /// Stop serving, and return once the daemon let go of the device: its endpoints are closed
+    /// and the device's lock is free, so a daemon may start on it again.
+    ///
+    /// # Errors
+    /// The daemon could not serve.
+    pub fn stop(self) -> io::Result<()> {
+        self.stop.tell();
+        self.wait()
+    }
+
+    /// Serve until the daemon is told to stop, by [`Self::stop`] or a signal, or another takes
+    /// the device over.
+    fn wait(mut self) -> io::Result<()> {
+        let served = self.serving.take().map_or(Ok(()), |serving| {
+            serving
+                .join()
+                .unwrap_or_else(|_| Err(io::Error::other("the daemon's thread panicked")))
+        });
+        self.close();
+        served
+    }
+
+    /// Close the native endpoint and wait for its thread.
+    fn close(&mut self) {
+        let _ = rustix::net::shutdown(&self.listener, rustix::net::Shutdown::Both);
+        if let Some(accepting) = self.accepting.take() {
+            let _ = accepting.join();
+        }
+        let _ = std::fs::remove_file(&self.native);
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(serving) = self.serving.take() {
+            self.stop.tell();
+            let _ = serving.join();
+        }
+        self.close();
+    }
+}
+
+/// Serve `device` over `profile` with `native` as its endpoint until `stop` is told: its person
+/// found or awaited, their services started, and the device held.
+fn serve_device(
+    profile: &Path,
+    dev: bool,
+    device: crate::device::unclaimed::ThisDevice,
+    native: &Native,
+    stop: &crate::device::serve::Stop,
+) -> io::Result<()> {
     // Before a person's certificate names this computer's key, a computer of one account's
     // founds its person; Tilo OS's device, and one handed a ticket, are served with the key alone,
     // the ticket spent on the way, and the person's services start once a certificate names it.
@@ -179,7 +285,9 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
             crate::device::services::found_a_person()?;
         } else {
             device.spend_handed_ticket();
-            device.until_claimed();
+            if !device.until_claimed(stop) {
+                return Ok(());
+            }
         }
     }
     let locked = device.into_lock();
@@ -203,12 +311,8 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
         other_devices: session.other_devices(),
     };
     native.serve_the_person(endpoint);
-    // The device is served until the daemon is told to stop, or another takes the device over:
-    // the process ends then, its apps' connections with it.
-    let held = crate::device::hold(&session);
-    // Removed while the daemon still holds the device's lock: a daemon starting after it binds
-    // its own endpoint there.
-    let _ = std::fs::remove_file(&path);
+    // The device is served until the daemon is told to stop, or another takes the device over.
+    let held = crate::device::hold(&session, stop);
     drop(session);
     held.map_err(|error| io::Error::other(format!("{error:#}")))?;
     Ok(())
@@ -572,6 +676,15 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     let answer = |value: Value| {
         if let Some(answer) = seated.and_then(|seated| seated.seats.answer(seated.seat, &value)) {
             return Answer::InOrder(Box::pin(async move { Ok(Some(answer)) }));
+        }
+        if value.get("method").and_then(Value::as_str) == Some(tilo_api::daemon::PEER_STATUS) {
+            // Asked by `tilo status`: what this device holds, answered beside the MCP methods.
+            let id = value.get("id").cloned().unwrap_or(Value::Null);
+            return Answer::InOrder(Box::pin(async move {
+                Ok(Some(
+                    json!({"jsonrpc": "2.0", "id": id, "result": crate::device::status().await}),
+                ))
+            }));
         }
         let native = value.get("native").and_then(Value::as_str);
         Answer::InOrder(match native {

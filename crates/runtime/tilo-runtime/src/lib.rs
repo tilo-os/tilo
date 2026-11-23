@@ -19,7 +19,7 @@ use std::{
 mod apps;
 pub mod cli;
 #[cfg(unix)]
-mod daemon;
+pub mod daemon;
 #[cfg(windows)]
 #[path = "daemon_windows.rs"]
 mod daemon;

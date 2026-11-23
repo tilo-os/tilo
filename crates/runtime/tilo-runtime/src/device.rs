@@ -59,6 +59,7 @@ use std::time::Duration;
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
+use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_session_client::device::{Device as Entered, DeviceActions};
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed};
@@ -86,7 +87,7 @@ const CLOSING: Duration = Duration::from_secs(5);
 ///
 /// # Errors
 /// The device's sockets cannot be listened at.
-pub(crate) fn hold(daemon: &Arc<services::Daemon>) -> Result<ExitCode> {
+pub(crate) fn hold(daemon: &Arc<services::Daemon>, stop: &serve::Stop) -> Result<ExitCode> {
     let device = daemon
         .login()
         .cloned()
@@ -106,7 +107,35 @@ pub(crate) fn hold(daemon: &Arc<services::Daemon>) -> Result<ExitCode> {
         login,
     ));
     let home = tilo_paths::home().ok_or_else(|| anyhow::anyhow!("HOME is missing"))?;
-    serve::hold(daemon.place(), shared, home)
+    *HELD.lock_recover() = Some(Arc::clone(&shared));
+    let held = serve::hold(daemon.place(), shared, home, stop);
+    HELD.lock_recover().take();
+    held
+}
+
+/// The device this process holds, while it holds one: what its native endpoint answers
+/// [`PEER_STATUS`] about.
+static HELD: std::sync::Mutex<Option<Arc<Shared<LoggedIn>>>> = std::sync::Mutex::new(None);
+
+/// This process's answer to [`PEER_STATUS`]: the held device's, or, before its person's services
+/// run, that it has none yet.
+pub(crate) async fn status() -> Value {
+    let held = HELD.lock_recover().clone();
+    match held {
+        Some(shared) => peer_status(&shared).await,
+        None => json!({
+            "pid": std::process::id(),
+            "device": null,
+            "person": null,
+            "host": null,
+            "session": "starting",
+            "not_in": "this device's person's services are not running yet",
+            "mounted": [],
+            "workspaces": [],
+            "workspaces_complete": false,
+            "failed": [],
+        }),
+    }
 }
 
 /// This device in the workspace: the one session every connection shares.
@@ -570,7 +599,7 @@ pub(crate) async fn peer_status<E: Enter>(shared: &Shared<E>) -> Value {
         .as_ref()
         .is_some_and(|session| session.device.is_live());
     drop(session);
-    let (mut mounted, failed, workspaces, complete) = match serve::PEER.get() {
+    let (mut mounted, failed, workspaces, complete) = match serve::peer() {
         Some(peer) => {
             let (workspaces, complete) = peer.workspaces().await;
             (peer.mounted().await, peer.failures(), workspaces, complete)

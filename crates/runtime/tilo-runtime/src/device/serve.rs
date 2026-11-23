@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
@@ -142,6 +143,7 @@ pub(crate) fn hold<E: Enter>(
     place: &DaemonPlace,
     shared: Arc<Shared<E>>,
     home: PathBuf,
+    stop: &Stop,
 ) -> Result<ExitCode> {
     let device_dir = place.device_dir();
     held(
@@ -151,7 +153,51 @@ pub(crate) fn hold<E: Enter>(
             home,
             state: device_dir,
         },
+        stop,
     )
+}
+
+/// What tells a daemon running in this process to stop ([`crate::daemon::Running::stop`]): heard
+/// by its holder's loop, and by its wait for a person to claim the device.
+#[derive(Clone, Default)]
+pub(crate) struct Stop(Arc<StopState>);
+
+#[derive(Default)]
+struct StopState {
+    told: std::sync::Mutex<bool>,
+    waiting: std::sync::Condvar,
+    heard: tokio::sync::Notify,
+}
+
+impl Stop {
+    /// Tell the daemon to stop.
+    pub(crate) fn tell(&self) {
+        *self.0.told.lock_recover() = true;
+        self.0.waiting.notify_all();
+        self.0.heard.notify_waiters();
+    }
+
+    /// Wait up to `within` for the daemon to be told to stop: whether it was.
+    pub(crate) fn wait(&self, within: Duration) -> bool {
+        let told = self.0.told.lock_recover();
+        *self
+            .0
+            .waiting
+            .wait_timeout_while(told, within, |told| !*told)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+    }
+
+    /// Return once the daemon is told to stop.
+    async fn heard(&self) {
+        loop {
+            let heard = self.0.heard.notified();
+            if *self.0.told.lock_recover() {
+                return;
+            }
+            heard.await;
+        }
+    }
 }
 
 /// How long a holder holds, and what else it does.
@@ -180,7 +226,7 @@ fn hold_for<E: Enter>(
         tracing::error!("this daemon ends: another daemon of this device keeps it");
         return Ok(ExitCode::SUCCESS);
     };
-    held(place, shared, holding)
+    held(place, shared, holding, &Stop::default())
 }
 
 /// [`hold`], holding as `holding` says, while the device's lock is held.
@@ -188,6 +234,7 @@ fn held<E: Enter>(
     place: &DaemonPlace,
     shared: Arc<Shared<E>>,
     holding: Holding,
+    stop: &Stop,
 ) -> Result<ExitCode> {
     say_panics();
     trim_log();
@@ -198,7 +245,7 @@ fn held<E: Enter>(
     tilo_rt::stall::heartbeat(runtime.handle());
     runtime.spawn(beating());
     let watching = watch_workers();
-    let served = runtime.block_on(serve_held(place, shared, holding));
+    let served = runtime.block_on(serve_held(place, shared, holding, stop));
     // A step that walks a whole folder tree — a merge of a tree record, a save of one — runs on
     // its thread to its end and cannot be interrupted. The process ends now instead of waiting
     // for it: the socket is gone, the folders were unmounted (or given up on), and the trees
@@ -207,7 +254,8 @@ fn held<E: Enter>(
     drop(watching);
     // The next holder opens the stores as soon as this process lets go of the lock, which is
     // before this process ends: let go of them first, or it finds them still open.
-    if let Some(peer) = PEER.get() {
+    let peer = PEER.lock_recover().take();
+    if let Some(peer) = peer {
         let releasing = bridge_runtime()?;
         // The timer is made inside the runtime: one made outside it has no clock to tick on.
         if releasing
@@ -285,6 +333,7 @@ async fn serve_held<E: Enter>(
     place: &DaemonPlace,
     shared: Arc<Shared<E>>,
     holding: Holding,
+    stop: &Stop,
 ) -> Result<()> {
     // Replaces a socket left by a holder that ended without removing it.
     let listener = tilo_files::native::private::bind_socket(place.socket())
@@ -330,13 +379,14 @@ async fn serve_held<E: Enter>(
                     .to_owned();
             },
             Some(signal) = ended.recv() => break format!("it was told to stop ({signal})"),
+            () = stop.heard() => break "it was told to stop".to_owned(),
         }
     };
     tracing::error!("this holder ends: {why}");
     // No connection from here on: the socket is shut down rather than left queuing clients that
     // would be told a holder is there by the kernel and wait in vain for it.
     accepting.stop();
-    if !replaced && let Some(peer) = PEER.get() {
+    if !replaced && let Some(peer) = peer() {
         // Unmounting and keeping the trees wait for the mounts' and trees' own steps, which
         // cannot be interrupted; both are bounded, so a stop ends inside the unit's timeout.
         peer.stop(STOPPING).await;
@@ -727,8 +777,13 @@ fn ending(within: Duration) -> Result<tokio::sync::mpsc::UnboundedReceiver<&'sta
     Ok(ended)
 }
 
-/// The peer this holder runs, once it does.
-pub(crate) static PEER: std::sync::OnceLock<Arc<super::peer::Peer>> = std::sync::OnceLock::new();
+/// The peer this holder runs, once it does, until it ends.
+static PEER: std::sync::Mutex<Option<Arc<super::peer::Peer>>> = std::sync::Mutex::new(None);
+
+/// The peer this process's holder runs, while it runs one.
+pub(crate) fn peer() -> Option<Arc<super::peer::Peer>> {
+    PEER.lock_recover().clone()
+}
 /// Why this holder's device is not in the workspace, while it is not.
 pub(crate) static NOT_IN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -786,7 +841,7 @@ async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathB
             return;
         }
     };
-    let _ = PEER.set(Arc::clone(&peer));
+    *PEER.lock_recover() = Some(Arc::clone(&peer));
     let mut shown: Option<Arc<super::Session>> = None;
     // What the host sends this session: the person's workspaces as they are
     // now, and a wake when one arrives.
