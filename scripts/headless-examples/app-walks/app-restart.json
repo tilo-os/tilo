@@ -34,11 +34,6 @@
           "press": "New folder"
         },
         {
-          "wait_for": {
-            "shown": "Name of the new folder"
-          }
-        },
-        {
           "type": "Walks"
         },
         {

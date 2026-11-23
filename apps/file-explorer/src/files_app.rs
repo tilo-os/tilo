@@ -177,6 +177,15 @@ const STATE_SURFACE_LOCATION_CHARS: usize = 36;
 const MAX_EAGER_ENTRY_RESOURCES: usize = 128;
 const MAX_ANSWERED_ENTRIES: usize = 64;
 
+/// A new folder's name typed before its row has the field: the keyboard is the person's from the
+/// press, so what they type at once is kept for the field that opens, never read as a row's first
+/// letters. `commit` is Enter pressed before the field came.
+#[derive(Default)]
+struct NamingAhead {
+    typed: String,
+    commit: bool,
+}
+
 enum OpFollowUp {
     NewFolder,
     Rename,
@@ -472,6 +481,8 @@ pub struct FilesState {
     renaming: Option<usize>,
     rename_buffer: String,
     rename_seed_pending: bool,
+    /// What the person typed for a new folder's name before its row took the field.
+    naming_ahead: Option<NamingAhead>,
     rename_input: TextInput,
     rename_rect: Rc<Cell<Option<vello::kurbo::Rect>>>,
     rename_paint: ui::own_paint::OwnPaint,
@@ -806,6 +817,7 @@ impl FileExplorerWidget {
             renaming: None,
             rename_buffer: String::new(),
             rename_seed_pending: false,
+            naming_ahead: None,
             rename_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Name)
                 .with_id("files.rename_input")
@@ -1027,9 +1039,24 @@ impl FilesState {
                         self.begin_rename();
                         self.rename_input
                             .set_accessible_name(t("files-tree-new-folder-name"));
+                        // The name typed before the row took the field is the one it opens with,
+                        // and Enter pressed before it came makes it now.
+                        if let Some(ahead) = self.naming_ahead.take() {
+                            if !ahead.typed.is_empty() {
+                                self.rename_buffer = ahead.typed;
+                                self.rename_seed_pending = true;
+                                self.rename_select_pending = false;
+                            }
+                            if ahead.commit {
+                                self.commit_rename();
+                            }
+                        }
+                    } else {
+                        self.naming_ahead = None;
                     }
                 }
                 Some(error) => {
+                    self.naming_ahead = None;
                     self.notify_failure(t("files-new-folder-failed-title"), &error, None);
                 }
             },
@@ -3937,6 +3964,9 @@ impl FilesState {
     }
 
     fn apply_new_folder(&mut self) -> bool {
+        // The name is the person's from the press: what they type before the row takes the field
+        // waits for it ([`NamingAhead`]) instead of choosing rows.
+        self.naming_ahead = Some(NamingAhead::default());
         self.queue(
             crate::file_ops::FileOp::NewFolder {
                 parent: self.current_path.display().to_string(),
@@ -6433,6 +6463,44 @@ impl FilesState {
         }
         if self.renaming.is_some() {
             return false;
+        }
+        // A new folder whose row has not taken the field yet: the name typed now is kept for it.
+        // With its making no longer waited on (the device refused or took it another way), the
+        // keys are the list's again.
+        let naming_ahead = self.naming_ahead.is_some()
+            && self
+                .awaiting_ops
+                .iter()
+                .any(|(_, follow)| matches!(follow, OpFollowUp::NewFolder));
+        if naming_ahead {
+            let mut kept = true;
+            match &ke.logical_key {
+                Key::Character(s) if !s.chars().any(char::is_control) => {
+                    if let Some(ahead) = &mut self.naming_ahead {
+                        ahead.typed.push_str(s);
+                    }
+                }
+                Key::Named(NamedKey::Space) => {
+                    if let Some(ahead) = &mut self.naming_ahead {
+                        ahead.typed.push(' ');
+                    }
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(ahead) = &mut self.naming_ahead {
+                        ahead.typed.pop();
+                    }
+                }
+                Key::Named(NamedKey::Enter) => {
+                    if let Some(ahead) = &mut self.naming_ahead {
+                        ahead.commit = true;
+                    }
+                }
+                Key::Named(NamedKey::Escape) => self.naming_ahead = None,
+                _ => kept = false,
+            }
+            if kept {
+                return true;
+            }
         }
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();

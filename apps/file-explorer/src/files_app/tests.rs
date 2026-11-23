@@ -2194,7 +2194,34 @@ mod command_path_tests {
         new_folder_creates_the_folder_and_opens_inline_rename();
         new_from_template_creates_the_file_and_opens_rename();
         new_folders_name_typed_in_a_burst_keeps_every_character();
+        a_new_folders_name_typed_before_its_field_opens_is_kept();
         super::headless_f2_renames_fixture_without_opening_a_file();
+    }
+
+    fn a_new_folders_name_typed_before_its_field_opens_is_kept() {
+        // The press has happened and the row's field is on its way: the person types the name at
+        // once, and Enter with it. None of it may read as choosing a row.
+        let widget = FileExplorerWidget::new();
+        widget.state().naming_ahead = Some(super::NamingAhead::default());
+        widget.state().awaiting_ops.push((
+            crate::file_ops::FileOp::NewFolder {
+                parent: "/".to_owned(),
+                name: "New folder".to_owned(),
+            },
+            super::OpFollowUp::NewFolder,
+        ));
+        let mut driver =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
+        driver.type_text("Walks");
+        driver.key("Enter");
+        let widget = driver
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<FileExplorerWidget>())
+            .expect("the Files window");
+        let ahead = widget.state().naming_ahead.take().expect("the name waited");
+        assert_eq!(ahead.typed, "Walks", "every character typed is kept");
+        assert!(ahead.commit, "Enter with it asks for it to be made");
     }
 
     fn new_folders_name_typed_in_a_burst_keeps_every_character() {
