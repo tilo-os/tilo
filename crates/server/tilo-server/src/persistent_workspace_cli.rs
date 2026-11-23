@@ -1964,48 +1964,59 @@ impl OperatorContext {
     }
 }
 
+/// The most a line on `operator.sock` may carry: matches `rollout.sock`
+/// (`tilo_server::rollout::MAX_REQUEST`, 4 KiB) and covers every legitimate
+/// [`OperatorCommand`].
+const MAX_OPERATOR_LINE_BYTES: usize = 4096;
+
 /// Answer one operator line on the socket: the same command its stdin takes,
 /// for a deployment whose workspace runs in a container and so has no stdin to
 /// write to.
 async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::UnixStream) {
-    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
     let (reading, mut writing) = stream.into_split();
-    let mut line = String::new();
     let mut reading = tokio::io::BufReader::new(reading);
-    let answer = match reading.read_line(&mut line).await {
-        Ok(0) => return,
-        Ok(_) => match OperatorCommand::from_line(&line) {
-            // A question about an address, and nothing about the address in
-            // its answer: the operator may ask it of a running workspace.
-            Ok(OperatorCommand::Status {
-                request,
-                removal_sha256,
-            }) => answer_state(
-                &context.workspaces,
-                &context.workspace,
-                request,
-                &removal_sha256,
-            )
-            .await
-            .to_line(),
-            Ok(other) => OperatorEvent::Unanswered {
-                reason: format!(
-                    "the operator socket takes state, not {}; owners and administrators let \
-                     people in with `tilo workspace people add` and `tilo workspace people invite`, and owners \
-                     choose a workspace's servers with `tilo workspace servers`",
-                    other.to_line().trim()
-                ),
+    let line = match wire_frame::read_line_async(&mut reading, MAX_OPERATOR_LINE_BYTES).await {
+        Ok(None) => return,
+        Ok(Some(bytes)) => match String::from_utf8(bytes) {
+            Ok(line) => line,
+            Err(error) => {
+                tracing::warn!("the operator socket: {error}");
+                return;
             }
-            .to_line(),
-            Err(error) => OperatorEvent::Unanswered {
-                reason: error.to_string(),
-            }
-            .to_line(),
         },
         Err(error) => {
             tracing::warn!("the operator socket: {error}");
             return;
         }
+    };
+    let answer = match OperatorCommand::from_line(&line) {
+        // A question about an address, and nothing about the address in
+        // its answer: the operator may ask it of a running workspace.
+        Ok(OperatorCommand::Status {
+            request,
+            removal_sha256,
+        }) => answer_state(
+            &context.workspaces,
+            &context.workspace,
+            request,
+            &removal_sha256,
+        )
+        .await
+        .to_line(),
+        Ok(other) => OperatorEvent::Unanswered {
+            reason: format!(
+                "the operator socket takes state, not {}; owners and administrators let \
+                 people in with `tilo workspace people add` and `tilo workspace people invite`, and owners \
+                 choose a workspace's servers with `tilo workspace servers`",
+                other.to_line().trim()
+            ),
+        }
+        .to_line(),
+        Err(error) => OperatorEvent::Unanswered {
+            reason: error.to_string(),
+        }
+        .to_line(),
     };
     if let Err(error) = writing.write_all(answer.as_bytes()).await {
         tracing::warn!("the operator socket's answer: {error}");
@@ -3011,6 +3022,70 @@ mod tests {
             !log.iter().any(|line| line.contains("log against rows")),
             "{log:#?}"
         );
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn operator_socket_refuses_oversized_line_and_answers_exact_bound() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (server, workspaces, _server_cert, workspace) = plaza(dir.path()).await;
+        let context = OperatorContext {
+            workspaces,
+            workspace,
+        };
+        let removal_sha256 = "00".repeat(32);
+        let make_status = |target_len: usize, prefix: &str| {
+            let shell = serde_json::to_string(&OperatorCommand::Status {
+                request: prefix.to_owned(),
+                removal_sha256: removal_sha256.clone(),
+            })
+            .unwrap();
+            let pad = target_len.checked_sub(shell.len()).unwrap();
+            let request = format!("{prefix}{}", "r".repeat(pad));
+            let json = serde_json::to_string(&OperatorCommand::Status {
+                request: request.clone(),
+                removal_sha256: removal_sha256.clone(),
+            })
+            .unwrap();
+            assert_eq!(json.len(), target_len);
+            (request, json)
+        };
+
+        // Oversized line without a trailing newline, then close: answered on main, closed silently after fix.
+        let (_over_req, over_json) =
+            make_status(MAX_OPERATOR_LINE_BYTES.saturating_add(1), "over:");
+        let (mut client, peer) = tokio::net::UnixStream::pair().unwrap();
+        let serving = tokio::spawn(answer_operator_socket(context.clone(), peer));
+        let _ = client.write_all(over_json.as_bytes()).await;
+        let _ = client.shutdown().await;
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).await.unwrap();
+        serving.await.unwrap();
+        assert!(
+            reply.is_empty(),
+            "an oversized operator line must end the exchange with no answer, got: {reply}"
+        );
+
+        // Exact-bound line ending in '\n': answered with the matching request id.
+        let (exact_req, mut exact_json) = make_status(MAX_OPERATOR_LINE_BYTES, "exact:");
+        exact_json.push('\n');
+        let (mut client, peer) = tokio::net::UnixStream::pair().unwrap();
+        let serving = tokio::spawn(answer_operator_socket(context, peer));
+        client.write_all(exact_json.as_bytes()).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).await.unwrap();
+        serving.await.unwrap();
+        assert_eq!(
+            OperatorEvent::from_line(&reply).unwrap(),
+            OperatorEvent::Status {
+                request: exact_req,
+                state: tilo_server_protocol::operator::WaitListStatus::Gone,
+            }
+        );
+
         server.shutdown().await;
     }
 }

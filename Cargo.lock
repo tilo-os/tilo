@@ -21866,6 +21866,7 @@ dependencies = [
  "tracing-subscriber",
  "ush",
  "uuid",
+ "wire-frame",
  "workspace-hack",
  "zeroize",
  "zip",
