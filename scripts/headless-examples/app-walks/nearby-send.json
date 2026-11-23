@@ -7,9 +7,10 @@
   "phone"
  ],
  "live": "rust",
- "apps": "tasks settings",
+ "apps": "settings",
  "packages": [
-   "files"
+   "files",
+   "tasks"
  ],
  "rust": {},
  "tl": {
