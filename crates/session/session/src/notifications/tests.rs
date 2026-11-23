@@ -1787,7 +1787,7 @@ fn a_refusal_is_dismissed_through_the_centres_published_action() {
     assert!(
         kept.get("notices")
             .and_then(Value::as_array)
-            .map_or(true, Vec::is_empty),
+            .is_none_or(Vec::is_empty),
         "the dismissal took it away: {kept}"
     );
 }
