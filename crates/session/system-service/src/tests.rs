@@ -9,6 +9,7 @@ use tilo_service::{Service, Services, Started, Wake};
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
 };
+use tilo_system_resources::update::Deployment;
 use tilo_system_resources::users::{LocalAccount, Users};
 
 use crate::device::{Change, PowerProfiles, PrintChange, System, UserChange};
@@ -36,6 +37,7 @@ struct Fake {
     users: Mutex<Users>,
     user_changes: Mutex<Vec<UserChange>>,
     user_refusal: Mutex<Option<String>>,
+    rollback_refusal: Mutex<Option<String>>,
 }
 
 impl Fake {
@@ -103,6 +105,7 @@ impl Fake {
             }),
             user_changes: Mutex::new(Vec::new()),
             user_refusal: Mutex::new(None),
+            rollback_refusal: Mutex::new(None),
         })
     }
 
@@ -170,6 +173,11 @@ impl System for Fake {
             Change::FollowedZone(zone) => self.time.lock().unwrap().zone = Some(zone.clone()),
             Change::AutomaticZone(on) => self.time.lock().unwrap().automatic = *on,
             Change::UpdateNow => return Err("nothing newer to fetch".into()),
+            Change::Rollback => {
+                if let Some(reason) = self.rollback_refusal.lock().unwrap().clone() {
+                    return Err(reason);
+                }
+            }
             Change::KeyboardLight(level) => {
                 self.keyboard_light.lock().unwrap().level = Some(*level);
             }
@@ -1251,6 +1259,93 @@ fn a_machine_with_no_account_service_offers_no_account_actions() {
     );
     assert!(matches!(
         service.invoke(USERS, "add", &Map::new()),
+        Err(ApiError::Unavailable { .. })
+    ));
+}
+
+#[test]
+fn rollback_goes_back_to_the_previous_system_and_refuses_without_the_grant() {
+    let fake = Fake::new();
+    *fake.update.lock().unwrap() = Update {
+        booted: Some(Deployment {
+            version: Some("44.2".into()),
+            ..Deployment::default()
+        }),
+        rollback: Some(Deployment {
+            version: Some("44.1".into()),
+            ..Deployment::default()
+        }),
+        ..Update::default()
+    };
+    let mut service = service(&fake);
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == SYSTEM_UPDATE)
+        .expect("the system-update resource is published");
+    let rollback = published
+        .actions
+        .iter()
+        .find(|action| action.id.as_str() == "rollback")
+        .expect("the rollback action is published");
+    assert_eq!(
+        rollback.contract.availability,
+        tilo_actions::Availability::Available,
+        "a machine with a previous system offers to go back to it"
+    );
+
+    // The person at the machine, in wheel, is allowed by polkit; anyone else is refused, and
+    // nothing is restarted.
+    *fake.rollback_refusal.lock().unwrap() =
+        Some("Interactive authentication required.".into());
+    assert_eq!(
+        service.invoke(SYSTEM_UPDATE, "rollback", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(
+        service.read(SYSTEM_UPDATE).unwrap()["pending"],
+        json!(["rollback"])
+    );
+    service.settle();
+    let update = service.read(SYSTEM_UPDATE).unwrap();
+    assert_eq!(
+        update["problem"],
+        json!("Interactive authentication required."),
+        "a person without the grant is told why it did not happen"
+    );
+    assert_eq!(update["pending"], json!([]));
+    assert!(
+        !fake
+            .changes()
+            .iter()
+            .any(|change| matches!(change, Change::Restart)),
+        "a refused rollback does not restart the machine"
+    );
+}
+
+#[test]
+fn a_machine_with_nothing_to_go_back_to_offers_no_rollback() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == SYSTEM_UPDATE)
+        .expect("the system-update resource is published");
+    let rollback = published
+        .actions
+        .iter()
+        .find(|action| action.id.as_str() == "rollback")
+        .expect("the rollback action is published, marked unavailable");
+    assert_eq!(
+        rollback.contract.availability,
+        tilo_actions::Availability::Unavailable {
+            code: "nothing_to_roll_back".into(),
+            reason: "There is no previous system to go back to".into(),
+        }
+    );
+    assert!(matches!(
+        service.invoke(SYSTEM_UPDATE, "rollback", &Map::new()),
         Err(ApiError::Unavailable { .. })
     ));
 }

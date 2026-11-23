@@ -104,6 +104,15 @@ pub enum UpdateAction {
         keywords = "restart to update, reboot"
     )]
     RestartToUpdate,
+    /// Go back to the system this machine ran before, and restart into it.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "history",
+        keywords = "roll back, previous system, go back, zurücksetzen"
+    )]
+    Rollback,
 }
 
 /// The `time-zone` resource's actions.

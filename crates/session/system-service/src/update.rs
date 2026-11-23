@@ -40,6 +40,13 @@ pub const BOOT_FALLBACK_DIR: &str = "/var/lib/tilo/boot-fallback";
 pub const UPDATE_UNIT: &str = "tilo-deployment-update.service";
 /// How long fetching, staging and applying an image may take.
 pub const UPDATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// The unit that boots the previous deployment from now on, which the person at the machine may
+/// start (os/etc/polkit-1/rules.d/49-tilo-updates.rules). It reorders the boot loader's entries
+/// and writes the next boot's default; the restart that follows is what makes it take effect.
+pub const ROLLBACK_UNIT: &str = "tilo-deployment-rollback.service";
+/// How long going back may take: a handful of renames on the ESP and one EFI variable write.
+pub const ROLLBACK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+
 /// The unit that finishes a live update: it merges what is left of the
 /// update, restarts the session services it changed, and restarts every Tilo
 /// desktop on this machine in place, which comes back with its windows
@@ -304,6 +311,28 @@ pub fn restart_desktop() -> Result<(), String> {
             "finishing the system update ended with {}",
             output.status
         ))
+    }
+}
+
+/// Boot the previous deployment from now on: the unit reorders the boot loader's entries and
+/// writes the next boot's default. The machine restarts into it afterward.
+///
+/// # Errors
+/// The unit did not run, or the account may not start it: polkit allows only the person at this
+/// machine's seat, in `wheel`, to roll it back.
+pub fn rollback() -> Result<(), String> {
+    let output = bounded_command::run(
+        "systemctl",
+        &["start", "--no-ask-password", ROLLBACK_UNIT],
+        None,
+        64 * 1024,
+        ROLLBACK_TIMEOUT,
+    )
+    .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!("the rollback ended with {}", output.status))
     }
 }
 

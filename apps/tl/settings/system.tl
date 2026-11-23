@@ -112,7 +112,13 @@ view updates_pane() {
                 called,
                 secondary: "What this machine can go back to",
                 icon: .history,
-            )
+            ) {
+                trailing: {
+                    ui.Button("Go back and restart", role: .destructive) {
+                        on press: device.rollback(device.update)
+                    }
+                }
+            }
         } else {
             ui.Text("There is nothing to go back to.", role: .caption, secondary: true)
         }

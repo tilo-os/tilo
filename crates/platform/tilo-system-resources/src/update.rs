@@ -10,6 +10,9 @@ pub const RESTART_DESKTOP: &str = "restart-desktop";
 /// The `system-update` action that restarts the machine into the staged
 /// update.
 pub const RESTART_TO_UPDATE: &str = "restart-to-update";
+/// The `system-update` action that boots the previous deployment from now on
+/// and restarts the machine into it.
+pub const ROLLBACK: &str = "rollback";
 
 /// One deployment of the system: the image it was made from.
 #[derive(

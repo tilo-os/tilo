@@ -760,6 +760,14 @@ pub fn update_resource(update: &Update) -> ResourceSpec {
             "No part of the update waits for the desktop",
         );
     }
+    if update.rollback.is_none() {
+        unavailable(
+            &mut resource,
+            crate::update::ROLLBACK,
+            "nothing_to_roll_back",
+            "There is no previous system to go back to",
+        );
+    }
     resource
 }
 
@@ -864,6 +872,7 @@ impl Service for SystemService {
                     UpdateAction::UpdateNow => Change::UpdateNow,
                     UpdateAction::RestartDesktop => Change::RestartDesktop,
                     UpdateAction::RestartToUpdate => Change::Restart,
+                    UpdateAction::Rollback => Change::Rollback,
                 };
                 Ok(self.start(Part::Update, id, change))
             }
