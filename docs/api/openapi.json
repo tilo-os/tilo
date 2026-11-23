@@ -34574,6 +34574,8 @@
               "channel_avatar",
               "description",
               "thumbnail",
+              "dearrow_title",
+              "dearrow_thumbnail",
               "stream",
               "found_for"
             ],
@@ -34660,6 +34662,18 @@
         ],
         "description": "Records how far into the video the person is, and that they watched it now: it moves to the\nfront of the history, and asks the service for the address its bytes play from when that is\nnot known yet. Starting a video, resuming it and moving the playhead as it plays are one\naction, so a video has one place it is played from."
       },
+      "tl.so.tilo.tube.Video.skip_segment.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "Skips the SponsorBlock segment the video plays into, at `at` (a share of its length), when the\nperson skips segments: the playhead moves to the segment's end, so a sponsor read or an outro\nis never watched. The player reports where it got to as it plays, so this is what makes a\nmarked segment skip on its own."
+      },
       "tl.so.tilo.tube.Video.forget.Arguments": {
         "type": "object",
         "properties": {},
@@ -34671,6 +34685,12 @@
         "properties": {},
         "required": [],
         "description": "Asks the service for where the video's bytes play from again, after the player could not show\nthem: the address the client holds is the service's alone to write, and the answer it gives\nnow is what the player opens."
+      },
+      "tl.so.tilo.tube.Video.refresh_comments.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the service for the video's comments again, for what people said since the page opened."
       },
       "tl.so.tilo.tube.Playlist.$create.Arguments": {
         "type": "object",
@@ -34737,6 +34757,182 @@
         "properties": {},
         "required": [],
         "description": "Plays the playlist from its first video."
+      },
+      "tl.so.tilo.tube.Comment.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.Comment.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "video_key",
+              "author",
+              "avatar",
+              "text"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Comment.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "pinned",
+              "hearted"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Comment.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.Comment.reply_to_comment.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "Replies to a comment: the workspace keeps the reply itself, beside the comment it answers,\nsince YouTube lets no app post as the person. Everyone who reads the comment reads the reply."
+      },
+      "tl.so.tilo.tube.Segment.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.Segment.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "video_key",
+              "category"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Segment.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Segment.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.Reply.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.Reply.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "comment",
+              "video",
+              "text"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Reply.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Reply.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.Reply.retract_reply.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Takes back a reply the person wrote. A reply the native app kept is the workspace's, and any\nmember may take it back."
       },
       "tl.so.tilo.tube.Subscription.$create.Arguments": {
         "type": "object",
@@ -34869,7 +35065,10 @@
             "description": "The name of the field to set.",
             "enum": [
               "autoplay",
-              "captions"
+              "captions",
+              "sponsorblock",
+              "dearrow",
+              "dislikes"
             ],
             "type": "string"
           },
@@ -34954,6 +35153,9 @@
             "enum": [
               "title",
               "search_text",
+              "search_kind",
+              "search_length",
+              "search_published",
               "search_state",
               "search_trouble",
               "feed_state",
@@ -34976,6 +35178,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
+              "history_cleared",
               "online"
             ],
             "type": "string"
@@ -35056,6 +35259,42 @@
         ],
         "description": "Whether videos show their captions for the person."
       },
+      "tl.so.tilo.tube.YouTube.set_sponsorblock.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": "Whether the player skips the segments SponsorBlock marks, as they play."
+      },
+      "tl.so.tilo.tube.YouTube.set_dearrow.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": "Whether a video shows the community's title and picture where DeArrow has them."
+      },
+      "tl.so.tilo.tube.YouTube.set_dislikes.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": "Whether a video shows how many people disliked it, as Return YouTube Dislike estimates it."
+      },
       "tl.so.tilo.tube.YouTube.search.Arguments": {
         "type": "object",
         "properties": {
@@ -35065,6 +35304,42 @@
         },
         "required": [],
         "description": "Searches YouTube: the service answers with channels, playlists and videos, written where the\nsearch view lists them. The answer arrives through the platform's network, never the app's."
+      },
+      "tl.so.tilo.tube.YouTube.filter_search.Arguments": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "description": "Narrows the search to the kinds the person chose: `all`, `video`, `channel` or `playlist`.\nWhat the service found is kept, and the page shows the kind chosen alone, as the old chips\ndid; asking again is the search field's, which carries the kind with it."
+      },
+      "tl.so.tilo.tube.YouTube.filter_length.Arguments": {
+        "type": "object",
+        "properties": {
+          "length": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "length"
+        ],
+        "description": "Narrows the search to how long its videos run: `any`, `short`, `medium` or `long`."
+      },
+      "tl.so.tilo.tube.YouTube.filter_published.Arguments": {
+        "type": "object",
+        "properties": {
+          "published": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "published"
+        ],
+        "description": "Narrows the search to how recent its results are: `any`, `hour`, `today`, `week`, `month` or\n`year`."
       },
       "tl.so.tilo.tube.YouTube.end_search.Arguments": {
         "type": "object",
@@ -35095,6 +35370,38 @@
           "link"
         ],
         "description": "Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel\n(`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it\nasks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the\nclient is open, and what this returns opens in the window. The host publishes it as the\nsystem's `open-link` on the client's root, which is what a shell hands a link to."
+      },
+      "tl.so.tilo.tube.YouTube.import_history.Arguments": {
+        "type": "object",
+        "properties": {
+          "watched": {
+            "items": {
+              "items": {},
+              "type": "array"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "watched"
+        ],
+        "description": "Imports a watch history another device kept, in the format the native app's own history and\nits `import` call used: rows of `[a video's key, when it was watched in milliseconds since\n1970]`. A video the person already watched keeps its place; each one imported becomes part of\ntheir own history, which keeps its newest thousand videos."
+      },
+      "tl.so.tilo.tube.YouTube.import_previous.Arguments": {
+        "type": "object",
+        "properties": {
+          "previous": {
+            "items": {
+              "items": {},
+              "type": "array"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "previous"
+        ],
+        "description": "Imports the watch history an earlier version of this app kept for the person, in that\nversion's own format: rows of `[a video's key, when it was watched in milliseconds since 1970,\nwhere it was left in milliseconds or nothing]`. Nothing is imported once the person deleted\ntheir history, since the delete is theirs to keep; a video already in it keeps its place."
       },
       "tl.so.tilo.tube.YouTube.play_again.Arguments": {
         "type": "object",
@@ -43449,6 +43756,12 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Video",
+      "action": "skip_segment",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.skip_segment.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "forget",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Video.forget.Arguments"
     },
@@ -43457,6 +43770,12 @@
       "resource": "tl.so.tilo.tube.Video",
       "action": "retry_playback",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Video.retry_playback.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
+      "action": "refresh_comments",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.refresh_comments.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -43493,6 +43812,90 @@
       "resource": "tl.so.tilo.tube.Playlist",
       "action": "play_playlist",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.play_playlist.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Comment",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Comment.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Comment",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Comment.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Comment",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Comment.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Comment",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Comment.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Comment",
+      "action": "reply_to_comment",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Comment.reply_to_comment.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Segment",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Segment.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Segment",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Segment.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Segment",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Segment.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Segment",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Segment.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Reply",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Reply.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Reply",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Reply.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Reply",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Reply.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Reply",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Reply.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Reply",
+      "action": "retract_reply",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Reply.retract_reply.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -43653,8 +44056,44 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.YouTube",
+      "action": "set_sponsorblock",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.set_sponsorblock.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "set_dearrow",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.set_dearrow.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "set_dislikes",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.set_dislikes.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "search",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.search.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "filter_search",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.filter_search.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "filter_length",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.filter_length.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "filter_published",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.filter_published.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -43679,6 +44118,18 @@
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "open_link",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.open_link.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "import_history",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.import_history.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "import_previous",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.import_previous.Arguments"
     },
     {
       "app": "so.tilo.tube",

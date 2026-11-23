@@ -23862,6 +23862,7 @@ dependencies = [
  "tilo-view",
  "tilolang",
  "tilolang-runtime",
+ "tilolang-youtube",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",

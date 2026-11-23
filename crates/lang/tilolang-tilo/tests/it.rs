@@ -8,7 +8,8 @@
     clippy::indexing_slicing,
     clippy::panic,
     clippy::needless_pass_by_value,
-    reason = "test assertions"
+    clippy::doc_markdown,
+    reason = "test assertions; YouTube is a name, not code"
 )]
 
 mod agent_queries;

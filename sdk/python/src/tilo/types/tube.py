@@ -23,6 +23,9 @@ __all__ = [
     "Channel",
     "Video",
     "Playlist",
+    "Comment",
+    "Segment",
+    "Reply",
     "Subscription",
     "QueuedVideo",
     "PlaybackPrefs",
@@ -34,12 +37,19 @@ __all__ = [
     "LikeArgs",
     "WatchLaterArgs",
     "ForgetArgs",
+    "RetractReplyArgs",
     "DeleteHistoryArgs",
     "SetAutoplayArgs",
     "SetSpeedArgs",
     "SetQualityArgs",
     "SetCaptionsArgs",
+    "SetSponsorblockArgs",
+    "SetDearrowArgs",
+    "SetDislikesArgs",
+    "FilterSearchArgs",
     "EndSearchArgs",
+    "ImportHistoryArgs",
+    "ImportPreviousArgs",
 ]
 
 SubscribeArgs = TypedDict("SubscribeArgs", {
@@ -65,6 +75,10 @@ ForgetArgs = TypedDict("ForgetArgs", {
 })
 """The arguments of `forget`."""
 
+RetractReplyArgs = TypedDict("RetractReplyArgs", {
+})
+"""The arguments of `retract_reply`."""
+
 DeleteHistoryArgs = TypedDict("DeleteHistoryArgs", {
 })
 """The arguments of `delete_history`."""
@@ -89,13 +103,43 @@ SetCaptionsArgs = TypedDict("SetCaptionsArgs", {
 })
 """The arguments of `set_captions`."""
 
+SetSponsorblockArgs = TypedDict("SetSponsorblockArgs", {
+    "on": "bool",
+})
+"""The arguments of `set_sponsorblock`."""
+
+SetDearrowArgs = TypedDict("SetDearrowArgs", {
+    "on": "bool",
+})
+"""The arguments of `set_dearrow`."""
+
+SetDislikesArgs = TypedDict("SetDislikesArgs", {
+    "on": "bool",
+})
+"""The arguments of `set_dislikes`."""
+
+FilterSearchArgs = TypedDict("FilterSearchArgs", {
+    "kind": "str",
+})
+"""The arguments of `filter_search`."""
+
 EndSearchArgs = TypedDict("EndSearchArgs", {
 })
 """The arguments of `end_search`."""
 
+ImportHistoryArgs = TypedDict("ImportHistoryArgs", {
+    "watched": "list[list[Any]]",
+})
+"""The arguments of `import_history`."""
+
+ImportPreviousArgs = TypedDict("ImportPreviousArgs", {
+    "previous": "list[list[Any]]",
+})
+"""The arguments of `import_previous`."""
+
 class Channel(Resource):
     """Channel — `tl.so.tilo.tube.Channel`."""
-    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
     @property
     def _26ctwf34(self) -> str:
         """key (`26ctwf34` on the wire)."""
@@ -160,7 +204,7 @@ class Channel(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.tube.Video`."""
-    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
@@ -185,7 +229,10 @@ class Video(Resource):
     mvlf65b5: int  # duration
     pfdoae2w: str  # description
     ddfiordt: int  # likes
+    lhbq7qff: int  # dislikes
     l25oorez: str  # thumbnail
+    vvxj4w64: str  # dearrow_title
+    imamvrnr: str  # dearrow_thumbnail
     pkbzjs7l: str  # stream
     jfam7tjf: bool  # live
     bifohbpv: bool  # liked
@@ -246,6 +293,10 @@ class Video(Resource):
         """Records how far into the video the person is, and that they watched it now: it moves to the front of the history, and asks the service for the address its bytes play from when that is not known yet. Starting a video, resuming it and moving the playhead as it plays are one action, so a video has one place it is played from."""
         return self.action("progress", at=at)
 
+    def skip_segment(self, *, at: float) -> None:
+        """Skips the SponsorBlock segment the video plays into, at `at` (a share of its length), when the person skips segments: the playhead moves to the segment's end, so a sponsor read or an outro is never watched. The player reports where it got to as it plays, so this is what makes a marked segment skip on its own."""
+        return self.action("skip_segment", at=at)
+
     def forget(self) -> None:
         """Takes one video out of the person's own history."""
         return self.action("forget")
@@ -258,14 +309,18 @@ class Video(Resource):
         """Asks the service for where the video's bytes play from again, after the player could not show them: the address the client holds is the service's alone to write, and the answer it gives now is what the player opens."""
         return self.action("retry_playback")
 
+    def refresh_comments(self) -> None:
+        """Asks the service for the video's comments again, for what people said since the page opened."""
+        return self.action("refresh_comments")
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"like", "like_many", "watch_later", "watch_later_many", "play", "resume", "progress", "forget", "forget_many", "retry_playback"})
+    __actions__ = frozenset({"like", "like_many", "watch_later", "watch_later_many", "play", "resume", "progress", "skip_segment", "forget", "forget_many", "retry_playback", "refresh_comments"})
 
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.tube.Playlist`."""
-    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
     ow7glfos: str  # key
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
@@ -302,22 +357,92 @@ class Playlist(Resource):
     __actions__ = frozenset({"refresh_playlist", "play_playlist"})
 
 
+class Comment(Resource):
+    """Comment — `tl.so.tilo.tube.Comment`."""
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
+    pv4laajx: str  # key
+    li4xiefh: str  # video_key
+    @property
+    def _3ncdj3up(self) -> str:
+        """author (`3ncdj3up` on the wire)."""
+        return self.fields["3ncdj3up"]
+
+    @_3ncdj3up.setter
+    def _3ncdj3up(self, value: str) -> None:
+        self.edit("3ncdj3up", value=value)
+    lgtlgzui: str  # avatar
+    az6iwuma: str  # text
+    hgdwjwgt: int  # likes
+    dninsxc6: str  # published
+    tmf5hovn: bool  # pinned
+    gp3basiz: bool  # hearted
+    ha6vpfhz: int  # replies
+
+    def reply_to_comment(self, *, text: str) -> Reply:
+        """Replies to a comment: the workspace keeps the reply itself, beside the comment it answers, since YouTube lets no app post as the person. Everyone who reads the comment reads the reply."""
+        return self.action("reply_to_comment", text=text)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"reply_to_comment"})
+
+
+class Segment(Resource):
+    """Segment — `tl.so.tilo.tube.Segment`."""
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
+    uakovynu: str  # key
+    pvlf5o2c: str  # video_key
+    qlgpeq35: str  # category
+    bbnmvcim: int  # start
+    hts3jgqy: int  # end
+    j7wuhxg5: int  # votes
+
+
+class Reply(Resource):
+    """Reply — `tl.so.tilo.tube.Reply`."""
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
+    y4coaxks: str  # comment
+    kwxg57v6: str  # video
+    @property
+    def _6psi22ua(self) -> str:
+        """text (`6psi22ua` on the wire)."""
+        return self.fields["6psi22ua"]
+
+    @_6psi22ua.setter
+    def _6psi22ua(self, value: str) -> None:
+        self.edit("6psi22ua", value=value)
+    nzwksffp: str | None  # member
+    k3jskmid: str  # said
+
+    def retract_reply(self) -> None:
+        """Takes back a reply the person wrote. A reply the native app kept is the workspace's, and any member may take it back."""
+        return self.action("retract_reply")
+
+    def retract_reply_many(self, items: list[RetractReplyArgs]) -> list[dict[str, Any]]:
+        """Runs `retract_reply` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("retract_reply", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"retract_reply", "retract_reply_many"})
+
+
 class Subscription(Resource):
     """Subscription — `tl.so.tilo.tube.Subscription`."""
-    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
     slhmwv67: str  # key
     ynf67l6e: str  # name
 
 
 class QueuedVideo(Resource):
     """QueuedVideo — `tl.so.tilo.tube.QueuedVideo`."""
-    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
     o3xolmld: str  # key
 
 
 class PlaybackPrefs(Resource):
     """PlaybackPrefs — `tl.so.tilo.tube.PlaybackPrefs`."""
-    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
     @property
     def _5twttwwn(self) -> str:
         """member (`5twttwwn` on the wire)."""
@@ -337,11 +462,21 @@ class PlaybackPrefs(Resource):
         self.edit("5bpxm33f", value=value)
     lesyml4z: str  # quality
     u3fgpv6e: bool  # captions
+    vbbcsaos: bool  # sponsorblock
+    @property
+    def _7cyrtrv6(self) -> bool:
+        """dearrow (`7cyrtrv6` on the wire)."""
+        return self.fields["7cyrtrv6"]
+
+    @_7cyrtrv6.setter
+    def _7cyrtrv6(self, value: bool) -> None:
+        self.edit("7cyrtrv6", value=value)
+    eyoonq3d: bool  # dislikes
 
 
 class WatchEntry(Resource):
     """WatchEntry — `tl.so.tilo.tube.WatchEntry`."""
-    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
     noppuxpb: str  # key
     stuii7l7: str  # title
     j37y2bbw: str  # channel_name
@@ -359,7 +494,7 @@ class WatchEntry(Resource):
 
 class YouTube(Resource):
     """YouTube — `tl.so.tilo.tube.YouTube`."""
-    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
     olrung72: str  # title
     ihhzrm3f: list[Entry[Channel]]  # channels
     qnfjkti5: list[Entry[Video]]  # videos
@@ -367,8 +502,22 @@ class YouTube(Resource):
     iputtmua: list[Entry[Subscription]]  # subscriptions
     jgjqgesf: list[Entry[QueuedVideo]]  # queue
     hv25j74h: list[Entry[WatchEntry]]  # history
+    puten5ar: bool  # history_cleared
+    ugv4b6is: list[Entry[Comment]]  # comments
+    cjlgivfs: list[Entry[Segment]]  # segments
+    iphlnbkx: list[Entry[Reply]]  # replies
     epgpppzy: list[Entry[PlaybackPrefs]]  # playback
     bqesicxq: str  # search_text
+    @property
+    def _2pryeqkt(self) -> str:
+        """search_kind (`2pryeqkt` on the wire)."""
+        return self.fields["2pryeqkt"]
+
+    @_2pryeqkt.setter
+    def _2pryeqkt(self, value: str) -> None:
+        self.edit("2pryeqkt", value=value)
+    egducuxn: str  # search_length
+    ypapv6iy: str  # search_published
     hcmy6dp7: str  # search_state
     zjw3anaz: str  # search_trouble
     nnvco6w3: str  # feed_state
@@ -419,6 +568,30 @@ class YouTube(Resource):
         """Runs `set_captions` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_captions", items)
 
+    def set_sponsorblock(self, *, on: bool) -> None:
+        """Whether the player skips the segments SponsorBlock marks, as they play."""
+        return self.action("set_sponsorblock", on=on)
+
+    def set_sponsorblock_many(self, items: list[SetSponsorblockArgs]) -> list[dict[str, Any]]:
+        """Runs `set_sponsorblock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_sponsorblock", items)
+
+    def set_dearrow(self, *, on: bool) -> None:
+        """Whether a video shows the community's title and picture where DeArrow has them."""
+        return self.action("set_dearrow", on=on)
+
+    def set_dearrow_many(self, items: list[SetDearrowArgs]) -> list[dict[str, Any]]:
+        """Runs `set_dearrow` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_dearrow", items)
+
+    def set_dislikes(self, *, on: bool) -> None:
+        """Whether a video shows how many people disliked it, as Return YouTube Dislike estimates it."""
+        return self.action("set_dislikes", on=on)
+
+    def set_dislikes_many(self, items: list[SetDislikesArgs]) -> list[dict[str, Any]]:
+        """Runs `set_dislikes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_dislikes", items)
+
     def search(self,
         *,
         query: str | None = None,
@@ -428,6 +601,22 @@ class YouTube(Resource):
         if query is not None:
             args["query"] = query
         return self.action("search", **args)
+
+    def filter_search(self, *, kind: str) -> None:
+        """Narrows the search to the kinds the person chose: `all`, `video`, `channel` or `playlist`. What the service found is kept, and the page shows the kind chosen alone, as the old chips did; asking again is the search field's, which carries the kind with it."""
+        return self.action("filter_search", kind=kind)
+
+    def filter_search_many(self, items: list[FilterSearchArgs]) -> list[dict[str, Any]]:
+        """Runs `filter_search` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("filter_search", items)
+
+    def filter_length(self, *, length: str) -> None:
+        """Narrows the search to how long its videos run: `any`, `short`, `medium` or `long`."""
+        return self.action("filter_length", length=length)
+
+    def filter_published(self, *, published: str) -> None:
+        """Narrows the search to how recent its results are: `any`, `hour`, `today`, `week`, `month` or `year`."""
+        return self.action("filter_published", published=published)
 
     def end_search(self) -> None:
         """Leaves the search the feed is showing for the place the person chose: the results stay where the service wrote them (found again by the query that found them), and the client shows the place chosen."""
@@ -449,16 +638,32 @@ class YouTube(Resource):
         """Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel (`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it asks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the client is open, and what this returns opens in the window. The host publishes it as the system's `open-link` on the client's root, which is what a shell hands a link to."""
         return self.action("open_link", link=link)
 
+    def import_history(self, *, watched: list[list[Any]]) -> None:
+        """Imports a watch history another device kept, in the format the native app's own history and its `import` call used: rows of `[a video's key, when it was watched in milliseconds since 1970]`. A video the person already watched keeps its place; each one imported becomes part of their own history, which keeps its newest thousand videos."""
+        return self.action("import_history", watched=watched)
+
+    def import_history_many(self, items: list[ImportHistoryArgs]) -> list[dict[str, Any]]:
+        """Runs `import_history` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import_history", items)
+
+    def import_previous(self, *, previous: list[list[Any]]) -> None:
+        """Imports the watch history an earlier version of this app kept for the person, in that version's own format: rows of `[a video's key, when it was watched in milliseconds since 1970, where it was left in milliseconds or nothing]`. Nothing is imported once the person deleted their history, since the delete is theirs to keep; a video already in it keeps its place."""
+        return self.action("import_previous", previous=previous)
+
+    def import_previous_many(self, items: list[ImportPreviousArgs]) -> list[dict[str, Any]]:
+        """Runs `import_previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import_previous", items)
+
     def play_again(self, *, h: WatchEntry) -> None:
         """Plays the video a history entry names, from where the person left off."""
         return self.action("play_again", h=h)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"play_queue", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_speed", "set_speed_many", "set_quality", "set_quality_many", "set_captions", "set_captions_many", "search", "end_search", "end_search_many", "refresh_feed", "load_trending", "open_link", "play_again"})
+    __actions__ = frozenset({"play_queue", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_speed", "set_speed_many", "set_quality", "set_quality_many", "set_captions", "set_captions_many", "set_sponsorblock", "set_sponsorblock_many", "set_dearrow", "set_dearrow_many", "set_dislikes", "set_dislikes_many", "search", "filter_search", "filter_search_many", "filter_length", "filter_published", "end_search", "end_search_many", "refresh_feed", "load_trending", "open_link", "import_history", "import_history_many", "import_previous", "import_previous_many", "play_again"})
 
 
 class Tube(Resource):
     """YouTube — `tl.so.tilo.tube`."""
-    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
+    __surface__ = "so.tilo.tube@3fc9638722335f13"
 

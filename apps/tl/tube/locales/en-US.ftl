@@ -57,7 +57,16 @@ d-pfdoae2w = Description
 
 d-ddfiordt = Likes
 
+d-lhbq7qff = Dislikes
+    .doc = How many people disliked it, as Return YouTube Dislike estimates: zero until it says.
+
 d-l25oorez = Thumbnail
+
+d-vvxj4w64 = Dearrow title
+    .doc = The community's title for it, when DeArrow names it better than its maker did.
+
+d-imamvrnr = Dearrow thumbnail
+    .doc = The picture the community frames it with, as this device's content address.
 
 d-pkbzjs7l = Stream
     .doc = The address its bytes play from, as the service answered: empty until it is asked.
@@ -103,6 +112,86 @@ d-dge65utd = Video keys
 d-p3yw6p2h = Found for
     .doc = The search that found it.
 
+d-4qqv4ujc = Comment
+    .doc = A comment someone left on a video, as the service says it is.
+    .noun = { $count ->
+        [one] comment
+       *[other] comments
+    }
+
+d-pv4laajx = Key
+
+d-li4xiefh = Video key
+    .doc = The video it was left on, as the service names it.
+
+d-3ncdj3up = Author
+
+d-lgtlgzui = Avatar
+
+d-az6iwuma = Text
+
+d-hgdwjwgt = Likes
+
+d-dninsxc6 = Published
+    .doc = When it was written.
+
+d-tmf5hovn = Pinned
+    .doc = The video's maker pinned it to the top.
+
+d-gp3basiz = Hearted
+    .doc = The video's maker marked it with a heart.
+
+d-ha6vpfhz = Replies
+    .doc = How many replies it has on YouTube.
+
+d-o7bs2bg7 = Segment
+    .doc = One `SponsorBlock` segment of a video: where it starts and ends, so the player can skip it.
+    .noun = { $count ->
+        [one] segment
+       *[other] segments
+    }
+
+d-uakovynu = Key
+
+d-pvlf5o2c = Video key
+    .doc = The video it belongs to, as the service names it.
+
+d-qlgpeq35 = Category
+    .doc = Its kind, as SponsorBlock names it: `sponsor`, `selfpromo`, `interaction`, `intro`, `outro`, `preview`, `music_offtopic` or `filler`.
+
+d-bbnmvcim = Start
+    .doc = Where it starts, in whole seconds.
+
+d-hts3jgqy = End
+    .doc = Where it ends, in whole seconds.
+
+d-j7wuhxg5 = Votes
+    .doc = The community votes that place it.
+
+d-3vh5q7os = Reply
+    .doc = A reply a member wrote to a comment: the workspace's own, kept beside the comment it answers, since YouTube does not let an app post as the person.
+    .noun = { $count ->
+        [one] reply
+       *[other] replies
+    }
+
+d-y4coaxks = Comment
+    .doc = The comment it answers, as the service names it.
+
+d-kwxg57v6 = Video
+    .doc = The video the comment is on.
+
+d-6psi22ua = Text
+
+d-nzwksffp = Member
+    .doc = Who wrote it.
+
+d-k3jskmid = Said
+
+d-3vh5q7os-filter-member = Member
+
+d-3vh5q7os-filter-said = Said
+
 d-ebglq5za = Subscription
     .doc = A channel the person subscribed to, by its key: membership, so two people subscribing at once keep it once, and the feed reads the channels' videos.
     .noun = { $count ->
@@ -146,6 +235,15 @@ d-lesyml4z = Quality
 d-u3fgpv6e = Captions
     .doc = Show the video's captions when it has them.
 
+d-vbbcsaos = Sponsorblock
+    .doc = Skip the segments SponsorBlock marks, as they play.
+
+d-7cyrtrv6 = Dearrow
+    .doc = Show the community's titles and pictures where DeArrow has them.
+
+d-eyoonq3d = Dislikes
+    .doc = Show how many people disliked a video, as Return YouTube Dislike estimates it.
+
 d-qynvz25p-filter-member = Member
 
 d-qynvz25p-filter-autoplay = Autoplay
@@ -153,6 +251,12 @@ d-qynvz25p-filter-autoplay = Autoplay
 d-qynvz25p-filter-speed = Speed
 
 d-qynvz25p-filter-captions = Captions
+
+d-qynvz25p-filter-sponsorblock = Sponsorblock
+
+d-qynvz25p-filter-dearrow = Dearrow
+
+d-qynvz25p-filter-dislikes = Dislikes
 
 d-kgojom6f = Watch entry
     .doc = One video the person watched: when, and where they left off.
@@ -200,11 +304,32 @@ d-jgjqgesf = Queue
 
 d-hv25j74h = History
 
+d-puten5ar = History cleared
+    .doc = Whether a person deleted their history: an earlier history is not imported over it, since the delete is theirs to keep.
+
+d-ugv4b6is = Comments
+    .doc = The comments the service answered with, by the comment's own id.
+
+d-cjlgivfs = Segments
+    .doc = The SponsorBlock segments the service answered with, by where each stands.
+
+d-iphlnbkx = Replies
+    .doc = The replies members wrote to comments: the workspace's own, since YouTube lets no app post as the person.
+
 d-epgpppzy = Playback
     .doc = Each member's own playback preferences.
 
 d-bqesicxq = Search text
     .doc = What the last search asks for, as it was typed.
+
+d-2pryeqkt = Search kind
+    .doc = Which kinds the last search shows: `all`, `video`, `channel` or `playlist`.
+
+d-egducuxn = Search length
+    .doc = How long the videos it finds run: `any`, `short` (under four minutes), `medium` (four to twenty) or `long` (over twenty).
+
+d-ypapv6iy = Search published
+    .doc = How recent they are: `any`, `hour`, `today`, `week`, `month` or `year`.
 
 d-hcmy6dp7 = Search state
     .doc = How the search of `search_text` stands: `searching`, `done`, `failed` or empty.
@@ -220,6 +345,8 @@ d-r3ksw6bn = Trouble
 
 d-qv7t2mza = Online
     .doc = Whether YouTube answered the last time it was asked.
+
+d-thwdswkk-filter-history_cleared = History cleared
 
 d-thwdswkk-filter-online = Online
 
@@ -261,6 +388,11 @@ d-jxokfijg = Progress
 
 d-jxokfijg-at = At
 
+d-s3fflgse = Skip the segment
+    .doc = Skips the SponsorBlock segment the video plays into, at `at` (a share of its length), when the person skips segments: the playhead moves to the segment's end, so a sponsor read or an outro is never watched.
+
+d-s3fflgse-at = At
+
 d-oqumfxkj = Delete from history
     .doc = Takes one video out of the person's own history.
 
@@ -275,6 +407,25 @@ d-edbp7ej2 = Refresh
 
 d-7lfzugkh = Play all
     .doc = Plays the playlist from its first video.
+
+d-ckcysqaa = Fetch on open
+    .doc = Opening a playlist asks the service what it holds, when the client does not know yet: a playlist a search found is known by its name and cover alone, and its videos appear once YouTube says them, so a page is never empty until someone presses Refresh.
+
+d-xwvivyes = Read on open
+    .doc = Opening a video asks the service for what its page shows and the client does not hold yet: where its bytes play from at the person's preferred quality, its comments, the segments SponsorBlock marks, the community's title and picture (DeArrow) and how many people disliked it.
+
+d-hr6a4zpi = Refresh comments
+    .doc = Asks the service for the video's comments again, for what people said since the page opened.
+
+d-jw35ym2c = Reply
+    .doc = Replies to a comment: the workspace keeps the reply itself, beside the comment it answers, since YouTube lets no app post as the person.
+    .w-type-something-to-reply-with = Type something to reply with
+
+d-jw35ym2c-text = Text
+
+d-gzpeyx2d = Delete reply
+    .doc = Takes back a reply the person wrote.
+    .w-only-the-person-who-wrote-a = Only the person who wrote a reply takes it back
 
 d-lcvxshh4 = Autoplay next video
     .doc = Each of these keeps one of the person's own playback preferences: the record is theirs, made the first time they set one, and every other member reads their own.
@@ -296,11 +447,44 @@ d-fmurpek2 = Captions
 
 d-fmurpek2-on = On
 
+d-dinedg2j = Skip sponsor segments
+    .doc = Whether the player skips the segments SponsorBlock marks, as they play.
+
+d-dinedg2j-on = On
+
+d-3hrcdqhd = Community titles and pictures
+    .doc = Whether a video shows the community's title and picture where DeArrow has them.
+
+d-3hrcdqhd-on = On
+
+d-usutngoe = Dislike counts
+    .doc = Whether a video shows how many people disliked it, as Return YouTube Dislike estimates it.
+
+d-usutngoe-on = On
+
 d-6lgqby4s = Search
     .doc = Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them.
     .w-type-something-to-search-for = Type something to search for
 
 d-6lgqby4s-query = Query
+
+d-eoe2k3dt = Filter the search
+    .doc = Narrows the search to the kinds the person chose: `all`, `video`, `channel` or `playlist`.
+    .w-is-not-a-kind-of-result = { $kind } is not a kind of result
+
+d-eoe2k3dt-kind = Kind
+
+d-tfnkfs2w = Filter by length
+    .doc = Narrows the search to how long its videos run: `any`, `short`, `medium` or `long`.
+    .w-is-not-a-length = { $length } is not a length
+
+d-tfnkfs2w-length = Length
+
+d-fheinfhb = Filter by date
+    .doc = Narrows the search to how recent its results are: `any`, `hour`, `today`, `week`, `month` or `year`.
+    .w-is-not-a-period = { $published } is not a period
+
+d-fheinfhb-published = Published
 
 d-vhf33pa7 = Leave search
     .doc = Leaves the search the feed is showing for the place the person chose: the results stay where the service wrote them (found again by the query that found them), and the client shows the place chosen.
@@ -320,8 +504,18 @@ d-mwai3gvn = Open link
 
 d-mwai3gvn-link = Link
 
+d-33ap24jl = Import watch history
+    .doc = Imports a watch history another device kept, in the format the native app's own history and its `import` call used: rows of `[a video's key, when it was watched in milliseconds since 1970]`.
+
+d-33ap24jl-watched = Watched
+
+d-j5dzbot6 = Import earlier history
+    .doc = Imports the watch history an earlier version of this app kept for the person, in that version's own format: rows of `[a video's key, when it was watched in milliseconds since 1970, where it was left in milliseconds or nothing]`.
+
+d-j5dzbot6-previous = Previous
+
 d-t3cwabaw = Carry native tube
-    .doc = What the native Tube kept before this app took its id over, carried into this one once: the channels subscribed to, the videos liked, the watch queue, and the watch history with when each video was watched.
+    .doc = What the native Tube kept before this app took its id over, carried into this one once: the channels subscribed to, the videos liked, the watch queue, the watch history with when each video was watched, and the replies it wrote to comments.
 
 d-yc4rjoeg = Play again
     .doc = Plays the video a history entry names, from where the person left off.
@@ -337,7 +531,17 @@ d-2nggfmec = Like~present
 
 d-fg57jp5b = Watch later~present
 
+d-7pzrjwch = Reply to comment~present
+
+d-eee25ayg = Retract reply~present
+
 d-h6g3amy7 = Search~present
+
+d-zk3bb2v4 = Filter search~present
+
+d-6aqost67 = Filter length~present
+
+d-u3d3kfnk = Filter published~present
 
 d-mufcicuu = Feed
     .w-youtube = YouTube
@@ -367,6 +571,22 @@ d-dfz6u5sa = Video grid
 
 d-nxne4q6s = Search results
     .w-search-youtube = Search YouTube
+    .w-all = All
+    .w-videos = Videos
+    .w-channels = Channels
+    .w-playlists = Playlists
+    .w-length = Length
+    .w-any = Any
+    .w-under-4-min = Under 4 min
+    .w-4-to-20-min = 4 to 20 min
+    .w-over-20-min = Over 20 min
+    .w-posted = Posted
+    .w-any-time = Any time
+    .w-past-hour = Past hour
+    .w-today = Today
+    .w-this-week = This week
+    .w-this-month = This month
+    .w-this-year = This year
 
 d-tbcsx2lp = Search found
     .w-searching-youtube = Searching YouTube
@@ -406,12 +626,16 @@ d-w7mpbzm4 = Video page
     .w-watch-later = Watch later
     .w-live = Live
     .w-description = Description
+    .w-no-comments-yet = No comments yet
+    .w-refresh-comments = Refresh comments
+    .w-comments = Comments
     .w-found-for = Found for { $found_for }
 
 d-eijjevst = Playlist page
     .w-refresh = Refresh
     .w-videos = { $video_count } videos
     .w-play-all = Play all
+    .w-loading-the-playlist = Loading the playlist
     .w-nothing-shown-from-this-playlist-yet = Nothing shown from this playlist yet
     .w-its-videos-appear-once-youtube-says = Its videos appear once YouTube says what it holds
 
