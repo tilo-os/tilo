@@ -12,19 +12,9 @@
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub(crate) fn playable(address: &str, name: Option<&str>) -> String {
-    let Some(hash) = address.strip_prefix("tilo-blob://") else {
-        return address.to_owned();
-    };
-    let Some(bytes) = tilo_content_device::device().and_then(|store| store.read(hash)) else {
-        // The bytes are not here yet, or this process holds no store: the player is handed the
-        // address it was given, and its own failure says what it could not play.
-        return address.to_owned();
-    };
-    let file = name.filter(|name| !name.is_empty()).unwrap_or("video");
-    media::Source::from_contents(file, &bytes)
-        .ok()
-        .and_then(|source| source.to_uri().ok())
-        .unwrap_or_else(|| address.to_owned())
+    media::playable(address, name, |hash| {
+        tilo_content_device::device().and_then(|store| store.read(hash))
+    })
 }
 
 /// The address as it stands: a page's media element plays what it names, and reads no device

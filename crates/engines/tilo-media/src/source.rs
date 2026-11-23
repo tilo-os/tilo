@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
 
+/// The scheme a view names a kept file by: `tilo-blob://<hash>`, the address a picture takes.
+pub const BLOB_SCHEME: &str = "tilo-blob://";
+
 /// A reference to playable media. Unified across the local disk, the P2P FUSE
 /// workspace, and a remote stream URL so the engine and the prefetcher take the
 /// same `Source` regardless of where the bytes live.
@@ -180,6 +183,39 @@ fn contents_source(extension: &str, bytes: &[u8]) -> std::io::Result<Source> {
     Ok(Source::LocalFile(path))
 }
 
+/// The medium `address` names, staged to a file when it is a content address
+/// (`tilo-blob://<hash>`): `read` answers the bytes this process can reach for the hash, and
+/// `name` is the file's name where the view knows it, so the staged file keeps the extension
+/// its container is read by. A file or stream address plays as it stands, and an address whose
+/// bytes `read` does not answer is handed on unchanged, so the player's own failure says what
+/// it could not play.
+///
+/// One resolver for both kinds of window: the native window's adapter and a tilolang app's
+/// host stage the same way, each with the content store its side holds.
+#[cfg(not(any(target_arch = "wasm32", web_page)))]
+#[must_use]
+pub fn playable(address: &str, name: Option<&str>, read: impl Fn(&str) -> Option<Vec<u8>>) -> String {
+    let Some(hash) = address.strip_prefix(BLOB_SCHEME) else {
+        return address.to_owned();
+    };
+    let Some(bytes) = read(hash) else {
+        return address.to_owned();
+    };
+    let file = name.filter(|name| !name.is_empty()).unwrap_or("video");
+    Source::from_contents(file, &bytes)
+        .ok()
+        .and_then(|source| source.to_uri().ok())
+        .unwrap_or_else(|| address.to_owned())
+}
+
+/// The address as it stands: a page's media element plays what it names, and reads no content
+/// store of this host.
+#[cfg(any(target_arch = "wasm32", web_page))]
+#[must_use]
+pub fn playable(address: &str, _name: Option<&str>, _read: impl Fn(&str) -> Option<Vec<u8>>) -> String {
+    address.to_owned()
+}
+
 #[cfg(any(unix, windows))]
 pub fn path_to_file_uri(path: &Path) -> std::io::Result<String> {
     let absolute = std::path::absolute(path)?;
@@ -221,6 +257,33 @@ pub fn path_to_file_uri(_path: &Path) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A kept file plays: its bytes are read by the store the caller holds and staged as a file
+    /// the player opens, under the name the view knew it by so the container is read right.
+    #[cfg(not(any(target_arch = "wasm32", web_page)))]
+    #[test]
+    fn a_kept_file_is_staged_under_the_name_the_view_knows() {
+        let bytes = b"not really an mp4".to_vec();
+        let staged = playable("tilo-blob://abc123", Some("Sunset Timelapse.mp4"), |hash| {
+            (hash == "abc123").then(|| bytes.clone())
+        });
+        assert!(
+            staged.starts_with("file://"),
+            "a content address plays as a staged file: {staged}"
+        );
+        assert!(staged.ends_with(".mp4"), "its container keeps its extension: {staged}");
+        let path = file_uri_to_path(&staged).expect("a file URI");
+        assert_eq!(std::fs::read(&path).expect("the staged file reads"), bytes);
+
+        // A stream, a file address, and an address no store answers play as they stand.
+        for address in [
+            "https://media.example/clip.mp4",
+            "file:///home/ada/clip.mp4",
+        ] {
+            assert_eq!(playable(address, None, |_| None), address);
+        }
+        assert_eq!(playable("tilo-blob://missing", None, |_| None), "tilo-blob://missing");
+    }
 
     #[test]
     fn sources_resolve_to_absolute_or_workspace_urls() {

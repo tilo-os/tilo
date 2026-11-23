@@ -41,7 +41,7 @@ use tilo_actions::{
     ResourceSpec,
 };
 use tilo_render_protocol::WireError;
-use tilo_render_protocol::patch::{ToUi, Transport};
+use tilo_render_protocol::patch::{Node, Patch, ToUi, Transport, Value as UiValue, decode_batch, encode_batch};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
@@ -512,15 +512,10 @@ struct HostPlatform {
     surface: SurfaceSlot,
     /// The later builds the instance follows ([`Hosted::follow_builds`]).
     builds: BuildsSlot,
-    /// The device content store of the app in its workspace, which the session opened for this
-    /// instance: what a chosen file's bytes are kept in and its document's pictures are read
-    /// from. `None` on a session that hands none, and then this window keeps what it is given
-    /// in [`Self::kept`] instead.
-    content: Option<tilo_content::ContentStore>,
-    /// Where a file a person chooses is kept when the session handed no store: this window's
-    /// own, in memory. It lasts as long as the window, which is what a device that keeps no
-    /// store can promise; the person is still asked, and the file still opens.
-    own_content: tilo_content::ContentStore,
+    /// The content store of the app in its workspace, which the session opened for this
+    /// instance, else this window's own: what a chosen file's bytes are kept in, its document's
+    /// pictures are read from, and the medium a player opens is staged from.
+    content: tilo_content::ContentStore,
     /// The person's own chooser, which the session opened for this instance.
     chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
     /// The person's clipboard, which the session opened for this instance.
@@ -540,11 +535,85 @@ struct HostPlatform {
 }
 
 impl HostPlatform {
-    /// The content store this window keeps files in: the device's for the app in its workspace,
-    /// which the session opened for it, else the one the window keeps itself, so a file a person
-    /// chooses still opens where no store was handed.
+    /// The content store this window keeps files in: the session's for the app in its workspace
+    /// when it opened one, else the window's own, so a file a person chooses still opens.
     fn store(&self) -> &tilo_content::ContentStore {
-        self.content.as_ref().unwrap_or(&self.own_content)
+        &self.content
+    }
+}
+
+/// The window's side of an instance, with every medium a view names as content staged first: a
+/// tilolang view names a song or a video by its address (`tilo-blob://<hash>`) and the bytes are
+/// this instance's store, which the window process cannot read itself. Staging here is the same
+/// one resolver a native window's adapter calls ([`media::playable`]), with this window's store.
+struct Playable {
+    inner: Box<dyn Transport>,
+    content: tilo_content::ContentStore,
+}
+
+impl Transport for Playable {
+    fn send(&mut self, batch: Vec<u8>) -> Result<(), WireError> {
+        // Most batches are no view at all (a notice, an action list): a medium can only be
+        // staged when one travels, so the bytes are read once to find out.
+        if !contains_batch(&batch, media::BLOB_SCHEME.as_bytes()) {
+            return self.inner.send(batch);
+        }
+        let mut messages = decode_batch::<ToUi>(&batch)?;
+        for message in &mut messages {
+            stage_message(message, &self.content);
+        }
+        self.inner.send(encode_batch(&messages)?)
+    }
+
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, WireError> {
+        self.inner.recv()
+    }
+}
+
+/// Whether the encoded batch carries `needle` anywhere.
+fn contains_batch(batch: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && batch.windows(needle.len()).any(|window| window == needle)
+}
+
+/// Stage every medium the message names, in the trees and patches it carries.
+fn stage_message(message: &mut ToUi, content: &tilo_content::ContentStore) {
+    match message {
+        ToUi::Open { tree, .. } => stage_node(tree, content),
+        ToUi::Patch { patches, .. } => {
+            for patch in patches {
+                match patch {
+                    Patch::SetRoot(node) => stage_node(node, content),
+                    Patch::Insert { node, .. } => stage_node(node, content),
+                    Patch::SetProp { name, value, .. } if name.as_str() == "source" => {
+                        if let Some(UiValue::Text(address)) = value {
+                            *address = media::playable(address, None, |hash| content.read(hash));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Stage the medium the node is drawn with, and those of the nodes under it.
+fn stage_node(node: &mut Node, content: &tilo_content::ContentStore) {
+    if matches!(node.kind.as_str(), "ui.VideoPlayer" | "ui.MediaTransport")
+        && let Some(UiValue::Text(address)) = node.props.get("source")
+    {
+        let title = match node.props.get("title") {
+            Some(UiValue::Text(title)) => Some(title.as_str()),
+            _ => None,
+        };
+        let staged = media::playable(address, title, |hash| content.read(hash));
+        if &staged != address {
+            node.props
+                .insert("source".to_owned(), UiValue::Text(staged));
+        }
+    }
+    for child in &mut node.children {
+        stage_node(child, content);
     }
 }
 
@@ -1201,6 +1270,10 @@ impl Hosted {
         let used = used_apps(&spec, &bundle, &store);
         let personal = PersonalDocument::open(&spec.app, &spec.person, &store);
         let watches = Rc::new(crate::files::Watches::new(Arc::clone(&wake)));
+        // One store for this window's files: the session's for the app in its workspace when it
+        // opened one, else the window's own. The platform keeps what the app chooses in it, and
+        // the window is handed a medium staged from it.
+        let content = kept.content.clone().unwrap_or_else(memory_content);
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
             installed: spec.installed.clone(),
@@ -1210,8 +1283,7 @@ impl Hosted {
             wake: Arc::clone(&wake),
             surface: Rc::clone(&surface),
             builds: Rc::clone(&builds),
-            content: kept.content.clone(),
-            own_content: memory_content(),
+            content: content.clone(),
             chooser: kept.chooser.clone(),
             clipboard: kept.clipboard.clone(),
             thumbnails: kept.thumbnails.clone(),
@@ -1234,7 +1306,10 @@ impl Hosted {
             Rc::new(platform),
             // People by what the workspace's member list calls them, once it arrived.
             Rc::new(tilolang_tilo::names::Installed),
-            window,
+            Box::new(Playable {
+                inner: window,
+                content: content.clone(),
+            }),
         );
         // What a native app of the package's id kept on this device: the package's migrations carry
         // it over on the device whose turn each one is.
