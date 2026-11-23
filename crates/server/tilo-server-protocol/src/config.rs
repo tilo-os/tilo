@@ -101,7 +101,10 @@ pub struct ServerConfig {
     /// Where this server serves its own web UI over HTTPS: on by default. Its person turns
     /// it off with the `web.serve` action on its entry among their servers, and `None`
     /// serves none in this process, as a deployment that publishes another's pages does.
-    #[serde(default = "default_web_listen", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "default_web_listen",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub web_listen: Option<SocketAddr>,
     /// The certificate its web UI is served with: a development one kept below its state
     /// ([`WebTls::Dev`], the default), or a PEM chain and key ([`WebTls::Files`]).
@@ -134,6 +137,10 @@ fn default_services() -> ServiceCapabilities {
     ServiceCapabilities::relay_only()
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "serde names an optional field's default by function, and a deployment serves no web UI by naming none"
+)]
 fn default_web_listen() -> Option<SocketAddr> {
     Some(SocketAddr::from(([0, 0, 0, 0], 8443)))
 }

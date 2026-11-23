@@ -17,6 +17,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use collab_types::WorkspaceId;
+use tilo_server_protocol::config::WebTls;
 use tilo_server_protocol::metrics::WorkspaceEgress;
 use tilo_server_protocol::{
     ComputeAccelerator, DeviceMeshProfile, MetricsSnapshot, PowerAvailability, ProcessLease,
@@ -239,12 +240,16 @@ tilo_test_env::scenario! {
             rented: false,
             services: ServiceCapabilities::relay_only(),
             web_entry: None,
+            web_listen: Some(SocketAddr::from(([0, 0, 0, 0], 8443))),
+            web_tls: WebTls::Dev,
             max_workspace_grants: None,
             relay: None,
         };
         let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-server"
 iroh_listen = "0.0.0.0:4919"
+web_listen = "0.0.0.0:8443"
+web_tls = "dev"
 
 [trust_policy]
 kind = "allow_list"
