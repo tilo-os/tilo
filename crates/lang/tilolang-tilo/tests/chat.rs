@@ -155,11 +155,7 @@ fn post(r: &Replica, view: &ViewInstance, text: &str) {
     reason = "one conversation: posts, a reply and a thread, on both devices"
 )]
 fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
-    let (ada, loaded) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[(CHAT, CHAT_IDS)],
-    );
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let team = call(&ada, "new_category", vec![all, Value::text("Team")]);
@@ -301,11 +297,7 @@ fn reactions(row: &UiNode) -> Vec<(String, Vec<Actor>)> {
 
 #[test]
 fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
-    let (ada, loaded) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[(CHAT, CHAT_IDS)],
-    );
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -650,11 +642,7 @@ fn the_conversations_of_chat_before_channels_open_as_channels_saying_what_they_s
     ada.commit();
 
     // The same workspace, opened by the Chat of channels.
-    let (later, _) = Replica::new(
-        "ada",
-        ada.doc.fork(),
-        &[(CHAT, CHAT_IDS)],
-    );
+    let (later, _) = Replica::new("ada", ada.doc.fork(), &[(CHAT, CHAT_IDS)]);
     let sidebar = later.view(APP);
     let shown = texts(sidebar.tree());
     assert!(
@@ -971,11 +959,7 @@ fn a_workspace_held_by_one_version_of_chat_is_read_and_changed_by_that_version_w
  {
     // The current Chat loaded first, then the Chat before channels: each a package with its
     // own ids lock, as an upgraded workspace has them.
-    let (current, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[(CHAT, CHAT_IDS)],
-    );
+    let (current, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let channels = Value::resource(&current.host.root_of(APP).unwrap());
     current.commit();
     let channel = call(
@@ -1053,11 +1037,7 @@ fn a_workspace_held_by_one_version_of_chat_is_read_and_changed_by_that_version_w
 /// end nothing is marked, and a message that arrives afterwards is marked alone.
 #[test]
 fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
-    let (ada, loaded) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[(CHAT, CHAT_IDS)],
-    );
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -1657,11 +1637,7 @@ fn a_message_is_found_by_search_and_a_read_holds_what_it_says() {
     use tilo_desktop_search::indexed::IndexedContent;
     use tilo_resource::search_index::{IndexState, Publisher};
 
-    let (ada, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[(CHAT, CHAT_IDS)],
-    );
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -1744,11 +1720,7 @@ impl tilolang_runtime::Words for EchoWords {
 /// or every other device in a real workspace refuses the message.
 #[test]
 fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
-    let (ada, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[(CHAT, CHAT_IDS)],
-    );
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -1790,4 +1762,3 @@ fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
         last.action
     );
 }
-

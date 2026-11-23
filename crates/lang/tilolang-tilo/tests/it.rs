@@ -63,7 +63,6 @@ mod surface;
 mod task;
 mod task_api;
 mod tasks;
-mod tasks_agent;
 mod tasks_features;
 mod tasks_places;
 mod tasks_time;
