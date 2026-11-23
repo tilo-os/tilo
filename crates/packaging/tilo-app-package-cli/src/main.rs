@@ -8,7 +8,6 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -544,12 +543,12 @@ fn cmd_pack(
     let packed =
         pack(payload_dir, &manifest, &identity).map_err(|e| anyhow!("pack failed: {e}"))?;
     let payload: Option<&dyn BlobSource> = if thin { None } else { Some(&packed) };
-    let limit = if local_build {
-        tilo_app_package::local_build_size_limit(&packed.meta.manifest)
+    let options = if local_build {
+        tilo_app_package::tapp::WriteOptions::replace().local_build()
     } else {
-        tilo_app_package::app_size_limit(&packed.meta.manifest)
+        tilo_app_package::tapp::WriteOptions::replace()
     };
-    write_tapp_within(output, &packed.meta, payload, limit)?;
+    write_tapp_with(output, &packed.meta, payload, options)?;
     eprintln!(
         "packed {} ({} form, {} payload blobs)",
         packed.id(),
@@ -966,48 +965,26 @@ fn cmd_unpack(dest: &Path, file: &Path) -> Result<()> {
 // .tapp I/O
 
 /// Write `meta` (full when `payload` is given, thin otherwise) to `path`
-/// atomically, enforcing the application size ceiling on the result.
+/// atomically, enforcing the application size ceiling and verifying the result.
 fn write_tapp(path: &Path, meta: &PackageMeta, payload: Option<&dyn BlobSource>) -> Result<()> {
-    write_tapp_within(
+    write_tapp_with(
         path,
         meta,
         payload,
-        tilo_app_package::app_size_limit(&meta.manifest),
+        tilo_app_package::tapp::WriteOptions::replace(),
     )
 }
 
-/// [`write_tapp`] against the size ceiling `limit` (none for a non-app
-/// bundle).
-fn write_tapp_within(
+/// [`write_tapp`] with explicit [`tilo_app_package::tapp::WriteOptions`].
+fn write_tapp_with(
     path: &Path,
     meta: &PackageMeta,
     payload: Option<&dyn BlobSource>,
-    limit: Option<u64>,
+    options: tilo_app_package::tapp::WriteOptions,
 ) -> Result<()> {
-    tilo_files::native::atomic::write_streaming(path, |temp| {
-        let mut archive =
-            tilo_app_package::tapp::write(std::io::BufWriter::new(&mut *temp), meta, payload)
-                .map_err(|error| {
-                    std::io::Error::other(format!("write package archive: {error}"))
-                })?;
-        archive
-            .flush()
-            .map_err(|error| std::io::Error::other(format!("flush package archive: {error}")))?;
-        drop(archive);
-        let archive_size = temp
-            .metadata()
-            .map_err(|error| std::io::Error::other(format!("stat temporary package: {error}")))?
-            .len();
-        if let Some(limit) = limit
-            && archive_size > limit
-        {
-            return Err(std::io::Error::other(format!(
-                "application tapp is {archive_size} bytes; limit is {limit} bytes"
-            )));
-        }
-        Ok(())
-    })
-    .with_context(|| format!("install package {}", path.display()))
+    tilo_app_package::tapp::write_file(path, meta, payload, options)
+        .map(|_| ())
+        .with_context(|| format!("install package {}", path.display()))
 }
 
 /// Decode the archive at `path`. With `keep_blobs` the carried payload is
@@ -1030,7 +1007,8 @@ fn read_tapp(path: &Path, keep_blobs: bool) -> Result<(Tapp, BTreeMap<BlobHash, 
 
 /// A publisher key file (see [`app_registry::publisher::key`]) as a package signer.
 fn load_identity(path: &Path) -> Result<SigningIdentity> {
-    load_signing_key(path).map(SigningIdentity::from_signing_key)
+    SigningIdentity::from_key_file(path)
+        .with_context(|| format!("publisher key {}", path.display()))
 }
 
 /// The raw signing key behind a key file — for signatures that aren't
@@ -1276,12 +1254,6 @@ fn load_previous_entry(path: &Path) -> Result<registry_types::RegistryEntry> {
     Ok(entry)
 }
 
-fn load_entry_metadata(path: &Path) -> Result<app_registry::publisher::EntryMetadata> {
-    let bytes =
-        std::fs::read(path).with_context(|| format!("read entry metadata {}", path.display()))?;
-    serde_json::from_slice(&bytes).context("decode entry metadata JSON")
-}
-
 fn print_entry(
     entry: &registry_types::RegistryEntry,
     action: Option<RegistryAction>,
@@ -1302,13 +1274,6 @@ fn print_entry(
         serde_json::to_string_pretty(&output).context("encode entry")?
     );
     Ok(())
-}
-
-fn release_time() -> u64 {
-    std::env::var("SOURCE_DATE_EPOCH")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_else(tilo_clock::unix_now)
 }
 
 /// Hand-written program files are accepted in any formatting; what gets
@@ -1344,7 +1309,7 @@ fn cmd_bot_entry(args: &BotEntryArgs) -> Result<()> {
     let metadata = args
         .metadata
         .as_deref()
-        .map(load_entry_metadata)
+        .map(app_registry::publisher::EntryMetadata::from_file)
         .transpose()?;
     let release = app_registry::publisher::BotRelease {
         program: &canonical,
@@ -1358,7 +1323,7 @@ fn cmd_bot_entry(args: &BotEntryArgs) -> Result<()> {
         &signer,
         previous.as_ref(),
         metadata.as_ref(),
-        release_time(),
+        app_registry::publisher::release_time(),
     )?;
     if args.upload {
         app_registry::publisher::RegistryClient::new(&args.registry)?
@@ -1394,7 +1359,9 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
         bail!("--previous-entry is required with --action update");
     }
     let previous = previous_entry.map(load_previous_entry).transpose()?;
-    let metadata = metadata.map(load_entry_metadata).transpose()?;
+    let metadata = metadata
+        .map(app_registry::publisher::EntryMetadata::from_file)
+        .transpose()?;
     let mut entry = if let Some(objects) = &args.objects {
         app_registry::publisher::build_entry_with_objects(
             app_registry::publisher::ThinPackage {

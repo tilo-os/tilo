@@ -63,11 +63,12 @@ pub(super) fn run(
     root.signature = Some(publisher.sign_signed_root(&root)?);
     let meta = PackageMeta::from_root(root, manifest_bytes, package.meta.collection_bytes)?;
     // A fresh create prevents accidental replacement of official/user packages.
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(output)?;
-    tilo_app_package::tapp::write(file, &meta, Some(&blobs))?;
+    super::write_tapp_with(
+        output,
+        &meta,
+        Some(&blobs),
+        tilo_app_package::tapp::WriteOptions::create_new(),
+    )?;
     println!("{}", meta.id);
     Ok(())
 }

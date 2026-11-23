@@ -4047,6 +4047,41 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
             .err()
             .expect("an existing output is not overwritten");
         assert!(format!("{again:#}").contains("creating"), "{again:#}");
+
+        // The bytes written by pack_manifest match the canonical archive encoding.
+        let mut expected_manifest = manifest();
+        expected_manifest.publisher.identity =
+            format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
+        expected_manifest.resources.kinds = vec!["local.dev.reading.list.greeting".into()];
+        let repacked = tilo_app_package::pack(&payload, &expected_manifest, &identity).unwrap();
+        assert_eq!(
+            std::fs::read(&output).unwrap(),
+            tilo_app_package::tapp::to_bytes(&repacked.meta, Some(&repacked)).unwrap()
+        );
+
+        // An oversized payload is refused and leaves nothing behind.
+        let big_payload = temp.path().join("big-payload");
+        std::fs::create_dir_all(big_payload.join("bin")).unwrap();
+        std::fs::write(
+            big_payload.join("bin/reading-list"),
+            vec![0x5a; usize::try_from(tilo_app_package::MAX_APP_TAPP_BYTES).unwrap()],
+        )
+        .unwrap();
+        let big_out_dir = temp.path().join("big-out");
+        std::fs::create_dir(&big_out_dir).unwrap();
+        let big_output = big_out_dir.join("reading-list.tapp");
+        let oversized =
+            pack::pack_manifest(manifest(), Vec::new(), &big_payload, &big_output, &identity)
+                .err()
+                .expect("oversized app must be refused");
+        assert!(
+            format!("{oversized:#}").contains("application tapp is"),
+            "{oversized:#}"
+        );
+        assert!(
+            std::fs::read_dir(&big_out_dir).unwrap().next().is_none(),
+            "oversized pack_manifest must leave nothing behind"
+        );
     }
 
     {

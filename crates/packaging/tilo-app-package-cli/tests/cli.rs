@@ -98,6 +98,31 @@ tilo_test_env::scenario! {
             stdout.contains("verifies and publisher is trusted"),
             "verify output: {stdout}"
         );
+
+        // Fixed key + fixed input produces the exact canonical archive bytes.
+        let fixed_key = workdir.path().join("fixed-key.json");
+        let fixed_pub = write_key(&fixed_key, 9);
+        let fixed_tapp = workdir.path().join("fixed.tapp");
+        run(&[
+            "pack",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "--identity",
+            fixed_key.to_str().unwrap(),
+            "-o",
+            fixed_tapp.to_str().unwrap(),
+        ]);
+        let fixed_manifest =
+            tilo_app_package::Manifest::from_toml_str(&sample_manifest_with(&fixed_pub)).unwrap();
+        let identity = tilo_app_package::SigningIdentity::from_seed(&[9; 32]);
+        let repacked =
+            tilo_app_package::pack(&payload_dir, &fixed_manifest, &identity).unwrap();
+        assert_eq!(
+            std::fs::read(&fixed_tapp).unwrap(),
+            tilo_app_package::tapp::to_bytes(&repacked.meta, Some(&repacked)).unwrap()
+        );
     }
 
     phase cli_pack_rejects_oversized_app_atomically;

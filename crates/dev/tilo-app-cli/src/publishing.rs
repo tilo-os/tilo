@@ -144,11 +144,8 @@ pub fn run_publish(args: PublishArgs) -> Result<Value> {
     };
     let metadata = args
         .metadata
-        .map(|path| {
-            let text = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-            serde_json::from_slice::<app_registry::publisher::EntryMetadata>(&text)
-                .with_context(|| format!("parse {}", path.display()))
-        })
+        .as_deref()
+        .map(app_registry::publisher::EntryMetadata::from_file)
         .transpose()?;
     let bytes = packages
         .iter()

@@ -1,17 +1,15 @@
 //! Signing and verifying a `.tapp` in process, so `tilo-app package` needs no
 //! separate `tilo-app-package` binary.
 
-use std::io::Write as _;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail};
-use tilo_app_package::{
-    BlobSource, DiscardBlobs, Manifest, SigningIdentity, Verification, pack, verify,
-};
+use anyhow::{Context, Result, anyhow};
+use tilo_app_package::{BlobSource, Manifest, SigningIdentity, pack};
 
-/// Reads a publisher key file (see [`app_registry::publisher::key`]).
+/// Reads a publisher key file (see [`registry_types::key_file`]).
 pub fn load_identity(path: &Path) -> Result<SigningIdentity> {
-    app_registry::publisher::key::load(path).map(SigningIdentity::from_signing_key)
+    SigningIdentity::from_key_file(path)
+        .with_context(|| format!("publisher key {}", path.display()))
 }
 
 /// What [`pack_manifest`] produced.
@@ -35,34 +33,15 @@ pub fn pack_manifest(
     let packed =
         pack(payload, &manifest, identity).map_err(|error| anyhow!("pack failed: {error}"))?;
 
-    let file = std::fs::File::create_new(output)
-        .with_context(|| format!("creating {}", output.display()))?;
-    let mut writer = tilo_app_package::tapp::write(
-        std::io::BufWriter::new(file),
+    let written = tilo_app_package::tapp::write_file(
+        output,
         &packed.meta,
         Some(&packed as &dyn BlobSource),
+        tilo_app_package::tapp::WriteOptions::create_new(),
     )
-    .context("writing package archive")?;
-    writer.flush().context("flushing package archive")?;
-    drop(writer);
-    let bytes = std::fs::metadata(output)?.len();
-    if let Some(limit) = tilo_app_package::app_size_limit(&packed.meta.manifest)
-        && bytes > limit
-    {
-        bail!("the package is {bytes} bytes; the limit for this application is {limit} bytes");
-    }
-
-    let reader = std::io::BufReader::new(std::fs::File::open(output)?);
-    let tapp = tilo_app_package::tapp::read(reader, &mut DiscardBlobs)
-        .with_context(|| format!("decoding {}", output.display()))?;
-    if !tapp.missing().is_empty() {
-        bail!("{} lacks payload blobs", output.display());
-    }
-    match verify(&tapp.meta, &[identity.public_key_bytes()]) {
-        Verification::Trusted { .. } => Ok(Packed {
-            id: tapp.meta.id.to_string(),
-            bytes,
-        }),
-        other => bail!("{} does not verify: {other:?}", output.display()),
-    }
+    .with_context(|| format!("creating {}", output.display()))?;
+    Ok(Packed {
+        id: written.id.to_string(),
+        bytes: written.bytes,
+    })
 }
