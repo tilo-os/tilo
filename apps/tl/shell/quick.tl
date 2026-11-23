@@ -34,6 +34,7 @@ view quick_settings() {
                             quiet_tile()
                             night_light_tile()
                             airplane_tile()
+                            mobile_tile()
                             power_mode_tile()
                         }
                         levels()
@@ -137,6 +138,16 @@ view airplane_tile() {
     }
 }
 
+/// Mobile data: on while the modem's data is, and nothing on a device without one.
+view mobile_tile() {
+    let mobile = device.network.mobile
+    if mobile.available {
+        ui.Button("Mobile data", icon: .globe, toggled: mobile.on) {
+            on press: device.set_mobile_data(device.network, not mobile.on)
+        }
+    }
+}
+
 /// The power mode, its own menu choosing between the modes the machine offers; nothing on a
 /// machine that offers none.
 view power_mode_tile() {
@@ -167,11 +178,15 @@ fn power_mode_label(mode: device.PowerMode) -> Text {
 /// The brightness and the volume, each where the device has it: dragging sets it as the device
 /// reads it back, and the volume's mute button silences it in one press.
 view levels() {
-    if let level = device.displays.level {
-        row(gap: .related, align: .center) {
-            ui.Icon(.sun)
-            ui.Slider(value: level, label: "Brightness", fill) {
-                on change(v): device.set_brightness(device.displays, v)
+    // One slider per display that can be dimmed, the focused display first: each sets that
+    // display's own brightness.
+    for display in device.displays.displays {
+        if let level = display.brightness {
+            row(gap: .related, align: .center) {
+                ui.Icon(.sun)
+                ui.Slider(value: level, label: display.name, fill) {
+                    on change(v): device.set_display_brightness(device.displays, display.connector, v)
+                }
             }
         }
     }
@@ -245,9 +260,24 @@ view sound_section() {
 /// The Wi-Fi networks in reach, the joined one first, each pressed to join it; and the saved
 /// networks this device knows but cannot see. Nothing on a device without Wi-Fi.
 view network_section() {
+    state password_for: Text = ""
+    state password: Text = ""
+    state hidden: Bool = false
+    state hidden_name: Text = ""
+    state hidden_password: Text = ""
     let wifi = device.network.wifi
     if wifi.available {
         ui.Section("Wi-Fi") {
+            if let wired = device.network.wired {
+                ui.ListRow(
+                    "Wired network",
+                    secondary: if wired.connected { "Connected" } else { "Cable unplugged" },
+                    selected: wired.connected,
+                    icon: .ethernet_port,
+                ) {
+                    on activate: device.set_wired(device.network, not wired.connected)
+                }
+            }
             if not wifi.on {
                 ui.Text("Wi-Fi is off", role: .caption, secondary: true)
             } else if wifi.networks.is_empty() {
@@ -262,15 +292,78 @@ view network_section() {
                     selected: n.connected,
                     icon: if n.secure { .lock } else { .wifi },
                 ) {
-                    on activate: device.join_wifi(device.network, n.name)
+                    on activate: if n.secure and not n.known {
+                        set(password_for, n.name)
+                    } else {
+                        device.join_wifi(device.network, n.name)
+                    }
+                }
+            }
+            if password_for != "" {
+                ui.Text("Enter the password for {password_for}", role: .caption, secondary: true)
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.TextInput(bind: password, placeholder: "Password", fill)
+                    ui.Button("Join", role: .primary, size: .small) {
+                        on press: device.connect_wifi(device.network, password_for, password)
+                    }
+                    ui.Button("Cancel", size: .small, role: .plain) {
+                        on press: set(password_for, "")
+                    }
+                }
+            }
+            row(gap: .related, align: .center) {
+                ui.Button("Hidden network", icon: .wifi, role: .plain, toggled: hidden) {
+                    on press: set(hidden, not hidden)
+                }
+            }
+            if hidden {
+                ui.Text("Join a network that does not broadcast its name", role: .caption, secondary: true)
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.TextInput(bind: hidden_name, placeholder: "Network name", fill)
+                    ui.TextInput(bind: hidden_password, placeholder: "Password", fill)
+                    ui.Button("Join", role: .primary, size: .small) {
+                        on press: device.connect_hidden_wifi(
+                            device.network,
+                            hidden_name,
+                            hidden_password,
+                        )
+                    }
+                    ui.Button("Cancel", size: .small, role: .plain) {
+                        on press: set(hidden, false)
+                    }
                 }
             }
             let saved = device.network.saved.filter(s -> s.kind == .wifi)
             if not saved.is_empty() {
                 ui.Text("Saved networks", role: .caption, secondary: true)
                 for s in saved {
-                    ui.ListRow(s.name, secondary: "Saved", icon: .wifi) {
+                    ui.ListRow(
+                        s.name,
+                        secondary: if s.autoconnect { "Joins by itself" } else { "Saved" },
+                        icon: .wifi,
+                    ) {
                         on activate: device.join_wifi(device.network, s.name)
+                        trailing: {
+                            ui.Button(
+                                if s.autoconnect {
+                                    "Stop joining by itself"
+                                } else { "Join by itself" },
+                                icon: .refresh,
+                                icon_only: true,
+                                size: .small,
+                                toggled: s.autoconnect,
+                                role: .plain,
+                            ) {
+                                on press: device.set_network_autoconnect(
+                                    device.network,
+                                    s.id,
+                                    on: not s.autoconnect,
+                                )
+                            }
+                            ui.Button("Forget this network", icon: .trash, icon_only: true, size: .small, role: .plain) {
+                                on press: device.forget_network(device.network, s.id)
+                            }
+                        }
                     }
                 }
             }
