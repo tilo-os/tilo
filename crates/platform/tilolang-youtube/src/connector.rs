@@ -89,6 +89,13 @@ fn asked(service: &dyn Service, ask: &Ask) -> Result<FromConnector, String> {
                 page,
             })
         }
+        Ask::Playlist { request, key } => {
+            let page = service.playlist(key).map_err(failed)?;
+            Ok(FromConnector::Playlist {
+                request: *request,
+                page,
+            })
+        }
         Ask::Trending { request } => {
             let page = service.trending().map_err(failed)?;
             Ok(FromConnector::Trending {

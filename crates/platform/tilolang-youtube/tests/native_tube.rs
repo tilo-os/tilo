@@ -139,7 +139,7 @@ fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once(
         "the channels still subscribed to, and not the one taken back"
     );
 
-    let videos = items(&host, "videos", "Video", &["key", "liked", "watch_later"]);
+    let videos = items(&host, "videos", "Video", &["key", "liked"]);
     let video = |key: &str| {
         videos
             .iter()
@@ -151,14 +151,14 @@ fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once(
         Value::Bool(true),
         "the liked video"
     );
-    assert_eq!(video("jfKfPfyJRdk")[2], Value::Bool(false));
-    assert_eq!(
-        video("aircAruvnKk")[2],
-        Value::Bool(true),
-        "the video kept for later"
-    );
     assert_eq!(video("aircAruvnKk")[1], Value::Bool(false));
     assert_eq!(videos.len(), 2, "one video each, liked or kept: {videos:?}");
+    let queue = items(&host, "queue", "QueuedVideo", &["key"]);
+    assert_eq!(
+        queue.iter().map(|item| text(&item[0])).collect::<Vec<_>>(),
+        ["aircAruvnKk"],
+        "the video kept for later went on the watch queue"
+    );
 
     let history = items(&host, "history", "WatchEntry", &["key", "watched"]);
     let watched: Vec<(String, String)> = history

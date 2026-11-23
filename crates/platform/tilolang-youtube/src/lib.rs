@@ -1,6 +1,6 @@
 //! YouTube as an outside origin of tilolang packages: the logic that keeps a package's types of
 //! the `youtube` kinds (`type Video (origin: youtube.video)`) in step with YouTube, from the
-//! searches, channels and trending lists its outside effects ask for.
+//! searches, channels, playlists and trending lists its outside effects ask for.
 //!
 //! The app holds nothing of it: it declares its types and hands its effects to the
 //! capabilities (`outside("youtube.search", query)`), and this origin, in native code the
@@ -33,8 +33,8 @@ pub use origin::YouTubeOrigin;
 #[cfg(unix)]
 pub use remote::RemoteService;
 pub use service::{
-    ChannelItem, ChannelPage, Live, PlaylistItem, Scripted, SearchPage, Service, ServiceError,
-    TrendingPage, VideoItem, scripted,
+    ChannelItem, ChannelPage, Live, PlaylistItem, PlaylistPage, Scripted, SearchPage, Service,
+    ServiceError, TrendingPage, VideoItem, scripted,
 };
 
 /// The origin kept in step with YouTube over the connector at the far end of `stream`, waking

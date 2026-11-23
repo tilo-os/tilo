@@ -7,7 +7,7 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-use crate::service::{ChannelPage, SearchPage, ServiceError, TrendingPage};
+use crate::service::{ChannelPage, PlaylistPage, SearchPage, ServiceError, TrendingPage};
 
 /// The largest frame either side accepts: a channel's page with its videos fits many times over.
 pub const MAX_FRAME: usize = 64 << 20;
@@ -21,6 +21,7 @@ pub enum Ask {
     Channel { request: u64, key: String },
     Trending { request: u64 },
     Stream { request: u64, key: String },
+    Playlist { request: u64, key: String },
 }
 
 /// The id a question is asked under.
@@ -29,6 +30,7 @@ pub const fn request_of(ask: &Ask) -> u64 {
     match ask {
         Ask::Search { request, .. }
         | Ask::Channel { request, .. }
+        | Ask::Playlist { request, .. }
         | Ask::Trending { request }
         | Ask::Stream { request, .. } => *request,
     }
@@ -58,6 +60,10 @@ pub enum FromConnector {
         request: u64,
         reason: String,
     },
+    Playlist {
+        request: u64,
+        page: PlaylistPage,
+    },
 }
 
 /// What an answer answers, for a fault that says the connector answered another question.
@@ -66,6 +72,7 @@ pub const fn kind_of(answer: &FromConnector) -> &'static str {
     match answer {
         FromConnector::Search { .. } => "a search",
         FromConnector::Channel { .. } => "a channel",
+        FromConnector::Playlist { .. } => "a playlist",
         FromConnector::Trending { .. } => "the trending list",
         FromConnector::Stream { .. } => "a stream",
         FromConnector::Failed { .. } => "a failure",
@@ -79,6 +86,7 @@ impl FromConnector {
         match self {
             Self::Search { request, .. }
             | Self::Channel { request, .. }
+            | Self::Playlist { request, .. }
             | Self::Trending { request, .. }
             | Self::Stream { request, .. }
             | Self::Failed { request, .. } => *request,

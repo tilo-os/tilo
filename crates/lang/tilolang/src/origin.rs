@@ -82,6 +82,11 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
         "Asks YouTube for a channel's videos: (the channel's key).",
     ),
     (
+        "youtube.playlist",
+        "Asks YouTube for what a playlist holds: (the playlist's key). Its videos are written \
+         where the playlist's page reads them, in the order its maker put them.",
+    ),
+    (
         "youtube.subscriptions",
         "Asks YouTube for the newest videos of the channels the person follows: (the keys of \
          the channels followed, in the feed's order), so a feed of a person who follows none \

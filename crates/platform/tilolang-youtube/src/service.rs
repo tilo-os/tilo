@@ -1,5 +1,5 @@
-//! The service the YouTube origin asks: what a search, a channel, the trending list and a
-//! video's stream are, in the client's own terms.
+//! The service the YouTube origin asks: what a search, a channel, a playlist, the trending list
+//! and a video's stream are, in the client's own terms.
 //!
 //! The origin ([`crate::origin`]) holds no protocol: it hands a [`Service`] a question and
 //! writes the answer into the package's records. Two are provided: [`Live`] asks YouTube
@@ -76,6 +76,13 @@ pub struct TrendingPage {
     pub videos: Vec<VideoItem>,
 }
 
+/// A playlist's page and the videos it holds, in the order its maker put them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistPage {
+    pub playlist: PlaylistItem,
+    pub videos: Vec<VideoItem>,
+}
+
 /// Why a question could not be answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceError(pub String);
@@ -95,6 +102,9 @@ pub trait Service: Send + Sync {
 
     /// A channel's page and its newest videos.
     fn channel(&self, key: &str) -> Result<ChannelPage, ServiceError>;
+
+    /// A playlist, and the videos it holds in the order its maker put them.
+    fn playlist(&self, key: &str) -> Result<PlaylistPage, ServiceError>;
 
     /// The videos YouTube lists as trending.
     fn trending(&self) -> Result<TrendingPage, ServiceError>;
@@ -134,6 +144,11 @@ impl Service for Live {
         crate::live::channel(&client, key)
     }
 
+    fn playlist(&self, key: &str) -> Result<PlaylistPage, ServiceError> {
+        let client = crate::live::client()?;
+        crate::live::playlist(&client, key)
+    }
+
     fn trending(&self) -> Result<TrendingPage, ServiceError> {
         let client = crate::live::client()?;
         crate::live::trending(&client)
@@ -153,6 +168,8 @@ pub struct Scripted {
     pub searches: std::collections::BTreeMap<String, SearchPage>,
     /// The channels, by key.
     pub channels: std::collections::BTreeMap<String, ChannelPage>,
+    /// The playlists, by key.
+    pub playlists: std::collections::BTreeMap<String, PlaylistPage>,
     pub trending: TrendingPage,
     /// The streams, by video key.
     pub streams: std::collections::BTreeMap<String, String>,
@@ -171,6 +188,13 @@ impl Service for Scripted {
             .get(key)
             .cloned()
             .ok_or_else(|| ServiceError(format!("no scripted channel {key:?}")))
+    }
+
+    fn playlist(&self, key: &str) -> Result<PlaylistPage, ServiceError> {
+        self.playlists
+            .get(key)
+            .cloned()
+            .ok_or_else(|| ServiceError(format!("no scripted playlist {key:?}")))
     }
 
     fn trending(&self) -> Result<TrendingPage, ServiceError> {
