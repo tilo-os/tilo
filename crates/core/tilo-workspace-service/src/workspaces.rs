@@ -58,6 +58,8 @@ pub use names::PersonNames;
 mod web_ui;
 pub use web_ui::WebUi;
 mod surfaces;
+#[cfg(test)]
+mod surfaces_tests;
 #[cfg(feature = "agents")]
 pub mod terminal;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
