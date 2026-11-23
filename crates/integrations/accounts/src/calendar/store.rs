@@ -26,6 +26,7 @@ impl CalendarAccount {
     /// The opaque, secret-free config payload saved into the workspace's
     /// record for this account. The `#[serde(skip)]` password keeps the
     /// credential out of this JSON; it lives only in the vault.
+    #[cfg(test)]
     fn to_stored(&self) -> StoredAccount {
         let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
         stored.display_name = self.label().to_string();

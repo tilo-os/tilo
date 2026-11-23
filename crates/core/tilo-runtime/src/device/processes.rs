@@ -44,11 +44,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use launcher::run::tilolang_process::VerifiedInstance;
-use tilo_lock::MutexRecover as _;
 use runtime_portal::process_link::{
     AppBuild, FromProcess, InstanceFds, InstanceRequest, MediaCommand, MediaView, OpenRequest,
     Packet as _, TaskFds, TaskRequest, ToProcess,
 };
+use tilo_lock::MutexRecover as _;
 
 use super::package_runs::{installed_apps, runs_in_process, verified_installed};
 
@@ -277,7 +277,7 @@ impl Processes {
         let Some(socket) = socket else {
             return false;
         };
-        if let Err(error) = ToProcess::MediaCommand { instance, command }.send(&socket) {
+        if let Err(error) = (ToProcess::MediaCommand { instance, command }).send(&socket) {
             tracing::warn!(%error, workspace = %key.workspace, app = %key.app, "a media control did not reach its app");
             return false;
         }
