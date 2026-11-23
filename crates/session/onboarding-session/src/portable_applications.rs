@@ -36,6 +36,7 @@ pub enum Event {
 
 impl Kind for Applications {
     type Declaration = PortableApplications;
+    type StoredDeclaration = prepared_setup_model::stored::StoredApplicationsExpectation;
     type Event = Event;
     const FAILURE: &'static str = "Portable applications are pending or unavailable";
     const ROOT: &'static str = "prepared-applications";
@@ -56,6 +57,9 @@ impl Kind for Applications {
     const MONOTONIC_RECEIPTS: bool = false;
     const COMPLETION_NEEDS_PROOF: bool = false;
 
+    fn into_declaration(stored: Self::StoredDeclaration) -> Self::Declaration {
+        stored.0
+    }
     fn declared(prepared: &Prepared, identity: &Path) -> io::Result<Option<PortableApplications>> {
         prepared.portable_applications(identity)
     }
@@ -360,6 +364,151 @@ mod tests {
             )
             .unwrap();
             assert!(Applications::package(&cx, &directory).is_err());
+        }
+    }
+
+    fn flat_choice_json(digest: [u8; 32], declaration: &PortableApplications) -> String {
+        // Exact literal wire layout and field order written by main's
+        // `Choice<PortableApplications>` (`schema`, `setup_digest`,
+        // `declaration` with flat 11-key `PortableApplications`, `outcome`).
+        format!(
+            concat!(
+                r#"{{"schema":1,"setup_digest":{digest},"declaration":{{"#,
+                r#""schema":1,"operation":"{operation}","purpose":"flatpak_applications","#,
+                r#""filename":"{filename}","setup_binding":"{binding}","#,
+                r#""sealed_bytes":{sealed_bytes},"plaintext_bytes":{plaintext_bytes},"#,
+                r#""entries":{entries},"ciphertext_sha256":{ciphertext},"#,
+                r#""manifest_sha256":{manifest},"limits":{{"plaintext_bytes":{limit_plain},"#,
+                r#""entries":{limit_entries},"metadata_bytes":{limit_meta}}}}},"#,
+                r#""outcome":"deferred"}}"#
+            ),
+            digest = serde_json::to_string(&digest).unwrap(),
+            operation = declaration.operation,
+            filename = declaration.filename,
+            binding = declaration.setup_binding,
+            sealed_bytes = declaration.sealed_bytes,
+            plaintext_bytes = declaration.plaintext_bytes,
+            entries = declaration.entries,
+            ciphertext = serde_json::to_string(&declaration.ciphertext_sha256).unwrap(),
+            manifest = serde_json::to_string(&declaration.kind.manifest_sha256).unwrap(),
+            limit_plain = declaration.limits.plaintext_bytes,
+            limit_entries = declaration.limits.entries,
+            limit_meta = declaration.limits.metadata_bytes,
+        )
+    }
+
+    fn v1_fixture() -> (tempfile::TempDir, PathBuf, PortableApplications) {
+        let (home, identity, mut declaration) = fixture();
+        declaration.kind.consumer_protocol = 1;
+        let prepared = Prepared::open(home.path()).unwrap();
+        std::fs::remove_file(
+            home.path()
+                .join(".local/state/tilo/prepared-setup/activated.json"),
+        )
+        .unwrap();
+        let signer = tilo_identity::store::load_from_path(identity.join("primary.json")).unwrap();
+        prepared
+            .acknowledge(
+                signer.group_public_key(),
+                None,
+                Some(declaration.clone()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        std::fs::write(
+            root(home.path()).join("expectation.json"),
+            serde_json::to_vec(&declaration).unwrap(),
+        )
+        .unwrap();
+        (home, identity, declaration)
+    }
+
+    #[test]
+    fn stored_main_flat_choice_json_loads_stays_on_equal_replaces_and_refuses_unknown_keys() {
+        let (home, identity, declaration) = v1_fixture();
+        let prepared = Prepared::open(home.path()).unwrap();
+        let directory = root(home.path());
+        let flat_choice = flat_choice_json(prepared.digest(), &declaration);
+        let choice_path = directory.join("choice.json");
+        std::fs::write(&choice_path, flat_choice.as_bytes()).unwrap();
+        std::fs::set_permissions(&choice_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let mut pending =
+            Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
+        assert!(pending.deferred());
+        assert!(!pending.pending());
+        assert_eq!(pending.status()["state"], "deferred");
+
+        // Re-acknowledging the equal outcome leaves the existing flat file untouched on disk.
+        pending.invoke("later", b"").unwrap();
+        assert_eq!(std::fs::read(&choice_path).unwrap(), flat_choice.as_bytes());
+
+        // Replacing the deferred flat choice with completion writes the nested shape.
+        pending.invoke("resume", b"").unwrap();
+        assert!(pending.pending());
+        pending
+            .receive_prepared_password(
+                prepared.digest(),
+                Zeroizing::new(b"private password".to_vec()),
+            )
+            .unwrap();
+        pending.manual();
+        let helper = home.path().join("inert-helper");
+        std::fs::write(
+            &helper,
+            b"#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"event\":\"complete\",\"restored\":2,\"verified\":true}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        pending.run_with("restore", &helper).unwrap();
+        wait(&mut pending);
+        assert_eq!(pending.status()["state"], "complete");
+        assert!(!pending.pending());
+
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&choice_path).unwrap()).unwrap();
+        assert_eq!(written["outcome"], "complete");
+        assert!(written["declaration"]["kind"]["manifest_sha256"].is_array());
+        assert!(written["declaration"].get("schema").is_none());
+        assert!(written["declaration"].get("purpose").is_none());
+
+        let reopened =
+            Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
+        assert!(!reopened.pending());
+        assert!(!reopened.deferred());
+
+        // Unknown keys (outer or declaration) and flat `consumer_protocol` are refused on both readers.
+        let mut with_outer_unknown: serde_json::Value = serde_json::from_str(&flat_choice).unwrap();
+        with_outer_unknown["unexpected"] = serde_json::json!(true);
+        let mut with_decl_unknown: serde_json::Value = serde_json::from_str(&flat_choice).unwrap();
+        with_decl_unknown["declaration"]["extra"] = serde_json::json!(true);
+        let mut with_flat_protocol_1: serde_json::Value =
+            serde_json::from_str(&flat_choice).unwrap();
+        with_flat_protocol_1["declaration"]["consumer_protocol"] = serde_json::json!(1);
+        let mut with_flat_protocol_2: serde_json::Value =
+            serde_json::from_str(&flat_choice).unwrap();
+        with_flat_protocol_2["declaration"]["consumer_protocol"] = serde_json::json!(2);
+        let mut with_nested_unknown = written;
+        with_nested_unknown["declaration"]["extra"] = serde_json::json!(true);
+
+        for (label, bad) in [
+            ("outer unknown", with_outer_unknown),
+            ("flat declaration unknown", with_decl_unknown),
+            ("flat consumer_protocol=1", with_flat_protocol_1),
+            ("flat consumer_protocol=2", with_flat_protocol_2),
+            ("nested declaration unknown", with_nested_unknown),
+        ] {
+            std::fs::write(&choice_path, serde_json::to_vec(&bad).unwrap()).unwrap();
+            assert!(
+                Pending::open(home.path().into(), identity.clone(), declaration.clone()).is_err(),
+                "open must refuse {label}"
+            );
+            assert!(
+                pending.invoke("later", b"").is_err(),
+                "acknowledge must refuse {label}"
+            );
         }
     }
 }

@@ -40,7 +40,9 @@ pub enum Settled {
 
 /// One kind of continuation's policy.
 pub trait Kind: Sized + 'static {
-    type Declaration: Clone + PartialEq + serde::Serialize + serde::de::DeserializeOwned;
+    type Declaration: Clone + PartialEq + serde::Serialize;
+    /// On-disk parser for stored declarations inside `choice.json`.
+    type StoredDeclaration: serde::de::DeserializeOwned;
     type Event: serde::de::DeserializeOwned;
     /// The one error every refusal reports.
     const FAILURE: &'static str;
@@ -79,6 +81,7 @@ pub trait Kind: Sized + 'static {
     /// completion proof ([`Kind::verified_completion`]) is.
     const COMPLETION_NEEDS_PROOF: bool;
 
+    fn into_declaration(stored: Self::StoredDeclaration) -> Self::Declaration;
     fn declared(prepared: &Prepared, identity: &Path) -> io::Result<Option<Self::Declaration>>;
     fn valid(declaration: &Self::Declaration) -> bool;
     fn operation(declaration: &Self::Declaration) -> &str;
@@ -117,13 +120,32 @@ pub struct Context<K: Kind> {
     pub digest: [u8; 32],
 }
 
-#[derive(PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(PartialEq, serde::Serialize)]
 struct Choice<D> {
     schema: u32,
     setup_digest: [u8; 32],
     declaration: D,
     outcome: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredChoice<D> {
+    schema: u32,
+    setup_digest: [u8; 32],
+    declaration: D,
+    outcome: String,
+}
+
+fn decode_choice<K: Kind>(bytes: &[u8]) -> io::Result<Choice<K::Declaration>> {
+    let stored: StoredChoice<K::StoredDeclaration> =
+        serde_json::from_slice(bytes).map_err(|_| failure::<K>())?;
+    Ok(Choice {
+        schema: stored.schema,
+        setup_digest: stored.setup_digest,
+        declaration: K::into_declaration(stored.declaration),
+        outcome: stored.outcome,
+    })
 }
 
 struct Worker {
@@ -199,8 +221,7 @@ impl<K: Kind> Continuation<K> {
         let state = match private_file::<K>(&root::<K>(&home).join("choice.json"), K::RECEIPT_BOUND)
         {
             Ok(bytes) => {
-                let receipt: Choice<K::Declaration> =
-                    serde_json::from_slice(&bytes).map_err(|_| failure::<K>())?;
+                let receipt = decode_choice::<K>(&bytes)?;
                 if receipt.schema != 1
                     || receipt.setup_digest != digest
                     || receipt.declaration != declaration
@@ -486,9 +507,8 @@ impl<K: Kind> Continuation<K> {
         let destination = directory.join("choice.json");
         let replace = match private_file::<K>(&destination, K::RECEIPT_BOUND) {
             Ok(previous) => {
-                let previous: Choice<K::Declaration> =
-                    serde_json::from_slice(&previous).map_err(|_| failure::<K>())?;
-                if K::MONOTONIC_RECEIPTS && previous == choice {
+                let previous = decode_choice::<K>(&previous)?;
+                if previous == choice {
                     return pin.sync_all();
                 }
                 if previous.schema != 1

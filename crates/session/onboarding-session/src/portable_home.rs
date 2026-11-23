@@ -78,6 +78,7 @@ pub fn helper_executable() -> io::Result<&'static Path> {
 
 impl Kind for Home {
     type Declaration = PortableHome;
+    type StoredDeclaration = PortableHome;
     type Event = HelperEvent;
     const FAILURE: &'static str = "Portable home migration is pending or unavailable";
     const ROOT: &'static str = "prepared-home";
@@ -98,6 +99,9 @@ impl Kind for Home {
     const MONOTONIC_RECEIPTS: bool = true;
     const COMPLETION_NEEDS_PROOF: bool = false;
 
+    fn into_declaration(stored: Self::StoredDeclaration) -> Self::Declaration {
+        stored
+    }
     fn declared(prepared: &Prepared, identity: &Path) -> io::Result<Option<PortableHome>> {
         prepared.portable_home(identity)
     }
@@ -455,6 +459,88 @@ mod tests {
             )
             .unwrap();
             assert!(Home::package(pending.context(), &directory).is_err());
+        }
+    }
+
+    #[test]
+    fn main_home_choice_json_matches_literal_bytes_loads_and_refuses_unknown_keys() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+        let (home, identity, declaration) = fixture();
+        let prepared = Prepared::open(home.path()).unwrap();
+
+        // Exact literal wire bytes produced by main's `Choice<PortableHome>`
+        // (`schema`, `setup_digest`, `declaration` with `schema`, `setup_binding`,
+        // `selection: "full_home"`, `applications: false`, `outcome`).
+        let main_choice = format!(
+            concat!(
+                r#"{{"schema":1,"setup_digest":{digest},"declaration":{{"#,
+                r#""schema":1,"setup_binding":"installed-operation","#,
+                r#""selection":"full_home","applications":false}},"#,
+                r#""outcome":"deferred"}}"#
+            ),
+            digest = serde_json::to_string(&prepared.digest()).unwrap(),
+        );
+        let choice_path = root(home.path()).join("choice.json");
+
+        // Writing a new Home choice emits byte-for-byte identical JSON to main.
+        let mut pending =
+            Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
+        pending.invoke("later", b"").unwrap();
+        assert_eq!(std::fs::read(&choice_path).unwrap(), main_choice.as_bytes());
+
+        // Reading main's literal bytes (and omitting the defaulted `applications` key) loads cleanly.
+        let main_choice_default_apps = format!(
+            concat!(
+                r#"{{"schema":1,"setup_digest":{digest},"declaration":{{"#,
+                r#""schema":1,"setup_binding":"installed-operation","#,
+                r#""selection":"full_home"}},"#,
+                r#""outcome":"deferred"}}"#
+            ),
+            digest = serde_json::to_string(&prepared.digest()).unwrap(),
+        );
+        std::fs::write(&choice_path, main_choice_default_apps.as_bytes()).unwrap();
+        std::fs::set_permissions(&choice_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut reopened =
+            Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
+        assert!(reopened.deferred());
+        assert!(!reopened.pending());
+        // Equal choice on disk is left untouched on re-acknowledgement.
+        reopened.invoke("later", b"").unwrap();
+        assert_eq!(
+            std::fs::read(&choice_path).unwrap(),
+            main_choice_default_apps.as_bytes()
+        );
+
+        // Unknown outer or declaration keys are refused, as on main.
+        for (label, bad) in [
+            (
+                "outer unknown",
+                main_choice.replacen(
+                    r#""outcome":"deferred"}"#,
+                    r#""outcome":"deferred","unexpected":true}"#,
+                    1,
+                ),
+            ),
+            (
+                "declaration unknown",
+                main_choice.replacen(
+                    r#""applications":false}"#,
+                    r#""applications":false,"extra":true}"#,
+                    1,
+                ),
+            ),
+        ] {
+            std::fs::write(&choice_path, bad.as_bytes()).unwrap();
+            assert!(
+                Pending::open(home.path().into(), identity.clone(), declaration.clone()).is_err(),
+                "open must refuse {label}"
+            );
+            assert!(
+                reopened.invoke("later", b"").is_err(),
+                "acknowledge must refuse {label}"
+            );
         }
     }
 }
