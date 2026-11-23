@@ -18,9 +18,6 @@ const COPIES_KEY: &str = crate::state::COPY_POLICY_KEY;
 const CALLS_KEY: &str = "calls_v1";
 /// The document key holding the app versions a workspace runs.
 const VERSIONS_KEY: &str = "app_versions_v1";
-/// The document keys older builds kept the bots a workspace ran, and those it
-/// was asked for, under.
-const BOT_KEYS: [&str; 2] = ["bot_programs_v1", "bot_requests_v1"];
 /// The document keys holding what a workspace vouches for the record history it
 /// published and the checkpoint it rests on.
 const CHECKPOINT_KEYS: [&str; 4] = [
@@ -47,9 +44,6 @@ pub enum GovernanceRow {
     RetiredMedia,
     /// The app versions the workspace runs.
     Versions,
-    /// The bots older builds ran and were asked for: nothing writes them now,
-    /// and it keeps its place so stored operations read the same.
-    RetiredBots,
     /// Checkpoint coverage, durability receipts and import floors.
     Checkpoints,
     /// The hosts serving the workspace.
@@ -71,14 +65,13 @@ pub enum GovernanceRow {
 }
 
 impl GovernanceRow {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 13] = [
         Self::Owner,
         Self::Membership,
         Self::Identities,
         Self::Settings,
         Self::RetiredMedia,
         Self::Versions,
-        Self::RetiredBots,
         Self::Checkpoints,
         Self::Hosts,
         Self::Log,
@@ -127,7 +120,6 @@ impl GovernanceRow {
             Self::Settings => &["name", "presets_v1", "entry_v1"],
             Self::RetiredMedia => &[MEDIA_KEY],
             Self::Versions => &[VERSIONS_KEY],
-            Self::RetiredBots => &BOT_KEYS,
             Self::Checkpoints => &CHECKPOINT_KEYS,
             Self::Hosts => &[KEEPING_DEVICES_KEY, COPIES_KEY],
             Self::Removals => &[crate::removals::FIELD_V1],
@@ -143,7 +135,6 @@ impl GovernanceRow {
     #[must_use]
     pub fn action(self) -> Option<&'static str> {
         match self {
-            Self::RetiredBots => Some(governance::GRANT),
             Self::RetiredMedia | Self::Checkpoints | Self::Hosts | Self::Removals => {
                 Some(governance::SETTINGS)
             }
