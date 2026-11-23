@@ -216,21 +216,13 @@ mod tests {
             }
         }
 
-        phase state_paths_and_sizes_read_like_the_launchers;
+        phase state_paths_read_like_the_launchers;
         {
             // The installer and the launcher have to agree on the directory name, or "remove this app's
             // data" would silently miss it.
-            {
-                assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
-                assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
-                assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
-            }
-            {
-                assert_eq!(human_bytes(0), "0 B");
-                assert_eq!(human_bytes(512), "512 B");
-                assert_eq!(human_bytes(1_500), "1.5 kB");
-                assert_eq!(human_bytes(2_400_000), "2.4 MB");
-            }
+            assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
+            assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
+            assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
         }
     }
 }

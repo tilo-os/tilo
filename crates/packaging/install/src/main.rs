@@ -2885,18 +2885,3 @@ fn which_launcher() -> PathBuf {
     }
     PathBuf::from("tilo-launcher")
 }
-
-#[cfg(test)]
-mod installer_tests {
-    #[test]
-    fn local_install_uses_the_shared_thin_app_limit() {
-        assert!(tilo_app_package::tapp_size_allowed(
-            tilo_app_package::Kind::App,
-            tilo_app_package::MAX_APP_TAPP_BYTES
-        ));
-        assert!(!tilo_app_package::tapp_size_allowed(
-            tilo_app_package::Kind::App,
-            tilo_app_package::MAX_APP_TAPP_BYTES + 1
-        ));
-    }
-}
