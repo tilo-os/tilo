@@ -356,20 +356,28 @@ action import_vcard(book: Book, file: File) -> Int (
 ) {
     require cards_read(file) "The file holds no card this app can read"
     match file.text() {
-        .ok(text) => {
-            let cards = text.split("BEGIN:VCARD")
-            let made: Int = 0
-            for card in cards {
-                if add_card(book, card) != .none {
-                    made = made + 1
-                }
-            }
-            made
-        }
+        .ok(text) => add_contacts(book, text),
         // The require above already refused a file whose words are not here, so this arm answers
         // what nothing imported is.
         .err(_) => 0,
     }
+}
+
+/// The cards `cards`, the words of a vCard file, as contacts of this book, and how many named
+/// somebody: what an importer, an agent or a script hands a book in one call.
+action add_contacts(book: Book, cards: Text) -> Int (
+    icon: .plus,
+    label: "Add contacts",
+    did: "added contacts",
+) {
+    let pieces = cards.split("BEGIN:VCARD")
+    let made: Int = 0
+    for card in pieces {
+        if add_card(book, card) != .none {
+            made = made + 1
+        }
+    }
+    made
 }
 
 /// Whether a vCard file's words are here: what an import needs before it reads any card.
@@ -700,7 +708,7 @@ view book_window(book: Book) {
                     // The list is the column's scroller: the stack takes the room the foot leaves,
                     // the row spans it, and the rail stands beside the list.
                     stack(fill, gap: .none) {
-                        row(fill, gap: .none) {
+                        row(fill, align: .stretch, gap: .none) {
                             // A press asks for the first card under its letter; the list brings it up,
                             // and brings it up again when the person has scrolled away since.
                             std.list(

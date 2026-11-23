@@ -215,6 +215,12 @@ d-btp4fqga = Import vCards
 
 d-btp4fqga-file = File
 
+d-lcnj23sa = Add contacts
+    .doc = The cards `cards`, the words of a vCard file, as contacts of this book, and how many named somebody: what an importer, an agent or a script hands a book in one call.
+    .did = added contacts
+
+d-lcnj23sa-cards = Cards
+
 d-l64bjt6g = Add a vCard's card
     .doc = The contact a vCard card says, made in the book, or none for a card that names nobody.
     .did = added a card

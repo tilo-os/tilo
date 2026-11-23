@@ -516,6 +516,27 @@ fn a_book_written_as_vcards_reads_back_with_every_field() {
 }
 
 #[test]
+fn a_book_takes_the_cards_of_a_vcard_file_in_one_call() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nORG:US Navy\r\nEND:VCARD\r\n\
+                 BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alan Turing\r\nEND:VCARD\r\n";
+    let made = call(
+        &ada,
+        "add_contacts",
+        vec![Value::resource(&root), Value::text(cards)],
+    );
+    assert_eq!(made, Value::Int(2), "two cards are two contacts");
+    ada.commit();
+    let mut names: Vec<String> = items(&ada, &root, "contacts")
+        .iter()
+        .map(|c| text(&ada, c, "name"))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["Alan Turing", "Grace Hopper"]);
+}
+
+#[test]
 fn a_photo_travels_as_the_address_the_avatar_shows() {
     let device = Device::default();
     let (ada, root, _) = book(&device);
