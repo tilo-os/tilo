@@ -2046,7 +2046,6 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_name
         .await
         .expect("the person answers");
     let confirmed = departure_answer(first.await.expect("the window is answered"), 1)
-        .await
         .expect("their answer is the confirmation the request runs with");
     let Some(Confirmation::Approved(token)) = Some(confirmed.confirmation) else {
         panic!("the person's answer travels as the host's approval");
@@ -2088,7 +2087,7 @@ async fn a_departure_the_person_does_not_allow_is_answered_kept() {
         .await
         .expect("the person answers");
     assert_eq!(
-        departure_answer(reported.await.expect("the window is answered"), 1).await,
+        departure_answer(reported.await.expect("the window is answered"), 1),
         Err(ActionCallError::NotPermitted),
         "kept: the session drops the request it reported and nothing leaves"
     );

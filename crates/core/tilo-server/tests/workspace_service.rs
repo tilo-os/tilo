@@ -225,11 +225,11 @@ async fn host_writes(hosted: &Hosted, workspace: WorkspaceId, record: &str, body
             std::time::SystemTime::now(),
         )
         .expect("the host signs its own change");
-    let body = postcard::to_allocvec(&change).expect("the change encodes");
+    let signed = postcard::to_allocvec(&change).expect("the change encodes");
     documents
         .commit(
             workspace,
-            &tilo_server::workspace_documents::HostCommit { body },
+            &tilo_server::workspace_documents::HostCommit { body: signed },
         )
         .expect("the host keeps its own change");
 }
