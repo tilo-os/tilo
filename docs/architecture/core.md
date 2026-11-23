@@ -642,6 +642,8 @@ and screen share only, never documents, and stays as it is.
   the same way. A program that needs more extends this API; it gets no call
   of its own. The session's own engine (`EngineRecords`, `settings_sync`)
   goes, and settings are records read and written like any other.
+  No action lists or returns records (`keys#list`, `devices#list`): actions
+  change things, and a list is a read of the records the caller may see.
 - **One way to ask**: whenever a person is asked for a yes, a choice or a
   secret, the question is an asked invocation record answered through
   `tilo.invocations#resolve`. An app, an agent, a web page in the Browser, an
