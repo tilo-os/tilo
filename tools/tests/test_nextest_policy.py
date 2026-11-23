@@ -618,6 +618,12 @@ class SetupHandedProgramTests(unittest.TestCase):
                         started(entry) for entry in family.get("starts", {}).get(tested, [])
                     }
                     for entry in entries:
+                        # The package's own plain bin is nextest's to build for its tests
+                        # (NEXTEST_BIN_EXE_<bin>), and t refuses it as a `starts` entry: the
+                        # family's own build already made it.
+                        package, _, features = started(entry)
+                        if package == tested and not features:
+                            continue
                         with self.subTest(setup=name, program=entry, tested=tested,
                                           family=family["name"]):
                             self.assertIn(
