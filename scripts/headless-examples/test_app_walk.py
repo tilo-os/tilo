@@ -240,6 +240,19 @@ class HoldingAWalkToItsBaseline(unittest.TestCase):
         self.assertEqual(walk.live_of(spec, ["tl"]), "tl")
 
 
+class AWalkWithNoBaselineExcusesNothing(unittest.TestCase):
+    """Only a baseline from main may excuse a step that does not walk; a walk
+    with none (a new one) fails on every such step, or a broken app passes."""
+
+    def test_every_step_that_did_not_walk_fails_the_walk(self):
+        now = found(("open", True, 900), ("add", False, 30000), ("delete", False, 10000), variant="tl")
+        self.assertEqual([(s["version"], s["step"], s["why"]) for s in walk.unexcused(now)],
+                         [("tl", "add", "not on screen"), ("tl", "delete", "not on screen")])
+
+    def test_a_walk_that_walked_every_step_has_nothing_to_excuse(self):
+        self.assertEqual(walk.unexcused(found(("open", True, 900), ("add", True, 400))), [])
+
+
 class ABaselineHoldsTheSlowestOfMainsRuns(unittest.TestCase):
     """One quick run on an idle node must not make main's next ordinary run read
     as slower: the baseline keeps each step's slowest time main has shown."""

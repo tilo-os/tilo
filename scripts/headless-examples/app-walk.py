@@ -2732,6 +2732,16 @@ SLOWER_FACTOR = 2.0
 SLOWER_MARGIN_MS = 1000
 
 
+def unexcused(found: dict) -> list[dict]:
+    """The steps of a walk with no baseline that did not walk: each one fails the
+    check. A baseline excuses only the failures it names, the ones main has; a walk
+    main has none for has none excused, so a new walk is red until it walks."""
+    return [{"version": variant, "step": step_id, "why": step.get("failed") or "not walked"}
+            for variant, report in found.get("versions", {}).items()
+            for step_id, step in report.get("steps", {}).items()
+            if not step.get("walked")]
+
+
 def rebaseline(found: dict, before: dict | None) -> dict:
     """The baseline main's newest run makes, beside the one it replaces: what it
     found, except that a step's time is the slowest main has shown for it. One
@@ -3101,6 +3111,12 @@ def main() -> int:
                         print(f"REGRESSION {walk_name} {regression['version']} {regression['step']}: "
                               f"{regression['why']}", file=sys.stderr)
                     verdict = verdict or (1 if comparison["regressions"] else 0)
+                else:
+                    failed = unexcused(found)
+                    for step in failed:
+                        print(f"FAILED {walk_name} {step['version']} {step['step']}: {step['why']} "
+                              "(no baseline names it)", file=sys.stderr)
+                    verdict = verdict or (1 if failed else 0)
             times = {v: f.get("walk_ms") for v, f in report["variants"].items()}
             print(f"==> {walk_name}: walked in {times} ms", file=sys.stderr)
             printed.append({"walk": str(where / "walk.json"), "report": str(report_path),
