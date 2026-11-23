@@ -579,6 +579,9 @@ view library(lib: Library) {
                     ui.Button("Analysis paused", icon: .play) {
                         on press: vision.resume(vision.analysis)
                     }
+                } else if not lib.photos.is_empty() and not vision.image_model.available {
+                    // Why no model answers, in its own words: there is nothing to start.
+                    ui.Text(vision.image_model.detail, role: .caption, secondary: true)
                 } else if not lib.photos.is_empty() {
                     ui.Button("Analyze photos", icon: .sparkles) {
                         on press: vision.start(vision.analysis)
@@ -866,7 +869,7 @@ view empty_place(lib: Library, place: Text) {
             message: "Give a photo a place on the map in its details.",
             icon: .map_pin,
         )
-    } else if place != "library" {
+    } else if place != "library" and place != "timeline" {
         ui.EmptyState(
             "This album is empty",
             message: "Add photos to it from the library.",
