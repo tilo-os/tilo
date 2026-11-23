@@ -20,7 +20,7 @@ impl Core {
     /// The workbook a text describes, with each sheet's extent and what each of its cells shows.
     pub(crate) fn sheet_values(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let text = self.text(a.h(0)?)?;
-        let answer = self.book_of(&text).map(|book| {
+        let answer = self.book_of(&text).and_then(|book| {
             let rows = tilo_sheet::shown_rows(&book);
             serde_json::to_string(&rows).map_err(|why| why.to_string())
         });
@@ -47,7 +47,7 @@ impl Core {
         let book = self.text(a.h(0)?)?;
         let sheet = self.text(a.h(1)?)?;
         let range = self.text(a.h(2)?)?;
-        let answer = self.book_of(&book).map(|book: tilo_sheet::Book| {
+        let answer = self.book_of(&book).and_then(|book: tilo_sheet::Book| {
             serde_json::to_string(&tilo_sheet::range_numbers(&book, &sheet, &range))
                 .map_err(|why| why.to_string())
         });

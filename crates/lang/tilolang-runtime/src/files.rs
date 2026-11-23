@@ -249,7 +249,7 @@ impl Core {
                 let path = self.text(a.h(0)?)?;
                 self.result(
                     host.list(&path)
-                        .map(|entries| Value::List(entries.iter().map(Entry::value).collect())),
+                        .map(|entries| Value::List(entries.iter().map(|entry| entry.value()).collect())),
                 )
             }
             Imp::FileStat => {
@@ -271,23 +271,23 @@ impl Core {
             }
             Imp::FileMkdir => {
                 let path = self.text(a.h(0)?)?;
-                self.result(host.mkdir(&path).map(Entry::value))
+                self.result(host.mkdir(&path).map(|entry| entry.value()))
             }
             Imp::FileWrite => {
                 let (path, bytes) = (self.text(a.h(0)?)?, self.bytes(a.h(1)?)?);
-                self.result(host.write(&path, &bytes).map(Entry::value))
+                self.result(host.write(&path, &bytes).map(|entry| entry.value()))
             }
             Imp::FileRename => {
                 let (path, name) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
-                self.result(host.rename(&path, &name).map(Entry::value))
+                self.result(host.rename(&path, &name).map(|entry| entry.value()))
             }
             Imp::FileMove => {
                 let (path, folder) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
-                self.result(host.move_entry(&path, &folder).map(Entry::value))
+                self.result(host.move_entry(&path, &folder).map(|entry| entry.value()))
             }
             Imp::FileCopy => {
                 let (path, folder) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
-                self.result(host.copy(&path, &folder).map(Entry::value))
+                self.result(host.copy(&path, &folder).map(|entry| entry.value()))
             }
             Imp::FileRemove => {
                 let path = self.text(a.h(0)?)?;
@@ -299,7 +299,7 @@ impl Core {
             }
             Imp::FileRestore => {
                 let path = self.text(a.h(0)?)?;
-                self.result(host.restore(&path).map(Entry::value))
+                self.result(host.restore(&path).map(|entry| entry.value()))
             }
             Imp::FileOpenPath => {
                 let path = self.text(a.h(0)?)?;

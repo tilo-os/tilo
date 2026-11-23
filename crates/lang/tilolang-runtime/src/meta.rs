@@ -4,8 +4,8 @@
 
 pub use tilolang::meta::{
     ActionMeta, AnchorMeta, DefaultMeta, DefaultViewMeta, EnumMeta, FieldMeta, FnMeta,
-    NamedRootMeta, PackageMeta, ParamMeta, ProposalMeta, Reach, StateMeta, TriggerArgMeta,
-    TriggerMeta, TriggerWhenMeta, TypeMeta, VariantMeta, ViewMeta,
+    NamedRootMeta, PackageMeta, ParamMeta, ProposalMeta, Reach, ReaderRule, StateMeta,
+    TriggerArgMeta, TriggerMeta, TriggerWhenMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 pub use tilolang::types::{EffectClass, MergeKind, Repr, Ty, TypeKey};
 

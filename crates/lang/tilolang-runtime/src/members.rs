@@ -14,6 +14,7 @@ use tilo_actions::policy::{MemberId, Role};
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
 use crate::ids::Actor;
+use crate::meta::ReaderRule;
 use crate::value::{ResourceRef, Value};
 use crate::view_state::StateKey;
 
@@ -290,23 +291,47 @@ impl Core {
             at.ty.clone()
         };
         let (_, info) = self.type_of_ref(&ty).ok()?;
-        let field = info.field_by_id_or_name(info.readers.as_deref()?)?.clone();
-        if let Some(vs) = self.frames.borrow_mut().view_mut() {
-            vs.reads.push((at.id_string(), field.id.clone()));
+        match info.readers.clone()? {
+            ReaderRule::Field { field } => {
+                let field = info.field_by_id_or_name(&field)?.clone();
+                if let Some(vs) = self.frames.borrow_mut().view_mut() {
+                    vs.reads.push((at.id_string(), field.id.clone()));
+                }
+                // A record whose readers cannot be read is read by nobody: never by everyone.
+                let Ok(Value::List(people)) = self.read_value(at, &field, None) else {
+                    return Some(Vec::new());
+                };
+                Some(
+                    people
+                        .into_iter()
+                        .filter_map(|who| match who {
+                            Value::Actor(who) => Some(who),
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            }
+            // `(readers: author)`: whoever made the record reads it, and every member once the
+            // field `until` names holds; the store seals it the same way.
+            ReaderRule::Author { until } => {
+                if let Some(until) = until {
+                    let field = info.field_by_id_or_name(&until)?.clone();
+                    if let Some(vs) = self.frames.borrow_mut().view_mut() {
+                        vs.reads.push((at.id_string(), field.id.clone()));
+                    }
+                    if let Ok(Value::Bool(true)) = self.read_value(at, &field, None) {
+                        return Some(self.read_members().iter().map(Member::who).collect());
+                    }
+                }
+                let created = self
+                    .store
+                    .borrow()
+                    .version_end(at, false)
+                    .ok()
+                    .flatten()?;
+                Some(vec![self.made_by(&created, at)])
+            }
         }
-        // A record whose readers cannot be read is read by nobody: never by everyone.
-        let Ok(Value::List(people)) = self.read_value(at, &field, None) else {
-            return Some(Vec::new());
-        };
-        Some(
-            people
-                .into_iter()
-                .filter_map(|who| match who {
-                    Value::Actor(who) => Some(who),
-                    _ => None,
-                })
-                .collect(),
-        )
     }
 
     pub(crate) fn members_import(

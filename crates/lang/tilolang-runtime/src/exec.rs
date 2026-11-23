@@ -679,6 +679,7 @@ impl Core {
                 entries: Vec::new(),
                 pending: None,
                 finished: false,
+                served: None,
                 approved_by: None,
                 asked: false,
                 effects: 0,
@@ -2094,7 +2095,8 @@ impl Core {
             .load_journal(run)?
             .ok_or_else(|| RuntimeError::NotFound(format!("run {run}")))?;
         journal.served = Some((request, invocation.to_owned()));
-        self.store.borrow_mut().save_journal(run, &journal)
+        self.store.borrow_mut().save_journal(run, &journal)?;
+        Ok(())
     }
 
     /// The journal of `run`, which waits on something.
@@ -3160,8 +3162,10 @@ fn entry_value(entry: &JournalEntry) -> Value {
             Value::Unit
         }
         // A write is answered where it is made, and a run that waited answers it there; a
-        // notification is no step's value either.
-        JournalEntry::Wrote { .. } | JournalEntry::Notified => Value::Unit,
+        // notification and a page's answer are no step's value either.
+        JournalEntry::Wrote { .. } | JournalEntry::Notified | JournalEntry::Page { .. } => {
+            Value::Unit
+        }
     }
 }
 

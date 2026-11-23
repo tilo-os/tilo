@@ -4,7 +4,7 @@
 //! window that shows no page, or one that could not answer, is a value the run carries on with:
 //! the answer is a JSON text saying why.
 
-use super::{Args, Core, HResult, Imp, JournalEntry, Value, Wasm, trap};
+use super::{Args, Core, HResult, JournalEntry, Value, Wasm, trap};
 
 impl Core {
     /// `page.call(request)`: the page the app's window shows does what the request says, and

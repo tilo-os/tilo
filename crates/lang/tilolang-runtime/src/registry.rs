@@ -7,8 +7,8 @@ use serde_json::Value as Json;
 
 use crate::ids::{ActionId, AppId, ModuleHash, TypeId, ViewId};
 use crate::meta::{
-    ActionMeta, EnumMeta, FieldKind, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta, ViewMeta,
-    field_kind, parse_ty,
+    ActionMeta, EnumMeta, FieldKind, FnMeta, Meta, ReaderRule, StateMeta, Ty, TypeKey, TypeMeta,
+    ViewMeta, field_kind, parse_ty,
 };
 use crate::store::{FieldSpec, NewResource};
 use crate::value::EnumValue;
@@ -29,9 +29,9 @@ pub struct TypeInfo {
     pub fields: Vec<FieldInfo>,
     /// `(title: subject)`: the field the type says names its records, by name.
     pub title: Option<String>,
-    /// `(readers: people)`: the field holding who reads a record and everything under it, by
-    /// name.
-    pub readers: Option<String>,
+    /// `(readers: people)`: who reads a record of the type and everything under it — the field
+    /// holding them, or its author and the field that makes it every member's.
+    pub readers: Option<ReaderRule>,
 }
 
 impl TypeInfo {
