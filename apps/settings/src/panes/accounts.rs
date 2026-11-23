@@ -1203,7 +1203,7 @@ impl AccountsPane {
     }
 
     /// The session the pane keeps a typed password in the workspace's vault through, and asks
-    /// for an account's sign-in: the one its window captured, or a test's stand-in.
+    /// for an account's sign-in: the one its window captured, or one a test answers.
     #[must_use]
     pub fn with_session_secrets(
         mut self,

@@ -21,7 +21,7 @@ fn scratch_root(config_root: &std::path::Path) -> Result<(Window, AccountRoot), 
     Ok((window, AccountRoot::at(config_root).with_person(record)))
 }
 
-/// The vault entry the stand-in session keeps an account's password in.
+/// The vault entry the test's session keeps an account's password in.
 const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
 
 /// What Settings asked the session for: each password it kept, as (account, password, username,
@@ -32,7 +32,7 @@ struct Asked {
     released: Vec<String>,
 }
 
-/// A stand-in for the session: it keeps a typed password in the workspace's vault under
+/// The session as the test answers it: it keeps a typed password in the workspace's vault under
 /// [`ITEM`], and releases `secret` for that entry, writing down what it was asked.
 fn session(
     secret: &'static str,

@@ -25,12 +25,12 @@ pub struct Client {
 enum To {
     /// The session, on the window's own route.
     Session(InitialReadBridge),
-    /// A test's stand-in for the session ([`Client::answering`]).
+    /// A test, answering as the session would ([`Client::answering`]).
     #[cfg(feature = "test-support")]
     Answering(std::sync::Arc<Answer>),
 }
 
-/// What a test's stand-in session answers each request with.
+/// What a test answers each request with, as the session would.
 #[cfg(feature = "test-support")]
 type Answer = dyn Fn(BrowserServiceSessionCommand) -> Result<BrowserServiceSessionReply, String>
     + Send
@@ -52,7 +52,7 @@ impl Client {
         }
     }
 
-    /// The workspace the client's route is in: `None` for a test's stand-in.
+    /// The workspace the client's route is in: `None` for one a test answers.
     fn workspace(&self) -> Option<String> {
         match &self.to {
             To::Session(bridge) => Some(bridge.workspace()),
