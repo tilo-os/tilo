@@ -30,9 +30,30 @@ pub enum Change {
     KeyboardLight(u32),
 }
 
+/// Live power-profile readings from the session's power service, which follows
+/// `power-profiles-daemon` over D-Bus.
+pub trait PowerProfiles: Send + Sync {
+    /// The modes the daemon currently advertises and the mode in force, if any.
+    fn snapshot(&self) -> (Vec<PowerMode>, Option<PowerMode>);
+
+    /// A revision that moves whenever [`Self::snapshot`] changes.
+    fn revision(&self) -> u64;
+
+    /// Call `wake` whenever the daemon reports a new mode or list of modes.
+    fn on_change(&self, wake: tilo_service::Wake);
+}
+
 /// The machine: reads and changes. Called on the service's worker.
 pub trait System: Send + Sync {
     fn power(&self) -> Power;
+
+    /// Whether another person may sign in beside this session. Used instead of
+    /// [`Self::power`] when power profiles arrive from a live [`PowerProfiles`]
+    /// source rather than polling `power-profiles-daemon`.
+    fn user_switching(&self) -> bool {
+        self.power().user_switching
+    }
+
     fn update(&self) -> Update;
     fn time(&self) -> Time;
     fn keyboard_light(&self) -> KeyboardLight;
@@ -72,6 +93,10 @@ impl System for OsSystem {
             user_switching: os_actions::user_switching_supported(),
             ..Power::default()
         }
+    }
+
+    fn user_switching(&self) -> bool {
+        os_actions::user_switching_supported()
     }
 
     fn update(&self) -> Update {
