@@ -1201,8 +1201,11 @@ everything else is visibly optional:
   the invocation. No migration state lives in files on one computer.
 - `tools/`: the dev VM, app CLIs, examples and test fakes.
 
-A crate moves to its group in the push that removes what it duplicates, not
-as a separate rename.
+A new crate starts in the group that owns its concern, and depends only on
+the groups that group may use; `tools/policy/check_crate_layout.py` refuses
+any other edge and any group this list doesn't name. `crates/session/` and
+`crates/system/` hold only crates being deleted or moved to services, and go
+when they're empty.
 
 ## Plan
 
