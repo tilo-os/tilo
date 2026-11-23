@@ -2540,7 +2540,7 @@ impl FrameHarness {
         {
             let preset = crate::theme::Preset::find(&self.theme.document.id)
                 .unwrap_or(crate::theme::Preset::Dark);
-            let dark = preset.document().is_dark();
+            let dark = crate::theme::PresetDesign::document(preset).is_dark();
             let mut section = serde_json::Map::new();
             section.insert(
                 crate::theme_layers::MODE_KEY.into(),

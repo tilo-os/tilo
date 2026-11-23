@@ -7,15 +7,16 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
+use settings_model::SettingsSchema;
 use ui_core::LocalState;
-use ui_core::storage::{AppStorage, Settings, SettingsRevision, SettingsSchema};
+use ui_core::storage::{AppStorage, Settings, SettingsRevision};
 
 use super::resources::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
 
 /// One typed settings value, kept current while the view lives: a write
 /// from this window, another window, the Settings app or another of the
-/// person's devices (for [`Scope::Personal`](ui_core::storage::Scope))
+/// person's devices (for [`Scope::Personal`](settings_model::Scope))
 /// reaches [`Self::state`] on the next frame.
 ///
 /// Bind controls to [`Self::state`] and write with [`Self::set`]. Settings

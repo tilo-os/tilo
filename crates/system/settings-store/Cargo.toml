@@ -42,6 +42,7 @@ tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", featur
 # The sections' types as models, so an app edits them by path.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+settings-model = { version = "0.1.0", path = "../settings-model" }
 
 [features]
 # Directory watches: a follower noticing the holder's saves at once, and the

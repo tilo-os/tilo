@@ -490,7 +490,7 @@ impl TextStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
+    use crate::theme::{PresetDesign, Theme};
 
     #[test]
     fn roles_resolve_to_the_design_table_from_one_base() {

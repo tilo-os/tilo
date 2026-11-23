@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
+use settings_model::{Scope, SettingsSchema};
 use ui::framework::Setting;
 use ui::prelude::*;
-use ui::storage::{Scope, SettingsSchema};
 
 use crate::model::{Alarm, Clocks, instant};
 pub use clocks_model::schedule::{ArmedAlarm, ClocksOnDevices, Delivery, OnThisDevice, Snooze};

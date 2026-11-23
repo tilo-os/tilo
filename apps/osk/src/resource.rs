@@ -102,8 +102,8 @@ impl Default for OskPreferences {
     }
 }
 
-impl ui::storage::SettingsSchema for OskPreferences {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+impl settings_model::SettingsSchema for OskPreferences {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Personal;
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]

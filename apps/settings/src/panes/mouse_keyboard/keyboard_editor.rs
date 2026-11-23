@@ -1794,8 +1794,8 @@ mod tests {
             suggestions: bool,
             personalization: bool,
         }
-        impl ui::storage::SettingsSchema for FixtureOskPreferences {
-            const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+        impl settings_model::SettingsSchema for FixtureOskPreferences {
+            const SCOPE: settings_model::Scope = settings_model::Scope::Personal;
         }
         let mut app = fixture_app("keyboard-osk", (440, 820));
         let document = app

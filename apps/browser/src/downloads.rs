@@ -54,8 +54,8 @@ pub struct Stored {
     downloads: Vec<serde_json::Value>,
 }
 
-impl ui::storage::SettingsSchema for Stored {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+impl settings_model::SettingsSchema for Stored {
+    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -398,7 +398,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store =
                 || ui::storage::Settings::<Stored>::for_app("so.tilo.browser").in_profile(dir.path());
-            assert_eq!(store().scope(), ui::storage::Scope::DeviceLocal);
+            assert_eq!(store().scope(), settings_model::Scope::DeviceLocal);
 
             let mut downloads = Downloads::load(store());
             assert!(downloads.requested(

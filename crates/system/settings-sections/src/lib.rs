@@ -70,7 +70,7 @@ sections!(
     accessibility::AccessibilityDevicePrefs,
     prefs::InputPrefs,
     prefs::InputDevicePrefs,
-    ui::text_assistance::TextAssistancePrefs,
+    settings_model::text_assistance::TextAssistancePrefs,
     prefs::PowerPrefs,
     prefs::WidgetsPrefs,
     search::SearchHistory,

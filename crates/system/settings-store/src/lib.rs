@@ -62,7 +62,6 @@ pub mod continuity_privacy;
 pub mod control_hints;
 pub mod day_schedule;
 pub mod desktop_controls;
-pub mod device_class;
 pub mod device_vpn;
 pub mod dictation;
 pub mod display_control;
@@ -102,7 +101,6 @@ pub mod watch;
 pub mod widgets;
 
 pub use accessibility::Labelled;
-pub use device_class::DeviceClass;
 pub use key::{Key, SectionWrite};
 pub use section_digest::SectionDigest;
 pub use source::{

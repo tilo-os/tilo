@@ -8,7 +8,7 @@ use ui::framework::Refused;
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::theme::{Preset, ThemeDocument};
+use ui::theme::{Preset, PresetDesign, ThemeDocument};
 use ui::tilo_resource::Path;
 use ui::widget::{
     Actions as CardActions, ButtonRole, Card, CardGrid, CardWidth, Field, Form, FormSection,

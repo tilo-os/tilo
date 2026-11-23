@@ -289,8 +289,8 @@ impl Default for CapturePreferences {
     }
 }
 
-impl ui::storage::SettingsSchema for CapturePreferences {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+impl settings_model::SettingsSchema for CapturePreferences {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Personal;
 }
 
 /// Choices about this device's own cameras: which resolutions and lenses
@@ -308,8 +308,8 @@ impl Default for CameraDevicePreferences {
     }
 }
 
-impl ui::storage::SettingsSchema for CameraDevicePreferences {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+impl settings_model::SettingsSchema for CameraDevicePreferences {
+    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
 }
 
 /// Camera's single recent capture handoff.

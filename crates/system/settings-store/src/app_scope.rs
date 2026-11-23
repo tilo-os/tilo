@@ -13,8 +13,9 @@ use std::io::{Error, ErrorKind};
 
 use serde_json::{Map, Value};
 
-use crate::placement::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, MAX_PERSONAL_VALUE_BYTES};
+use crate::placement::MAX_PERSONAL_VALUE_BYTES;
 use crate::{ChangeOrigin, SettingsSource};
+use settings_model::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION};
 
 /// Sections every app reads and only their owners write: the person's
 /// region, spelling, accessibility and colour preferences and the desktop's

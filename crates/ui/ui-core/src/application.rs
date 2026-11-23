@@ -865,7 +865,7 @@ impl ProcessContext {
     }
     /// This app's typed settings of type `T`, in the settings document the host gave it
     /// ([`Self::provide_settings`]); `T` declares how far they travel.
-    pub fn settings<T: crate::storage::SettingsSchema>(&self) -> crate::storage::Settings<T> {
+    pub fn settings<T: settings_model::SettingsSchema>(&self) -> crate::storage::Settings<T> {
         self.storage().settings()
     }
     /// This app's files, secrets and settings in one handle, as framework views and surfaces receive

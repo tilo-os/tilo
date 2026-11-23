@@ -995,7 +995,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The app's typed settings in this profile's settings, which
     /// the running app follows: a write here is what another window, the
     /// Settings app or another of the person's devices writing them does.
-    pub fn settings<T: ui_core::storage::SettingsSchema>(&self) -> ui_core::storage::Settings<T> {
+    pub fn settings<T: settings_model::SettingsSchema>(&self) -> ui_core::storage::Settings<T> {
         ui_core::storage::Settings::for_app(super::app::hooks::<A>().id())
             .in_document(self.profile.settings())
     }

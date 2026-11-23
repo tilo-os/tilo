@@ -20,6 +20,7 @@ thin = ["dep:runtime-dylib"]
 tracing.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
 # The resources the app draws: their types, verbs and typed action arguments.
 disk-usage-model = { path = "../disk-usage-model" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }

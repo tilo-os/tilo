@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use ui::storage::{Scope, SettingsSchema};
+use settings_model::{Scope, SettingsSchema};
 
 pub const RECENT_HISTORY_LIMIT: usize = 32;
 
@@ -47,8 +47,8 @@ impl Default for PlayerSettings {
     }
 }
 
-impl ui::storage::SettingsSchema for PlayerSettings {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+impl settings_model::SettingsSchema for PlayerSettings {
+    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

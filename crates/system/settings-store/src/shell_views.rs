@@ -20,9 +20,9 @@ pub const SECTION: &str = "shell_views";
 /// The key a kind of device's bindings are kept under, in the section's
 /// `on_device`.
 #[must_use]
-pub fn device_key(device: crate::device_class::DeviceClass) -> &'static str {
+pub fn device_key(device: settings_model::DeviceClass) -> &'static str {
     match device {
-        crate::device_class::DeviceClass::Native => "native",
-        crate::device_class::DeviceClass::Web => "web",
+        settings_model::DeviceClass::Native => "native",
+        settings_model::DeviceClass::Web => "web",
     }
 }

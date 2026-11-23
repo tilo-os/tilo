@@ -5,7 +5,7 @@
 //! someone else reads a diff.
 
 use serde::{Deserialize, Serialize};
-use ui::storage::{Scope, SettingsSchema};
+use settings_model::{Scope, SettingsSchema};
 
 /// How the diff pane lays out old vs. new content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -25,8 +25,8 @@ pub(crate) struct QueuedWrites {
     pub(super) taken: BTreeMap<String, BTreeMap<String, BTreeSet<String>>>,
 }
 
-impl ui_core::storage::SettingsSchema for QueuedWrites {
-    const SCOPE: ui_core::storage::Scope = ui_core::storage::Scope::DeviceLocal;
+impl settings_model::SettingsSchema for QueuedWrites {
+    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

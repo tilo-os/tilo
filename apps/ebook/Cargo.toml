@@ -33,6 +33,7 @@ runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 # "Open a book…" goes through `ui::portal`, the platform's own picker (the
 # HIG's file-access boundary), instead of a magic folder.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
 automerge.workspace = true
 # Content-addressed book identity: the BLAKE3 hash of an EPUB's bytes is its id,
 # so annotations + reading progress follow the file across paths, devices and

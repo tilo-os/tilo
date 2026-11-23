@@ -27,10 +27,10 @@ pub struct SearchHistory {
     pub places: Places,
 }
 
-impl ui::storage::SettingsSchema for SearchHistory {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::search_history::SECTION);
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for SearchHistory {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::search_history::SECTION);
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.search_history")]

@@ -749,7 +749,7 @@ struct ProofingPreferences {
     language: String,
     personal: bool,
     personal_words: proofing::PersonalDictionary,
-    shared: Option<ui::framework::Setting<ui::text_assistance::TextAssistancePrefs>>,
+    shared: Option<ui::framework::Setting<settings_model::text_assistance::TextAssistancePrefs>>,
     applied_language: Option<String>,
 }
 
@@ -1203,7 +1203,7 @@ impl Editor {
 
     pub(crate) fn follow_preferences(
         &mut self,
-        shared: ui::framework::Setting<ui::text_assistance::TextAssistancePrefs>,
+        shared: ui::framework::Setting<settings_model::text_assistance::TextAssistancePrefs>,
         layout: ui::framework::Setting<proofing::WriterLayout>,
     ) {
         self.proofing.shared = Some(shared);

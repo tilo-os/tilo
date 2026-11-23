@@ -68,9 +68,9 @@ impl Default for ContinuityPrivacy {
     }
 }
 
-impl ui::storage::SettingsSchema for ContinuityPrivacy {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for ContinuityPrivacy {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("continuity");
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.continuity")]

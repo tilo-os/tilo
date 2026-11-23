@@ -15,11 +15,12 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use settings_model::SettingsSchema;
 use tilo_actions::{Action, ActionError, ActionInvoker, EncodedAction};
 use tilo_resource::{Doc, Fields, ModelError, Reader, Resource};
 use ui_core::history_source::{ThreadWords, steps};
 use ui_core::storage::{
-    ChangeOrigin, InvokingAction, Settings, SettingsDocument, SettingsRevision, SettingsSchema,
+    ChangeOrigin, InvokingAction, Settings, SettingsDocument, SettingsRevision,
 };
 
 use super::live::Live;

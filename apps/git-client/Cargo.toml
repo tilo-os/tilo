@@ -29,6 +29,7 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 hex.workspace = true
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
 # The resource the app draws: its types, verb and typed action arguments.
 git-client-model = { path = "../git-client-model" }
 # The Tilo ACTION model: the client's durable view preferences (diff layout,

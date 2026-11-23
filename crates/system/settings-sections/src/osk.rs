@@ -30,8 +30,8 @@ impl Default for OskSourceSettings {
     }
 }
 
-impl ui::storage::SettingsSchema for OskSourceSettings {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+impl settings_model::SettingsSchema for OskSourceSettings {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Personal;
     const APP: Option<&'static str> = Some(KEYBOARD_APP_ID);
 }
 

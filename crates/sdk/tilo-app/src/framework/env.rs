@@ -465,10 +465,10 @@ impl<R: Resource> ResourceEnv<R> {
 
     /// The app's typed settings of type `S`, kept current while this scope
     /// lives. `S` declares whether they follow the person or stay on the
-    /// device ([`Scope`](ui_core::storage::Scope)).
+    /// device ([`Scope`](settings_model::Scope)).
     pub fn settings<S>(&self) -> Setting<S>
     where
-        S: ui_core::storage::SettingsSchema + Clone + PartialEq + Send + Sync,
+        S: settings_model::SettingsSchema + Clone + PartialEq + Send + Sync,
     {
         self.storage.follow(self.alive.clone())
     }

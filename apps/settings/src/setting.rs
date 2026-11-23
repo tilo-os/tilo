@@ -159,9 +159,9 @@ pub struct Follows {
     held: RefCell<Vec<Rc<dyn Any>>>,
 }
 
-pub trait Followable: ui::storage::SettingsSchema + Clone + PartialEq + 'static {}
+pub trait Followable: settings_model::SettingsSchema + Clone + PartialEq + 'static {}
 
-impl<T: ui::storage::SettingsSchema + Clone + PartialEq + 'static> Followable for T {}
+impl<T: settings_model::SettingsSchema + Clone + PartialEq + 'static> Followable for T {}
 
 impl Follows {
     /// The section `T` as stored in `storage` now, read again only where

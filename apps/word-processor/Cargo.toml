@@ -33,6 +33,7 @@ test-support = []
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }

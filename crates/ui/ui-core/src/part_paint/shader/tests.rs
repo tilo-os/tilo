@@ -44,7 +44,7 @@ fn fs_surface(
 #[test]
 fn a_settled_shader_part_is_evaluated_once_and_replayed() {
     use crate::part_paint::{Moment, Part, States, paint_part, part_tokens};
-    use crate::theme::{Preset, Theme};
+    use crate::theme::{Preset, PresetDesign, Theme};
     use crate::tokens::{Finish, SurfaceRole, SurfaceShader};
     let theme_with = |wgsl: &str| {
         let mut document = Preset::Dark.document();

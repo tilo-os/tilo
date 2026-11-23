@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::platform::surfaces::part_view::PartSurface;
 use serde_json::Value;
-use settings_store::device_class::DeviceClass;
+use settings_model::DeviceClass;
 
 use crate::surfaces;
 
@@ -283,7 +283,7 @@ mod tests {
                 bound_to(
                     &reading,
                     "window-menu",
-                    settings_store::device_class::DeviceClass::Native
+                    settings_model::DeviceClass::Native
                 )
                 .map(|binding| binding.view),
                 Some("wide".to_owned())
@@ -292,7 +292,7 @@ mod tests {
                 bound_to(
                     &reading,
                     "window-menu",
-                    settings_store::device_class::DeviceClass::Web
+                    settings_model::DeviceClass::Web
                 )
                 .map(|binding| binding.view),
                 Some("narrow".to_owned())

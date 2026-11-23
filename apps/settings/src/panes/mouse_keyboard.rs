@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use provider_settings_ui::bound::{SettingRows as _, record_item};
+use settings_model::text_assistance::TextAssistancePrefs;
 use settings_store::hardware::{
     InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot, TouchpadClickMethod,
     TouchpadScrollMethod,
@@ -18,7 +19,6 @@ use settings_store::hardware::{
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::i18n::ArgValue;
-use ui::text_assistance::TextAssistancePrefs;
 #[cfg(test)]
 use ui::theme::Theme;
 use ui::tilo_actions::ResourcePresentation;

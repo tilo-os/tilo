@@ -30,9 +30,9 @@ tilo_accessibility_settings::accessibility_settings!(
 );
 
 /// The person's assists, shared with the compositor and the shell.
-impl ui::storage::SettingsSchema for AccessibilitySettings {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(SECTION);
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for AccessibilitySettings {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared(SECTION);
+    settings_model::settings_codec!();
 }
 
 /// The section as a record the person edits by path.
@@ -93,9 +93,9 @@ impl Default for AccessibilityDevicePrefs {
     }
 }
 
-impl ui::storage::SettingsSchema for AccessibilityDevicePrefs {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::accessibility::DEVICE_SECTION);
+impl settings_model::SettingsSchema for AccessibilityDevicePrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::accessibility::DEVICE_SECTION);
 }
 
 #[tilo_resource::resource(kind = "settings.accessibility-device")]

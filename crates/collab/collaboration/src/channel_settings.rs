@@ -168,7 +168,7 @@ impl ChannelSettings {
         }
         let delivery = state
             .view
-            .get(settings_store::placement::APP_DEVICE_LOCAL_SECTION)
+            .get(settings_model::APP_DEVICE_LOCAL_SECTION)
             .and_then(|section| section.get(&self.app_id))
             .and_then(|entry| entry.get(VIEW_KEY))
             .cloned();
@@ -218,7 +218,7 @@ impl ChannelSettings {
             }
             let delivery = state
                 .view
-                .get_mut(settings_store::placement::APP_DEVICE_LOCAL_SECTION)
+                .get_mut(settings_model::APP_DEVICE_LOCAL_SECTION)
                 .and_then(|section| section.get_mut(&self.app_id))
                 .and_then(|entry| {
                     entry.get_mut(settings_store::personal_dictionary::delivery::VIEW_KEY)
@@ -239,7 +239,7 @@ impl ChannelSettings {
             }
             *delivery = serde_json::to_value(preview).map_err(std::io::Error::other)?;
             state.outbox.push((
-                settings_store::placement::APP_DEVICE_LOCAL_SECTION.to_owned(),
+                settings_model::APP_DEVICE_LOCAL_SECTION.to_owned(),
                 values,
                 None,
             ));
@@ -331,7 +331,7 @@ impl Drop for Unanswered<'_> {
 fn settings_document(view: &Map<String, Value>) -> Map<String, Value> {
     let mut document = view.clone();
     if let Some(entries) = document
-        .get_mut(settings_store::placement::APP_DEVICE_LOCAL_SECTION)
+        .get_mut(settings_model::APP_DEVICE_LOCAL_SECTION)
         .and_then(Value::as_object_mut)
     {
         for entry in entries.values_mut().filter_map(Value::as_object_mut) {
@@ -376,7 +376,7 @@ impl SettingsSource for ChannelSettings {
             )?;
             let delivery = state
                 .view
-                .get(settings_store::placement::APP_DEVICE_LOCAL_SECTION)
+                .get(settings_model::APP_DEVICE_LOCAL_SECTION)
                 .and_then(|entries| entries.get(&self.app_id))
                 .and_then(|entry| {
                     entry.get(settings_store::personal_dictionary::delivery::VIEW_KEY)
@@ -386,7 +386,7 @@ impl SettingsSource for ChannelSettings {
             if let Some(delivery) = delivery {
                 let section = state
                     .view
-                    .entry(settings_store::placement::APP_DEVICE_LOCAL_SECTION.to_owned())
+                    .entry(settings_model::APP_DEVICE_LOCAL_SECTION.to_owned())
                     .or_insert_with(|| Value::Object(Map::new()));
                 if let Some(section) = section.as_object_mut() {
                     let entry = section

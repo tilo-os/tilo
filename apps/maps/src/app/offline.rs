@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use ui::storage::{Scope, SettingsSchema};
+use settings_model::{Scope, SettingsSchema};
 
 use super::{GeoBounds, MapsApp, TileId, bounds_contains, failure, format_bytes};
 use crate::model::DownloadedRegion;

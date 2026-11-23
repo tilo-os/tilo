@@ -39,9 +39,9 @@ pub struct DeviceVpnPrefs {
     pub profile_release: Option<ProfileRelease>,
 }
 
-impl ui::storage::SettingsSchema for DeviceVpnPrefs {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::device_vpn::SECTION);
+impl settings_model::SettingsSchema for DeviceVpnPrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::device_vpn::SECTION);
 }
 
 #[tilo_resource::resource(kind = "settings.device-vpn")]

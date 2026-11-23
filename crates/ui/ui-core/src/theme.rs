@@ -1,19 +1,19 @@
 use crate::theme_document::ThemeIcons;
 pub use crate::theme_document::{
-    Look, MotionCurve, Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial,
+    LookDesign, MotionCurve, PresetDesign, THEME_SCHEMA_VERSION, ThemeDocument, ThemeMaterial,
     ThemeMotion, ThemeShape, ThemeType, ThemeWeight, ThemeWeights,
 };
 pub use crate::theme_layers::{
-    APPEARANCE_SECTION, AccessibilityLayer, CUSTOM_THEMES_KEY, ContentSurface, DARK_THEME_KEY,
-    DENSITY_KEY, DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION,
-    DISTRIBUTION_LAYER_ID, DistributionDefaults, DistributionPolicy, FinishLayer, LIGHT_THEME_KEY,
-    MODE_KEY, PIN_DENSITY, PIN_EMPHASIS, PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE,
-    PIN_SHAPE, PIN_TYPE, PINNABLE, TRANSLUCENCY_KEY, ThemeLayerStack, UI_FACE_KEY,
-    WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers, user_document,
-    workspace_temperature_override,
+    APPEARANCE_SECTION, AccessibilityLayer, ContentSurface, DARK_THEME_KEY, DENSITY_KEY,
+    DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION, DISTRIBUTION_LAYER_ID,
+    DistributionDefaults, DistributionPolicy, FinishLayer, LIGHT_THEME_KEY, MODE_KEY, PIN_DENSITY,
+    PIN_EMPHASIS, PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE, PIN_SHAPE, PIN_TYPE,
+    PINNABLE, TRANSLUCENCY_KEY, ThemeLayerStack, UI_FACE_KEY, WORKSPACE_TEMPERATURES_KEY,
+    resolve_theme_layers, user_document, workspace_temperature_override,
 };
 pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
 use crate::tokens::{Colors, PresenceHue, Tokens};
+pub use settings_model::theme::{CUSTOM_THEMES_KEY, Look, Preset, ThemeDensity};
 pub use settings_store::day_schedule::{AUTOMATIC_MODE, is_automatic as is_automatic_mode};
 use vello::peniko::Color;
 

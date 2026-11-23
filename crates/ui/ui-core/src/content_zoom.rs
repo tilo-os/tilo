@@ -375,8 +375,8 @@ pub(crate) struct ZoomPrefs {
     content_zoom: Option<f32>,
 }
 
-impl crate::storage::SettingsSchema for ZoomPrefs {
-    const SCOPE: crate::storage::Scope = crate::storage::Scope::DeviceLocal;
+impl settings_model::SettingsSchema for ZoomPrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
 }
 
 /// A window's content zoom: its factor, where it is remembered, the level the window's bar says after a

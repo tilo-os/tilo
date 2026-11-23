@@ -1,0 +1,28 @@
+[package]
+name = "settings-model"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "The settings' typed schema, the theme names and the shared sections as resource models, buildable for WebAssembly"
+
+# What settings are, as data: where a typed setting lives and how far it travels, which kind of
+# device reads it, the looks and presets a theme is named by, and the sections every app reads.
+# It has no store and no window; settings-store keeps the document and the toolkit draws it.
+
+[lib]
+name = "settings_model"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -283,10 +283,10 @@ impl Default for InputPrefs {
 
 /// The person's pointer and keyboard choices, read by the compositor's input
 /// layer.
-impl ui::storage::SettingsSchema for InputPrefs {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::hardware::INPUT_SECTION);
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for InputPrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::hardware::INPUT_SECTION);
+    settings_model::settings_codec!();
 }
 
 /// This device's input: whether its touchpads are on, its physical
@@ -343,10 +343,10 @@ impl Default for InputDevicePrefs {
     }
 }
 
-impl ui::storage::SettingsSchema for InputDevicePrefs {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::hardware::INPUT_DEVICE_SECTION);
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for InputDevicePrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::hardware::INPUT_DEVICE_SECTION);
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.input-device")]
@@ -1178,9 +1178,10 @@ impl Default for WidgetsPrefs {
     }
 }
 
-impl ui::storage::SettingsSchema for WidgetsPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(settings_store::widgets::SECTION);
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for WidgetsPrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::widgets::SECTION);
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.widgets")]
@@ -1188,9 +1189,9 @@ impl WidgetsPrefs {}
 
 /// This device's idle and button preferences, read by the compositor's
 /// idle layer.
-impl ui::storage::SettingsSchema for PowerPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("power");
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for PowerPrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("power");
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(
@@ -1311,9 +1312,9 @@ pub struct UpdatePrefs {
 }
 
 /// This device's update preferences.
-impl ui::storage::SettingsSchema for UpdatePrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for UpdatePrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("updates");
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(
@@ -1702,25 +1703,25 @@ pub struct AppearanceDevicePrefs {
     pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
 }
 
-impl ui::storage::SettingsSchema for AppearanceDevicePrefs {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::appearance::DEVICE_SECTION);
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for AppearanceDevicePrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::appearance::DEVICE_SECTION);
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.appearance-device")]
 impl AppearanceDevicePrefs {}
 
-impl ui::storage::SettingsSchema for AppearancePrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for AppearancePrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("appearance");
+    settings_model::settings_codec!();
 
     /// A page follows the light or dark its browser and system show until the
     /// person picks a theme, so what it shows them chosen there is Automatic;
     /// the person's own computer starts dark.
-    fn defaults_on(device: ui::storage::DeviceClass) -> Self {
+    fn defaults_on(device: settings_model::DeviceClass) -> Self {
         let mut prefs = Self::default();
-        if device == ui::storage::DeviceClass::Web {
+        if device == settings_model::DeviceClass::Web {
             settings_store::day_schedule::AUTOMATIC_MODE.clone_into(&mut prefs.mode);
         }
         prefs
@@ -1849,9 +1850,9 @@ fn default_true() -> bool {
 
 /// The person's notification policy, read by the compositor's notification
 /// layer.
-impl ui::storage::SettingsSchema for NotificationPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("notifications");
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for NotificationPrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("notifications");
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.notifications")]
@@ -1958,9 +1959,9 @@ pub fn valid_stored_app_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
-impl ui::storage::SettingsSchema for AudioPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio");
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for AudioPrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("audio");
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(
@@ -1987,9 +1988,9 @@ impl AudioPrefs {
     }
 }
 
-impl ui::storage::SettingsSchema for AudioDevicePrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio_device");
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for AudioDevicePrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("audio_device");
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.audio-device")]
@@ -2025,9 +2026,9 @@ fn remembered(device: String) -> Result<String, tilo_resource::Refusal> {
     Ok(device)
 }
 
-impl ui::storage::SettingsSchema for DisplayPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for DisplayPrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("display");
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(
@@ -2053,10 +2054,10 @@ impl DisplayPrefs {
     }
 }
 
-impl ui::storage::SettingsSchema for NightLightPrefs {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::hardware::DISPLAY_PERSON_SECTION);
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for NightLightPrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::hardware::DISPLAY_PERSON_SECTION);
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.night-light")]

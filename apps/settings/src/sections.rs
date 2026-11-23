@@ -6,8 +6,8 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use settings_model::SettingsSchema;
 use ui::framework::{Actions, Dispatcher, ViewCx};
-use ui::storage::SettingsSchema;
 
 use crate::resource::Settings;
 
@@ -113,7 +113,7 @@ fn held_sections(cx: &ViewCx<Settings>) -> HashMap<TypeId, Box<dyn Any>> {
     hold::<crate::accessibility_settings::AccessibilityDevicePrefs>(cx, &mut held);
     hold::<crate::prefs::InputPrefs>(cx, &mut held);
     hold::<crate::prefs::InputDevicePrefs>(cx, &mut held);
-    hold::<ui::text_assistance::TextAssistancePrefs>(cx, &mut held);
+    hold::<settings_model::text_assistance::TextAssistancePrefs>(cx, &mut held);
     hold::<crate::prefs::PowerPrefs>(cx, &mut held);
     hold::<crate::prefs::WidgetsPrefs>(cx, &mut held);
     hold::<crate::prefs::UpdatePrefs>(cx, &mut held);

@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use settings_model::{Scope, SettingsSchema};
 use ui::framework::{Fixture, ResourceApp, ViewCx};
-use ui::storage::{Scope, SettingsSchema};
 use ui::widget::Element;
 
 use crate::actions::BackupsEffect;

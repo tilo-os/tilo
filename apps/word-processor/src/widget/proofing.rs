@@ -2,7 +2,7 @@
 //! and the person's own dictionary.
 
 use serde::{Deserialize, Serialize};
-use ui::storage::{Scope, SettingsSchema};
+use settings_model::{Scope, SettingsSchema};
 
 /// The words this person added to the dictionary. They are never seen by
 /// members: a document shared with someone else does not change what

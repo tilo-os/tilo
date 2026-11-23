@@ -338,6 +338,7 @@ pub mod prelude {
     };
     pub use ui_core::i18n::LabelKey;
 
+    pub use settings_model::{DeviceClass, Scope, SettingsSchema};
     pub use ui_core::application::{
         ANY_MEDIA_TYPE, AppComponent, ApplicationCatalog, ApplicationDefinition,
         ComponentBehaviour, ComponentRunnerInputs, LaunchTarget, OpenFile, PlaybackHandoff,
@@ -350,7 +351,6 @@ pub mod prelude {
         DOCUMENT_ID_XATTR, DocumentCheckout, DocumentId, ResourceSaveStatus, ResourceType,
         WorkspaceAnswer,
     };
-    pub use ui_core::storage::{DeviceClass, Scope, SettingsSchema};
     pub use ui_core::tilo_actions;
     pub use ui_core::tilo_actions::{ActionError, ActionNeed, ActionRegistry, ExecutionLocus};
     pub use ui_core::tokens::TextRole;

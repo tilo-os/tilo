@@ -3,41 +3,8 @@
 //! would turn a UX feature into an I/O hot path.
 
 use crate::time::{Duration, Instant};
+use settings_model::text_assistance::TextAssistancePrefs;
 use std::sync::{Mutex, OnceLock};
-
-pub const SETTINGS_SECTION: &str = "text_assistance";
-
-#[derive(
-    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,
-)]
-#[model(defaults)]
-pub struct TextAssistancePrefs {
-    /// Underline words the spell checker does not know, in every text field.
-    pub check_spelling: bool,
-    /// Replace common misspellings with the word the checker suggests as they are typed.
-    pub auto_correct: bool,
-    /// The language the checker reads, as a BCP 47 tag; empty uses the person's interface language.
-    #[serde(default)]
-    pub spelling_language: String,
-}
-
-impl Default for TextAssistancePrefs {
-    fn default() -> Self {
-        Self {
-            check_spelling: true,
-            auto_correct: true,
-            spelling_language: String::new(),
-        }
-    }
-}
-
-impl crate::storage::SettingsSchema for TextAssistancePrefs {
-    const SCOPE: crate::storage::Scope = crate::storage::Scope::Shared(SETTINGS_SECTION);
-}
-
-/// The section as a record the person edits by path.
-#[tilo_resource::resource(kind = "settings.text-assistance")]
-impl TextAssistancePrefs {}
 
 #[derive(Default)]
 struct CachedPrefs {

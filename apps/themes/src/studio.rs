@@ -4,8 +4,8 @@
 
 use ui::prelude::*;
 use ui::theme::{
-    Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial, ThemeMotion,
-    ThemeShape, ThemeType,
+    Preset, PresetDesign, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial,
+    ThemeMotion, ThemeShape, ThemeType,
 };
 use ui::tilo_resource::{Path, Refusal};
 use ui::tokens::{

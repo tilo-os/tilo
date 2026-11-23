@@ -20,13 +20,12 @@
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 /// Whether this thread may wait on storage.
 pub use durable_store::waiting;
-pub use settings_store::{ChangeOrigin, DeviceClass, InvokingAction, made_by};
+use settings_model::{DeviceClass, Scope, SettingsSchema};
+pub use settings_store::{ChangeOrigin, InvokingAction, made_by};
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
 
@@ -79,105 +78,6 @@ impl AppFiles {
     pub fn state(&self) -> Result<Dir, FsError> {
         Dir::open(self.paths.state())
     }
-}
-
-/// Where an app's typed settings live and how far they travel. Settings follow a person
-/// or a device, never a workspace's members; they are never visible to members.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scope {
-    Personal,
-    /// Kept on this device and never sent anywhere: a hardware choice, a path, a window
-    /// placement.
-    DeviceLocal,
-    Shared(&'static str),
-}
-
-impl Scope {
-    /// The document section holding the settings of this scope.
-    #[must_use]
-    pub const fn section(self) -> &'static str {
-        match self {
-            Self::Personal => settings_store::placement::APP_PERSONAL_SECTION,
-            Self::DeviceLocal => settings_store::placement::APP_DEVICE_LOCAL_SECTION,
-            Self::Shared(name) => name,
-        }
-    }
-}
-
-/// A typed settings value with a declared [`Scope`].
-///
-/// Reads never fail: a missing document reads as [`Default`], and a key
-/// that is missing or does not decode reads as its default while every
-/// other key keeps its stored value. An app's types of one scope share
-/// its section, so their field names must not collide.
-///
-/// ```ignore
-/// #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
-/// struct Preferences { confirm_kill: bool }
-/// impl SettingsSchema for Preferences {
-///     const SCOPE: Scope = Scope::Personal;
-/// }
-/// let prefs = context.settings::<Preferences>().get();
-/// ```
-pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
-    const SCOPE: Scope;
-
-    const APP: Option<&'static str> = None;
-
-    /// What a person who changed nothing has on a `device`: [`Default`] everywhere,
-    /// unless the setting costs what one class of device should not spend unasked (a copy
-    /// kept on the device, work in the background).
-    #[must_use]
-    fn defaults_on(device: DeviceClass) -> Self {
-        let _ = device;
-        Self::default()
-    }
-
-    /// Whether the setting means anything on a `device`: one whose effect a class of
-    /// device cannot have (a copy kept on a device that keeps none) is not offered there,
-    /// neither shown nor published.
-    #[must_use]
-    fn available_on(device: DeviceClass) -> bool {
-        let _ = device;
-        true
-    }
-
-    /// The setting `value` holds, as JSON stores it. When `value` is not one.
-    fn from_settings_value(value: Value) -> serde_json::Result<Self> {
-        serde_json::from_value(value)
-    }
-
-    /// The setting as JSON stores it; see [`Self::from_settings_value`]. When it does not
-    /// serialize.
-    fn to_settings_value(&self) -> serde_json::Result<Value> {
-        serde_json::to_value(self)
-    }
-}
-
-#[doc(hidden)]
-pub use serde_json as __serde_json;
-
-/// [`SettingsSchema::from_settings_value`] and [`SettingsSchema::to_settings_value`]
-/// compiled where the impl is, never in the crates that read the setting: for a large
-/// settings type whose crate is in the shared runtime or an engine, every app or pane
-/// reading it otherwise carries its own copy of serde's decoder.
-#[macro_export]
-macro_rules! settings_codec {
-    () => {
-        #[inline(never)]
-        fn from_settings_value(
-            value: $crate::storage::__serde_json::Value,
-        ) -> $crate::storage::__serde_json::Result<Self> {
-            $crate::storage::__serde_json::from_value(value)
-        }
-
-        #[inline(never)]
-        fn to_settings_value(
-            &self,
-        ) -> $crate::storage::__serde_json::Result<$crate::storage::__serde_json::Value> {
-            $crate::storage::__serde_json::to_value(self)
-        }
-    };
 }
 
 /// Which settings document a host gives its apps.

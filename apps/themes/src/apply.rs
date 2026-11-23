@@ -3,9 +3,10 @@
 //! and fixes it here.
 
 use serde::{Deserialize, Serialize};
-use ui::storage::{Scope, SettingsSchema};
+use settings_model::{Scope, SettingsSchema};
 use ui::theme::{
-    CUSTOM_THEMES_KEY, DARK_THEME_KEY, LIGHT_THEME_KEY, MODE_KEY, Preset, ThemeDocument,
+    CUSTOM_THEMES_KEY, DARK_THEME_KEY, LIGHT_THEME_KEY, MODE_KEY, Preset, PresetDesign,
+    ThemeDocument,
 };
 
 /// The person's theme choice as the appearance section holds it: the keys Settings and

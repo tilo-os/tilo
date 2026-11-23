@@ -914,7 +914,7 @@ mod tests {
         // including for a theme whose own hover is quieter than the stock one.
         phase a_floored_rest_face_is_quieter_than_a_hovered_one;
         {
-            use crate::theme::Preset;
+            use crate::theme::{Preset, PresetDesign};
             use crate::tokens::{Response, ResponseStep};
             let quiet = {
                 let mut document = Preset::Dark.document();

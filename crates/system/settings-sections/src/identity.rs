@@ -30,9 +30,10 @@ impl IdentityPrefs {
 }
 
 /// This person's colour, read from the shared `identity` section.
-impl ui::storage::SettingsSchema for IdentityPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(settings_store::identity::SECTION);
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for IdentityPrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::identity::SECTION);
+    settings_model::settings_codec!();
 }
 
 #[tilo_resource::resource(kind = "settings.identity")]

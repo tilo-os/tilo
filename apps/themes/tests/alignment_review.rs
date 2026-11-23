@@ -8,7 +8,7 @@
 use themes::{App, SCENARIO_THEME, Studio};
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Id, TestApp};
-use ui::theme::Preset;
+use ui::theme::{Preset, PresetDesign};
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
 

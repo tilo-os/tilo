@@ -38,6 +38,7 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use tilo_compositor::Screenshot;
 use tilo_session::{Options, Session};
+use ui::theme::PresetDesign;
 
 use crate::common::{MAIL, NOTES};
 

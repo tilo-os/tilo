@@ -19,8 +19,8 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use tilo_resource;
-use tilo_ui::icons::Icon;
+use ui::icons::Icon;
+use ui::prelude::tilo_resource;
 
 use crate::media::MediumSpec;
 use crate::model::{Artwork, Ground, MarkBody};
@@ -346,7 +346,7 @@ impl ArtworkFile {
                 crate::model::Shape::Image { src, .. } => Some(src.as_str()),
                 _ => None,
             })
-            .filter(|src| tilo_ui::tilo_actions::content_hash(src).is_some())
+            .filter(|src| ui::tilo_actions::content_hash(src).is_some())
             .collect()
     }
 
@@ -372,7 +372,7 @@ impl ArtworkFile {
 
 /// A file name for `title`: what a person would call it, without the
 /// characters file systems refuse.
-pub fn file_name(title: &str, extension: &str, untitled: &str) -> String {
+pub fn file_name(title: &str, extension: &str) -> String {
     let cleaned: String = title
         .chars()
         .map(|c| {
@@ -385,7 +385,7 @@ pub fn file_name(title: &str, extension: &str, untitled: &str) -> String {
         .collect();
     let words = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let stem = if words.is_empty() {
-        untitled.to_owned()
+        crate::locales::CATALOG.t("canvas-untitled")
     } else {
         words
     };
@@ -393,7 +393,7 @@ pub fn file_name(title: &str, extension: &str, untitled: &str) -> String {
 }
 
 /// An artwork opened or saved lately.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::JsonSchema)]
 pub struct Recent {
     /// Where the file is.
     pub path: String,
@@ -411,7 +411,7 @@ pub struct Recent {
 /// path.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecentArtworks {
-    pub artworks: tilo_resource::Recents<Recent, 8>,
+    pub artworks: ui::tilo_resource::Recents<Recent, 8>,
 }
 
 tilo_resource::json_model!(RecentArtworks);
@@ -423,12 +423,12 @@ pub struct DeviceArtworkRecents {
     pub by_workspace: BTreeMap<String, RecentArtworks>,
 }
 
-impl tilo_ui::storage::SettingsSchema for DeviceArtworkRecents {
-    const SCOPE: tilo_ui::storage::Scope = tilo_ui::storage::Scope::DeviceLocal;
+impl settings_model::SettingsSchema for DeviceArtworkRecents {
+    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
 }
 
 impl DeviceArtworkRecents {
-    pub fn in_workspace(&self, workspace: &str) -> RecentArtworks {
+    pub(crate) fn in_workspace(&self, workspace: &str) -> RecentArtworks {
         self.by_workspace
             .get(workspace)
             .cloned()
@@ -477,7 +477,7 @@ pub fn pack(
         .map_err(|error| failed(&error))?;
     let mut missing = Vec::new();
     for address in file.pictures() {
-        let held = tilo_ui::tilo_actions::content_hash(address)
+        let held = ui::tilo_actions::content_hash(address)
             .and_then(|reference| Some((reference, store.read(reference)?)));
         let Some((reference, bytes)) = held else {
             missing.push(address.to_owned());

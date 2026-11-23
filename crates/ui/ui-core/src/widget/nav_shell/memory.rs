@@ -4,7 +4,8 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use crate::storage::{Scope, Settings, SettingsSchema};
+use crate::storage::Settings;
+use settings_model::{Scope, SettingsSchema};
 
 /// The sidebar widths an app's shells were dragged to, authored at 1×,
 /// keyed by the shell's id ([`super::NavShell::with_id`]).

@@ -174,8 +174,8 @@
 //!   [settles](Dispatcher::settle) the gesture.
 //! * **Settings** — preferences that follow a person or stay on a device,
 //!   never seen by members — are a typed
-//!   [`SettingsSchema`](crate::storage::SettingsSchema) whose
-//!   [`Scope`](crate::storage::Scope) says how far they travel: `Personal`
+//!   [`SettingsSchema`](settings_model::SettingsSchema) whose
+//!   [`Scope`](settings_model::Scope) says how far they travel: `Personal`
 //!   roams across the person's own devices, `DeviceLocal` never leaves this
 //!   one, `Shared` reads a per-user section every app follows (`locale`,
 //!   `text_assistance`). [`ResourceEnv::settings`]

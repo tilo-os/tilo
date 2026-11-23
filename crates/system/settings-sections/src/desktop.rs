@@ -25,9 +25,9 @@ pub struct DesktopControls {
     pub vim_mode: bool,
 }
 
-impl ui::storage::SettingsSchema for DesktopControls {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::desktop_controls::DESKTOP_CONTROLS_SECTION);
+impl settings_model::SettingsSchema for DesktopControls {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::desktop_controls::DESKTOP_CONTROLS_SECTION);
 }
 
 #[ui::tilo_resource::resource(
@@ -50,8 +50,8 @@ pub struct DesktopControlsDevice {
     pub hide_top_bar: bool,
 }
 
-impl ui::storage::SettingsSchema for DesktopControlsDevice {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(
+impl settings_model::SettingsSchema for DesktopControlsDevice {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared(
         settings_store::desktop_controls::DESKTOP_CONTROLS_DEVICE_SECTION,
     );
 }
@@ -71,9 +71,9 @@ pub struct DefaultApps {
     pub handlers: BTreeMap<String, String>,
 }
 
-impl ui::storage::SettingsSchema for DefaultApps {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(desktop_policy::PERSONAL_DEFAULTS_SECTION);
+impl settings_model::SettingsSchema for DefaultApps {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(desktop_policy::PERSONAL_DEFAULTS_SECTION);
 }
 
 #[ui::tilo_resource::resource(kind = "settings.default-apps")]
@@ -121,8 +121,9 @@ pub struct ClockPrefs {
     pub automatic_zone: bool,
 }
 
-impl ui::storage::SettingsSchema for ClockPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(settings_store::clock::SECTION);
+impl settings_model::SettingsSchema for ClockPrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::clock::SECTION);
 }
 
 #[ui::tilo_resource::resource(kind = "settings.clock")]
@@ -136,9 +137,9 @@ pub struct SharedDisplayPrefs {
     pub placement: Placements,
 }
 
-impl ui::storage::SettingsSchema for SharedDisplayPrefs {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::person_displays::PLACEMENTS_SECTION);
+impl settings_model::SettingsSchema for SharedDisplayPrefs {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::person_displays::PLACEMENTS_SECTION);
 }
 
 #[ui::tilo_resource::resource(kind = "settings.display-placement")]
@@ -176,8 +177,8 @@ impl Default for AutomaticDisplayPrefs {
     }
 }
 
-impl ui::storage::SettingsSchema for AutomaticDisplayPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
+impl settings_model::SettingsSchema for AutomaticDisplayPrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("continuity");
 }
 
 #[ui::tilo_resource::resource(kind = "settings.automatic-display")]
@@ -220,9 +221,9 @@ pub struct PendingDisplayChange {
     pub message: Option<String>,
 }
 
-impl ui::storage::SettingsSchema for PendingDisplayChange {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::hardware::DISPLAY_TRANSACTION_SECTION);
+impl settings_model::SettingsSchema for PendingDisplayChange {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::hardware::DISPLAY_TRANSACTION_SECTION);
 }
 
 #[ui::tilo_resource::resource(kind = "settings.display-change")]

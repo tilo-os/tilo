@@ -2,7 +2,7 @@
 //! member sees them.
 
 use serde::{Deserialize, Serialize};
-use ui::storage::{Scope, SettingsSchema};
+use settings_model::{Scope, SettingsSchema};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

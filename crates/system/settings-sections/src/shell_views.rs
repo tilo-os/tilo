@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use settings_store::device_class::DeviceClass;
+use settings_model::DeviceClass;
 use ui::tilo_resource;
 
 /// The parts of the shell a person may bind a view to.
@@ -71,10 +71,10 @@ pub struct ShellViews {
     pub on_device: BTreeMap<String, BTreeMap<String, Binding>>,
 }
 
-impl ui::storage::SettingsSchema for ShellViews {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::shell_views::SECTION);
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for ShellViews {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(settings_store::shell_views::SECTION);
+    settings_model::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "shell-views")]

@@ -4,9 +4,10 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use settings_model::{Scope, SettingsSchema};
 #[cfg(feature = "desktop")]
 use ui::framework::SurfaceCx;
-use ui::storage::{Scope, Settings, SettingsSchema};
+use ui::storage::Settings;
 use ui::tilo_resource::{self, Model, Refusal, resource};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

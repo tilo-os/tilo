@@ -2,7 +2,7 @@
 use crate::Studio;
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::prelude::*;
-use ui::theme::{Preset, ThemeDocument};
+use ui::theme::{Preset, PresetDesign, ThemeDocument};
 
 const MAX_THEME_BYTES: usize = 1_048_576;
 

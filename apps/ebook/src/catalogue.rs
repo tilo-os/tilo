@@ -13,8 +13,8 @@ use std::io::Read as _;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
+use settings_model::{DeviceClass, Scope, SettingsSchema};
 use ui::content::PublicState;
-use ui::storage::{DeviceClass, Scope, SettingsSchema};
 use ui::tilo_resource;
 
 use crate::store::StoreBook;

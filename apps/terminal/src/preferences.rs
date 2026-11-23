@@ -59,8 +59,8 @@ impl Default for PreferencesSetting {
     }
 }
 
-impl ui::storage::SettingsSchema for PreferencesSetting {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+impl settings_model::SettingsSchema for PreferencesSetting {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Personal;
 }
 
 use ui::apps::TERMINAL as TERMINAL_APP_ID;

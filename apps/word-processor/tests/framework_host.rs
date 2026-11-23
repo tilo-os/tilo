@@ -831,7 +831,7 @@ fn layout_and_spelling_language_follow_the_person() {
         "the layout is kept with the person's settings"
     );
 
-    app.settings::<ui::text_assistance::TextAssistancePrefs>()
+    app.settings::<settings_model::text_assistance::TextAssistancePrefs>()
         .update(|prefs| prefs.spelling_language = "de_DE".into())
         .unwrap();
     let mut app = app.reopen().unwrap();

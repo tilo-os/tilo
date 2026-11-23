@@ -3,7 +3,7 @@
 //! document. Whether this window is sampling belongs to the window alone.
 
 use serde::{Deserialize, Serialize};
-use ui::storage::{Scope, SettingsSchema};
+use settings_model::{Scope, SettingsSchema};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Prefs {

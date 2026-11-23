@@ -6,27 +6,28 @@
 # connection the launcher hands the app.
 name = "shell-ui"
 version = 37
-version_const = "crates/ui/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
+version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
 sources = [
-    "crates/ui/ui-core/src/floating_surface.rs",
-    "crates/ui/ui-core/src/floating_surface/wire.rs",
-    "crates/ui/ui-core/src/pick_wire.rs",
-    "crates/ui/ui-core/src/window_targets.rs",
-    "crates/ui/ui-core/src/workspace_sync.rs",
-    "crates/ui/ui-core/src/window_toolbar.rs",
-    "crates/ui/ui-core/src/window_share.rs",
-    "crates/ui/ui-core/src/widget/toast.rs",
-    "crates/ui/ui-core/src/widget/find_bar.rs",
-    "crates/ui/ui-core/src/search/request.rs",
-    "crates/ui/ui-core/src/action_locus.rs",
-    "crates/ui/ui-core/src/shared_selection.rs",
-    "crates/ui/ui-core/src/theme_document.rs",
-    "crates/ui/ui-core/src/tokens/palette.rs",
-    "crates/ui/ui-core/src/tokens/finish.rs",
-    "crates/ui/ui-core/src/tokens/selector.rs",
-    "crates/ui/ui-core/src/tokens/response.rs",
+    "crates/sdk/ui-core/src/floating_surface.rs",
+    "crates/sdk/ui-core/src/floating_surface/wire.rs",
+    "crates/sdk/ui-core/src/pick_wire.rs",
+    "crates/sdk/ui-core/src/window_targets.rs",
+    "crates/sdk/ui-core/src/workspace_sync.rs",
+    "crates/sdk/ui-core/src/window_toolbar.rs",
+    "crates/sdk/ui-core/src/window_share.rs",
+    "crates/sdk/ui-core/src/widget/toast.rs",
+    "crates/sdk/ui-core/src/widget/find_bar.rs",
+    "crates/sdk/ui-core/src/search/request.rs",
+    "crates/sdk/ui-core/src/action_locus.rs",
+    "crates/sdk/ui-core/src/shared_selection.rs",
+    "crates/sdk/ui-core/src/theme_document.rs",
+    "crates/system/settings-model/src/theme.rs",
+    "crates/sdk/ui-core/src/tokens/palette.rs",
+    "crates/sdk/ui-core/src/tokens/finish.rs",
+    "crates/sdk/ui-core/src/tokens/selector.rs",
+    "crates/sdk/ui-core/src/tokens/response.rs",
     "crates/collab/actions/src/context.rs",
     "crates/collab/actions/src/selection.rs",
     "crates/collab/actions/src/send_to.rs",

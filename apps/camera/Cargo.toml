@@ -37,6 +37,7 @@ runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 # Scanned links and the privacy-settings hand-off open through
 # `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
 # The resource the app draws: its types, verbs and typed action arguments.
 camera-model = { path = "../camera-model" }
 # The Tilo ACTION model: Camera's `actions` module exports capture/scan metadata

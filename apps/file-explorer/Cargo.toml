@@ -76,6 +76,7 @@ page-definition = "page_definition"
 # Only what both use is declared here; the manager's crates are `desktop`'s.
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
 # The records the app draws: their types, verbs and typed action arguments.
 file-explorer-model = { path = "../file-explorer-model" }
 tilo-actions = { path = "../../crates/collab/actions" }

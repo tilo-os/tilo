@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
+use settings_model::{Scope, SettingsSchema};
 use ui::framework::{ResourceApp, SeedCx, Setting, ViewCx};
 use ui::prelude::Effect;
-use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{self, Invoke};
 use ui::widget::Element;
 

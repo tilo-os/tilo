@@ -51,6 +51,7 @@ web-features = []
 [dependencies]
 # OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
 automerge.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

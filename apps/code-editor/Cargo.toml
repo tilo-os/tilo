@@ -33,6 +33,7 @@ runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 # sandbox's file-access grant is made — so it is the only way in, not merely
 # the tidy one. The SDK selects each platform's chooser.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
 # The Tilo resource + action model: the serializable, replayable buffer-creation
 # action Code exports, plus the Resource tree it publishes to Ctrl+K.
 tilo-actions = { path = "../../crates/collab/actions" }

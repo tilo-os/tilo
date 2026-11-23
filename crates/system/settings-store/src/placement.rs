@@ -5,18 +5,13 @@
 //! section once; one it does not name is the device's, so nothing leaves the device until someone
 //! decides it should.
 
+use settings_model::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Holder {
     Person,
     Device,
 }
-
-/// The section holding every app's settings that follow the person, one
-/// object per app id: an app's typed settings declare where each belongs,
-/// and only those that follow the person are written here.
-pub const APP_PERSONAL_SECTION: &str = "app_personal";
-
-pub const APP_DEVICE_LOCAL_SECTION: &str = "app_device_local";
 
 /// The largest serialized value of the person's the device fabric carries.
 /// An app's entry in [`APP_PERSONAL_SECTION`] is one value, so its whole

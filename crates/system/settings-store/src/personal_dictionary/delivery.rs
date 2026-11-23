@@ -25,7 +25,7 @@ pub fn project(document: &Map<String, Value>, app: &str, view: &mut Map<String, 
         return;
     };
     let section = view
-        .entry(crate::placement::APP_DEVICE_LOCAL_SECTION.to_owned())
+        .entry(settings_model::APP_DEVICE_LOCAL_SECTION.to_owned())
         .or_insert_with(|| Value::Object(Map::new()));
     let Some(section) = section.as_object_mut() else {
         return;
@@ -55,7 +55,7 @@ pub fn command(
     if app.is_empty() {
         return Err(denied());
     }
-    if section != crate::placement::APP_DEVICE_LOCAL_SECTION {
+    if section != settings_model::APP_DEVICE_LOCAL_SECTION {
         return Ok(false);
     }
     let Some(own) = values.get(app).and_then(Value::as_object) else {

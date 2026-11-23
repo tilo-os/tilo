@@ -36,8 +36,8 @@ pub struct SidePanelWidths {
     side_panel_widths: std::collections::BTreeMap<String, f32>,
 }
 
-impl ui::storage::SettingsSchema for SidePanelWidths {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+impl settings_model::SettingsSchema for SidePanelWidths {
+    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
 }
 
 /// How narrow and how wide a side panel may be dragged in `theme`: from a utility

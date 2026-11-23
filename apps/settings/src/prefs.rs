@@ -68,7 +68,8 @@ mod tests {
     use super::*;
     use crate::accessibility_settings::AccessibilitySettings;
 
-    use ui::storage::SettingsSchema;
+    use settings_model::SettingsSchema;
+    use ui::theme::PresetDesign;
 
     fn seeded(text: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

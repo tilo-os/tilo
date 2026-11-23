@@ -1358,8 +1358,8 @@ fn keeping_book_catalogues_is_a_device_setting_search_reaches() {
     .unwrap();
     assert!(!app.settings::<CatalogueCopies>().get().keep_catalogues);
     assert_eq!(
-        <CatalogueCopies as ui::storage::SettingsSchema>::SCOPE,
-        ui::storage::Scope::DeviceLocal,
+        <CatalogueCopies as settings_model::SettingsSchema>::SCOPE,
+        settings_model::Scope::DeviceLocal,
         "it never leaves this device"
     );
 }

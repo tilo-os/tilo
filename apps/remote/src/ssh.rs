@@ -103,8 +103,8 @@ pub struct KnownHostsSetting {
     entries: serde_json::Value,
 }
 
-impl ui::storage::SettingsSchema for KnownHostsSetting {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+impl settings_model::SettingsSchema for KnownHostsSetting {
+    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
 }
 
 #[derive(Clone, Debug)]

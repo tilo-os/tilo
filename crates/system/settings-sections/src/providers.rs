@@ -41,9 +41,9 @@ impl From<AgentProviders> for StoredProviders {
     }
 }
 
-impl ui::storage::SettingsSchema for AgentProviders {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
+impl settings_model::SettingsSchema for AgentProviders {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
 }
 
 #[ui::tilo_resource::resource(kind = "settings.agent-providers")]
@@ -115,9 +115,9 @@ pub struct HostedAgentProviders {
     pub hosted: HostedProfiles,
 }
 
-impl ui::storage::SettingsSchema for HostedAgentProviders {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(agent_provider_config::HOSTED_SECTION);
+impl settings_model::SettingsSchema for HostedAgentProviders {
+    const SCOPE: settings_model::Scope =
+        settings_model::Scope::Shared(agent_provider_config::HOSTED_SECTION);
 }
 
 #[ui::tilo_resource::resource(kind = "settings.hosted-agent-providers")]

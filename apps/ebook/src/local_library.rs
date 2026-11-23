@@ -4,8 +4,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 
+use settings_model::{Scope, SettingsSchema};
 use ui::framework::ViewCx;
-use ui::storage::{Scope, Settings, SettingsSchema};
+use ui::storage::Settings;
 
 const MAX_ENTRIES: usize = 200;
 const MAX_PATH_BYTES: usize = 4096;

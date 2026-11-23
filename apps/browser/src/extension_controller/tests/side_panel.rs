@@ -361,7 +361,7 @@ tilo_test_env::scenario! {
         later.attach_side_panel_widths(store());
         open(&mut later, &notes);
         assert!((later.side_panel_extent(&theme, room) - 480.0).abs() < 0.01);
-        assert_eq!(store().scope(), ui::storage::Scope::DeviceLocal);
+        assert_eq!(store().scope(), settings_model::Scope::DeviceLocal);
     }
 
     phase a_shortcut_pressed_in_the_address_runs_the_command_that_holds_it;

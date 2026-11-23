@@ -120,9 +120,9 @@ fn taken(config: &ShortcutConfig, chord: &KeyChord, error: ShortcutConfigError) 
     })
 }
 
-impl ui::storage::SettingsSchema for ShortcutPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("shortcuts");
-    ui::settings_codec!();
+impl settings_model::SettingsSchema for ShortcutPrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("shortcuts");
+    settings_model::settings_codec!();
 }
 
 #[tilo_resource::resource(kind = "settings.shortcuts")]

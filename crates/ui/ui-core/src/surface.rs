@@ -1074,6 +1074,7 @@ pub fn control_face(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::PresetDesign;
 
     tilo_test_env::scenario! {
         /// Edge fades, separators and derived edges.

@@ -181,8 +181,8 @@ impl Default for Locale {
     }
 }
 
-impl ui::storage::SettingsSchema for Locale {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("locale");
+impl settings_model::SettingsSchema for Locale {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared("locale");
 }
 
 #[ui::tilo_resource::resource(kind = "settings.locale")]

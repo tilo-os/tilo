@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use settings_model::{Scope, SettingsSchema};
 use ui::framework::Setting;
-use ui::storage::{Scope, SettingsSchema};
 
 /// At most this many bindings are kept.
 const MAX_BINDINGS: usize = 64;

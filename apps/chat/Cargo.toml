@@ -1,0 +1,123 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "chat"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["chat-samples"]
+
+[lib]
+name = "chat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "chat"
+path = "src/main.rs"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+# Calls run through the shell's native voice service (`ui::native_media`),
+# which a page build reaches through its host; the app itself has no media
+# transport.
+[package.metadata.tilo]
+web-features = []
+
+[features]
+# The demo workspace, the screenshot scenarios and the messages they stage, and
+# the helpers that write a chat as its people would: development runs,
+# captures and tests (here and in the crates that test against a chat) only,
+# never a release.
+samples = []
+default = ["video"]
+thin = ["dep:runtime-dylib"]
+# Reach the emoji catalogue (emoji, with its names and keywords in every
+# locale) through its engine library in the runtime bundle
+# (libtilo_emoji_engine.so, crates/engines/loadable/emoji) instead of linking
+# it. The release collection enables it (dist/apps/app-collections.toml); a
+# `thin` build without it (`tilo-app dev`) links it statically, because an
+# engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-emoji-engine/thin"]
+# A call's pictures are decoded in Chat, hardware first, through the shared
+# media stack's real-time decoder.
+video = ["ui/realtime-video"]
+
+[dependencies]
+fnv.workspace = true
+# Chat's own reading of the catalogue, to name an emoji and its group in the
+# accessibility tree. The picker and reaction strip take the catalogue from
+# the toolkit, which provides it.
+emoji = { path = "../../crates/text/emoji" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-emoji-engine = { path = "../../crates/engines/loadable/emoji", optional = true }
+# A channel's page as a described-components view, drawn by the shell like any app's
+# (one-app-model.md §2).
+tilo-view = { path = "../../crates/platform/tilo-view" }
+tilo-view-macros = { path = "../../crates/sdk/view-macros" }
+# A message's moment in the form a component's `time` prop takes it (RFC 3339).
+jiff.workspace = true
+# The chat's records: its channels, categories, read marks, feedback and
+# moderation, and each person's drafts, as every device holding the workspace's
+# keys applies them.
+chat-model = { path = "../chat-model" }
+# The Tilo action model: the serializable, replayable unit of CRDT mutation
+# behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
+# are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
+# framework's `ui::ActionProvider`.
+tilo-actions = { path = "../../crates/collab/actions" }
+# The address a message carries when it was authored by selecting something —
+# `Message::reference` — and the vocabulary an agent's own progress on a
+# summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
+tilo-reference = { path = "../../crates/collab/reference" }
+# Message bodies and drafts are rich text, written in the SDK editor.
+tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
+# Content addressing everywhere; the on-disk store, and the device store where
+# the launcher hands one over.
+tilo-content = { path = "../../crates/system/content", features = ["dir"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
+automerge.workspace = true
+tilo-automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+# The data directory for the workspace document, the workspace mount the
+# attachment picker browses, and the session's account and host names.
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+
+[dev-dependencies]
+# Tests build their image fixtures.
+image = { workspace = true, features = ["png"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `chat` claims `--features chat/thin` in the
+# collection build, and the app then links the whole runtime statically.
+chat-samples = { package = "chat", path = ".", features = ["samples"] }
+# Descriptor fixtures exercise the real gateway backend injected into the SDK.
+tilo-model-client = { path = "../../crates/agent/model-client", default-features = false, features = ["runtime-client"] }
+# Reads the signed manifest's offers to check them against what the app publishes.
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tempfile.workspace = true
+tilo-test-env = { path = "../../tools/test-env" }
+# The host's reading of a part's id, checked against the app's.
+neighbour-wire = { path = "../../crates/collab/neighbour-wire" }
+# Each device's store, for a part that reaches one from another.
+durable-store = { path = "../../crates/system/durable-store" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

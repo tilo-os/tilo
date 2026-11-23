@@ -18,9 +18,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
+use settings_model::SettingsSchema;
 use tilo_actions::{ActionError, ActionInvoker, EncodedAction, OperationKind};
 use tilo_resource::{Fields, Resource};
-use ui_core::storage::SettingsSchema;
 
 use super::controls::Actions;
 use super::dispatch::Dispatcher;
@@ -849,7 +849,7 @@ impl<'a> Resources<'a> {
         T: Resource<State = T> + Fields + SettingsSchema,
     {
         // A setting that means nothing on this device is not published.
-        if !T::available_on(ui_core::storage::DeviceClass::current()) {
+        if !T::available_on(settings_model::DeviceClass::current()) {
             return self;
         }
         if let Some(sections) = &mut self.sections {

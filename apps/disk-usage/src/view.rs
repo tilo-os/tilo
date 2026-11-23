@@ -24,9 +24,9 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 use crate::locales::CATALOG;
 use crate::resource::{DiskUsage, DiskUsageEffect, Folders, analyze, folder_row, recent_row};
 use crate::scan::{Entry, ScanCancellation, ScanResult};
+use settings_model::{Scope, SettingsSchema};
 use ui::format::{count, size};
 use ui::framework::Setting;
-use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::AbsolutePath;
 use ui::widget::DrawChild;
 

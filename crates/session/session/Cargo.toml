@@ -92,6 +92,7 @@ tilo-desktop-surface = { path = "../desktop-surface" }
 # the session runs.
 tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
 settings-store = { path = "../../system/settings-store" }
+settings-model = { path = "../../system/settings-model" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }
 durable-store = { path = "../../system/durable-store" }

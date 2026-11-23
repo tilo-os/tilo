@@ -240,8 +240,8 @@ pub struct NetworkUsage {
     pub boot: Option<String>,
 }
 
-impl ui::storage::SettingsSchema for NetworkUsage {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(SECTION);
+impl settings_model::SettingsSchema for NetworkUsage {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared(SECTION);
 }
 
 #[tilo_resource::resource(kind = "settings.network-usage")]

@@ -6,12 +6,12 @@
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
+use settings_model::{Scope, SettingsSchema};
 use sha2::{Digest as _, Sha256};
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
 use ui::framework::{EffectAnswer, Effected, Publishes, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{
     self, AbsolutePath, ActionCx, ActionDecl, Atom, Collection, Id, Invoke, Model, NonBlank,
     Outbox, Refusal, Settled, Undoing, resource,
@@ -1213,8 +1213,8 @@ pub(crate) struct DeviceRecentFiles {
     pub(crate) by_workspace: std::collections::BTreeMap<String, crate::recent::RecentFiles>,
 }
 
-impl ui::storage::SettingsSchema for DeviceRecentFiles {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+impl settings_model::SettingsSchema for DeviceRecentFiles {
+    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
 }
 
 impl DeviceRecentFiles {

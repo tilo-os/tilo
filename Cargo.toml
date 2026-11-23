@@ -598,6 +598,7 @@ members = [
     "crates/system/secret-service",
     "crates/system/peer-facts",
     "crates/system/secret-vault",
+    "crates/system/settings-model",
     "crates/system/settings-store",
     "crates/system/settings-sections",
     "crates/integrations/ssh-agent-client",

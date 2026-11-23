@@ -7,7 +7,7 @@
 //! surface context, so it survives a restart.
 
 use serde::{Deserialize, Serialize};
-use ui_core::storage::{Scope, SettingsSchema};
+use settings_model::{Scope, SettingsSchema};
 
 use super::kind::{KindDecl, filters};
 use super::query::QuerySpec;

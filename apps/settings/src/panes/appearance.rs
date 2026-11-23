@@ -5,6 +5,7 @@ use std::rc::Rc;
 use provider_settings_ui::bound::{SettingRows as _, record_item};
 use ui::LocalState;
 use ui::framework::{ActionControl as _, Actions, EffectAnswer, EffectCx, Effected, ViewCx};
+use ui::theme::LookDesign;
 use ui::tilo_resource;
 use ui::widget::Element;
 

@@ -36,6 +36,7 @@ tilo-keyboard-map = { path = "../../crates/platform/tilo-keyboard-map" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/engines/loadable/emoji", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+settings-model = { path = "../../crates/system/settings-model" }
 tilo-actions = { path = "../../crates/collab/actions" }
 # FUTO swipe decoder (ExecuTorch over FFI); builds an unavailable stub when
 # the FUTO libraries are not linked.

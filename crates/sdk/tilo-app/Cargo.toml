@@ -14,11 +14,6 @@ description = "The Tilo application SDK: one app source for Linux, macOS and the
 # builds for Linux, macOS and wasm32 unchanged. With resolver 2 the features
 # below that name the native runner enable nothing on wasm32, where that
 # dependency does not exist.
-# The app SDK: the kinds it declares are the framework's, which no app lists as
-# its own (tools/tilo-app-cli/src/resource_kinds.rs).
-[package.metadata.tilo]
-framework = true
-
 [features]
 # Every OS affordance is on by default: the native runner, collaboration over
 # the broker, desktop media controls, notifications and GPU video frames. An
@@ -65,9 +60,10 @@ registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Scratch directories for test and capture profiles.
 tilo-paths.workspace = true
-ui-core = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false }
+settings-model = { version = "0.1.0", path = "../../system/settings-model" }
 # The document editor and its text stack: what an app edits rich text and notes with.
-tilo-rich-edit = { version = "0.1.0", path = "../../ui/tilo-rich-edit" }
+tilo-rich-edit = { version = "0.1.0", path = "../tilo-rich-edit" }
 # What a headless test keeps on its profile as an earlier build stored it.
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 # Whose each app's records are, as the fleet's manifests declare (`[resources] own`).
@@ -85,11 +81,11 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 tilo-history = { version = "0.1.0", path = "../tilo-history" }
 # Portable feedback review, capture and durable delivery contracts.
-tilo-feedback = { version = "0.1.0", path = "../feedback" }
+tilo-feedback = { version = "0.1.0", path = "../../collab/feedback" }
 # The workspace's own emoji and its agents, which every window opens and
 # offers its views.
-tilo-workspace-agent = { version = "0.1.0", path = "../tilo-workspace-agent" }
-tilo-workspace-emoji = { version = "0.1.0", path = "../tilo-workspace-emoji" }
+tilo-workspace-agent = { version = "0.1.0", path = "../../platform/tilo-workspace-agent" }
+tilo-workspace-emoji = { version = "0.1.0", path = "../../platform/tilo-workspace-emoji" }
 # The default search provider over a resource's entries.
 tilo-search = { version = "0.1.0", path = "../../engines/search" }
 # Merging a member's change in tests, the way sync does.

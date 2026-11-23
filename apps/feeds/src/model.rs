@@ -493,8 +493,8 @@ impl Default for ReadSettings {
     }
 }
 
-impl ui::storage::SettingsSchema for ReadSettings {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+impl settings_model::SettingsSchema for ReadSettings {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Personal;
 }
 
 impl ReadSettings {

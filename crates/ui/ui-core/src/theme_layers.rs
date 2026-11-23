@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
 
 use crate::theme::{Theme, WindowAppearance};
-use crate::theme_document::{Preset, ThemeDensity, ThemeDocument};
+use crate::theme_document::{PresetDesign, ThemeDocument};
 use crate::tokens::{Emphasis, PresenceHue};
+use settings_model::theme::{CUSTOM_THEMES_KEY, Preset, ThemeDensity};
 
 /// JSON id of the distribution-defaults layer.
 pub const DISTRIBUTION_LAYER_ID: &str = "distribution";
@@ -72,8 +73,6 @@ pub const MODE_KEY: &str = settings_store::day_schedule::MODE_KEY;
 pub const DARK_THEME_KEY: &str = "dark_theme";
 /// `appearance` key: the theme light mode shows, a preset id or `custom:<id>`.
 pub const LIGHT_THEME_KEY: &str = "light_theme";
-/// `appearance` key: the custom theme documents a `custom:<id>` names.
-pub const CUSTOM_THEMES_KEY: &str = "custom_themes";
 /// `appearance` key: the person's density, over whichever theme is shown.
 pub const DENSITY_KEY: &str = "density";
 /// `appearance` key: per-workspace temperature overrides, OKLCH degrees by workspace id.

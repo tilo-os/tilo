@@ -17,8 +17,8 @@ struct MonitorPrefs {
     interval_ms: u64,
 }
 
-impl crate::storage::SettingsSchema for MonitorPrefs {
-    const SCOPE: crate::storage::Scope = crate::storage::Scope::Personal;
+impl settings_model::SettingsSchema for MonitorPrefs {
+    const SCOPE: settings_model::Scope = settings_model::Scope::Personal;
 }
 
 /// Whether the calling test `name` (in this module) runs its body here.
