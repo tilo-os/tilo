@@ -3332,6 +3332,41 @@ secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
 [check.matrix]
 deb = ["amd64", "arm64"]
 
+# Arch's package is built by makepkg from dist/arch/PKGBUILD and Nix's by nix build from
+# dist/nix/package.nix: the two userspaces that read their own package definition instead of a
+# script in this tree, and the two a release builds on their own. Each check runs just that
+# userspace of the packaging job, so it needs neither the other four distributions' time nor the
+# app-store trust root that only the Fedora build stages. Both are release checks: dispatch one
+# to build the package and get it with its checksum (`t outputs package/arch`).
+
+[[check]]
+name = "package/arch"
+# Installs the container engine from Fedora's mirrors and builds in an Arch image pulled from
+# Docker Hub, which then installs from Arch's mirrors: no fixed host list covers them.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\n# The Arch userspace of dist/ci/package-targets.txt: dist/arch/build-arch.sh builds with makepkg and\n# dist/arch/test-package.sh installs and verifies the package there (dist/ci/run-package-job.sh).\n# The job's micro-VM has 8 GiB, and tilo-ui's release compile did not fit beside three other\n# rustc processes; two fit.\nexport TILO_CARGO_JOBS=2\nbash dist/ci/package-job.sh amd64 arch\nout=dist/ci-output/arch-amd64\n(cd \"$out\" && sha256sum ./*.pkg.tar.zst > SHA256SUMS)\nls -l \"$out\"\n"
+isolation = "vm"
+requires = ["arch=x86_64"]
+git = true
+outputs = ["dist/ci-output/**"]
+timeout_secs = 14400
+on = ["dispatch"]
+heavy = true
+
+[[check]]
+name = "package/nix"
+# Installs the container engine from Fedora's mirrors and builds in a Nix image pulled from Docker
+# Hub, which then fetches the flake's inputs and Cargo's crates: no fixed host list covers them.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\n# The Nix userspace of dist/ci/package-targets.txt: nix build of the flake package, the\n# installed-result verification, the NixOS module evaluation, and the store closure as a portable\n# archive (dist/ci/run-package-job.sh).\n# The job's micro-VM has 8 GiB, and tilo-ui's release compile did not fit beside three other\n# rustc processes; two fit.\nexport TILO_CARGO_JOBS=2\nbash dist/ci/package-job.sh amd64 nix\nout=dist/ci-output/nix-amd64\n(cd \"$out\" && sha256sum ./*.nar.gz > SHA256SUMS)\nls -l \"$out\"\n"
+isolation = "vm"
+requires = ["arch=x86_64"]
+git = true
+outputs = ["dist/ci-output/**"]
+timeout_secs = 14400
+on = ["dispatch"]
+heavy = true
+
 [[check]]
 name = "host-session-e2e"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
@@ -4335,12 +4370,32 @@ default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# A release tag's Windows build: the same build and package as above, embedding the media
+# catalogue the tag built (release-catalog/imager), and the only one sign/windows-{arch} signs.
+[[check]]
+name = "release/windows-{arch}"
+# Fetches from mirrors, registries and release hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = """set -eu
+export TILO_RELEASE_CATALOG=/target/imager-release/catalog/tilo-installer-catalog-v2.json
+bash tools/ci/windows/build.sh imager {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/release-build
+bash apps/imager/packaging/package-windows.sh {arch} /target/windows/{arch}/release-build/imager.exe /target/windows/{arch}/release-package
+"""
+needs = ["build/windows-sdk-{arch}", "release-catalog/imager"]
+image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
+requires = ["arch=x86_64"]
+outputs = ["/target/windows/{arch}/release-build/*", "/target/windows/{arch}/release-package/*"]
+cache = false
+on = ["tag:imager-v*"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 [[check]]
 name = "sign/windows-{arch}"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/windows/sign.sh {arch} /target/windows/{arch}/build /target/windows/{arch}/package /target/windows/{arch}/signed"
-needs = ["build/windows-{arch}", "package/windows-{arch}"]
+run = "bash tools/ci/windows/sign.sh {arch} /target/windows/{arch}/release-build /target/windows/{arch}/release-package /target/windows/{arch}/signed"
+needs = ["release/windows-{arch}"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 env = { TILO_AUTHENTICODE_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-authenticode-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTPackageSigner" }
 requires = ["arch=x86_64"]
@@ -4351,6 +4406,98 @@ secrets = ["TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
 id_token = ["sts.amazonaws.com"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "build/macos-{arch}"
+# Installs packages (rustup targets) from hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/macos/build-imager.sh {arch} \"$CARGO_TARGET_DIR/macos/{arch}/build\""
+# Both architectures build on the one Mac node: Apple silicon builds its own,
+# and cross-builds x86_64, which the install check starts through Rosetta. The
+# job writes into its build directory, which a Mac node keeps where the job
+# runs it, not at /target.
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/build/*"]
+default = false
+# A cold release build of the imager took 68 minutes on the Mac node with an
+# empty compiler cache.
+timeout_secs = 7200
+on = ["dispatch", "idle"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+[[check]]
+name = "package/macos-{arch}"
+run = '''set -eu
+case "${T_REF:-}" in tag:imager-v*) export TILO_VERSION="${T_REF#tag:imager-v}" ;; esac
+TILO_IMAGER_BINARY="${TILO_IMAGER_BINARY:-$CARGO_TARGET_DIR/macos/{arch}/build/imager}"
+bash apps/imager/packaging/package-macos.sh {arch} "$TILO_IMAGER_BINARY" "$CARGO_TARGET_DIR/macos/{arch}/package"
+'''
+needs = ["build/macos-{arch}"]
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/package/*"]
+default = false
+timeout_secs = 1800
+on = ["dispatch", "idle"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+# The DMG as a person receives it: mounted read-only, the app inside it
+# started offscreen from the mount, and the capture kept as the check's output.
+[[check]]
+name = "install/macos-{arch}"
+run = '''set -eu
+case "${T_REF:-}" in tag:imager-v*) export TILO_VERSION="${T_REF#tag:imager-v}" ;; esac
+bash apps/imager/packaging/macos/verify-dmg.sh {arch} \
+  "$CARGO_TARGET_DIR/macos/{arch}/package/tilo-imager-macos-{arch}.dmg" "$CARGO_TARGET_DIR/macos/{arch}/install"
+'''
+needs = ["package/macos-{arch}"]
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/install/*"]
+default = false
+timeout_secs = 1800
+on = ["dispatch", "idle"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+# A release repackages the exact executable the build check made, with the
+# Developer ID identity the stored secret holds, notarizes it and staples the
+# ticket; the signed DMG is then mounted, started and checked as a person
+# receives it, Gatekeeper included. Only a tag run holds any of this.
+# A release tag's macOS build: the same build and package as above, embedding the media catalogue
+# the tag built (release-catalog/imager), and the only one sign/macos-{arch} signs.
+[[check]]
+name = "release/macos-{arch}"
+# Installs packages (rustup targets) from hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = '''set -eu
+export TILO_VERSION="${T_REF#tag:imager-v}" TILO_RELEASE_CATALOG=/target/imager-release/catalog/tilo-installer-catalog-v2.json
+bash tools/ci/macos/build-imager.sh {arch} "$CARGO_TARGET_DIR/macos/{arch}/release-build"
+bash apps/imager/packaging/package-macos.sh {arch} "$CARGO_TARGET_DIR/macos/{arch}/release-build/imager" "$CARGO_TARGET_DIR/macos/{arch}/release-package"
+'''
+needs = ["release-catalog/imager"]
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/release-build/*", "/target/macos/{arch}/release-package/*"]
+cache = false
+timeout_secs = 10800
+on = ["tag:imager-v*"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+[[check]]
+name = "sign/macos-{arch}"
+# Takes the Developer ID certificate and Apple notarization credentials from t's secrets, and reaches Apple's notary service.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/macos/sign-imager.sh {arch} \"$CARGO_TARGET_DIR/macos/{arch}/release-build\" \"$CARGO_TARGET_DIR/macos/{arch}/release-package\" \"$CARGO_TARGET_DIR/macos/{arch}/signed\""
+needs = ["release/macos-{arch}"]
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/signed/*"]
+cache = false
+timeout_secs = 7200
+on = ["tag:imager-v*"]
+secrets = ["TILO_MAC_SIGNING_P12", "TILO_MAC_SIGNING_P12_PASSWORD", "TILO_APPLE_ID", "TILO_APPLE_TEAM_ID", "TILO_APPLE_APP_PASSWORD", "TILO_MAC_EXPECTED_TEAM_ID", "TILO_MAC_EXPECTED_CERT_SHA256"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
 
 [[check]]
 name = "wine/windows-x86_64-tests"
@@ -4384,6 +4531,66 @@ image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd
 requires = ["arch=x86_64"]
 default = false
 
+# ---- The standalone Linux installer
+# The AppImage tools package/linux-{arch} runs: pinned in os/external-assets/github-assets.tsv.
+[[check]]
+name = "os-assets-appimage-{arch}"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh linuxdeploy-1-alpha-20251107-1-{arch}.AppImage appimagetool-1.9.1-{arch}.AppImage type2-runtime-20251108-{arch}"
+outputs = ["os/external-assets/cache/linuxdeploy-1-alpha-20251107-1-{arch}.AppImage", "os/external-assets/cache/appimagetool-1.9.1-{arch}.AppImage", "os/external-assets/cache/type2-runtime-20251108-{arch}"]
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The tarball, AppImage and Flatpak a person downloads, built natively for each architecture: the
+# only thing that keeps them building, so main's newest head gets it whenever t has room,
+# bisected when it breaks. A micro-VM: Flatpak's builder sandboxes each step and the packagers
+# install their tools, which a job container's read-only system does not allow.
+[[check]]
+name = "package/linux-{arch}"
+# Fetches from mirrors, registries and Flathub: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/linux-imager/package.sh {arch} /target/linux/{arch}/package"
+needs = ["os-assets-appimage-{arch}"]
+requires = ["arch={arch}"]
+outputs = ["/target/linux/{arch}/package/*"]
+isolation = "vm"
+timeout_secs = 7200
+on = ["idle"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The same build on a release tag, which also signs the capture service the installer ships
+# with the capture identities: the only build that holds them.
+[[check]]
+name = "release/linux-{arch}"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/linux-imager/package.sh {arch} /target/linux/{arch}/release"
+needs = ["os-assets-appimage-{arch}", "release-catalog/imager"]
+requires = ["arch={arch}"]
+outputs = ["/target/linux/{arch}/release/*"]
+secrets = ["TILO_CAPTURE_RUNTIME_IDENTITY_KEY", "TILO_CAPTURE_SERVICE_IDENTITY_KEY", "TILO_CAPTURE_QUALIFIER_BASE", "TILO_CAPTURE_SOURCE_ASSETS"]
+cache = false
+isolation = "vm"
+timeout_secs = 7200
+on = ["tag:imager-v*"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# Each Linux download installed and started on a machine that did not build it.
+[[check]]
+name = "install/linux-{arch}"
+# Fetches the Flatpak runtime from Flathub: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/linux-imager/install.sh {arch} /target/linux/{arch}/package"
+needs = ["package/linux-{arch}"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+requires = ["arch={arch}"]
+isolation = "vm"
+on = ["idle"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 [[check]]
 name = "package/windows-winget"
 # Fetches from mirrors, registries and release hosts no fixed list names.
@@ -4406,12 +4613,84 @@ timeout_secs = 1800
 on = ["schedule:23 */6 * * *", "dispatch"]
 secrets = ["TILO_SITE_TOKEN"]
 
-# ---- The imager release's publication surfaces
+# ---- The standalone installer's release
 #
-# The release's own assets are built by the imager release workflow: this draft translates
-# everything the release does after that, because those scripts are in the tree. Each check
-# runs on the release tag and reads that tag's published assets, which is what the workflow
-# handed these jobs as a downloaded artifact.
+# Every platform's downloads are built and installed by the checks above, on main's newest head.
+# release-assets/imager gathers them, with the installer medium, into the release a person
+# downloads and checks it is complete: on main that is the dry run, on an imager-v* tag it takes
+# the signed outputs. Only a tag publishes: to GitHub releases, then WinGet, the Homebrew tap and
+# the site's downloads.
+
+[[check]]
+name = "sign/linux-{arch}"
+run = "bash tools/ci/linux-imager/sign.sh {arch} /target/linux/{arch}/release /target/linux/{arch}/signed"
+needs = ["release/linux-{arch}"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+outputs = ["/target/linux/{arch}/signed/*"]
+cache = false
+on = ["tag:imager-v*"]
+secrets = ["TILO_LINUX_SIGNING_KEY_ASC", "TILO_LINUX_EXPECTED_FINGERPRINT"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The internal bundle published to the generic package the Imager stages onto a machine's own
+# disk from: the manifest and its two component images go first and the manifest last, and the
+# check downloads each one anonymously and compares its bytes. Only a tag publishes.
+[[check]]
+name = "publish-internal-bundle-{arch}"
+# Publishes with a stored token, to the forge's package registry.
+egress = { to = ["code.tilo.so:443"] }
+run = "GITHUB_REF_NAME=${T_REF#tag:} FORGEJO_TOKEN=$TILO_PACKAGES_TOKEN bash apps/imager/packaging/publish-internal-bundle.sh /target/imager-medium/{arch}/bundle"
+needs = ["medium/imager-{arch}"]
+requires = ["arch={arch}"]
+cache = false
+timeout_secs = 3600
+on = ["tag:imager-v*"]
+secrets = ["TILO_PACKAGES_TOKEN"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# A tag's catalogue of the media it built, which the tag's installer builds embed
+# (TILO_RELEASE_CATALOG, apps/imager/build.rs); main's builds embed the reviewed
+# apps/imager/release-catalog.json.
+[[check]]
+name = "release-catalog/imager"
+run = "GITHUB_REF_NAME=${T_REF#tag:} bash apps/imager/packaging/build-release-catalog.sh /target/imager-medium /target/imager-release/catalog"
+needs = ["medium/imager-x86_64", "medium/imager-aarch64"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+outputs = ["/target/imager-release/catalog/*"]
+cache = false
+on = ["tag:imager-v*"]
+
+# Main's dry run: the complete unsigned set gathered and checked, nothing published.
+[[check]]
+name = "release-assets/imager"
+run = "bash tools/ci/imager-release/assets.sh gather /target/imager-release/assets 0.0.0"
+needs = ["package/linux-x86_64", "package/linux-aarch64", "package/windows-x86_64", "package/windows-aarch64", "package/macos-x86_64", "package/macos-aarch64", "medium/imager-x86_64", "medium/imager-aarch64"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+requires = ["arch=x86_64"]
+outputs = ["/target/imager-release/assets/**"]
+on = ["idle"]
+
+# A tag's release: the signed set of every platform and the signed media, gathered and checked the
+# same way, then published once every download has been installed and started.
+[[check]]
+name = "publish-github-release"
+# Publishes with a stored token, to hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = """set -eu
+export GITHUB_REF_NAME="${T_REF#tag:}" GITHUB_SHA="{commit}"
+bash tools/ci/imager-release/assets.sh gather "$TMPDIR/imager-release" "${T_REF#tag:imager-v}"
+apps/imager/packaging/publish-github-release.sh "$TMPDIR/imager-release"
+"""
+needs = ["sign/linux-x86_64", "sign/linux-aarch64", "sign/windows-x86_64", "sign/windows-aarch64", "sign/macos-x86_64", "sign/macos-aarch64", "sign/medium-x86_64", "sign/medium-aarch64", "install/linux-x86_64", "install/linux-aarch64", "wine/windows-x86_64-install", "install/macos-x86_64", "install/macos-aarch64"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+env = { TILO_RELEASE_REPOSITORY = "tilo-os/releases" }
+requires = ["arch=x86_64"]
+cache = false
+timeout_secs = 3600
+on = ["tag:imager-v*"]
+secrets = ["GITHUB_RELEASE_TOKEN", "TILO_LINUX_EXPECTED_FINGERPRINT"]
 
 [[check]]
 name = "publish-winget"
@@ -4429,14 +4708,14 @@ python3 apps/imager/packaging/generate-winget.py "$assets" \
 python3 apps/imager/packaging/validate-winget.py "$assets/winget"
 bash apps/imager/packaging/publish-winget.sh "$assets"
 '''
-needs = ["package/windows-x86_64", "package/windows-aarch64"]
+needs = ["package/windows-x86_64", "package/windows-aarch64", "publish-github-release"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { TILO_RELEASE_SERVER = "https://github.com", TILO_RELEASE_REPOSITORY = "tilo-os/releases", TILO_HOMEBREW_TAP_REPOSITORY = "tilo-os/homebrew-tilo", TILO_HOMEBREW_TAP_NAME = "tilo/tilo" }
 requires = ["arch=x86_64"]
 cache = false
 timeout_secs = 3600
 on = ["tag:imager-v*"]
-secrets = ["WINGET_GITHUB_TOKEN"]
+secrets = ["WINGET_GITHUB_TOKEN", "WINGET_GITHUB_USER"]
 
 [[check]]
 name = "publish-homebrew-tap"
@@ -4453,6 +4732,7 @@ for name in tilo-imager-linux-x86_64.tar.gz tilo-imager-linux-aarch64.tar.gz \
 done
 bash apps/imager/packaging/publish-homebrew-tap.sh "$assets"
 '''
+needs = ["publish-github-release"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { TILO_IMAGER_MACOS_ENABLED = "1", TILO_RELEASE_SERVER = "https://github.com", TILO_RELEASE_REPOSITORY = "tilo-os/releases", TILO_HOMEBREW_TAP_REPOSITORY = "tilo-os/homebrew-tilo", TILO_HOMEBREW_TAP_NAME = "tilo/tilo" }
 requires = ["os=linux", "arch=aarch64"]
@@ -5020,6 +5300,194 @@ timeout_secs = 10800
 heavy = true
 default = false
 on = ["dispatch"]
+
+# The live installer medium a release publishes, from the release image this tree composes:
+# the bootable qcow2, the raw payload the Imager downloads and writes with the catalog entry
+# that names its bytes, and the internal bundle the Imager stages onto a machine's own disk
+# (tools/ci/publish/installer-release-medium.sh). The medium is tools/ci/publish/installer-medium.sh's,
+# the same build the server and development media use; the release image is the one
+# os-release-image-{arch} composes, which the release seal and sign steps consume.
+# The medium carries no release signature: signing its boot artifacts is the release signer's
+# step, on the protected tag it runs on.
+[[check]]
+name = "medium/imager-{arch}"
+# Pinned: it runs in the OS assembler image, which carries the install's tools, and the disk
+# step installs from container storage, so it pulls no image.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash tools/ci/publish/installer-release-medium.sh {arch} /target/os/{arch}/release-image /target/imager-medium/{arch}"
+needs = ["os-release-image-{arch}", "bootc-alongside-{arch}"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/{arch}/bootc" }
+requires = ["arch={arch}", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/imager-medium/{arch}/**"]
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# A release signs the medium it ships, in a keyring that exists only for the check: the payload
+# and its digest are copied into the directory the release gathers a tag's media from, and the
+# signature is made over those exact bytes. The public key and its fingerprint are the package
+# sign step's, on x86_64, so a person verifies the medium with the same release key.
+[[check]]
+name = "sign/medium-{arch}"
+run = "bash tools/ci/linux-imager/sign-medium.sh {arch} /target/imager-medium/{arch} /target/imager-medium-signed/{arch}"
+needs = ["medium/imager-{arch}"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+requires = ["arch={arch}"]
+outputs = ["/target/imager-medium-signed/{arch}/*"]
+cache = false
+timeout_secs = 1800
+on = ["tag:imager-v*"]
+secrets = ["TILO_LINUX_SIGNING_KEY_ASC", "TILO_LINUX_EXPECTED_FINGERPRINT"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The complete graphical installation cycle on that medium: erase, prepared-alongside and
+# guided-alongside (tools/ci/installer-release-cycle.sh). Each mode drives the live installer
+# only through the actions its console publishes, unlocks the encrypted target after a cold
+# power cycle, and reads the installed desktop's first login off the framebuffer; the alongside
+# modes also prove the foreign Windows and Linux partitions and their shared ESP are unchanged.
+[[check]]
+name = "medium/cycle-{arch}"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt tools/ci/packages/installer-cycle.txt\nrm -rf /var/tmp/tilo-installer-release-cycle\nTILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-release-cycle bash tools/ci/installer-release-cycle.sh /target/imager-medium/{arch} /target/imager-medium-cycle/{arch}\n"
+needs = ["medium/imager-{arch}", "tilo-vm-binary-{arch}"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch={arch}", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/imager-medium-cycle/{arch}/**"]
+# A failed run keeps what each guest and its installer said: the serial tails, the installer's
+# console state and the screens it was on.
+evidence = ["/target/imager-medium-cycle/{arch}/**"]
+cache = false
+git = true
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The WHPX installer medium: the aarch64 live installer with one published, signed target
+# preloaded, then the guided-alongside install-only cycle that proves the installer wrote exactly
+# that target, and the qcow2 compressed once for the Windows on ARM host to write
+# (tools/ci/publish/installer-whpx-medium.sh, tools/ci/installer-whpx-cycle.sh). It reads
+# published, signed inputs and signs the medium's source description with the release key in KMS;
+# it publishes nothing. Dispatch it with
+# `--input target_image=...,live_base_image=...,source_revision=...`; a run without them fails
+# here, never falls back to an unsigned target.
+[[check]]
+name = "medium/whpx-medium-aarch64"
+# Takes an identity token from t for the registry and reads the public release hosts; the
+# private board child needs the stored registry token.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "[[ -n $T_INPUT_TARGET_IMAGE && -n $T_INPUT_LIVE_BASE_IMAGE && -n $T_INPUT_SOURCE_REVISION ]] || { echo 'medium/whpx-medium-aarch64 needs --input target_image=...,live_base_image=...,source_revision=... from a published, signed release' >&2; exit 2; }\nbash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt\nbash tools/ci/publish/installer-whpx-medium.sh $T_INPUT_TARGET_PROFILE \"$T_INPUT_TARGET_IMAGE\" \"$T_INPUT_LIVE_BASE_IMAGE\" \"$T_INPUT_SOURCE_REVISION\" /target/imager-whpx-medium\n"
+needs = ["bootc-alongside-aarch64", "signing-tools"]
+image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
+env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/aarch64/bootc" }
+secrets = ["REGISTRY_TOKEN"]
+requires = ["arch=aarch64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/imager-whpx-medium/**"]
+cache = false
+git = true
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+dispatch_inputs = { target_image = "", live_base_image = "", source_revision = "", target_profile = "generic" }
+
+[[check]]
+name = "medium/whpx-aarch64"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-aarch64.txt tools/ci/packages/installer-cycle.txt\n[[ -n $T_INPUT_LIVE_BASE_IMAGE ]] || { echo 'medium/whpx-aarch64 needs --input live_base_image=... from a published, signed release' >&2; exit 2; }\nTILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-whpx bash tools/ci/installer-whpx-cycle.sh /target/imager-whpx-medium \"$T_INPUT_LIVE_BASE_IMAGE\" /target/imager-whpx\n"
+needs = ["medium/whpx-medium-aarch64", "tilo-vm-binary-aarch64", "signing-tools"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner" }
+requires = ["arch=aarch64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/imager-whpx/**"]
+evidence = ["/target/imager-whpx/**"]
+cache = false
+git = true
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+id_token = ["sts.amazonaws.com"]
+dispatch_inputs = { live_base_image = "" }
+
+# The USB-free installation round trip on the x86-64 release medium: a retained Fedora stages the
+# internal bundle, reboots into the staged installer, installs Tilo beside it, and comes back to
+# an intact Fedora after the installed system's first boot (os/dev/ci-internal-install-cycle.sh).
+# Fedora Cloud Base is pinned by the same URL and SHA-256 the server install proof pins.
+[[check]]
+name = "medium/internal-cycle-x86_64"
+# dnf installs from Fedora's mirrors, the Fedora image is fetched by URL, and the test Imager
+# builds from this tree: no fixed host list names them all.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "FEDORA_URL=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 FEDORA_SHA256=28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f SCENARIO=all TILO_INTERNAL_CYCLE_RELEASE_TAG=imager-v0.0.0 TILO_INTERNAL_CYCLE_RUN_ID=t-${T_COMMIT:0:12} TILO_INTERNAL_CYCLE_STORAGE_ROOT=/var/tmp/tilo-installer-internal-cycle TILO_ACCEL=kvm TILO_MEM=8192 TILO_INTERNAL_CYCLE_MAX_INSTALL_SECONDS=3600 bash os/dev/ci-internal-install-cycle.sh /target/imager-medium/x86_64/disk.qcow2 /target/imager-internal-cycle"
+needs = ["medium/imager-x86_64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/imager-internal-cycle/**"]
+evidence = ["/target/imager-internal-cycle/**"]
+cache = false
+git = true
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+
+# The signed target policy a preparation host reviews instead of mounting a live medium: one
+# architecture's small boot bundle and the catalog fragment that names it, exported from the
+# exact published OS child and verified with the shape a catalog merge reads
+# (apps/imager/packaging/export-target-policy.py). It reads a published, signed image; it
+# publishes nothing. Dispatch it on a release with
+# `--input published_os_image=registry.tilo.so/tilo/tilo@sha256:...`.
+[[check]]
+name = "target-policy/imager-{arch}"
+# The registry redirects each blob to its object store, and the verifier reads the transparency
+# log; no fixed host list names them.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "[[ -n $T_INPUT_PUBLISHED_OS_IMAGE && -n $T_INPUT_SOURCE_REVISION ]] || { echo 'target-policy/imager-{arch} needs --input published_os_image=...,source_revision=... from a published, signed release' >&2; exit 2; }\nbash tools/ci/linux-imager/target-policy.sh export {arch} \"$T_INPUT_PUBLISHED_OS_IMAGE\" \"$T_INPUT_SOURCE_REVISION\" \"$T_INPUT_RELEASE_ID\" /target/imager-target-policy/{arch}"
+needs = ["signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["arch={arch}"]
+isolation = "vm"
+outputs = ["/target/imager-target-policy/{arch}/**"]
+timeout_secs = 3600
+default = false
+on = ["dispatch"]
+dispatch_inputs = { published_os_image = "", source_revision = "", release_id = "imager-v0.0.0" }
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The same bundle published to the generic package the Imager reads it from. A dispatch names the
+# published OS image and the release; the check exports the bundle again, so what it uploads is
+# what the dry-run check reads, and then verifies the public bytes it uploaded.
+[[check]]
+name = "publish-target-policy-{arch}"
+# Publishes with a stored token, to the forge's package registry and the release hosts it reads.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "[[ -n $T_INPUT_PUBLISHED_OS_IMAGE && -n $T_INPUT_SOURCE_REVISION ]] || { echo 'publish-target-policy-{arch} needs --input published_os_image=...,source_revision=... from a published, signed release' >&2; exit 2; }\nFORGEJO_TOKEN=$TILO_PACKAGES_TOKEN bash tools/ci/linux-imager/target-policy.sh publish {arch} \"$T_INPUT_PUBLISHED_OS_IMAGE\" \"$T_INPUT_SOURCE_REVISION\" \"$T_INPUT_RELEASE_ID\" \"${TMPDIR:-/var/tmp}/target-policy-{arch}\""
+needs = ["signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+secrets = ["TILO_PACKAGES_TOKEN"]
+requires = ["arch={arch}"]
+isolation = "vm"
+cache = false
+timeout_secs = 3600
+on = ["dispatch"]
+dispatch_inputs = { published_os_image = "", source_revision = "", release_id = "imager-v0.0.0" }
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 # One person's four devices used as one computer, on tilo-vm's private network: an x86-64
 # desktop with two virtual outputs, an aarch64 laptop under the software emulator and the
