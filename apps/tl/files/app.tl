@@ -590,6 +590,12 @@ fn shown(l: Listing, s: Session, found: Text) -> List<Entry> {
     [folders, files].flat_map(x -> x)
 }
 
+/// The sort key of one entry as text, so a folder orders the way the person asked whatever it
+/// holds.
+fn by_name(e: Entry) -> Text {
+    e.name.lower()
+}
+
 /// `entries` in the order `sort` and `ascending` say.
 fn ordered(entries: List<Entry>, sort: SortBy, ascending: Bool) -> List<Entry> {
     if sort == .size {
@@ -603,9 +609,9 @@ fn ordered(entries: List<Entry>, sort: SortBy, ascending: Bool) -> List<Entry> {
             entries.sort_by(e -> extension(e.name), desc)
         }
     } else if ascending {
-        entries.sort_by(e -> e.name.lower())
+        entries.sort_by(e -> by_name(e))
     } else {
-        entries.sort_by(e -> e.name.lower(), desc)
+        entries.sort_by(e -> by_name(e), desc)
     }
 }
 
