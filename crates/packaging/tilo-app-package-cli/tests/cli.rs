@@ -68,12 +68,13 @@ ext  = []
 tilo_test_env::scenario! {
     fn cli_pack_inspect_unpack_and_verify_round_trip;
 
-    phase cli_pack_then_verify;
+    phase cli_pack_verify_inspect_and_unpack_round_trip;
     {
         let workdir = tempfile::tempdir().unwrap();
         let payload_dir = workdir.path().join("payload");
         std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
-        std::fs::write(payload_dir.join("bin/hello"), b"#!/bin/sh\necho hi\n").unwrap();
+        let payload = b"#!/bin/sh\necho hi\n";
+        std::fs::write(payload_dir.join("bin/hello"), payload).unwrap();
 
         // Manifest with a placeholder identity — pack will patch
         // it to the generated key's public hex.
@@ -123,6 +124,30 @@ tilo_test_env::scenario! {
             std::fs::read(&fixed_tapp).unwrap(),
             tilo_app_package::tapp::to_bytes(&repacked.meta, Some(&repacked)).unwrap()
         );
+        let inspected = String::from_utf8_lossy(&run(&["inspect", tapp.to_str().unwrap()]).stdout)
+            .into_owned();
+        assert!(inspected.contains("package-id: tapp:"), "inspect: {inspected}");
+        assert!(inspected.contains("archive-size:"), "inspect: {inspected}");
+        assert!(
+            inspected.contains(&format!("payload-size: {} bytes", payload.len())),
+            "inspect: {inspected}"
+        );
+        assert!(
+            inspected.contains("package-overhead:"),
+            "inspect: {inspected}"
+        );
+        assert!(inspected.contains("bin/hello"), "inspect: {inspected}");
+
+        let dest = workdir.path().join("dest");
+        run(&[
+            "unpack",
+            "--dest",
+            dest.to_str().unwrap(),
+            tapp.to_str().unwrap(),
+        ]);
+        assert!(dest.join("bin/hello").exists());
+        assert!(dest.join("manifest.toml").exists());
+        assert_eq!(std::fs::read(dest.join("bin/hello")).unwrap(), payload);
     }
 
     phase cli_pack_rejects_oversized_app_atomically;
@@ -159,70 +184,6 @@ tilo_test_env::scenario! {
             b"previous valid release",
             "a rejected build must not replace the prior release artifact"
         );
-    }
-
-    phase cli_inspect_lists_payload;
-    {
-        let workdir = tempfile::tempdir().unwrap();
-        let payload_dir = workdir.path().join("payload");
-        std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
-        std::fs::write(payload_dir.join("bin/hello"), b"hi\n").unwrap();
-        let manifest_path = workdir.path().join("manifest.toml");
-        std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
-
-        let tapp = workdir.path().join("example.tapp");
-        run(&[
-            "pack",
-            "--manifest",
-            manifest_path.to_str().unwrap(),
-            "--payload",
-            payload_dir.to_str().unwrap(),
-            "-o",
-            tapp.to_str().unwrap(),
-        ]);
-
-        let out = run(&["inspect", tapp.to_str().unwrap()]);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("package-id: tapp:"), "inspect: {stdout}");
-        assert!(stdout.contains("archive-size:"), "inspect: {stdout}");
-        assert!(
-            stdout.contains("payload-size: 3 bytes"),
-            "inspect: {stdout}"
-        );
-        assert!(stdout.contains("package-overhead:"), "inspect: {stdout}");
-        assert!(stdout.contains("bin/hello"), "inspect: {stdout}");
-    }
-
-    phase cli_unpack_round_trips;
-    {
-        let workdir = tempfile::tempdir().unwrap();
-        let payload_dir = workdir.path().join("payload");
-        std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
-        std::fs::write(payload_dir.join("bin/hello"), b"hi\n").unwrap();
-        let manifest_path = workdir.path().join("manifest.toml");
-        std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
-        let tapp = workdir.path().join("example.tapp");
-        run(&[
-            "pack",
-            "--manifest",
-            manifest_path.to_str().unwrap(),
-            "--payload",
-            payload_dir.to_str().unwrap(),
-            "-o",
-            tapp.to_str().unwrap(),
-        ]);
-
-        let dest = workdir.path().join("dest");
-        run(&[
-            "unpack",
-            "--dest",
-            dest.to_str().unwrap(),
-            tapp.to_str().unwrap(),
-        ]);
-        assert!(dest.join("bin/hello").exists());
-        assert!(dest.join("manifest.toml").exists());
-        let body = std::fs::read(dest.join("bin/hello")).unwrap();
-        assert_eq!(body, b"hi\n");
     }
 }
 
