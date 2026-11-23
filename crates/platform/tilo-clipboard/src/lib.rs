@@ -28,15 +28,6 @@ use std::sync::{Mutex, OnceLock};
 mod caps;
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 
-#[cfg(target_os = "linux")]
-mod lifecycle;
-/// Runner-owned native clipboard attachment (Wayland only).
-#[cfg(target_os = "linux")]
-pub use lifecycle::ClipboardAttachment;
-#[cfg(not(target_os = "linux"))]
-pub struct ClipboardAttachment {
-    _private: (),
-}
 pub mod conformance;
 pub mod events;
 /// The clipboard over a connection an app's session or launcher opened for it: `serve` answers on
@@ -45,15 +36,11 @@ pub mod events;
 pub mod service;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod images;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod native;
-#[cfg(target_os = "linux")]
-mod wayland;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
-
-#[cfg(target_os = "linux")]
-#[doc(hidden)]
-pub use wayland::WaylandClipboard;
 
 pub const MAX_CLIPBOARD_HTML_BYTES: usize = 1024 * 1024;
 
@@ -502,10 +489,10 @@ pub fn unavailable() -> std::sync::Arc<dyn ClipboardBackend> {
 /// The operating system's clipboard of this process: the selection a person's own desktop holds.
 ///
 /// This is for the process that serves an app's clipboard where no Tilo session does — the
-/// launcher, or `tilo-app run` — not for an app, which talks only to [`service::Connected`]. On
-/// Linux it is the process's own Wayland connection once [`attach_wayland_display`] has attached
-/// one, `arboard` on X11 with the `x11` feature, and a buffer private to the process when the
-/// seat offers neither; on macOS and Windows it is `arboard`.
+/// launcher, or `tilo-app run` — not for an app, which talks only to [`service::Connected`]. It is
+/// `arboard`, the protocol for a client without focus: Wayland's data-control protocol, X11
+/// (including `XWayland`) where a compositor lacks data-control, `NSPasteboard` and the Windows
+/// clipboard; where none of those answers, a buffer private to the process.
 pub fn os() -> std::sync::Arc<dyn ClipboardBackend> {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
@@ -517,33 +504,6 @@ pub fn os() -> std::sync::Arc<dyn ClipboardBackend> {
     {
         unavailable()
     }
-}
-
-/// Route the operating system's clipboard ([`os`]) through the process's own Wayland connection,
-/// so copies go through the connection that owns the focused surface — the compositor only
-/// accepts `set_selection` from that one.
-///
-/// Pass the runner's owned display handle, not a borrow of the event loop. Keep the returned guard
-/// until the process closes. Dropping it refuses new calls and schedules teardown without waiting on
-/// protocol workers.
-pub fn attach_wayland_display(
-    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
-) -> Option<ClipboardAttachment> {
-    attach(handle)
-}
-
-#[cfg(target_os = "linux")]
-fn attach(
-    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
-) -> Option<ClipboardAttachment> {
-    native::attach_wayland(handle)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn attach(
-    _handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
-) -> Option<ClipboardAttachment> {
-    None
 }
 
 /// Emit the "this clipboard does not leave the process" warning exactly once.
@@ -558,9 +518,9 @@ pub fn warn_fallback_once(op: &str) {
             operation = op,
             "no system clipboard: falling back to an in-process buffer. Copy and paste \
              will work inside this process and silently do nothing between processes. \
-             On Wayland this means the compositor advertises neither \
-             wl_data_device_manager nor zwp_primary_selection_device_manager_v1, or the \
-             window has no keyboard focus yet."
+             On Wayland this means the compositor offers neither \
+             zwlr_data_control_manager_v1 nor ext_data_control_v1 and no X11 (XWayland) \
+             clipboard is reachable either."
         );
     });
 }

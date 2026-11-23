@@ -168,7 +168,6 @@ rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", defau
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
-raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
 read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
@@ -409,7 +408,6 @@ rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", defau
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
-raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
 read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
@@ -507,7 +505,7 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -544,7 +542,7 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -580,7 +578,7 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -617,7 +615,7 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }

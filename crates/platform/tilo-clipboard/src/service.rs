@@ -22,7 +22,7 @@ use std::time::Duration;
 use wire_frame::Framing;
 
 use crate::{
-    ClipboardBackend, ClipboardImage, ClipboardTarget, CopyContent, MAX_CLIPBOARD_IMAGE_BYTES,
+    ClipboardBackend, ClipboardImage, ClipboardTarget, CopyContent,
     MAX_CLIPBOARD_IMAGE_INPUT_BYTES, MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES, MAX_PASTED_IMAGE_BYTES,
     RichTextOffer,
 };
@@ -405,7 +405,7 @@ impl ClipboardBackend for ServiceClipboard {
     }
 
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
-        let Some(png) = encode_png(width, height, rgba) else {
+        let Some(png) = crate::images::encode_png(width, height, rgba) else {
             return false;
         };
         self.0
@@ -497,7 +497,7 @@ impl ClipboardSide for BackendSide {
             if target != Target::Clipboard {
                 return false;
             }
-            let Some((width, height, rgba)) = decode_image(bytes) else {
+            let Some((width, height, rgba)) = crate::images::decode_image(bytes) else {
                 return false;
             };
             return self.backend.set_image(width, height, &rgba);
@@ -547,42 +547,6 @@ impl ClipboardSide for BackendSide {
         }
         held
     }
-}
-
-/// An encoded image as RGBA8 and its size, for an OS clipboard that takes pixels.
-fn decode_image(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
-    let image = image::load_from_memory(bytes).ok()?.to_rgba8();
-    let (width, height) = image.dimensions();
-    let rgba = image.into_raw();
-    if rgba.len() > MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
-        return None;
-    }
-    Some((
-        usize::try_from(width).ok()?,
-        usize::try_from(height).ok()?,
-        rgba,
-    ))
-}
-
-/// An RGBA8 image as PNG, when it is well formed and the image clipboard takes it.
-fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
-    if width == 0 || height == 0 || rgba.len() > MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
-        return None;
-    }
-    let width_u32 = u32::try_from(width).ok()?;
-    let height_u32 = u32::try_from(height).ok()?;
-    let expected_len = width.checked_mul(height)?.checked_mul(4)?;
-    if rgba.len() != expected_len {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    {
-        use image::ImageEncoder as _;
-        image::codecs::png::PngEncoder::new(&mut bytes)
-            .write_image(rgba, width_u32, height_u32, image::ExtendedColorType::Rgba8)
-            .ok()?;
-    }
-    (bytes.len() <= MAX_CLIPBOARD_IMAGE_BYTES).then_some(bytes)
 }
 
 #[cfg(test)]
@@ -824,7 +788,7 @@ mod tests {
         }
 
         fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
-            let Some(png) = encode_png(width, height, rgba) else {
+            let Some(png) = crate::images::encode_png(width, height, rgba) else {
                 return false;
             };
             *held(self.image.lock()) = Some(("image/png", png));

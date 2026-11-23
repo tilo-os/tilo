@@ -1,107 +1,17 @@
-//! The desktop clipboard on Linux, macOS and Windows, resolved per operation.
+//! The operating system's clipboard through `arboard`: Wayland's data-control
+//! protocol, X11, `NSPasteboard` and the Windows clipboard, with a buffer
+//! private to the process when the seat offers none.
 //!
-//! Order: the app's Wayland connection once attached (Linux), else `arboard`
-//! when this process is not a Wayland client (X11 with the `x11` feature,
-//! `NSPasteboard`, the Windows clipboard), else a process-local buffer that
-//! announces itself in the log.
+//! `arboard` is the protocol made for a client without focus: on Wayland it
+//! talks `zwlr_data_control_manager_v1` (falling back to X11/XWayland when the
+//! compositor lacks it), which is what lets the launcher — no surface, no
+//! keyboard focus — own the selection on the person's behalf.
 
 use crate::{ClipboardBackend, ClipboardTarget, InProcessClipboard, warn_fallback_once};
 
 #[derive(Default)]
 pub(crate) struct NativeClipboard {
     local: std::sync::Arc<InProcessClipboard>,
-}
-
-/// Keep a closed session as a tombstone: late calls must not fall through to
-/// another clipboard after the runner closes its focused connection.
-#[cfg(target_os = "linux")]
-static WAYLAND: std::sync::Mutex<Option<std::sync::Arc<crate::lifecycle::Session>>> =
-    std::sync::Mutex::new(None);
-
-#[cfg(target_os = "linux")]
-pub(crate) fn attach_wayland(
-    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
-) -> Option<crate::ClipboardAttachment> {
-    use raw_window_handle::RawDisplayHandle;
-
-    let Ok(display) = handle.display_handle() else {
-        return None;
-    };
-    let RawDisplayHandle::Wayland(_) = display.as_raw() else {
-        return None;
-    };
-    let mut slot = WAYLAND
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if slot.is_some() {
-        return None;
-    }
-    let session = crate::lifecycle::Session::new(|| {
-        Some(std::sync::Arc::new(
-            crate::wayland::WaylandClipboard::from_owned_display(handle)?,
-        ))
-    })?;
-    *slot = Some(std::sync::Arc::clone(&session));
-    drop(slot);
-    Some(crate::ClipboardAttachment { session })
-}
-
-#[cfg(target_os = "linux")]
-fn wayland() -> Option<std::sync::Arc<crate::lifecycle::Session>> {
-    WAYLAND
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-}
-
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-pub(crate) fn reaped_wayland_for_test() -> bool {
-    wayland().is_some_and(|session| session.reaped_for_test())
-}
-
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-pub(crate) fn clear_wayland_for_test() {
-    *WAYLAND
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-}
-
-#[cfg(not(target_os = "linux"))]
-fn wayland() -> Option<&'static NoWayland> {
-    None
-}
-
-/// Stand-in so the resolution order reads the same on every desktop.
-///
-/// The Linux build reaches its Wayland session through the same
-/// [`ClipboardBackend`] methods, so resolving through this type keeps the
-/// calls above checked against the trait the Linux backend implements. Adding
-/// a method one side and not the other is then a compile error wherever each
-/// is built, rather than one only a macOS or Windows build meets.
-#[cfg(not(target_os = "linux"))]
-struct NoWayland;
-
-#[cfg(not(target_os = "linux"))]
-impl ClipboardBackend for NoWayland {
-    // There is no Wayland connection to hand a copy to, so every method
-    // answers as an empty clipboard and `NativeClipboard` falls through to
-    // the system clipboard behind it.
-    fn set_text(&self, _target: ClipboardTarget, _text: &str) -> bool {
-        false
-    }
-    fn text(&self, _target: ClipboardTarget) -> Option<String> {
-        None
-    }
-    fn request_text(&self, _target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
-        let (reply, result) = std::sync::mpsc::channel();
-        let _ = reply.send(None);
-        result
-    }
-    fn name(&self) -> &'static str {
-        "no-wayland"
-    }
 }
 
 /// Whether `target` has no system storage here, and stays in the process.
@@ -113,9 +23,6 @@ fn local_only(target: ClipboardTarget) -> bool {
 
 impl NativeClipboard {
     fn set_shared(target: ClipboardTarget, text: &str) -> bool {
-        if let Some(wayland) = wayland() {
-            return wayland.set_text(target, text);
-        }
         if local_only(target) {
             return false;
         }
@@ -125,18 +32,12 @@ impl NativeClipboard {
 
 impl ClipboardBackend for NativeClipboard {
     fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
-        if let Some(wayland) = wayland() {
-            return wayland.request_text(target);
-        }
         let (reply, result) = std::sync::mpsc::channel();
         let _ = reply.send(self.text(target));
         result
     }
 
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
-        if let Some(wayland) = wayland() {
-            return wayland.set_text(target, text);
-        }
         if Self::set_shared(target, text) {
             return true;
         }
@@ -148,25 +49,14 @@ impl ClipboardBackend for NativeClipboard {
     }
 
     fn set_shared_text(&self, target: ClipboardTarget, text: &str) -> bool {
-        // An attached Wayland connection is authoritative: its refusal must
-        // not route a secret through another clipboard.
-        if let Some(wayland) = wayland() {
-            return wayland.set_text(target, text);
-        }
         Self::set_shared(target, text)
     }
 
     fn set_secret_text(&self, text: &str) -> bool {
-        if let Some(wayland) = wayland() {
-            return wayland.set_secret_text(text);
-        }
         system::set_secret_text(text)
     }
 
     fn set_rich_text(&self, html: &str, plain: &str) -> bool {
-        if let Some(wayland) = wayland() {
-            return wayland.set_rich_text(html, plain);
-        }
         if system::set_html(html, plain) {
             return true;
         }
@@ -174,20 +64,7 @@ impl ClipboardBackend for NativeClipboard {
         self.local.set_rich_text(html, plain)
     }
 
-    #[cfg(target_os = "linux")]
-    fn copy(&self, content: crate::CopyContent<'_>) -> crate::ClipboardCopy {
-        let Some(wayland) = wayland() else {
-            return crate::copy_now(self, content);
-        };
-        // The attached connection remains authoritative after close. A local
-        // fallback would report success for text this handle cannot read.
-        wayland.copy(content)
-    }
-
     fn text(&self, target: ClipboardTarget) -> Option<String> {
-        if let Some(wayland) = wayland() {
-            return wayland.text(target);
-        }
         if local_only(target) {
             return self.local.text(target);
         }
@@ -199,9 +76,6 @@ impl ClipboardBackend for NativeClipboard {
     }
 
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
-        if let Some(wayland) = wayland() {
-            return wayland.set_image(width, height, rgba);
-        }
         let well_formed = width > 0
             && height > 0
             && rgba.len() <= crate::MAX_CLIPBOARD_IMAGE_INPUT_BYTES
@@ -216,9 +90,6 @@ impl ClipboardBackend for NativeClipboard {
     }
 
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
-        if let Some(wayland) = wayland() {
-            return wayland.rich_text();
-        }
         match system::html() {
             SystemText::Read(html) => html
                 .map(|html| crate::RichTextOffer {
@@ -234,9 +105,6 @@ impl ClipboardBackend for NativeClipboard {
     }
 
     fn image(&self) -> Option<crate::ClipboardImage> {
-        if let Some(wayland) = wayland() {
-            return wayland.image();
-        }
         system::image()
     }
 
@@ -248,21 +116,20 @@ impl ClipboardBackend for NativeClipboard {
 enum SystemText {
     Unavailable,
     /// The clipboard was read: its text, or `None` when it holds none. A
-    /// Linux build without `x11` has no such clipboard to read.
+    /// Linux build without the `os` feature has no such clipboard to read.
     #[cfg_attr(
-        all(target_os = "linux", not(feature = "x11")),
+        all(target_os = "linux", not(feature = "os")),
         allow(
             dead_code,
-            reason = "a Linux build without x11 never reads a system clipboard"
+            reason = "a Linux build without os never reads a system clipboard"
         )
     )]
     Read(Option<String>),
 }
 
-/// The system clipboard of a process that is not a Wayland client, through
-/// `arboard`: X11 (with the `x11` feature), `NSPasteboard`, the Windows
-/// clipboard.
-#[cfg(any(not(target_os = "linux"), feature = "x11"))]
+/// The system clipboard through `arboard`: Wayland data-control (and X11 as
+/// its fallback) with the `os` feature, `NSPasteboard`, the Windows clipboard.
+#[cfg(any(not(target_os = "linux"), feature = "os"))]
 mod system {
     use std::sync::{Mutex, OnceLock};
 
@@ -358,8 +225,9 @@ mod system {
     }
 
     /// A copy clipboard managers are asked to leave out of their histories:
-    /// `x-kde-passwordManagerHint` on X11, the `nspasteboard.org` marker on
-    /// macOS, and Windows' history and cloud-sync exclusion formats.
+    /// `x-kde-passwordManagerHint` (data-control offers it too), the
+    /// `nspasteboard.org` marker on macOS, and Windows' history and cloud-sync
+    /// exclusion formats.
     #[cfg(target_os = "linux")]
     fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
         use arboard::SetExtLinux;
@@ -412,7 +280,7 @@ mod system {
     #[cfg(target_os = "linux")]
     pub(super) fn image() -> Option<crate::ClipboardImage> {
         let image = arboard_clipboard()?.lock().ok()?.get_image().ok()?;
-        let bytes = crate::wayland::encode_png(image.width, image.height, &image.bytes)?;
+        let bytes = crate::images::encode_png(image.width, image.height, &image.bytes)?;
         Some(crate::ClipboardImage {
             mime: "image/png",
             bytes,
@@ -424,35 +292,21 @@ mod system {
         None
     }
 
-    /// Lazy global `arboard` handle, used **only off Wayland**.
-    ///
-    /// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, which Tilo does
-    /// not offer to sandboxed apps; an app there goes through the Wayland backend
-    /// and `wl_data_device` instead. Construction is skipped rather than attempted
-    /// on Wayland because arboard's probe there is slow, and a handle that fails
-    /// on every call is worse than no handle.
+    /// The process's one `arboard` handle: Wayland's data-control protocol on
+    /// a Wayland session, X11/XWayland where the compositor lacks it, and the
+    /// platform clipboard elsewhere.
     fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
         static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
-        CB.get_or_init(|| {
-            if running_on_wayland() {
-                return None;
-            }
-            arboard::Clipboard::new().ok().map(Mutex::new)
-        })
-        .as_ref()
-    }
-
-    fn running_on_wayland() -> bool {
-        cfg!(target_os = "linux")
-            && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+        CB.get_or_init(|| arboard::Clipboard::new().ok().map(Mutex::new))
+            .as_ref()
     }
 }
 
-/// A Linux build without `x11` is a Wayland client only, as every app in
-/// Tilo's sandbox is: there is no X11 clipboard to fall back to, and the
-/// shared runtime carries no X11 client library. Development builds on an
-/// X11 host turn `x11` on (`tilo-app`'s and the toolkit's `x11` feature).
-#[cfg(all(target_os = "linux", not(feature = "x11")))]
+/// A Linux build without `os` is a Wayland client only, as an app in Tilo's
+/// sandbox is: it copies and pastes through the service, never through a
+/// library in its own process. The launcher turns `os` on to serve that
+/// service from the person's own desktop.
+#[cfg(all(target_os = "linux", not(feature = "os")))]
 mod system {
     use crate::ClipboardTarget;
 
