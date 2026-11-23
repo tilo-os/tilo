@@ -14,6 +14,7 @@ tilo-workspace-agent-note-sub-agent = Unteragent einen Hinweis geben
 tilo-workspace-agent-stop-sub-agent = Unteragent anhalten
 tilo-workspace-agent-sub-agent-stands = Stand eines Unteragenten vermerken
 tilo-workspace-agent-sub-agent-produced = Festhalten, was ein Unteragent erstellt hat
+tilo-workspace-agent-sub-agent-coding = Stand der Arbeit eines Coding-Agenten festhalten
 tilo-workspace-agent-set-sub-agent-limits = Grenzen für Unteragenten festlegen
 chat-learned = Was deine Agenten gelernt haben
 chat-learned-learn = Fakt festhalten

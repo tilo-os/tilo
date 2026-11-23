@@ -103,6 +103,7 @@ fn an_agent_starts_a_sub_agent_with_its_job_its_role_and_its_kind_of_work() {
             model: None,
             task: Some("tasks.issues/issues/i_7".to_owned()),
             id: None,
+            coding: None,
         }))
         .unwrap();
     let state = record.state().unwrap();
@@ -834,6 +835,7 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
                 "line": "",
                 "notes": [{"id": note_id, "by": MAIN, "text": "It may be in Files.", "at": THEN}],
                 "produced": [],
+                "coding": null,
             },
             "sub_depth": null,
             "sub_at_once": null,

@@ -155,6 +155,9 @@ pub struct Sub {
     pub notes: Vec<Note>,
     /// What it made, each a thing one can open ([`crate::Produced`]), oldest first.
     pub produced: Vec<crate::Produced>,
+    /// Its work by a coding harness in a repository ([`crate::coding`]); `None` for a
+    /// sub-agent that is Tilo's own loop.
+    pub coding: Option<crate::Coding>,
 }
 
 /// A sub-agent to start: the parameters of [`WorkspaceAgents::start_sub_agent`].
@@ -184,6 +187,10 @@ pub struct NewSubAgent {
     /// Its id: letters, digits and dashes; leave it out and its name makes one
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Have a coding harness do the work on a repository: the folder it works on, and when
+    /// not the default which harness, its branch and what the branch starts from
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding: Option<crate::NewCoding>,
 }
 
 fn by_an_agent() -> Refusal {
@@ -314,7 +321,8 @@ pub(crate) fn check(agent: &Agent) -> Result<(), Refusal> {
     for note in &sub.notes {
         check_plain(&note.text, MAX_NOTE, "a note")?;
     }
-    crate::produced::check(sub)
+    crate::produced::check(sub)?;
+    crate::coding::check(sub)
 }
 
 impl WorkspaceAgents {
@@ -564,6 +572,10 @@ impl WorkspaceAgents {
         if self.agents.find(&Id::from_raw(id.clone())).is_some() {
             return Err(Refusal::new(format!("there is already an agent {id:?}")));
         }
+        let coding = new
+            .coding
+            .map(|coding| crate::coding::started(coding, &id))
+            .transpose()?;
         self.make_room()?;
         let now = cx.now_ms();
         let conversation = MemberId::direct_conversation([
@@ -595,6 +607,7 @@ impl WorkspaceAgents {
                 line: String::new(),
                 notes: Vec::new(),
                 produced: Vec::new(),
+                coding,
             }),
             sub_depth: None,
             sub_at_once: None,
@@ -621,22 +634,25 @@ impl WorkspaceAgents {
 
     pub(crate) fn stop_sub(&mut self, cx: &ActionCx, agent: &Id) -> Result<(), Refusal> {
         let acting = cx.invoked_by().ok_or_else(by_an_agent)?;
-        if acting.is_agent() {
+        let by = if acting.is_agent() {
             let (by, _) = agent_acting(cx)?;
             self.steered_by(agent, &by)?;
+            format!("agent:{by}")
         } else {
             // A member themselves, and nothing that only acts for them.
-            acting.person_id().ok_or_else(|| {
+            let person = acting.person_id().ok_or_else(|| {
                 Refusal::new("a sub-agent is stopped by a member, or by the agent that steers it")
             })?;
             self.working_sub(agent)?;
-        }
+            format!("person:{person}")
+        };
         let now = cx.now_ms();
         let sub = self.sub_mut(agent)?;
         if sub.stands.at_work() {
             sub.stands = Stands::Stopped;
             sub.since = now;
             sub.line.clear();
+            crate::coding::stopped(sub, by);
         }
         Ok(())
     }

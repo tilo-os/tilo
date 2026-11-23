@@ -2490,6 +2490,39 @@
               "string",
               "null"
             ]
+          },
+          "coding": {
+            "additionalProperties": false,
+            "properties": {
+              "base": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "harness": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2618,6 +2651,88 @@
           "agent",
           "kind",
           "label"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.sub-agent-coding.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "process": {
+            "additionalProperties": false,
+            "properties": {
+              "ended": {
+                "type": "string"
+              },
+              "ended_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "exit": {
+                "maximum": 2147483647,
+                "minimum": -2147483648,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_ms": {
+                "type": "integer"
+              },
+              "stopped_by": {
+                "type": "string"
+              },
+              "words": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "started_ms"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spent_micros": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "harness": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
         ],
         "description": ""
       },
@@ -35382,6 +35497,12 @@
       "resource": "tilo.workspace.agent",
       "action": "sub-agent-produced",
       "arguments": "#/components/schemas/tilo.workspace.agent.sub-agent-produced.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "sub-agent-coding",
+      "arguments": "#/components/schemas/tilo.workspace.agent.sub-agent-coding.Arguments"
     },
     {
       "app": "so.tilo.assistant",

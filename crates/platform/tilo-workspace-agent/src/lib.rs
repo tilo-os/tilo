@@ -24,13 +24,17 @@ use tilo_resource::{
     resource,
 };
 
+pub mod coding;
 pub mod learned;
 pub mod produced;
 pub mod sub;
 
+pub use coding::{Coding, NewCoding};
 pub use produced::{Produced, ProducedAt};
 pub use sub::{NewSubAgent, Stands, Sub};
 
+#[cfg(test)]
+mod coding_tests;
 #[cfg(test)]
 mod produced_tests;
 #[cfg(test)]
@@ -646,6 +650,37 @@ impl WorkspaceAgents {
         >,
     ) -> Result<(), Refusal> {
         self.produced(cx, &agent, (&kind, label.as_str()), url, at)
+    }
+
+    /// Say how a coding agent's work stands.
+    ///
+    /// Written by whatever works it, as the sub-agent itself: which coding harness it started,
+    /// the harness's own id for its conversation, when its process began and how it ended, and
+    /// what its model calls cost so far. Only what is named changes.
+    #[action(item = agents, audience = "agents")]
+    pub fn sub_agent_coding(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The sub-agent")] agent: Id,
+        #[param("Its harness's process: when it started and, once it ended, when, how and why")]
+        process: Option<coding::CodingProcess>,
+        #[param("The harness's own id for its conversation")] session: Option<String>,
+        #[param("What its model calls cost so far, in millionths of the currency")]
+        spent_micros: Option<u64>,
+        #[param("Which coding harness it started: its id and its name")] harness: Option<
+            coding::CodingHarness,
+        >,
+    ) -> Result<(), Refusal> {
+        self.coding_stands(
+            cx,
+            &agent,
+            coding::CodingReport {
+                process,
+                session,
+                spent_micros,
+                harness,
+            },
+        )
     }
 
     /// Say how many sub-agents an agent may have.
