@@ -3,7 +3,6 @@
 
 first_party_apps! {
     ACTIVITY => "so.tilo.activity",
-    AGENT => "so.tilo.agent",
     API_TESTER => "so.tilo.api-tester",
     ASSISTANT => "so.tilo.assistant",
     BACKUPS => "so.tilo.backups",

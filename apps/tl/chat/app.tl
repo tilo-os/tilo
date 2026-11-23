@@ -5,8 +5,6 @@ app so.tilo.lang.chat "Chat" (
     keywords: ["messenger", "instant messaging", "conversation"],
 )
 
-use so.tilo.agent as agent
-
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people.
 type Conversations {
@@ -306,21 +304,7 @@ action send(
     match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
-        d: Direct => {
-            let sent = d.messages.insert(m)
-            // Writing to an agent asks it, made from the message, whose replies stand under it.
-            // Nothing said goes to an agent that may not read it.
-            if d.person.kind() == .agent {
-                agent
-                    .ask(
-                        agent.agents,
-                        d.person,
-                        if std.may_read(d.person, sent) { body } else { RichText("") },
-                    )
-                    .made_from(sent)
-            }
-            sent
-        }
+        d: Direct => d.messages.insert(m),
     }
 }
 
@@ -792,14 +776,7 @@ view message(
     if let t = m.thread {
         std.thread_chip(t, count: t.messages.len())
     }
-    // What its asks of agents answer, under it, as the agents write it.
-    let asks = agent.asks_on(m)
-    for a in asks {
-        agent.replies(a)
-    }
-    let listed = linked(m)
-        .filter(l -> shown.any(x -> l.of == x) or asks.any(a -> l.of == a))
-        .map(l -> l.of)
+    let listed = linked(m).filter(l -> shown.any(x -> l.of == x)).map(l -> l.of)
     std.linked(m, compact: true, without: listed)
 }
 

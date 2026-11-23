@@ -36,22 +36,15 @@ mod cases {
 
     struct Apps {
         mail: App,
-        agent: App,
         chat: App,
         views: App,
     }
 
     fn apps() -> Apps {
         let mail = build(app_source!("mail"), &[]);
-        let agent = build(app_source!("agent"), &[]);
-        let chat = build(app_source!("chat"), &[&agent]);
-        let views = build(app_source!("views"), &[&agent, &chat]);
-        Apps {
-            mail,
-            agent,
-            chat,
-            views,
-        }
+        let chat = build(app_source!("chat"), &[]);
+        let views = build(app_source!("views"), &[&chat]);
+        Apps { mail, chat, views }
     }
 
     /// One person: their runtime over their own store, every app installed.
@@ -69,7 +62,7 @@ mod cases {
             let auth = TestAuthority::new();
             let rt = Runtime::new(store.clone(), auth.clone()).unwrap();
             // Installed packages are code the platform trusts, as it does every installed app.
-            for app in [&apps.mail, &apps.agent, &apps.chat, &apps.views] {
+            for app in [&apps.mail, &apps.chat, &apps.views] {
                 auth.trust(&app.load(&rt));
             }
             let views = rt.create_root("Views").unwrap();

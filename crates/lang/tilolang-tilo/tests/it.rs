@@ -36,7 +36,6 @@ mod links;
 mod make_from;
 mod marks;
 mod may_read;
-mod mention_asks;
 mod migrations;
 mod naming;
 mod native_chat;

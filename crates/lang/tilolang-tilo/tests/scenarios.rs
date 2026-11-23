@@ -41,14 +41,13 @@ fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
         ),
         ("so.tilo.notes", vec![app!("discussion"), app!("notes")]),
         ("so.tilo.mail", vec![app!("mail")]),
-        ("so.tilo.lang.chat", vec![app!("agent"), app!("chat")]),
+        ("so.tilo.lang.chat", vec![app!("chat")]),
         (
             "so.tilo.lang.today",
             vec![
                 app!("discussion"),
                 app!("notes"),
                 app_and_scenarios!("tasks"),
-                app!("agent"),
                 app!("chat"),
                 app!("today"),
             ],
@@ -144,7 +143,7 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
     let mut owners: Vec<(Replica, Vec<tilolang_tilo::host::Package>)> = [
         vec![app!("discussion"), app!("notes")],
         vec![app!("discussion"), app_and_scenarios!("tasks")],
-        vec![app!("agent"), app!("chat")],
+        vec![app!("chat")],
     ]
     .iter()
     .map(|packages| {

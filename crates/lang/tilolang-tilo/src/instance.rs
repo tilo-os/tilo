@@ -2434,11 +2434,6 @@ impl Instance {
         if self.staged.is_some() {
             self.run_staged(&host);
         }
-        // The agents what was written since the last frame mentions are asked, in the mode a
-        // person writes in.
-        if self.mode == Mode::Live && host.ask_from_mentions() > 0 {
-            self.moved = true;
-        }
         if std::mem::take(&mut self.moved) {
             self.settle_due = true;
             self.facts_stale |= self.facts.is_some();
