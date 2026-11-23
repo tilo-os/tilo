@@ -4640,6 +4640,18 @@ impl Store for ResourceStore {
     }
 
     fn begin_run(&mut self, run: &str) {
+        // A run that goes on after waiting on a call is the one opened before the wait: what it
+        // wrote since it began is still held, and opening it again would hold it twice and leave
+        // the first entry open for ever.
+        if self
+            .inner
+            .runs
+            .borrow()
+            .iter()
+            .any(|(open, ..)| open == run)
+        {
+            return;
+        }
         self.note_held_all();
         let saved = self.saved();
         let mut runs = self.inner.runs.borrow_mut();
