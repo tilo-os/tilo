@@ -34,7 +34,7 @@ mod external_moderation_rpc_tests {
         route: CrdtRoute,
         state: Arc<AppBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
-        _owner_mailbox: crate::apps::test_owner::owner_commit::OwnerCommitMailbox,
+        _owner_mailbox: crate::apps::test_owner::writes::OwnerCommitMailbox,
     }
 
     impl Workspace {
@@ -76,9 +76,9 @@ mod external_moderation_rpc_tests {
                 workspace: route.cluster_id.clone(),
             }));
             let (owner_handle, owner_mailbox) =
-                crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
+                crate::apps::test_owner::writes::OwnerCommitMailbox::bounded(8);
             let publisher =
-                PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
+                PeerPublisher::with_commits(Arc::new(LifecycleSink), Arc::new(owner_handle));
             let (state, bridge) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),

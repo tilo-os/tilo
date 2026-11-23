@@ -175,7 +175,7 @@ tilo_test_env::scenario! {
         let (state, _bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
+            PeerPublisher::with_commits(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
             Some(WorkspaceTree::default().shared().authority()),
             None,
             Some(&config),
@@ -609,7 +609,7 @@ tilo_test_env::scenario! {
         let socket = lifecycle_socket(&directory, "owner-health-drop");
         let journal_root = directory.path().join("owner-health-invocations");
         let holder = Arc::new(Mutex::new(None));
-        let publisher = PeerPublisher::with_owner_commit(
+        let publisher = PeerPublisher::with_commits(
             Arc::new(LifecycleSink),
             Arc::new(DropBrokerOnHealth {
                 broker: Arc::clone(&holder),
@@ -667,7 +667,7 @@ tilo_test_env::scenario! {
         let other = crate::apps::collab_broker::spawn_with_test_services(
             other_socket.clone(),
             Some(WorkspaceTree::default().shared().authority()),
-            PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
+            PeerPublisher::with_commits(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
             Some(&other_config),
             ProcessServices::default(),
             None,
@@ -686,7 +686,7 @@ tilo_test_env::scenario! {
         let broker = crate::apps::collab_broker::spawn_with_test_services(
             broker_socket,
             Some(WorkspaceTree::default().shared().authority()),
-            PeerPublisher::with_owner_commit(
+            PeerPublisher::with_commits(
                 Arc::new(LifecycleSink),
                 Arc::new(DropOtherBrokerOnHealth {
                     broker: Arc::clone(&other_holder),

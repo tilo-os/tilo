@@ -1,14 +1,15 @@
-//! A durable owner of one workspace its own device governs, behind a bounded
-//! commit mailbox: the owner-commit boundary the broker's tests cross.
+//! A durable record of one workspace its own device governs, behind a bounded
+//! write mailbox: the boundary the broker's tests cross.
 //!
-//! Each applied commit admits the signed document (or records the effect
-//! receipt in the workspace) on a candidate peer, writes the candidate and its
+//! Each applied write admits the signed document (or records the effect receipt
+//! in the workspace) on a candidate peer, writes the candidate and its
 //! generation to `session.bin`, and only then replaces the live peer and
-//! answers. A failed write leaves the live owner unchanged.
+//! answers. A failed write leaves the live record unchanged.
 #![allow(
     clippy::missing_panics_doc,
     reason = "test fixture: a failed step is the test failing"
 )]
+use collab_types::SignedOp;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use serde::{Deserialize, Serialize};
@@ -19,9 +20,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tilo_peer_state::owner_commit::{
-    CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
-};
+use tilo_broker_core::workspace_commits::{DocumentFuture, EffectFuture, WorkspaceCommits};
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use tokio::sync::{mpsc, oneshot};
@@ -250,7 +250,7 @@ impl SessionOwner {
 
     fn publications(&self, mut peer: StatePeer) -> Result<Vec<Vec<u8>>, String> {
         peer.publication_mut()
-            .durable_bootstrap_messages(&self.key, tilo_clock::wall(), self.generation.max(1))?
+            .bootstrap_messages(&self.key, tilo_clock::wall())?
             .iter()
             .map(|message| postcard::to_stdvec(message).map_err(|e| e.to_string()))
             .collect()
@@ -280,35 +280,24 @@ impl SessionOwner {
         Ok(())
     }
 
-    fn apply(&mut self, request: &OwnerCommitRequest) -> Result<OwnerCommitReceipt, String> {
-        let binding = request.binding()?;
-        if request.workspace != self.peer.workspace_id() {
-            return Err("owner namespace unavailable".into());
-        }
+    fn apply(&mut self, change: &Change) -> Result<(), String> {
         let now = tilo_clock::wall();
         let mut candidate = self.peer.clone();
-        match &request.operation {
-            CommitOperation::Document {
+        match change {
+            Change::Document {
                 app,
                 document: record,
                 envelope,
-                ..
             } => {
                 let outcome =
-                    candidate.admit_local_app_document(app, record, *envelope.clone(), now)?;
+                    candidate.admit_local_app_document(app, record, (**envelope).clone(), now)?;
                 if outcome.deferred || outcome.incomplete.is_some() {
                     return Err("local publication admission incomplete".into());
                 }
             }
-            CommitOperation::EffectReceipt {
-                invocation,
-                redacted,
-            } => {
+            Change::Effect { redacted } => {
                 let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
                     serde_json::from_slice(redacted).map_err(|e| e.to_string())?;
-                if receipt.invocation.0 != *invocation {
-                    return Err("effect receipt invocation mismatch".into());
-                }
                 let mut doc = candidate
                     .admitted_workspace()
                     .ok_or("owner governance missing")?
@@ -320,13 +309,7 @@ impl SessionOwner {
                     .into_iter()
                     .find(|held| held.invocation == receipt.invocation)
                 {
-                    Some(held) if held == receipt => {
-                        return Ok(OwnerCommitReceipt {
-                            binding,
-                            generation: self.generation,
-                            aggregate_hash: self.status().aggregate,
-                        });
-                    }
+                    Some(held) if held == receipt => return Ok(()),
                     Some(_) => return Err("effect receipt is immutable".into()),
                     None => tilo_desktop_model::projection::project_effect_receipts(
                         &mut doc,
@@ -345,24 +328,32 @@ impl SessionOwner {
                         TransportOrigin::ServerDelta(self.key.verifying_key().to_bytes()),
                         NeighbourMsg::SyncResp {
                             changes,
-                            workspace: request.workspace.clone(),
+                            workspace: candidate.workspace_id().into(),
                         },
                         now,
                     )
                     .map_err(|error| error.to_string())?;
             }
-            _ => return Err("this owner commits documents and effect receipts only".into()),
         }
-        self.commit(candidate)?;
-        Ok(OwnerCommitReceipt {
-            binding,
-            generation: self.generation,
-            aggregate_hash: self.status().aggregate,
-        })
+        self.commit(candidate)
     }
 }
 
-pub mod owner_commit {
+/// A write the broker hands the record: a document as it signed it, or an
+/// effect's terminal receipt.
+#[derive(Clone, Debug)]
+pub enum Change {
+    Document {
+        app: String,
+        document: String,
+        envelope: SignedOp,
+    },
+    Effect {
+        redacted: Vec<u8>,
+    },
+}
+
+pub mod writes {
     use super::*;
 
     /// The broker's side of the mailbox. A commit waits for the owner's turn;
@@ -379,8 +370,8 @@ pub mod owner_commit {
     }
 
     pub struct PendingOwnerCommit {
-        request: OwnerCommitRequest,
-        reply: oneshot::Sender<Result<OwnerCommitReceipt, String>>,
+        change: Change,
+        reply: oneshot::Sender<Result<(), String>>,
     }
 
     impl OwnerCommitMailbox {
@@ -406,46 +397,71 @@ pub mod owner_commit {
     }
 
     impl PendingOwnerCommit {
-        /// Commit the request in `owner` and answer the waiting broker.
-        pub fn apply(self, owner: &mut SessionOwner) -> Result<OwnerCommitReceipt, String> {
-            let result = owner.apply(&self.request);
+        /// Apply the change in `owner` and answer the waiting broker.
+        pub fn apply(self, owner: &mut SessionOwner) -> Result<(), String> {
+            let result = owner.apply(&self.change);
             let _ = self.reply.send(result.clone());
             result
         }
     }
 
-    impl OwnerCommitService for OwnerCommitHandle {
+    impl WorkspaceCommits for OwnerCommitHandle {
+        fn projects_workspace(&self, _: WorkspaceId) -> bool {
+            true
+        }
+
         fn health(&self) -> Result<(), String> {
             if self.failed.load(Ordering::SeqCst) {
-                return Err("owner commit failed earlier; outcome unknown".into());
+                return Err("the record failed earlier; outcome unknown".into());
             }
             if self.sender.is_closed() {
-                return Err("owner commit mailbox closed; outcome unknown".into());
+                return Err("the record's mailbox closed; outcome unknown".into());
             }
             Ok(())
         }
-        fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+
+        fn document(
+            &self,
+            _workspace: String,
+            app: String,
+            document: String,
+            _readers: Option<String>,
+            envelope: SignedOp,
+            _resource_type: Option<String>,
+        ) -> DocumentFuture {
             let this = self.clone();
             Box::pin(async move {
-                this.health()?;
-                request.binding()?;
-                let (reply, response) = oneshot::channel();
-                this.sender
-                    .try_send(PendingOwnerCommit {
-                        request: request.clone(),
-                        reply,
-                    })
-                    .map_err(|_| {
-                        this.failed.store(true, Ordering::SeqCst);
-                        "owner commit capacity exhausted; outcome unknown".to_owned()
-                    })?;
-                let receipt = response.await.map_err(|_| {
-                    this.failed.store(true, Ordering::SeqCst);
-                    "owner commit reply lost; outcome unknown".to_owned()
-                })??;
-                receipt.validate_for(&request)?;
-                Ok(receipt)
+                let answered = envelope.clone();
+                this.apply(Change::Document {
+                    app,
+                    document,
+                    envelope,
+                })
+                .await?;
+                Ok(answered)
             })
+        }
+
+        fn effect(&self, _workspace: String, redacted: Vec<u8>) -> EffectFuture {
+            let this = self.clone();
+            Box::pin(async move { this.apply(Change::Effect { redacted }).await })
+        }
+    }
+
+    impl OwnerCommitHandle {
+        async fn apply(&self, change: Change) -> Result<(), String> {
+            self.health()?;
+            let (reply, response) = oneshot::channel();
+            self.sender
+                .try_send(PendingOwnerCommit { change, reply })
+                .map_err(|_| {
+                    self.failed.store(true, Ordering::SeqCst);
+                    "the record's capacity exhausted; outcome unknown".to_owned()
+                })?;
+            response.await.map_err(|_| {
+                self.failed.store(true, Ordering::SeqCst);
+                "the record's reply lost; outcome unknown".to_owned()
+            })?
         }
     }
 }

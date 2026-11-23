@@ -371,7 +371,7 @@ impl Fixture {
         let (state, rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::with_optional_owner_commit(None, native.clone()),
+            PeerPublisher::with_optional_commits(None, native.clone()),
             Some(native.clone()),
             None,
             Some(&config),

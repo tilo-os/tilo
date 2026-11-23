@@ -62,8 +62,10 @@ impl crate::apps::services::WorkspaceMemberships for CountedWorkspace {
 
     fn execute(
         &self,
-        _: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        _: String,
+        _: tilo_user_identity::DeviceCert,
+        _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> crate::apps::services::WorkspaceMembershipFuture {
         Box::pin(async { Err("the policy turn fixture never commits".into()) })
     }
 }

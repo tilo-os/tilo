@@ -320,7 +320,7 @@ pub struct OriginalWorkspace {
     pub authority: Arc<CurrentHost>,
     pub directories: Rc<LocalActionDirectoryRegistry>,
     _clock: crate::apps::policy_clock::OwnerPolicyClock,
-    _owner_mailbox: crate::apps::test_owner::owner_commit::OwnerCommitMailbox,
+    _owner_mailbox: crate::apps::test_owner::writes::OwnerCommitMailbox,
     // Restore the environment before removing the identity and journal files.
     _identity_env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
@@ -434,9 +434,9 @@ impl OriginalWorkspace {
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (owner_handle, owner_mailbox) =
-            crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
+            crate::apps::test_owner::writes::OwnerCommitMailbox::bounded(8);
         let publisher =
-            PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
+            PeerPublisher::with_commits(Arc::new(LifecycleSink), Arc::new(owner_handle));
         let mut services = membership.services();
         services.document_content = document_content;
         let (state, bridge_rx) = AppBrokerState::new_configured(

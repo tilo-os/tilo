@@ -484,10 +484,8 @@ pub(crate) mod signed_test_support {
             );
             tilo_peer_state::owner::testing::enroll_interactive(&owner, &key, &certificate)
                 .unwrap();
-            let publisher = PeerPublisher::with_optional_owner_commit(
-                None,
-                Arc::new(NativeOwnerReceipts { owner }),
-            );
+            let publisher =
+                PeerPublisher::with_optional_commits(None, Arc::new(NativeOwnerReceipts { owner }));
             let person = person_id_for_root(certificate.user_public_key);
             workspace.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();

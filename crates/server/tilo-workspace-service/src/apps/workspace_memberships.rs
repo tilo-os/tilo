@@ -747,7 +747,12 @@ mod tests {
             Ok(())
         }
 
-        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
+        fn execute(
+            &self,
+            _: String,
+            _: tilo_user_identity::DeviceCert,
+            _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        ) -> crate::apps::services::WorkspaceMembershipFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
     }
@@ -772,7 +777,12 @@ mod tests {
             Ok(())
         }
 
-        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
+        fn execute(
+            &self,
+            _: String,
+            _: tilo_user_identity::DeviceCert,
+            _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        ) -> crate::apps::services::WorkspaceMembershipFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
     }

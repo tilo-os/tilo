@@ -92,16 +92,29 @@ impl crate::apps::collab_outbound::PeerPublishSink for LifecycleSink {
 struct HealthyOwner;
 
 #[cfg(test)]
-impl tilo_peer_state::owner_commit::OwnerCommitService for HealthyOwner {
-    fn commit(
-        &self,
-        _: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
-        Box::pin(async { Err("unused lifecycle commit".into()) })
+impl tilo_broker_core::workspace_commits::WorkspaceCommits for HealthyOwner {
+    fn projects_workspace(&self, _: tilo_desktop_model::WorkspaceId) -> bool {
+        false
     }
 
     fn health(&self) -> Result<(), String> {
         Ok(())
+    }
+
+    fn document(
+        &self,
+        _: String,
+        _: String,
+        _: String,
+        _: Option<String>,
+        _: collab_types::SignedOp,
+        _: Option<String>,
+    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
+        Box::pin(async { Err("unused lifecycle write".into()) })
+    }
+
+    fn effect(&self, _: String, _: Vec<u8>) -> tilo_broker_core::workspace_commits::EffectFuture {
+        Box::pin(async { Err("unused lifecycle receipt".into()) })
     }
 }
 
@@ -431,7 +444,6 @@ fn prepare(
 }
 
 #[cfg(test)]
-include!("../owner_commit_tests.rs");
 #[cfg(test)]
 include!("../resolved_invocation_tests.rs");
 #[cfg(test)]

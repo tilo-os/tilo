@@ -89,7 +89,7 @@ fn fixture() -> Fixture {
     let membership = tree.shared();
     let held = Arc::new(tokio::sync::Semaphore::new(1));
     let submitted = Arc::new(tokio::sync::Notify::new());
-    let publisher = PeerPublisher::with_optional_owner_commit(
+    let publisher = PeerPublisher::with_optional_commits(
         None,
         Arc::new(NativeEffects {
             owner: owner.clone(),

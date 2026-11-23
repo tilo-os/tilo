@@ -94,9 +94,8 @@ mod durable_local_matrix {
             tree.persist_path = Some(root.path().join("workspace.json"));
             let membership = tree.shared();
             let (handle, mut mailbox) =
-                crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
-            let publisher =
-                PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(handle));
+                crate::apps::test_owner::writes::OwnerCommitMailbox::bounded(8);
+            let publisher = PeerPublisher::with_commits(Arc::new(LifecycleSink), Arc::new(handle));
             let owner_task = tokio::task::spawn_local(async move {
                 while let Some(pending) = mailbox.recv().await {
                     pending.apply(&mut owner).unwrap();

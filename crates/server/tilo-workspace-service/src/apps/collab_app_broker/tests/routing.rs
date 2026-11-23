@@ -92,8 +92,10 @@ async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
 
         fn execute(
             &self,
-            _: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        ) -> tilo_peer_state::owner_commit::CommitFuture {
+            _: String,
+            _: tilo_user_identity::DeviceCert,
+            _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        ) -> crate::apps::services::WorkspaceMembershipFuture {
             Box::pin(async { Err("roster fixture never commits owner state".into()) })
         }
     }
@@ -162,8 +164,10 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
 
         fn execute(
             &self,
-            _: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        ) -> tilo_peer_state::owner_commit::CommitFuture {
+            _: String,
+            _: tilo_user_identity::DeviceCert,
+            _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        ) -> crate::apps::services::WorkspaceMembershipFuture {
             Box::pin(async { Err("roster fixture never commits owner state".into()) })
         }
     }
