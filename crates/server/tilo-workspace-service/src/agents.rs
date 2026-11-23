@@ -2625,7 +2625,8 @@ impl Reply {
 }
 
 /// What the agent `caller` is held to in `workspace`, as the workspace's list of its agents
-/// keeps it: the bound kept for it there, and nothing at all for one that was retired.
+/// keeps it: the bound kept for it there, and nothing at all for one that was retired, or for a
+/// sub-agent outside a turn of its starter's chain.
 /// Answered for an agent a person's own device handed its session to: one this server works for
 /// its keeper on a turn, or one a person's own computer works with under its name (`tilo
 /// login`, then `tilo mcp`, whose id is [`tilo_actions::remote::device_agent_id`]).
@@ -2653,7 +2654,10 @@ pub async fn workspace_agent(
         return Vec::new();
     }
     let workspace = workspace.to_string();
-    if let Some(bound) = workspaces.kept_bound(&workspace, agent).await {
+    if let Some(bound) = workspaces
+        .kept_bound(&workspace, agent, caller.turn().is_some())
+        .await
+    {
         return bound;
     }
     let (Some(user), Some(name)) = (caller.user_public_key(), caller.agent_name()) else {
