@@ -1,9 +1,9 @@
 //! A web call with a key by reference, against services the test starts on
 //! this computer and a key that is made up. The key reaches its own service
-//! and no other, where its item says it rides; its person is asked about
-//! each call and their allow sends that very call once; and the key is in no
-//! answer, no refusal, no log line, nothing the server keeps for the
-//! question and no file in the clear.
+//! and no other, where its item says it rides; each call waits for its
+//! person's yes and their approve sends that very call; and the key is in no
+//! answer, no refusal, no log line, nothing they are shown and no file in the
+//! clear.
 
 #![allow(
     clippy::unwrap_used,
@@ -24,11 +24,12 @@ use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest};
 
 use super::super::tests::{admit, caller, governed};
-use super::turn_use_tests::on_turn;
+use super::turn_use_tests::{approved, asked_by, asks, fact, on_turn};
 use super::vault_tests::{ask, files_holding};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnUse, UseAnswer};
+use crate::workspaces::hosted_use::HostedTurn;
 use crate::workspaces::tests::{governor, test_host};
+use tilo_actions::remote::asked::AskedFacts;
 
 /// A made-up key: no service ever issued it, and it opens nothing.
 const KEY: &str = "made-up-key-for-tests-0123456789abcdef";
@@ -74,44 +75,31 @@ fn call(url: &str, key: &Value, more: Value) -> InvokeRequest {
     }
 }
 
-/// The ask a call answered with, when it asked.
-fn asked(taken: Result<TurnUse, ActionCallError>) -> OpenAsk {
-    match taken {
-        Ok(TurnUse::Asks(open)) => *open,
-        other => panic!("the person is asked first: {other:?}"),
-    }
-}
-
 /// What a call that was made answered.
-fn made(taken: Result<TurnUse, ActionCallError>) -> Value {
-    match taken {
-        Ok(TurnUse::Done(answer)) => answer,
-        other => panic!("the call is made: {other:?}"),
-    }
+fn made(taken: Result<Value, ActionCallError>) -> Value {
+    taken.unwrap_or_else(|error| panic!("the call is made: {error:?}"))
 }
 
 /// Why a call was refused.
-fn refusal(taken: Result<TurnUse, ActionCallError>) -> String {
+fn refusal(taken: Result<Value, ActionCallError>) -> String {
     match taken {
         Err(Refused { reason }) => reason,
         other => panic!("the call is refused: {other:?}"),
     }
 }
 
-/// The agent asks for the call `asking` makes, its person allows it, and the
-/// agent makes the same call again: what it is answered then.
+/// The agent asks for the call `asking` makes, and its person approves it: what that very
+/// call is answered then.
 async fn allowed(
     workspaces: &Workspaces,
     turn: &HostedTurn<'_>,
     asking: impl Fn() -> InvokeRequest,
-) -> Result<TurnUse, ActionCallError> {
-    let open = asked(workspaces.use_for_turn(turn, &asking(), json!({})).await);
-    let answered = workspaces
-        .answer_use(turn, &open.ask, &open.detail, UseAnswer::Once)
+) -> Result<Value, ActionCallError> {
+    let request = asking();
+    let _: AskedFacts = asks(workspaces.use_for_turn(turn, &request).await);
+    workspaces
+        .use_for_turn(turn, &approved(&request, &turn.workspace.to_string()))
         .await
-        .expect("an allow is taken");
-    assert_eq!(answered, Some(json!({"allowed": "once"})));
-    workspaces.use_for_turn(turn, &asking(), json!({})).await
 }
 
 /// How a service looks for the made-up key in a request.
@@ -221,11 +209,10 @@ fn reference(kept: Result<Value, ActionCallError>) -> Value {
     kept.expect("the person keeps a key")["reference"].clone()
 }
 
-/// A call asks its person first and sends nothing. What the server keeps for
-/// the question names the key by reference. Their allow sends that very call
-/// once, when the agent makes it again, and the next one asks anew: also
-/// after "Always", which lets nothing stand. The key is in no answer, no log
-/// line and no file in the clear, and its use is written down without it.
+/// A call waits for its person first and sends nothing. What they are shown names the call
+/// and where it goes, and the key by nothing, and offers no always. Their approve sends that
+/// very call once; another call, or the same call made again, waits anew. The key is in no
+/// answer, no log line and no file in the clear, and its use is written down without it.
 #[tokio::test]
 async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
     stage!(
@@ -270,51 +257,37 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
             json!({"reason": "To read this month's numbers."}),
         )
     };
-    let open = asked(
-        workspaces
-            .use_for_turn(&turn, &balance(), json!({"part": "p0"}))
-            .await,
+    let first = balance();
+    let facts = asks(workspaces.use_for_turn(&turn, &first).await);
+    assert_eq!(facts.plural, None, "no Always is offered for a call");
+    assert_eq!(facts.words, "To read this month's numbers.");
+    assert!(asked_by(&facts, "scout", "Scout"), "{facts:?}");
+    assert_eq!(
+        fact(&facts, "Calls"),
+        format!("GET {}/v1/balance", paying.url()),
+        "the person sees where it goes"
     );
-    assert!(!open.takes_always(), "no Always is offered for a call");
-    assert_eq!(open.reason, "To read this month's numbers.");
-    assert_eq!(open.agent, "scout");
-    let shown = open.detail.to_string();
-    assert!(
-        shown.contains("/v1/balance"),
-        "the person sees where it goes: {shown}"
-    );
+    let shown = serde_json::to_string(&facts).unwrap();
     let id = item.as_str().unwrap().trim_start_matches("vault.item:");
     assert!(
-        !shown.contains(id),
-        "the item's address is withheld: {shown}"
+        !shown.contains(id) && !shown.contains(KEY),
+        "the item's address and the key are withheld: {shown}"
     );
     assert!(
         paying.drain_requests().is_empty(),
         "nothing is sent unasked"
     );
-    assert_eq!(
-        workspaces.use_for_turn(&turn, &balance(), json!({})).await,
-        Ok(TurnUse::Waits),
-        "the same call asks once"
-    );
-
-    // Allowed: nothing is sent by the answer, and the same call goes through.
-    let answered = workspaces
-        .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Once)
-        .await
-        .unwrap();
-    assert_eq!(answered, Some(json!({"allowed": "once"})));
-    assert!(
-        paying.drain_requests().is_empty(),
-        "an allow sends nothing by itself"
-    );
-    // Another call is not the one its person was shown.
+    // Another call is not the one its person was shown: it waits on its own.
     let other = call(&format!("{}/v1/echo", paying.url()), &item, json!({}));
-    let asked_anew = asked(workspaces.use_for_turn(&turn, &other, json!({})).await);
-    workspaces.use_not_asked(&asked_anew);
+    asks(workspaces.use_for_turn(&turn, &other).await);
     assert!(paying.drain_requests().is_empty());
 
-    let answer = made(workspaces.use_for_turn(&turn, &balance(), json!({})).await);
+    // Approved, that very call goes through.
+    let answer = made(
+        workspaces
+            .use_for_turn(&turn, &approved(&first, &workspace))
+            .await,
+    );
     assert_eq!(answer["status"], 200);
     assert_eq!(answer["body"], r#"{"balance":1234}"#);
     assert_eq!(answer["truncated"], false);
@@ -326,24 +299,16 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
     assert_eq!(seen[0].target, "/v1/balance");
     assert!(as_bearer(&seen[0]), "with the key its service knows");
 
-    // The allow is spent: the next one asks again, and a no sends nothing.
-    let again = asked(workspaces.use_for_turn(&turn, &balance(), json!({})).await);
-    assert_eq!(
+    // The approve was for that call: the next one waits again, and a decline sends nothing.
+    asks(workspaces.use_for_turn(&turn, &balance()).await);
+    let third = balance();
+    asks(workspaces.use_for_turn(&turn, &third).await);
+    made(
         workspaces
-            .answer_use(&turn, &again.ask, &again.detail, UseAnswer::No)
+            .use_for_turn(&turn, &approved(&third, &workspace))
             .await,
-        Ok(None)
     );
-    let third = asked(workspaces.use_for_turn(&turn, &balance(), json!({})).await);
-    // "Always" lets one call through, as an allow does, and nothing stands.
-    assert_eq!(
-        workspaces
-            .answer_use(&turn, &third.ask, &third.detail, UseAnswer::Always)
-            .await,
-        Ok(Some(json!({"allowed": "once"})))
-    );
-    made(workspaces.use_for_turn(&turn, &balance(), json!({})).await);
-    asked(workspaces.use_for_turn(&turn, &balance(), json!({})).await);
+    asks(workspaces.use_for_turn(&turn, &balance()).await);
     assert_eq!(paying.drain_requests().len(), 1, "one more, and no third");
 
     // What the item remembers: when, where and for whom, and no leave.
@@ -361,8 +326,7 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
     assert_eq!(uses[0]["by"], "Scout");
     assert_eq!(uses[0]["places"], json!([paying.url()]));
     // And what for: the call's own word, its method and path, and that its
-    // person allowed that one call. An "Always" answered anyway let one
-    // call through, and is written down as that.
+    // person allowed that one call.
     let word = person_vault::use_word(&person_vault::call_target());
     for used in uses {
         assert_eq!(used["using"], json!(word), "{remembers}");
@@ -396,9 +360,8 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
 
 /// A key is sent to the service its item belongs to and to no other: not to
 /// another service, not to another port of the same computer, and not by a
-/// call its person allowed for the right one. An item that is no key is
-/// refused. Nobody is asked about a call that would be refused, and nothing
-/// reaches the other service.
+/// call its person approved for the right one. An item that is no key is
+/// refused, before anyone is asked, and nothing reaches the other service.
 #[tokio::test]
 async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
     stage!(
@@ -435,24 +398,19 @@ async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
     assert_eq!(
         refusal(
             workspaces
-                .use_for_turn(&turn, &call(&elsewhere, &item, json!({})), json!({}))
+                .use_for_turn(&turn, &call(&elsewhere, &item, json!({})))
                 .await
         ),
         "That item belongs somewhere else"
     );
-    // Allowed for its own service, the allow does not carry over.
+    // Approved for its own service, the approve does not carry over: it is that call's.
     let own = || call(&format!("{}/v1/balance", paying.url()), &item, json!({}));
-    let open = asked(workspaces.use_for_turn(&turn, &own(), json!({})).await);
-    workspaces
-        .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Once)
-        .await
-        .unwrap();
+    let mine = own();
+    asks(workspaces.use_for_turn(&turn, &mine).await);
+    let mut elsewhere_approved = approved(&mine, &workspace);
+    elsewhere_approved.argument = call(&elsewhere, &item, json!({})).argument;
     assert_eq!(
-        refusal(
-            workspaces
-                .use_for_turn(&turn, &call(&elsewhere, &item, json!({})), json!({}))
-                .await
-        ),
+        refusal(workspaces.use_for_turn(&turn, &elsewhere_approved).await),
         "That item belongs somewhere else"
     );
     for (url, why) in [
@@ -472,7 +430,7 @@ async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
         assert_eq!(
             refusal(
                 workspaces
-                    .use_for_turn(&turn, &call(&url, &item, json!({})), json!({}))
+                    .use_for_turn(&turn, &call(&url, &item, json!({})))
                     .await
             ),
             why,
@@ -482,7 +440,7 @@ async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
     assert_eq!(
         refusal(
             workspaces
-                .use_for_turn(&turn, &own_with(&paying, &value), json!({}))
+                .use_for_turn(&turn, &own_with(&paying, &value))
                 .await
         ),
         "That item is not the kind of thing this needs"
@@ -491,14 +449,14 @@ async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
     assert_eq!(
         refusal(
             workspaces
-                .use_for_turn(&turn, &own_with(&paying, &nobody), json!({}))
+                .use_for_turn(&turn, &own_with(&paying, &nobody))
                 .await
         ),
         "That item is not kept here"
     );
     assert!(matches!(
         workspaces
-            .use_for_turn(&turn, &own_with(&paying, &json!(KEY)), json!({}))
+            .use_for_turn(&turn, &own_with(&paying, &json!(KEY)))
             .await,
         Err(ActionCallError::InvalidRequest { reason }) if !reason.contains(KEY)
     ));
@@ -510,13 +468,13 @@ async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
         paying.drain_requests().is_empty(),
         "and nothing was sent yet"
     );
-    assert!(
-        workspaces.open_use_asks(&workspace).is_empty(),
-        "nobody is asked about a call that would be refused"
-    );
-    // The allow for its own service still stands, and is spent there.
+    // The approve of the call for its own service sends that call there.
     assert_eq!(
-        made(workspaces.use_for_turn(&turn, &own(), json!({})).await)["status"],
+        made(
+            workspaces
+                .use_for_turn(&turn, &approved(&mine, &workspace))
+                .await
+        )["status"],
         200
     );
     assert_eq!(paying.drain_requests().len(), 1);
@@ -593,7 +551,6 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
                         &item,
                         json!({"headers": not_the_agents}),
                     ),
-                    json!({}),
                 )
                 .await,
         );
@@ -602,7 +559,7 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
             let taken = format!("{}/v1/balance?api_key=mine", at.url());
             let said = refusal(
                 workspaces
-                    .use_for_turn(&turn, &call(&taken, &item, json!({})), json!({}))
+                    .use_for_turn(&turn, &call(&taken, &item, json!({})))
                     .await,
             );
             assert!(said.contains("is not yours to set"), "{said}");
@@ -610,10 +567,6 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
         assert!(
             at.drain_requests().is_empty(),
             "{sent_in}: nothing was sent"
-        );
-        assert!(
-            workspaces.open_use_asks(&workspace).is_empty(),
-            "{sent_in}: nobody was asked"
         );
 
         let answer = made(
@@ -674,7 +627,7 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
     );
     let said = refusal(
         workspaces
-            .use_for_turn(&turn, &own_with(&short, &item), json!({}))
+            .use_for_turn(&turn, &own_with(&short, &item))
             .await,
     );
     assert!(said.contains("too short"), "{said}");
@@ -854,7 +807,7 @@ async fn only_a_hosted_turn_makes_a_call() {
     assert!(workspaces.calls_offered(&herself).await.is_empty());
     assert_eq!(
         workspaces
-            .use_for_turn(&herself, &own_with(&paying, &item), json!({}))
+            .use_for_turn(&herself, &own_with(&paying, &item))
             .await,
         Err(UnknownAction)
     );
@@ -867,7 +820,7 @@ async fn only_a_hosted_turn_makes_a_call() {
     assert!(workspaces.calls_offered(&narrowed).await.is_empty());
     assert_eq!(
         workspaces
-            .use_for_turn(&narrowed, &own_with(&paying, &item), json!({}))
+            .use_for_turn(&narrowed, &own_with(&paying, &item))
             .await,
         Err(NotPermitted)
     );
@@ -875,19 +828,20 @@ async fn only_a_hosted_turn_makes_a_call() {
     // the workspace's, and its use asks his person, not hers.
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let his = on_turn(&bo, &workspace, "rover");
-    let his_asker = hex::encode(bo.user_public_key);
+    let his_asker = Some(hex::encode(bo.user_public_key));
     let theirs = HostedTurn {
         workspace: workspace_id,
         caller: &his,
         bound: None,
     };
-    let open = asked(
+    asks(
         workspaces
-            .use_for_turn(&theirs, &own_with(&paying, &item), json!({}))
+            .use_for_turn(&theirs, &own_with(&paying, &item))
             .await,
     );
     assert_eq!(
-        open.person, his_asker,
+        tilo_actions::remote::asked::asked_person(&his),
+        his_asker,
         "the workspace's item asks his person"
     );
     // No device's request makes a call: the person's is no action the
@@ -917,10 +871,5 @@ async fn only_a_hosted_turn_makes_a_call() {
         "{hers:?}"
     );
     assert!(paying.drain_requests().is_empty(), "nothing was sent");
-    assert_eq!(
-        workspaces.open_use_asks(&workspace).len(),
-        1,
-        "his person was asked about it"
-    );
     assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
 }

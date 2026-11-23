@@ -21,13 +21,12 @@ use serde_json::{Value, json};
 use tilo_actions::remote::person_models::{SignInStarted, SignInState};
 use tilo_actions::remote::{ActionCallError, Caller, person_models};
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::ServiceWorkspaceActions;
-use super::tests::{admit, ask_own, governed, request, settled};
+use super::tests::{Answering, admit, answered, ask_own, governed, request, settled};
+use crate::workspaces::OpenAiSignIn;
 use crate::workspaces::tests::{governor, test_host};
-use crate::workspaces::{AsksPeople, OpenAiSignIn, PersonAnswer};
 
 fn asking(text: &str) -> Value {
     serde_json::to_value(ModelRequest {
@@ -119,27 +118,6 @@ fn at_fake(fake: &FakeProviders) -> OpenAiSignIn {
     }
 }
 
-/// A person who answers every question one way, or not at all.
-struct Asked {
-    answer: Option<ConfirmationAnswer>,
-}
-
-impl Asked {
-    fn answering(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
-        Arc::new(Self { answer })
-    }
-}
-
-impl AsksPeople for Asked {
-    fn ask(&self, _: [u8; 32], _: PendingConfirmation) -> PersonAnswer {
-        let answer = self
-            .answer
-            .clone()
-            .ok_or_else(|| "nobody answered".to_owned());
-        Box::pin(async move { answer })
-    }
-}
-
 /// One of the sign-in actions asked by `caller` on `member`'s device.
 async fn a_sign_in_asked_by(
     actions: &ServiceWorkspaceActions,
@@ -150,11 +128,20 @@ async fn a_sign_in_asked_by(
 ) -> Result<(), ActionCallError> {
     let mut asking = request("", "", json!({"signIn": "any"}));
     asking.target = person_models::target(verb);
-    settled(tilo_actions::remote::ActionProvider::invoke(
+    let first = settled(tilo_actions::remote::ActionProvider::invoke(
         &actions.in_workspace_as(workspace_id, member),
         caller,
-        asking,
+        asking.clone(),
     ))
+    .await;
+    let workspaces = actions.shared.workspaces.get().unwrap();
+    answered(
+        workspaces,
+        (Some(workspace_id), Some(member)),
+        caller,
+        &asking,
+        first,
+    )
     .await
     .map(|_| ())
 }
@@ -175,15 +162,15 @@ async fn no_agent_signs_in_on_its_own(
             "{verb} with nobody to ask through: {unasked:?}"
         );
     }
-    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
-    workspaces.ask_people(refusing);
+    let refusing = Answering::declining();
     for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
         let refused = a_sign_in_asked_by(actions, workspace_id, ada, &assistant, verb).await;
         assert!(
-            matches!(refused, Err(ActionCallError::Refused { .. })),
-            "{verb} its member refused: {refused:?}"
+            matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
+            "{verb} its member declined: {refused:?}"
         );
     }
+    assert_eq!(refusing.asked().len(), 2, "each asked its member");
     let person = hex::encode(ada.user_public_key);
     let nobodies = [
         Caller::local_agent("assistant"),

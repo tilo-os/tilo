@@ -15,38 +15,37 @@ use tilo_actions::remote::{
     ActionCallError as Refused, ActionProvider as _, Caller, CatalogueQuery, InvokeArgument,
     InvokeRequest, ReceiptStatus,
 };
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions as Served;
 use super::super::tests::{admit, caller, governed, settled};
+use super::turn_use_tests::{approved, asks};
 use crate::connections::ASKS_FIRST;
 use crate::connections::stand_in::StandIn;
+use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::test_host as start_serving;
 use crate::workspaces::tests::governor;
-use crate::workspaces::{AsksPeople, PersonAnswer};
 
 const NOT_KEPT: &str = "That connection is not kept here";
 const NOT_CALLED: &str = "That address is not called from here";
 
-/// A person who answers every question one way.
-struct Asked {
-    answer: Option<ConfirmationAnswer>,
-}
-
-impl Asked {
-    fn answering(answer: Option<ConfirmationAnswer>) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self { answer })
-    }
-}
-
-impl AsksPeople for Asked {
-    fn ask(&self, _: [u8; 32], _: PendingConfirmation) -> PersonAnswer {
-        let answer = self
-            .answer
-            .clone()
-            .ok_or_else(|| "nobody answered".to_owned());
-        Box::pin(async move { answer })
+/// The call of the connections' `action` with `argument`, under a fresh invocation id.
+fn calling(action: &str, argument: Value) -> InvokeRequest {
+    let argument = match argument {
+        Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
+        _ => InvokeArgument::None,
+    };
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: person_connections::target(action),
+        argument,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
     }
 }
 
@@ -72,26 +71,35 @@ impl<'a> Asking<'a> {
 
     /// `action` of the workspace's connections: what it answered, or why not.
     async fn ask(self, action: &str, argument: Value) -> Result<Value, Refused> {
-        let argument = match argument {
-            Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
-            _ => InvokeArgument::None,
-        };
-        let request = InvokeRequest {
-            invocation: InvocationId::new(),
-            target: person_connections::target(action),
-            argument,
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        };
+        self.asked(&calling(action, argument)).await
+    }
+
+    /// `action`, which waits for its person's yes, and the same call again as their approve
+    /// in `workspaces` admits it: what it answered then.
+    async fn allowed(
+        self,
+        workspaces: &Workspaces,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value, Refused> {
+        let request = calling(action, argument);
+        asks(self.asked(&request).await);
+        workspaces
+            .invoke(
+                Some(self.workspace_id),
+                self.caller,
+                Some(self.device),
+                &approved(&request, &self.workspace_id.to_string()),
+            )
+            .await
+    }
+
+    /// `request`: what it answered, or why not.
+    async fn asked(self, request: &InvokeRequest) -> Result<Value, Refused> {
         let receipt = settled(
             self.actions
                 .in_workspace_as(self.workspace_id, self.device)
-                .invoke(self.caller, request),
+                .invoke(self.caller, request.clone()),
         )
         .await?;
         match receipt.status {
@@ -420,18 +428,14 @@ async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
         (&Value::Null, &json!("refused"))
     );
 
-    // Her no refuses every change; her yes makes it, as the workspace's.
+    // Every change waits for her, and nothing of it is done until she approves; her yes makes
+    // it, as the workspace's.
     let searching = ada_asks;
-    workspaces.ask_people(Asked::answering(Some(ConfirmationAnswer::Deny)));
     for (action, argument) in [
         (ADD, json!({"address": another.address()})),
         (REMOVE, json!({"connection": id})),
     ] {
-        let refused = searching.by(&ada, &agent).ask(action, argument).await;
-        assert!(
-            matches!(refused, Err(Refused::Refused { .. })),
-            "{action}: {refused:?}"
-        );
+        asks(searching.by(&ada, &agent).ask(action, argument).await);
     }
     assert_eq!(
         searching.ask(LIST, json!({})).await.unwrap()["connections"]
@@ -440,10 +444,9 @@ async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
         Some(1),
         "nothing changed"
     );
-    workspaces.ask_people(Asked::answering(Some(ConfirmationAnswer::AllowOnce)));
     let removed = searching
         .by(&ada, &agent)
-        .ask(REMOVE, json!({"connection": id}))
+        .allowed(workspaces, REMOVE, json!({"connection": id}))
         .await
         .expect("her yes removes it");
     assert_eq!(removed["connections"], json!([]));

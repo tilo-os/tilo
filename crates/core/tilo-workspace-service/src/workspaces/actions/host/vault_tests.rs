@@ -9,7 +9,7 @@
     reason = "a vault's tests walk one subject each, whole"
 )]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
@@ -19,52 +19,20 @@ use tilo_actions::remote::{
 };
 use tilo_actions::remote::{person_accounts, person_models, person_vault};
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
+use super::turn_use_tests::{approved, asks};
+use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{test_host, test_host_holding};
 use crate::workspaces::tests::{governor, guest_device};
-use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 const PASSWORD: &str = "correct horse battery staple";
 const NAME: &str = "ada@example.test";
 /// What no site shows as a setup key: it holds digits a seed never does.
 const NOT_A_SEED: &str = "correct horse battery staple 0189";
 const KEY: &str = "sk-live-ada-own-key";
-
-/// A person who answers every question one way, or not at all, and what
-/// they were asked.
-struct Asked {
-    answer: Option<ConfirmationAnswer>,
-    questions: Mutex<Vec<PendingConfirmation>>,
-}
-
-impl Asked {
-    fn answering(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
-        Arc::new(Self {
-            answer,
-            questions: Mutex::default(),
-        })
-    }
-
-    /// How many questions the person was put.
-    fn count(&self) -> usize {
-        self.questions.lock().unwrap().len()
-    }
-}
-
-impl AsksPeople for Asked {
-    fn ask(&self, _person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
-        self.questions.lock().unwrap().push(question);
-        let answer = self
-            .answer
-            .clone()
-            .ok_or_else(|| "nobody answered".to_owned());
-        Box::pin(async move { answer })
-    }
-}
 
 /// `target` asked by `caller`, on the device `device` certifies, in the
 /// workspace `workspace_id` carries.
@@ -75,11 +43,22 @@ pub(super) async fn ask_at(
     target: RemoteActionTarget,
     argument: Value,
 ) -> Result<Value, ActionCallError> {
+    asked(
+        service,
+        workspace_id,
+        (device, caller),
+        &request_of(target, argument),
+    )
+    .await
+}
+
+/// The call of `target` with `argument`, under a fresh invocation id.
+fn request_of(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
     let argument = match argument {
         Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
         _ => InvokeArgument::None,
     };
-    let request = InvokeRequest {
+    InvokeRequest {
         invocation: InvocationId::new(),
         target,
         argument,
@@ -90,11 +69,21 @@ pub(super) async fn ask_at(
         wait_ms: None,
         appearance: None,
         signed: None,
-    };
+    }
+}
+
+/// `request` asked by `caller`, on the device `device` certifies, in the workspace
+/// `workspace_id` carries.
+async fn asked(
+    service: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    (device, caller): (&DeviceCert, &Caller),
+    request: &InvokeRequest,
+) -> Result<Value, ActionCallError> {
     let receipt = settled(
         service
             .in_workspace_as(workspace_id, device)
-            .invoke(caller, request),
+            .invoke(caller, request.clone()),
     )
     .await?;
     match receipt.status {
@@ -119,6 +108,27 @@ pub(super) async fn ask(
         argument,
     )
     .await
+}
+
+/// `target` asked by `caller` as [`ask_at`] asks, which waits for its person's yes, and then the
+/// same call as their approve admits it again: what it answered.
+async fn allowed_at(
+    workspaces: &Workspaces,
+    service: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    (device, caller): (&DeviceCert, &Caller),
+    (target, argument): (RemoteActionTarget, Value),
+) -> Result<Value, ActionCallError> {
+    let request = request_of(target, argument);
+    asks(asked(service, workspace_id, (device, caller), &request).await);
+    workspaces
+        .invoke(
+            Some(workspace_id),
+            caller,
+            Some(device),
+            &approved(&request, &workspace_id.to_string()),
+        )
+        .await
 }
 
 /// The fields `said` carries, in order of their names.
@@ -407,18 +417,18 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     assert_eq!(unchanged["items"], listed["items"]);
 
     // Allowed by its person, the change it would make is made.
-    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-    workspaces.ask_people(allowing.clone());
-    ask(
+    allowed_at(
+        workspaces,
         &service,
         workspace_id,
         (&ada, &agent),
-        person_vault::ADD,
-        a_login("https://example.test"),
+        (
+            person_vault::target(person_vault::ADD),
+            a_login("https://example.test"),
+        ),
     )
     .await
     .expect("her agent keeps what she allowed");
-    assert_eq!(allowing.count(), 1, "she was asked once");
     let now = ask(
         &service,
         workspace_id,
@@ -788,13 +798,15 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
         "{unasked:?}"
     );
-    workspaces.ask_people(Asked::answering(Some(ConfirmationAnswer::AllowOnce)));
-    let view = ask_at(
+    let view = allowed_at(
+        workspaces,
         &service,
         workspace_id,
         (&ada, &helper),
-        person_models::target(person_models::SET_KEY_FROM_ITEM),
-        keeping,
+        (
+            person_models::target(person_models::SET_KEY_FROM_ITEM),
+            keeping,
+        ),
     )
     .await
     .expect("the agent keeps the key by naming its item, once its person allowed it");

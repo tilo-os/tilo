@@ -22,9 +22,9 @@ use serde_json::{Map, Value, json};
 use tilo_action_policy::{
     ActionKind, Answer, Grant, GrantId, Grantee, KindSet, Level, Rule, TreePath,
 };
+use tilo_actions::remote::asked::{AskedFacts, asked_person};
 use tilo_actions::remote::person_connections::{
-    self, ADD, Asks, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, Leave, PROPOSE, REFRESH,
-    REMOVE, Taken, USES,
+    self, ADD, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, PROPOSE, REFRESH, REMOVE, USES,
 };
 use tilo_actions::remote::{
     Caller, CatalogueRow, InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -32,15 +32,13 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_user_identity::DeviceCert;
 
-use super::super::turn_use_tests::on_turn;
+use super::super::turn_use_tests::{approved, asks, fact, on_turn};
 use super::super::vault_tests::ask_at;
 use super::{Refused, Served, admit, caller, governed, governor, start_serving};
 use crate::connections::DEFINED_ANEW;
 use crate::connections::stand_in::StandIn;
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
-use crate::workspaces::person_asking::kept_asks::{CARRIED_OUT, KeptAsk, NewAsk};
-use crate::workspaces::person_asking::policy_node;
 
 const SCOUT: &str = "scout";
 
@@ -78,22 +76,19 @@ fn calling(id: &str, command: &str, arguments: Value) -> InvokeRequest {
 }
 
 /// What a turn's request was answered, where it was carried out.
-fn done(taken: Result<Taken, Refused>) -> Value {
+fn done(taken: Result<Value, Refused>) -> Value {
     match taken {
-        Ok(Taken::Done(value)) => value,
+        Ok(value) => value,
         other => panic!("it is carried out: {other:?}"),
     }
 }
 
-/// What a turn's request asks its person, where it asks first.
-fn asked(taken: Result<Taken, Refused>) -> Asks {
-    match taken {
-        Ok(Taken::Asks(asks)) => *asks,
-        other => panic!("the person is asked first: {other:?}"),
-    }
+/// What a turn's request shows its person, where it waits for their yes.
+fn asked(taken: Result<Value, Refused>) -> AskedFacts {
+    asks(taken)
 }
 
-fn refused_with(refused: &Result<Taken, Refused>, why: &str) -> bool {
+fn refused_with(refused: &Result<Value, Refused>, why: &str) -> bool {
     matches!(refused, Err(Refused::Refused { reason }) if reason.contains(why))
 }
 
@@ -269,8 +264,18 @@ impl<'a> Team<'a> {
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
-    ) -> Result<Taken, Refused> {
+    ) -> Result<Value, Refused> {
         self.workspaces.connections_for_turn(turn, request).await
+    }
+
+    /// `request` of `turn` again, as its person's approve admits it.
+    async fn approve(
+        &self,
+        turn: &HostedTurn<'_>,
+        request: &InvokeRequest,
+    ) -> Result<Value, Refused> {
+        let approved = approved(request, &self.workspace_id.to_string());
+        self.workspaces.connections_for_turn(turn, &approved).await
     }
 
     /// The actions `turn` finds of its person's connections in its listing.
@@ -314,38 +319,42 @@ impl<'a> Team<'a> {
         added["id"].as_str().expect("an id").to_owned()
     }
 
-    /// The ask the server keeps while the question about `asks` waits, kept
-    /// as the code that puts the question keeps it.
-    fn keeps(&self, asks: &Asks) -> KeptAsk {
-        let new = NewAsk {
-            workspace: self.workspace.clone(),
-            agent: SCOUT.to_owned(),
-            name: "Scout".to_owned(),
-            carrier: person_connections::CARRIER.to_owned(),
-            kept: asks.kept.clone(),
-            always: asks.always.clone(),
-            words: asks.named.clone(),
-            asked_in: Value::Null,
-        };
+    /// The grant her "always" gives Scout for calling `command` of the connection `id` as its
+    /// service defines it now, written in the workspace by its owner `owner`.
+    async fn always(&self, owner: &DeviceCert, id: &str, command: &str) -> GrantId {
+        let root = self.workspaces.workspace_root(&self.workspace);
+        let digest =
+            crate::connections::callable(&root, &crate::connections::Reach::of(true), id, command)
+                .unwrap()
+                .digest;
+        let grant = Grant::new(
+            format!("test:always:{SCOUT}:{id}:{command}"),
+            Grantee::agent(SCOUT),
+            command_node(&self.workspace, id, (command, &digest)),
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            Grantee::person(self.ada_id.clone()),
+        );
+        let id = grant.id.clone();
         self.workspaces
-            .keep_ask(&asks.person, new)
-            .unwrap()
-            .expect("nothing the same waits already")
-    }
-
-    /// Ada's answer to the question `waits` is kept for, carried out for
-    /// `turn`.
-    async fn answered(
-        &self,
-        turn: &HostedTurn<'_>,
-        waits: &KeptAsk,
-        leave: Option<Leave>,
-    ) -> Result<(), String> {
-        self.workspaces
-            .connection_answered(turn, waits, leave)
+            .put_workspace_grants(&self.workspace, owner, rand::random(), vec![grant])
             .await
-            .map(drop)
+            .unwrap();
+        id
     }
+}
+
+/// Where a grant that lets an agent call the command `name` of `connection` in `workspace`, as
+/// its service defines it (`digest`), stands in the workspace's policy.
+fn command_node(workspace: &str, connection: &str, (name, digest): (&str, &str)) -> TreePath {
+    TreePath::workspace(workspace)
+        .app(person_connections::PROVIDER)
+        .kind(person_connections::COMMAND_KIND)
+        .resource(format!(
+            "{connection}/{}",
+            person_connections::command_resource(name, digest)
+        ))
+        .action(CALL)
 }
 
 /// The turn lists the workspace's connection and finds in its listing what
@@ -505,11 +514,10 @@ async fn a_turn_with_no_device_reads_the_workspaces_connections_and_no_other_cal
     started.shutdown().await;
 }
 
-/// A call of a command that changes something calls nothing and answers
-/// what its person is asked: the service by the site of its address, the
-/// command and its arguments whole. What a question could not show whole
-/// is refused before anybody is asked. What is asked.
-async fn it_asks_and_calls_nothing(team: &Team<'_>, service: &StandIn, id: &str) -> Asks {
+/// A call of a command that changes something calls nothing and waits for its person: they are
+/// shown the service by the site of its address, the command and its arguments whole. What a
+/// question could not show whole is refused before anybody is asked. What they are shown.
+async fn it_asks_and_calls_nothing(team: &Team<'_>, service: &StandIn, id: &str) -> AskedFacts {
     let turn = team.turn();
     let planting = calling(id, "plant_tree", json!({"kind": "apple", "row": 3}));
     let asks = asked(team.takes(&turn, &planting).await);
@@ -517,33 +525,21 @@ async fn it_asks_and_calls_nothing(team: &Team<'_>, service: &StandIn, id: &str)
         calls(&service.seen()).is_empty(),
         "nothing is called before the answer"
     );
-    assert_eq!(asks.person, team.ada.user_public_key);
+    assert_eq!(asked_person(turn.caller), Some(team.ada_id.clone()));
+    let on = asks.on.clone().unwrap_or_default();
     assert!(
-        asks.words.contains("plant_tree")
-            && asks.words.contains(&service.site())
-            && asks.words.contains(r#"{"kind":"apple","row":3}"#),
-        "{}",
-        asks.words
+        on.contains("plant_tree") && on.contains(&service.site()),
+        "{on}"
     );
+    assert_eq!(fact(&asks, "Arguments"), r#"{"kind":"apple","row":3}"#);
     assert_eq!(
-        asks.kept["shown"]["call"],
-        json!({
-            "connection": {"id": id, "address": service.address(), "name": "Orchard Tools"},
-            "command": "plant_tree",
-            "arguments": {"kind": "apple", "row": 3},
-        })
+        asks.plural.as_deref(),
+        Some("commands"),
+        "always is offered"
     );
-    assert_eq!(asks.kept["words"], asks.words.as_str());
-    let always = asks.always.clone().expect("always is offered");
-    assert_eq!(always.agent, SCOUT);
-    assert_eq!(always.workspace, team.workspace);
-    let on = always.on.expect("one command of one connection");
-    assert_eq!(on.document, id);
-    assert!(on.resource.starts_with("commands/plant_tree@"), "{on:?}");
-    assert_eq!(asks.answers, None);
-    // Asked the same again, it asks the same: one question stands.
+    // Asked the same again, it asks the same.
     let again = asked(team.takes(&turn, &planting).await);
-    assert_eq!(again.kept, asks.kept);
+    assert_eq!(again, asks);
 
     let large = calling(id, "plant_tree", json!({"kind": "a".repeat(3_000)}));
     let refused = team.takes(&turn, &large).await;
@@ -554,35 +550,9 @@ async fn it_asks_and_calls_nothing(team: &Team<'_>, service: &StandIn, id: &str)
     asks
 }
 
-/// An answer is carried out for the agent that asked, acting for the person
-/// asked, and for nobody else: not for another member's ask of the same
-/// agent, or another agent of the person's; and
-/// what was kept for another carrier is no connection's to carry out.
-async fn an_answer_for_anybody_else_does_nothing(team: &Team<'_>, waits: &KeptAsk) {
-    let bos_ask = on_turn(&team.bo, &team.workspace, SCOUT);
-    let another = on_turn(&team.ada, &team.workspace, "another-agent");
-    for (who, stranger) in [
-        ("another member's ask of the same agent", &bos_ask),
-        ("another agent of the person's", &another),
-    ] {
-        let strange = team.turn_of(stranger);
-        let carried = team.answered(&strange, waits, Some(Leave::Once)).await;
-        assert!(carried.is_err(), "{who}: {carried:?}");
-    }
-    let other_carrier = KeptAsk {
-        carrier: "mail-send".to_owned(),
-        ..waits.clone()
-    };
-    let carried = team
-        .answered(&team.turn(), &other_carrier, Some(Leave::Once))
-        .await;
-    assert!(carried.is_err(), "{carried:?}");
-}
-
-/// A command that changes something is not called: its person is asked. A
-/// no calls nothing. An answer is carried out only for the agent that asked
-/// acting for the person asked, and then the command is called with what
-/// they were shown, once: the next call asks again.
+/// A command that changes something is not called: it waits for its person. Unapproved it
+/// calls nothing; their approve calls it with what they were shown, once: the next call asks
+/// again.
 #[tokio::test]
 async fn a_command_that_changes_something_asks_and_only_its_persons_answer_calls_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -593,16 +563,12 @@ async fn a_command_that_changes_something_asks_and_only_its_persons_answer_calls
     let id = team.connects(&service).await;
     let turn = team.turn();
 
-    let asks = it_asks_and_calls_nothing(&team, &service, &id).await;
-    let waits = team.keeps(&asks);
-    an_answer_for_anybody_else_does_nothing(&team, &waits).await;
-    team.answered(&turn, &waits, None)
-        .await
-        .expect("a no is carried out by doing nothing");
+    it_asks_and_calls_nothing(&team, &service, &id).await;
     assert!(calls(&service.seen()).is_empty(), "nothing was called");
 
-    // Their yes calls it with what they were shown, by the leave they gave.
-    team.answered(&turn, &waits, Some(Leave::Once))
+    // Their yes calls it with what they were shown, once.
+    let planting = calling(&id, "plant_tree", json!({"kind": "apple", "row": 3}));
+    team.approve(&turn, &planting)
         .await
         .expect("the person's yes calls the command");
     assert_eq!(
@@ -622,28 +588,8 @@ async fn a_command_that_changes_something_asks_and_only_its_persons_answer_calls
     started.shutdown().await;
 }
 
-/// What waits when the server stops: one question nobody answered, and one
-/// whose answer a reader claimed and had done nothing about yet.
-async fn two_questions_wait(team: &Team<'_>, id: &str) -> (KeptAsk, KeptAsk) {
-    let turn = team.turn();
-    let apple = calling(id, "plant_tree", json!({"kind": "apple", "row": 3}));
-    let waits = team.keeps(&asked(team.takes(&turn, &apple).await));
-    let pear = calling(id, "plant_tree", json!({"kind": "pear", "row": 4}));
-    let begun = team.keeps(&asked(team.takes(&turn, &pear).await));
-    assert_ne!(waits.ask, begun.ask, "each is a question of its own");
-    let claimed = team
-        .workspaces
-        .claim_ask(&begun.ask)
-        .expect("the first reader of its answer");
-    assert!(claimed.started);
-    (waits, begun)
-}
-
-/// A question about a command outlives its server's restart. What was asked
-/// is read back whole, and its person's yes after the restart calls the
-/// command with what they were shown, by one reader of their answer: a
-/// second reader does nothing. A question whose answer was being carried
-/// out when the server stopped is carried out by nobody afterwards.
+/// A question about a command outlives its server's restart: its person's approve after the
+/// restart calls the command with what they were shown.
 #[tokio::test]
 async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried_out_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -652,7 +598,8 @@ async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried
     let started = start_serving(dir.path(), &key, &owner).await;
     let team = Team::on(started.workspaces(), &owner).await;
     let id = team.connects(&service).await;
-    let (waits, begun) = two_questions_wait(&team, &id).await;
+    let apple = calling(&id, "plant_tree", json!({"kind": "apple", "row": 3}));
+    asked(team.takes(&team.turn(), &apple).await);
     let members = team.members();
     assert!(
         calls(&service.seen()).is_empty(),
@@ -661,62 +608,35 @@ async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried
     started.shutdown().await;
 
     let started = start_serving(dir.path(), &key, &owner).await;
-    let workspaces = started.workspaces();
-    let team = Team::back(workspaces, members);
-    let kept = workspaces.open_asks(&team.workspace);
-    assert_eq!(kept.len(), 2, "{kept:?}");
-    let still = kept.iter().find(|ask| ask.ask == waits.ask).unwrap();
-    assert!(!still.started && !still.interrupted, "{still:?}");
-    assert_eq!(still.kept, waits.kept, "what was asked is read back whole");
-    assert_eq!(still.always, waits.always);
-    assert_eq!(still.person, hex::encode(team.ada.user_public_key));
-
-    // Her yes, read after the restart: one reader claims it and carries it
-    // out, and the command is called with what she was shown.
-    let turn = team.turn();
-    let claimed = workspaces
-        .claim_ask(&waits.ask)
-        .expect("the first reader of her answer");
-    team.answered(&turn, &claimed, Some(Leave::Once))
+    let team = Team::back(started.workspaces(), members);
+    team.approve(&team.turn(), &apple)
         .await
         .expect("her yes calls the command after the restart");
     assert_eq!(
         calls(&service.seen()),
         [("plant_tree".to_owned(), json!({"kind": "apple", "row": 3}))]
     );
-    assert_eq!(
-        workspaces.claim_ask(&waits.ask),
-        Err(CARRIED_OUT.to_owned()),
-        "a second reader of the same answer does nothing"
-    );
     let used = team.uses(&id).await;
     assert_eq!(used.as_array().map(Vec::len), Some(1), "{used}");
     assert_eq!(used[0]["command"], "plant_tree");
     assert_eq!(used[0]["leave"], "once");
-
-    // The one whose answer was being carried out when the server stopped.
-    let was_begun = kept.iter().find(|ask| ask.ask == begun.ask).unwrap();
-    assert!(was_begun.started && was_begun.interrupted, "{was_begun:?}");
-    assert_eq!(
-        workspaces.claim_ask(&begun.ask),
-        Err(CARRIED_OUT.to_owned()),
-        "it is not carried out a second time"
-    );
-    assert!(calls(&service.seen()).is_empty(), "nothing more is called");
     started.shutdown().await;
 }
 
-/// After her "always" that command of that connection is called unasked,
-/// and Ada's exact approval is kept in workspace governance.
-async fn always_lets_it_go_ahead_unasked(team: &Team<'_>, service: &StandIn, id: &str) -> GrantId {
+/// After her "always", a grant of the workspace, that command of that connection is called
+/// unasked.
+async fn always_lets_it_go_ahead_unasked(
+    team: &Team<'_>,
+    owner: &DeviceCert,
+    (service, id): (&StandIn, &str),
+) -> GrantId {
     let turn = team.turn();
     let planting = calling(id, "plant_tree", json!({"kind": "apple"}));
-    let asks = asked(team.takes(&turn, &planting).await);
-    let waits = team.keeps(&asks);
-    team.answered(&turn, &waits, Some(Leave::Always))
+    asked(team.takes(&turn, &planting).await);
+    let permission = team.always(owner, id, "plant_tree").await;
+    team.approve(&turn, &planting)
         .await
         .expect("the person's always calls the command");
-    team.workspaces.forget_ask(&waits);
 
     let planting = calling(id, "plant_tree", json!({"kind": "pear"}));
     let planted = done(team.takes(&turn, &planting).await);
@@ -728,25 +648,10 @@ async fn always_lets_it_go_ahead_unasked(team: &Team<'_>, service: &StandIn, id:
             ("plant_tree".to_owned(), json!({"kind": "pear"})),
         ]
     );
-    let scope = asks.always.expect("the command offers lasting approval");
-    let grant = team
-        .workspaces
-        .workspace_grants(&team.workspace)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|grant| {
-            grant.node == policy_node(&scope)
-                && grant.grantee == Grantee::agent(SCOUT)
-                && grant.granted_by == Grantee::person(team.ada_id.clone())
-        })
-        .expect("the workspace keeps the precise approval");
-    assert_eq!(grant.answer, Answer::Allow);
-    assert_eq!(grant.kinds, KindSet::OUTSIDE);
     let used = team.uses(id).await;
     assert_eq!(used.as_array().map(Vec::len), Some(2), "{used}");
     assert!(used[0]["leave"] == "always" && used[1]["leave"] == "always");
-    grant.id
+    permission
 }
 
 /// Their "always" lets one command of one connection go ahead unasked for
@@ -761,7 +666,7 @@ async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_b
     let (service, another) = (StandIn::start("plain"), StandIn::start("plain"));
     let id = team.connects(&service).await;
     let other = team.connects(&another).await;
-    let permission = always_lets_it_go_ahead_unasked(&team, &service, &id).await;
+    let permission = always_lets_it_go_ahead_unasked(&team, &owner, (&service, &id)).await;
 
     let members = team.members();
     started.shutdown().await;
@@ -846,10 +751,8 @@ async fn a_command_its_service_defines_anew_asks_again_also_after_always() {
 
     let planting = calling(&id, "plant_tree", json!({"kind": "apple"}));
     let asks = asked(team.takes(&turn, &planting).await);
-    let waits = team.keeps(&asks);
-    let carried = team.answered(&turn, &waits, Some(Leave::Always)).await;
-    assert_eq!(carried, Err(DEFINED_ANEW.to_owned()));
-    team.workspaces.forget_ask(&waits);
+    let carried = team.approve(&turn, &planting).await;
+    assert!(refused_with(&carried, DEFINED_ANEW), "{carried:?}");
     assert!(
         calls(&service.seen()).is_empty(),
         "a command defined otherwise than its person was shown is not called"
@@ -870,9 +773,9 @@ async fn a_command_its_service_defines_anew_asks_again_also_after_always() {
     assert_eq!(plant["changed"], true);
     assert_eq!(plant["asks"], true);
     let again = asked(team.takes(&turn, &planting).await);
-    assert_ne!(
-        again.always, asks.always,
-        "another definition, another thing"
+    assert_eq!(
+        again, asks,
+        "it asks again, about the command as it is defined now"
     );
     // A command the service adds and marks as only reading asks as well.
     asked(
@@ -1021,36 +924,19 @@ async fn with_a_rule_that_names_it_it_reads_and_still_asks(
     assert!(calls(&service.seen()).is_empty());
 }
 
-/// An agent's proposal adds nothing: its person is asked, shown the
-/// service by the site of its address and what a card of it needs, and the
-/// agent is answered that it asked. What is asked.
-async fn a_proposal_asks_and_adds_nothing(team: &Team<'_>, service: &StandIn) -> Asks {
+/// An agent's proposal adds nothing: it waits for its person, who is shown the service by the
+/// site of its address and what a card of it needs, and nothing is connected before they
+/// approve. What they are shown.
+async fn a_proposal_asks_and_adds_nothing(team: &Team<'_>, service: &StandIn) -> AskedFacts {
     let proposing = of(PROPOSE, json!({"address": service.address()}));
-    let asks = asked(team.takes(&team.turn(), &proposing).await);
-    assert_eq!(asks.person, team.ada.user_public_key);
-    assert_eq!(asks.always, None, "a connection is never added unasked");
-    let card = &asks.kept["shown"]["connection"];
-    assert_eq!(
-        *card,
-        json!({
-            "address": service.address(), "name": "Orchard Tools", "needsSignIn": false,
-            "commands": 3,
-        })
-    );
-    assert!(
-        asks.words.contains(&service.site())
-            && asks.words.contains("3 commands")
-            && !asks.words.contains("Orchard"),
-        "the system's own words, and the service by the site of its address: {}",
-        asks.words
-    );
-    let told = asks.answers.clone().expect("the agent is answered");
-    assert_eq!(told["connection"], *card);
-    let says = told["told"].as_str().unwrap_or_default();
-    assert!(
-        says.contains("Nothing is connected before they say yes"),
-        "{told}"
-    );
+    let turn = team.turn();
+    let asks = asked(team.takes(&turn, &proposing).await);
+    assert_eq!(asked_person(turn.caller), Some(team.ada_id.clone()));
+    assert_eq!(asks.plural, None, "a connection is never added unasked");
+    assert_eq!(asks.on.as_deref(), Some(service.site().as_str()));
+    assert_eq!(fact(&asks, "Address"), service.address());
+    assert_eq!(fact(&asks, "It calls itself"), "Orchard Tools");
+    assert_eq!(fact(&asks, "Commands"), "3");
     assert_eq!(
         team.her_connections().await,
         json!([]),
@@ -1059,11 +945,10 @@ async fn a_proposal_asks_and_adds_nothing(team: &Team<'_>, service: &StandIn) ->
     asks
 }
 
-/// An agent proposes a connection from an address, and nothing is added by
-/// its call. Their no adds nothing, an answer carried out for anybody else
-/// adds nothing, and their own yes adds the connection as theirs. A service
-/// that wants a sign-in says so on its card, and an address inside the
-/// server's own network is not looked at unless its operator lets it.
+/// An agent proposes a connection from an address, and nothing is added by its call or before
+/// its person approves; their approve adds the connection as theirs. A service that wants a
+/// sign-in says so, and an address inside the server's own network is not looked at unless its
+/// operator lets it.
 #[tokio::test]
 async fn an_agent_proposes_a_connection_and_only_its_persons_yes_adds_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -1072,40 +957,29 @@ async fn an_agent_proposes_a_connection_and_only_its_persons_yes_adds_it() {
     let team = Team::on(started.workspaces(), &owner).await;
     let (service, signing) = (StandIn::start("plain"), StandIn::start("signing-in"));
     let turn = team.turn();
-    let asks = a_proposal_asks_and_adds_nothing(&team, &service).await;
-
-    let waits = team.keeps(&asks);
-    team.answered(&turn, &waits, None)
-        .await
-        .expect("a no is carried out by doing nothing");
-    let bos_agent = on_turn(&team.bo, &team.workspace, SCOUT);
-    let strange = team.turn_of(&bos_agent);
-    let carried = team.answered(&strange, &waits, Some(Leave::Once)).await;
-    assert!(carried.is_err(), "{carried:?}");
+    a_proposal_asks_and_adds_nothing(&team, &service).await;
     assert_eq!(team.her_connections().await, json!([]));
 
-    team.answered(&turn, &waits, Some(Leave::Once))
+    let proposing = of(PROPOSE, json!({"address": service.address()}));
+    team.approve(&turn, &proposing)
         .await
         .expect("the person's yes adds the connection");
     let hers = team.her_connections().await;
     assert_eq!(hers.as_array().map(Vec::len), Some(1));
     assert_eq!(
-        hers[0]["address"], asks.kept["shown"]["connection"]["address"],
+        hers[0]["address"],
+        service.address(),
         "a client finds the connection it was asked about by its address"
     );
     assert_eq!(hers[0]["state"], "ready");
-    let proposing = of(PROPOSE, json!({"address": service.address()}));
     let refused = team.takes(&turn, &proposing).await;
     assert!(refused_with(&refused, "connected already"), "{refused:?}");
 
-    // A service that wants a sign-in says so on its card, with where its
-    // person signs in: signing in stays their own act.
+    // A service that wants a sign-in says so, with where its person signs in: signing in stays
+    // their own act.
     let proposing = of(PROPOSE, json!({"address": signing.address()}));
     let asks = asked(team.takes(&turn, &proposing).await);
-    let card = &asks.kept["shown"]["connection"];
-    assert_eq!(card["needsSignIn"], true, "{card}");
-    assert_eq!(card["signInAt"], signing.issuer_site().as_str(), "{card}");
-    assert!(asks.words.contains("sign in"), "{}", asks.words);
+    assert_eq!(fact(&asks, "Sign in at"), signing.issuer_site().as_str());
 
     // An address inside the server's own network is not looked at unless
     // its operator lets it.
@@ -1167,9 +1041,7 @@ async fn what_a_turn_and_its_person_read(team: &Team<'_>, id: &str) -> Vec<Strin
     let planting = calling(id, "plant_tree", json!({"kind": "apple"}));
     let asks = asked(team.takes(&turn, &planting).await);
     read.push(format!("{asks:?}"));
-    let waits = team.keeps(&asks);
-    read.push(serde_json::to_string(&waits).unwrap());
-    team.answered(&turn, &waits, Some(Leave::Once))
+    team.approve(&turn, &planting)
         .await
         .expect("the person's yes calls the command");
     read

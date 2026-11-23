@@ -511,6 +511,25 @@ fn use_asked(
                 .unwrap_or_default(),
         ));
     }
+    let said = |name: &str| {
+        arguments
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    };
+    // What the call sends where, as the person would read it in its log: the method and the
+    // address, never the key.
+    if *target == person_vault::call_target() {
+        let method = match said("method").trim() {
+            "" => "GET".to_owned(),
+            method => method.to_ascii_uppercase(),
+        };
+        facts.push(Fact::new("Calls", format!("{method} {}", said("url"))));
+    }
+    // The account it signs in, where it signs one in.
+    if *target == person_accounts::target(person_accounts::ADD_MAIL_WITH_ITEM) {
+        facts.push(Fact::new("Account", said("address")));
+    }
     AskedFacts {
         words: reason.to_owned(),
         facts,

@@ -104,8 +104,8 @@ async fn a_calendar_account_connected_for_reading_only_is_never_written_to() {
     // was handed to with a vault item's reference, once she allowed that,
     // and she herself with the password.
     let assistant = ada.agent("assistant");
-    let allowing = Answering::with(Some(ConfirmationAnswer::AllowOnce));
-    ada.workspaces.ask_people(allowing.clone());
+    let allowing = Answering::with(Some(Answer::Approve));
+    ada.answer_with(allowing.clone());
     let login = asked(
         &ada.page(),
         &ada.herself(),
@@ -145,8 +145,8 @@ async fn a_calendar_account_connected_for_reading_only_is_never_written_to() {
 
     // She would allow whatever else she is asked: nothing more is to reach
     // her, because reading only refuses first.
-    let answering = Answering::with(Some(ConfirmationAnswer::AllowOnce));
-    ada.workspaces.ask_people(answering.clone());
+    let answering = Answering::with(Some(Answer::Approve));
+    ada.answer_with(answering.clone());
 
     // It is read as any account is, by her assistant and by herself.
     assert_eq!(ada.week(&assistant).await.len(), 3);

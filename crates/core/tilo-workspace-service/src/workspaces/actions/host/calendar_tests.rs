@@ -27,24 +27,24 @@ use std::sync::{Arc, Mutex};
 use collab_types::WorkspaceId;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_actions::remote::person_asking::{ActionName, Asked, Thing, Words};
+use tilo_action_policy::{ActionKind, Answer as GrantAnswer, Grant, Grantee, KindSet, TreePath};
+use tilo_actions::remote::asked::{AskedBy, AskedFacts, asked_person};
 use tilo_actions::remote::{
     ActionCallError as ActionError, ActionProvider as ActionService, Caller, CatalogueQuery,
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget, person_accounts,
     person_vault,
 };
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{admit, caller, governed, settled};
+use super::turn_use_tests::approved;
+use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost as TestHolder;
 use crate::workspaces::fixtures::test_host as test_holder;
-use crate::workspaces::person_asking::Allowing;
 use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
 use crate::workspaces::tests::governor;
-use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 /// A device of the person `root`.
 fn key_of(root: &SigningKey, label: &str) -> DeviceCert {
@@ -90,6 +90,8 @@ struct Ada {
     device: DeviceCert,
     workspace: String,
     workspace_id: WorkspaceId,
+    /// How she answers what waits for her yes, where she does.
+    answering: Mutex<Option<Arc<Answering>>>,
     _holder: TestHolder,
     _dir: tempfile::TempDir,
 }
@@ -121,6 +123,7 @@ impl Ada {
             device,
             workspace,
             workspace_id,
+            answering: Mutex::default(),
             _holder: holder,
             _dir: dir,
         }
@@ -161,7 +164,14 @@ impl Ada {
         self.herself().delegated_to(name)
     }
 
-    /// What `caller` is answered when it asks `action` of the calendars.
+    /// From now on she answers what waits for her yes as `answering` does.
+    fn answer_with(&self, answering: Arc<Answering>) {
+        *self.answering.lock().unwrap() = Some(answering);
+    }
+
+    /// What `caller` is answered when it asks `action` of the calendars. A call that waits for
+    /// her yes is answered as she answers ([`Self::answer_with`]): approved, it is admitted
+    /// again as her approve admits it; declined, its caller hears so; unanswered, it waits.
     async fn ask(
         &self,
         caller: &Caller,
@@ -172,7 +182,32 @@ impl Ada {
             provider: person_accounts::PROVIDER.to_owned(),
             address: ActionAddress::new(held::RESOURCE, action),
         };
-        asked(&self.page(), caller, target, argument).await
+        let request = calling(target, argument);
+        let answer = answered(&self.page(), caller, &request).await;
+        let Err(ActionError::ConfirmationRequired(facts)) = answer else {
+            return answer;
+        };
+        let answering = self.answering.lock().unwrap().clone();
+        let Some(answering) = answering else {
+            return Err(ActionError::ConfirmationRequired(facts));
+        };
+        answering.questions.lock().unwrap().push((*facts).clone());
+        match answering.answer {
+            None => Err(ActionError::ConfirmationRequired(facts)),
+            Some(Answer::Decline) => Err(ActionError::Refused {
+                reason: tilo_actions::remote::asked::DECLINED.to_owned(),
+            }),
+            Some(Answer::Approve) => {
+                self.workspaces
+                    .invoke(
+                        Some(self.workspace_id),
+                        caller,
+                        Some(&self.device),
+                        &approved(&request, &self.workspace_id.to_string()),
+                    )
+                    .await
+            }
+        }
     }
 
     /// Ada adds her account with the password she types.
@@ -239,11 +274,16 @@ async fn asked(
     target: RemoteActionTarget,
     argument: Value,
 ) -> Result<Value, ActionError> {
+    answered(page, caller, &calling(target, argument)).await
+}
+
+/// The call of `target` with `argument`, under a fresh invocation id.
+fn calling(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
     let argument = match argument {
         Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
         _ => InvokeArgument::None,
     };
-    let request = InvokeRequest {
+    InvokeRequest {
         invocation: InvocationId::new(),
         target,
         argument,
@@ -254,8 +294,16 @@ async fn asked(
         wait_ms: None,
         appearance: None,
         signed: None,
-    };
-    let receipt = settled(page.invoke(caller, request)).await?;
+    }
+}
+
+/// `request` by `caller` over `page`, answered at once.
+async fn answered(
+    page: &(impl ActionService + Sync),
+    caller: &Caller,
+    request: &InvokeRequest,
+) -> Result<Value, ActionError> {
+    let receipt = settled(page.invoke(caller, request.clone())).await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
         other => panic!("the holder answers at once, not {other:?}"),
@@ -658,8 +706,8 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
         matches!(unasked, Err(ActionError::ConfirmationRequired { .. })),
         "with nobody to ask through: {unasked:?}"
     );
-    let allowing = Answering::with(Some(ConfirmationAnswer::AllowOnce));
-    ada.workspaces.ask_people(allowing.clone());
+    let allowing = Answering::with(Some(Answer::Approve));
+    ada.answer_with(allowing.clone());
     let made = ada
         .ask(&assistant, held::ADD_INVITATION, json!({"ics": invitation}))
         .await
@@ -669,8 +717,7 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
 
     // What she refuses changes nothing: her account is not removed and none
     // is added with a password the agent typed.
-    ada.workspaces
-        .ask_people(Answering::with(Some(ConfirmationAnswer::Deny)));
+    ada.answer_with(Answering::with(Some(Answer::Decline)));
     for (what, action, argument) in [
         ("removing the account", held::REMOVE, json!({"account": id})),
         (
@@ -760,7 +807,7 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
     let outside = keep("https://elsewhere.example".to_owned())
         .await
         .expect("and another");
-    ada.workspaces.ask_people(allowing.clone());
+    ada.answer_with(allowing.clone());
     let wrong = ada
         .ask(
             &assistant,
@@ -813,15 +860,22 @@ fn naming_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// How Ada answers a call that waits for her yes.
+#[derive(Clone, Copy)]
+enum Answer {
+    Approve,
+    Decline,
+}
+
 /// Ada answering every question about her calendar one way, or not at all,
-/// and what she was asked.
+/// and what she was shown.
 struct Answering {
-    answer: Option<ConfirmationAnswer>,
-    questions: Mutex<Vec<([u8; 32], PendingConfirmation)>>,
+    answer: Option<Answer>,
+    questions: Mutex<Vec<AskedFacts>>,
 }
 
 impl Answering {
-    fn with(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
+    fn with(answer: Option<Answer>) -> Arc<Self> {
         Arc::new(Self {
             answer,
             questions: Mutex::default(),
@@ -833,33 +887,32 @@ impl Answering {
         self.questions.lock().unwrap().len()
     }
 
+    /// The questions she was put, in order.
+    fn asked(&self) -> Vec<AskedFacts> {
+        self.questions.lock().unwrap().clone()
+    }
+
     /// What the rows labelled `label` of the last question say, in order.
     fn rows(&self, label: &str) -> Vec<String> {
         self.questions
             .lock()
             .unwrap()
             .last()
-            .map(|(_, question)| {
+            .map(|question| {
                 question
-                    .arguments
+                    .facts
                     .iter()
-                    .filter(|(labelled, _)| labelled == label)
-                    .map(|(_, value)| value.clone())
+                    .filter(|fact| fact.label == label)
+                    .map(|fact| fact.value.clone())
                     .collect()
             })
             .unwrap_or_default()
     }
 }
 
-impl AsksPeople for Answering {
-    fn ask(&self, person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
-        self.questions.lock().unwrap().push((person, question));
-        let answer = self
-            .answer
-            .clone()
-            .ok_or_else(|| "nobody answered".to_owned());
-        Box::pin(async move { answer })
-    }
+/// Whether `question` is asked by the agent `id`.
+fn asked_by(question: &AskedFacts, id: &str) -> bool {
+    matches!(&question.by, AskedBy::Agent(named) if named.id == id)
 }
 
 /// An agent a member's device handed its session to writes the text it
@@ -896,8 +949,8 @@ async fn what_she_entered_herself_is_not_her_assistants_to_change_or_remove() {
         ),
     );
     let assistant = ada.with_her_assistant().await;
-    let answering = Answering::with(Some(ConfirmationAnswer::AllowOnce));
-    ada.workspaces.ask_people(answering.clone());
+    let answering = Answering::with(Some(Answer::Approve));
+    ada.answer_with(answering.clone());
     // It reads what her calendar holds, as it may.
     assert_eq!(
         ada.week(&assistant).await,
@@ -1005,8 +1058,8 @@ async fn an_invitation_to_her_goes_in_and_out_once_she_allowed_it_and_no_server_
     // What the server was asked while her account was added does not count.
     let _ = ada.server.requests();
 
-    let allowing = Answering::with(Some(ConfirmationAnswer::AllowOnce));
-    ada.workspaces.ask_people(allowing.clone());
+    let allowing = Answering::with(Some(Answer::Approve));
+    ada.answer_with(allowing.clone());
     let made = ada
         .put(&assistant, &offsite("REQUEST", "20261119T140000"))
         .await
@@ -1041,7 +1094,7 @@ async fn an_invitation_to_her_goes_in_and_out_once_she_allowed_it_and_no_server_
     assert_eq!(allowing.count(), 2);
 
     // With nobody to ask through, nothing comes out either.
-    ada.workspaces.ask_people(Answering::with(None));
+    ada.answer_with(Answering::with(None));
     let unanswered = ada
         .put(&assistant, &offsite("CANCEL", "20261119T160000"))
         .await;
@@ -1051,7 +1104,7 @@ async fn an_invitation_to_her_goes_in_and_out_once_she_allowed_it_and_no_server_
     );
     assert_eq!(ada.server.held("work").len(), 1, "the entry is still there");
 
-    ada.workspaces.ask_people(allowing.clone());
+    ada.answer_with(allowing.clone());
     let gone = ada
         .put(&assistant, &offsite("CANCEL", "20261119T160000"))
         .await
@@ -1205,21 +1258,22 @@ async fn an_entry_that_names_people_waits_for_her_answer() {
     );
 
     let silent = Answering::with(None);
-    ada.workspaces.ask_people(silent.clone());
+    ada.answer_with(silent.clone());
     let unanswered = ada.put(&assistant, &dinner).await;
     assert!(
         matches!(unanswered, Err(ActionError::ConfirmationRequired { .. })),
         "with no answer: {unanswered:?}"
     );
     assert!(ada.server.held("work").is_empty(), "nothing unallowed");
-    let (person, question) = silent.questions.lock().unwrap()[0].clone();
+    let question = silent.asked()[0].clone();
     assert_eq!(
-        person, ada.device.user_public_key,
+        asked_person(&assistant),
+        Some(hex::encode(ada.device.user_public_key)),
         "her calendar, her answer"
     );
-    assert_eq!(question.agent_id, "assistant");
-    assert_eq!(question.action_label, "put this entry into the calendar");
-    assert_eq!(question.resource_label, "Mine");
+    assert!(asked_by(&question, "assistant"), "{question:?}");
+    assert_eq!(question.verb, "put in");
+    assert_eq!(question.on.as_deref(), Some("Mine"));
     assert_eq!(silent.rows("Calendar"), ["Work"]);
     assert_eq!(silent.rows("Title"), ["Dinner"]);
     assert_eq!(silent.rows("Names"), ["3 addresses"]);
@@ -1229,8 +1283,7 @@ async fn an_entry_that_names_people_waits_for_her_answer() {
         ["bo@example.test", "eve@elsewhere.test"]
     );
 
-    ada.workspaces
-        .ask_people(Answering::with(Some(ConfirmationAnswer::Deny)));
+    ada.answer_with(Answering::with(Some(Answer::Decline)));
     let denied = ada.put(&assistant, &dinner).await;
     assert!(
         matches!(denied, Err(ActionError::Refused { .. })),
@@ -1238,8 +1291,8 @@ async fn an_entry_that_names_people_waits_for_her_answer() {
     );
     assert!(ada.server.held("work").is_empty(), "nothing she refused");
 
-    let allowing = Answering::with(Some(ConfirmationAnswer::AllowOnce));
-    ada.workspaces.ask_people(allowing.clone());
+    let allowing = Answering::with(Some(Answer::Approve));
+    ada.answer_with(allowing.clone());
     let made = ada
         .put(&assistant, &dinner)
         .await
@@ -1333,8 +1386,8 @@ async fn what_she_always_allows_is_put_unasked_until_she_takes_it_back() {
     let ada = Ada::signing_in_as(ADDRESS).await;
     let assistant = ada.with_her_assistant().await;
     let person = ada.device.user_public_key;
-    let refusing = Answering::with(Some(ConfirmationAnswer::Deny));
-    ada.workspaces.ask_people(refusing.clone());
+    let refusing = Answering::with(Some(Answer::Decline));
+    ada.answer_with(refusing.clone());
     let dinner = |uid: &str| {
         carried(
             "REQUEST",
@@ -1348,36 +1401,25 @@ async fn what_she_always_allows_is_put_unasked_until_she_takes_it_back() {
         )
     };
 
-    // The server lets a permission stay when it reads her own answer
-    // always to a question it put; the test stands in for that moment.
-    let permission = ada
-        .workspaces
-        .let_always(
-            &person,
-            Allowing {
-                scope: Asked {
-                    workspace: ada.workspace_id.to_string(),
-                    agent: "assistant".to_owned(),
-                    action: ActionName {
-                        provider: person_accounts::PROVIDER.to_owned(),
-                        kind: person_accounts::PROVIDER.to_owned(),
-                        action: held::ADD_INVITATION.to_owned(),
-                    },
-                    on: Some(Thing {
-                        document: String::new(),
-                        resource: held::RESOURCE.to_owned(),
-                    }),
-                },
-                name: "Assistant".to_owned(),
-                words: Words {
-                    action: "Add invitation to calendar".to_owned(),
-                    on: "Calendars".to_owned(),
-                    place: "Calendars".to_owned(),
-                },
-                asked_by: None,
-            },
-        )
-        .expect("it stays");
+    // Her "always" is a grant of the workspace to her assistant, for putting entries that name
+    // people into her calendars.
+    let grant = Grant::new(
+        "test:always:assistant:calendar".to_owned(),
+        Grantee::agent("assistant"),
+        TreePath::workspace(&ada.workspace)
+            .app(person_accounts::PROVIDER)
+            .kind(person_accounts::PROVIDER)
+            .resource(held::RESOURCE)
+            .action(held::ADD_INVITATION),
+        KindSet::of(ActionKind::Outside),
+        GrantAnswer::Allow,
+        Grantee::person(hex::encode(person)),
+    );
+    let permission = grant.id.clone();
+    ada.workspaces
+        .put_workspace_grants(&ada.workspace, &ada.owner, rand::random(), vec![grant])
+        .await
+        .unwrap();
 
     let made = ada
         .put(&assistant, &dinner("dinner-3@example.org"))
@@ -1385,19 +1427,12 @@ async fn what_she_always_allows_is_put_unasked_until_she_takes_it_back() {
         .expect("what she always allows asks her nothing");
     assert_eq!(made["made"], "created", "{made}");
     assert_eq!(refusing.count(), 0, "she is not asked");
-    assert_eq!(
-        ada.workspaces.permissions_of(&person).permissions[0].used_times,
-        1,
-        "and its use is counted for her to see"
-    );
     ada.nobody_was_mailed("an entry she always allows");
 
-    assert_eq!(
-        ada.workspaces
-            .take_back_permission(&person, &permission.id)
-            .await,
-        Ok(true)
-    );
+    ada.workspaces
+        .remove_workspace_grants(&ada.workspace, &ada.owner, rand::random(), vec![permission])
+        .await
+        .unwrap();
     let again = ada.put(&assistant, &dinner("dinner-4@example.org")).await;
     assert!(
         matches!(again, Err(ActionError::Refused { .. })),
@@ -1624,28 +1659,28 @@ async fn what_she_entered_herself_is_filed_by_her_assistant_only_once_she_allowe
     );
 
     let silent = Answering::with(None);
-    ada.workspaces.ask_people(silent.clone());
+    ada.answer_with(silent.clone());
     let unanswered = filed(&ada, &assistant, &board, &["Cancelled"]).await;
     assert!(
         matches!(unanswered, Err(ActionError::ConfirmationRequired { .. })),
         "with no answer: {unanswered:?}"
     );
     assert_eq!(ada.server.held("work"), before, "nothing unallowed");
-    let (person, question) = silent.questions.lock().unwrap()[0].clone();
+    let question = silent.asked()[0].clone();
     assert_eq!(
-        person, ada.device.user_public_key,
+        asked_person(&assistant),
+        Some(hex::encode(ada.device.user_public_key)),
         "her calendar, her answer"
     );
-    assert_eq!(question.agent_id, "assistant");
-    assert_eq!(question.action_label, "file this entry under categories");
-    assert_eq!(question.resource_label, "Mine");
+    assert!(asked_by(&question, "assistant"), "{question:?}");
+    assert_eq!(question.verb, "file");
+    assert_eq!(question.on.as_deref(), Some("Mine"));
     assert_eq!(silent.rows("Calendar"), ["Work"]);
     assert_eq!(silent.rows("Title"), ["Board meeting"]);
     assert_eq!(silent.rows("Filed under"), ["Board"]);
     assert_eq!(silent.rows("To file under"), ["Cancelled"]);
 
-    ada.workspaces
-        .ask_people(Answering::with(Some(ConfirmationAnswer::Deny)));
+    ada.answer_with(Answering::with(Some(Answer::Decline)));
     let denied = filed(&ada, &assistant, &board, &["Cancelled"]).await;
     assert!(
         matches!(denied, Err(ActionError::Refused { .. })),
@@ -1653,8 +1688,8 @@ async fn what_she_entered_herself_is_filed_by_her_assistant_only_once_she_allowe
     );
     assert_eq!(ada.server.held("work"), before, "nothing she refused");
 
-    let allowing = Answering::with(Some(ConfirmationAnswer::AllowOnce));
-    ada.workspaces.ask_people(allowing.clone());
+    let allowing = Answering::with(Some(Answer::Approve));
+    ada.answer_with(allowing.clone());
     let done = filed(&ada, &assistant, &board, &["Board", "Quarter"])
         .await
         .expect("she allowed what she was shown");
@@ -1719,8 +1754,8 @@ async fn filing_what_she_invites_others_to_is_not_her_assistants_and_writes_to_n
         ),
     );
     let assistant = ada.with_her_assistant().await;
-    let answering = Answering::with(Some(ConfirmationAnswer::AllowOnce));
-    ada.workspaces.ask_people(answering.clone());
+    let answering = Answering::with(Some(Answer::Approve));
+    ada.answer_with(answering.clone());
     let dinner = entry_titled(&ada, &assistant, "Dinner").await;
     let before = ada.server.held("work");
 
@@ -1765,8 +1800,8 @@ async fn an_invitation_her_assistant_did_not_put_in_is_not_its_to_change_or_remo
     ada.server
         .put("work", "review.ics", &review("20261118T100000"));
     let assistant = ada.with_her_assistant().await;
-    let answering = Answering::with(Some(ConfirmationAnswer::AllowOnce));
-    ada.workspaces.ask_people(answering.clone());
+    let answering = Answering::with(Some(Answer::Approve));
+    ada.answer_with(answering.clone());
     assert_eq!(
         ada.week(&assistant).await,
         ["Review 2026-11-18T10:00:00+01:00"]

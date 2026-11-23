@@ -13,21 +13,18 @@
     reason = "the served and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the server it drives"
 )]
 
-use std::sync::{Arc, Mutex};
-
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
+use tilo_actions::remote::asked::{AskedBy, asked_person};
 use tilo_actions::remote::{
     ActionCallError::{self, InvalidRequest, Refused, UnknownAction},
     ActionProvider as _, Caller, ReceiptStatus,
 };
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
-use super::tests::{admit, caller, governed, request, settled};
+use super::tests::{Answering, admit, answered, caller, governed, request, settled};
 use crate::workspaces::person_learned::{self, CORRECT, FORGET, Facts, LEARN, LIST};
 use crate::workspaces::tests::{governor, test_host};
-use crate::workspaces::{AsksPeople, PersonAnswer};
 
 /// The agent that works for a person on the server, by its id.
 const SCOUT: &str = "scout";
@@ -51,10 +48,19 @@ impl Asking<'_> {
     ) -> Answered<Value> {
         let mut request = request("", "", argument);
         request.target = person_learned::target(action);
-        let receipt = settled(
+        let first = settled(
             self.server
                 .in_workspace_as(self.workspace, device)
-                .invoke(caller, request),
+                .invoke(caller, request.clone()),
+        )
+        .await;
+        let workspaces = self.server.shared.workspaces.get().unwrap();
+        let receipt = answered(
+            workspaces,
+            (Some(self.workspace), Some(device)),
+            caller,
+            &request,
+            first,
         )
         .await?;
         match receipt.status {
@@ -99,38 +105,6 @@ macro_rules! stage {
 
 /// Where the agent's fact came from, as a hosted turn closes it.
 const KEPT_IN: &str = "They said so (chat.workspace/messages/m1)";
-
-/// A person who answers every question one way, or not at all, and what
-/// they were asked.
-struct Asked {
-    answer: Option<ConfirmationAnswer>,
-    questions: Mutex<Vec<([u8; 32], PendingConfirmation)>>,
-}
-
-impl Asked {
-    fn answering(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
-        Arc::new(Self {
-            answer,
-            questions: Mutex::default(),
-        })
-    }
-
-    /// How many questions the person was put.
-    fn count(&self) -> usize {
-        self.questions.lock().unwrap().len()
-    }
-}
-
-impl AsksPeople for Asked {
-    fn ask(&self, person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
-        self.questions.lock().unwrap().push((person, question));
-        let answer = self
-            .answer
-            .clone()
-            .ok_or_else(|| "nobody answered".to_owned());
-        Box::pin(async move { answer })
-    }
-}
 
 /// A member reads what an agent on the workspace's server kept about them,
 /// writes a fact down themselves and corrects the agent's: every change of
@@ -302,34 +276,26 @@ async fn her_agent_asks_her_first(
         matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
         "a change with nobody to ask through: {unasked:?}"
     );
-    let silent = Asked::answering(None);
-    workspaces.ask_people(silent.clone());
-    let unanswered = provider.ask_as(ada, &agent, teaching.clone()).await;
+    let refusing = Answering::declining();
+    let refused = provider.ask_as(ada, &agent, teaching.clone()).await;
     assert!(
-        matches!(
-            unanswered,
-            Err(ActionCallError::ConfirmationRequired { .. })
-        ),
-        "a change with no answer: {unanswered:?}"
+        matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
+        "a change she declined: {refused:?}"
     );
-    assert_eq!(silent.count(), 1, "the change asked her");
-    let (asked_person, question) = silent.questions.lock().unwrap()[0].clone();
+    let asked = refusing.asked();
+    assert_eq!(asked.len(), 1, "the change asked her");
     assert_eq!(
-        asked_person, ada.user_public_key,
+        asked_person(&agent),
+        Some(hex::encode(ada.user_public_key)),
         "her agent, her own answer"
     );
-    assert_eq!(question.agent_id, SCOUT);
+    assert!(
+        matches!(&asked[0].by, AskedBy::Agent(named) if named.id == SCOUT),
+        "{asked:?}"
+    );
     assert_eq!(provider.list(ada).await, *hers, "nothing changed");
 
-    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
-    workspaces.ask_people(refusing.clone());
-    let refused = provider.ask_as(ada, &agent, teaching.clone()).await;
-    assert!(matches!(refused, Err(Refused { .. })), "{refused:?}");
-    assert_eq!(refusing.count(), 1, "the change asked her");
-    assert_eq!(provider.list(ada).await, *hers, "nothing changed");
-
-    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-    workspaces.ask_people(allowing.clone());
+    let allowing = Answering::approving();
     let changed = provider.ask_as(ada, &agent, teaching).await.unwrap();
     let changed: Facts = serde_json::from_value(changed).unwrap();
     let kept = changed
@@ -338,7 +304,7 @@ async fn her_agent_asks_her_first(
         .find(|held| held.text == "Prefers calls after noon.")
         .expect("the fact the agent kept");
     assert_eq!(kept.by.as_deref(), Some(SCOUT), "the agent wrote it");
-    assert_eq!(allowing.count(), 1, "one question for one change");
+    assert_eq!(allowing.asked().len(), 1, "one question for one change");
     assert!(
         !provider
             .list(bo)

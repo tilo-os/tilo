@@ -1,6 +1,6 @@
 //! A page's field filled from a vault item by a turn the server carries out: the first
-//! fill of an item at a site asks its person and releases nothing, their allow lets that
-//! agent's next fill there through once, their "Always" is the item's own leave, which
+//! fill of an item at a site waits for its person and releases nothing, their approve
+//! releases that fill once, the grant their "always" gives is the item's own leave, which
 //! they read and take back, and what is released is a password, a code or a value for
 //! that one site and nothing else.
 
@@ -15,18 +15,16 @@ use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer, KindSet};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError as Refusal;
-use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
+use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions as Service;
 use super::super::tests::{admit, caller, governed};
-use super::turn_use_tests::on_turn;
+use super::turn_use_tests::{always, approved, asked_by, asks, fact, on_turn};
 use super::vault_tests::{ask, files_holding};
 use crate::workspaces::fixtures::test_host as serving;
-use crate::workspaces::hosted_use::{
-    HostedTurn, OpenAsk, PageField, PageText, TurnRelease, UseAnswer,
-};
+use crate::workspaces::hosted_use::{HostedTurn, PageField, PageText};
 use crate::workspaces::tests::governor;
 use crate::workspaces::{WorkspaceId, Workspaces};
 
@@ -81,44 +79,76 @@ fn fill(site: &str, item: &ItemRef) -> FillPage {
     }
 }
 
+/// The request that fills `wanted`, as a turn's tool makes it.
+fn filling(wanted: &FillPage) -> InvokeRequest {
+    let serde_json::Value::Object(argument) = serde_json::to_value(wanted).unwrap() else {
+        panic!("a fill reads as an object");
+    };
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: person_vault::page_target(),
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
 async fn release(
     workspaces: &Workspaces,
     turn: &HostedTurn<'_>,
     wanted: &FillPage,
-) -> Result<TurnRelease, Refusal> {
-    workspaces
-        .release_for_turn(turn, wanted, InvocationId::new(), json!({"part": "p0"}))
-        .await
+) -> Result<PageText, Refusal> {
+    released(workspaces, turn, wanted, &filling(wanted)).await
 }
 
-/// The ask a fill answered with, when it asked.
-fn asked(released: Result<TurnRelease, Refusal>) -> OpenAsk {
-    match released {
-        Ok(TurnRelease::Asks(open)) => *open,
-        other => panic!("the person is asked first: {other:?}"),
-    }
+/// What `request`, a fill of `wanted`, releases.
+async fn released(
+    workspaces: &Workspaces,
+    turn: &HostedTurn<'_>,
+    wanted: &FillPage,
+    request: &InvokeRequest,
+) -> Result<PageText, Refusal> {
+    workspaces.release_for_turn(turn, wanted, request).await
 }
 
 /// The text a fill was released, when it was.
-fn text(released: Result<TurnRelease, Refusal>) -> PageText {
-    match released {
-        Ok(TurnRelease::Released(text)) => text,
-        other => panic!("the text is released: {other:?}"),
-    }
+fn text(released: Result<PageText, Refusal>) -> PageText {
+    released.unwrap_or_else(|error| panic!("the text is released: {error:?}"))
+}
+
+/// The grant "always" gives the agent `agent` to fill `item` at `SITE`.
+async fn always_fill(
+    workspaces: &Workspaces,
+    (workspace, owner, ada): (&str, &DeviceCert, &DeviceCert),
+    agent: &str,
+    item: &ItemRef,
+) {
+    always(
+        workspaces,
+        (workspace, owner, ada),
+        agent,
+        (&person_vault::page_target(), &json!(item), &[SITE]),
+    )
+    .await;
 }
 
 /// Why a fill was refused, when it was.
-fn refusal(released: Result<TurnRelease, Refusal>) -> String {
+fn refusal(released: Result<PageText, Refusal>) -> String {
     match released {
         Err(Refusal::Refused { reason }) => reason,
         other => panic!("the fill is refused: {other:?}"),
     }
 }
 
-/// The first fill of an item at a site asks its person and releases nothing. What is kept
-/// for the question names the site and withholds the item; the same fill asked again does
-/// not ask twice; a "no" releases nothing. Allowed once, that agent's next fill there is
-/// released once, written down, and the one after asks again.
+/// The first fill of an item at a site waits for its person and releases nothing. What they
+/// are shown names the site and withholds the item; the same fill asked again waits again; a
+/// decline never admits it. Approved, that fill is released once, written down, and the one
+/// after asks again; another agent of hers is still asked.
 #[tokio::test]
 async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -131,7 +161,6 @@ async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     let hers = (&ada, &as_ada);
     let login = kept(&service, workspace_id, hers, ("login", SITE, PASSWORD)).await;
     let scout = on_turn(&ada, &workspace, "scout");
-    let asker = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -144,20 +173,19 @@ async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     );
 
     let wanted = fill(SITE, &login);
-    let open = asked(release(workspaces, &turn, &wanted).await);
-    assert_eq!(open.agent, "scout");
-    assert_eq!(open.person, asker);
-    assert_eq!(open.reason, "To sign in for you.");
-    assert_eq!(open.asked_in, json!({"part": "p0"}));
+    let first = filling(&wanted);
+    let facts = asks(released(workspaces, &turn, &wanted, &first).await);
+    assert!(asked_by(&facts, "scout", "Scout"), "{facts:?}");
     assert_eq!(
-        open.detail["use"],
-        json!({
-            "ask": open.ask,
-            "item": {"kind": "login", "belongsTo": [SITE]},
-            "site": {"name": "example.test", "origin": SITE},
-        })
+        tilo_actions::remote::asked::asked_person(&scout),
+        Some(hex::encode(ada.user_public_key))
     );
-    let shown = open.detail.to_string();
+    assert_eq!(facts.words, "To sign in for you.");
+    assert_eq!(fact(&facts, "Item"), "login");
+    assert_eq!(fact(&facts, "Goes to"), SITE);
+    assert_eq!(fact(&facts, "Site"), SITE);
+    assert_eq!(facts.verb, PAGE_USE);
+    let shown = serde_json::to_string(&facts).unwrap();
     assert!(
         !shown.contains(login.id()) && !shown.contains(PASSWORD),
         "{shown}"
@@ -167,45 +195,26 @@ async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
         json!({"uses": []})
     );
 
-    // Asked the same again, the one question stands; a "no" releases nothing.
-    assert!(matches!(
-        release(workspaces, &turn, &wanted).await,
-        Ok(TurnRelease::Waits)
-    ));
-    assert_eq!(
-        workspaces
-            .answer_use(&turn, &open.ask, &open.detail, UseAnswer::No)
-            .await,
-        Ok(None)
-    );
-    let open = asked(release(workspaces, &turn, &wanted).await);
-
-    // Allowed once: nothing is filled by the answer, and no leave is kept with the item.
-    assert_eq!(
-        workspaces
-            .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Once)
-            .await,
-        Ok(Some(json!({"allowed": "once", "site": SITE})))
-    );
+    // Asked the same again, it waits again; declined, nothing is released.
+    assert_eq!(asks(release(workspaces, &turn, &wanted).await), facts);
     assert_eq!(
         remembered(&service, workspace_id, hers, &login).await,
         json!({"uses": []})
     );
-    // Another agent of hers is still asked: the allow names one agent.
+    // Another agent of hers is still asked: the approve was for one call.
     let other = on_turn(&ada, &workspace, "other");
     let others = HostedTurn {
         caller: &other,
         ..turn
     };
-    let theirs = asked(release(workspaces, &others, &wanted).await);
-    workspaces.use_not_asked(&theirs);
+    asks(release(workspaces, &others, &wanted).await);
 
     // That agent's next fill there is released, for a password field, and written down.
-    let released = text(release(workspaces, &turn, &wanted).await);
-    assert_eq!(released.text(), PASSWORD);
-    assert_eq!(released.field(), PageField::Password);
-    assert_eq!(released.field().as_str(), "password");
-    let printed = format!("{released:?}");
+    let filled = text(released(workspaces, &turn, &wanted, &approved(&first, &workspace)).await);
+    assert_eq!(filled.text(), PASSWORD);
+    assert_eq!(filled.field(), PageField::Password);
+    assert_eq!(filled.field().as_str(), "password");
+    let printed = format!("{filled:?}");
     assert!(!printed.contains("horse"), "{printed}");
     let remembers = remembered(&service, workspace_id, hers, &login).await;
     assert_eq!(
@@ -218,13 +227,13 @@ async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     assert_eq!(remembers.get("always"), None, "once leaves no leave");
 
     // Once is once: the fill after it asks again.
-    asked(release(workspaces, &turn, &wanted).await);
+    asks(release(workspaces, &turn, &wanted).await);
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
     server.shutdown().await;
 }
 
-/// After "Always" that agent fills that item at that site without a question, each fill
-/// written down, until its person takes the leave back.
+/// With the grant "always" gives, that agent fills that item at that site without a question,
+/// each fill written down, until its person takes the leave back.
 #[tokio::test]
 async fn after_always_the_agent_fills_there_alone_until_the_leave_is_taken_back() {
     let dir = tempfile::tempdir().unwrap();
@@ -244,13 +253,8 @@ async fn after_always_the_agent_fills_there_alone_until_the_leave_is_taken_back(
     };
     let wanted = fill(SITE, &login);
 
-    let open = asked(release(workspaces, &turn, &wanted).await);
-    assert_eq!(
-        workspaces
-            .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Always)
-            .await,
-        Ok(Some(json!({"allowed": "always", "site": SITE})))
-    );
+    asks(release(workspaces, &turn, &wanted).await);
+    always_fill(workspaces, (&workspace, &owner, &ada), "scout", &login).await;
     let remembers = remembered(&service, workspace_id, hers, &login).await;
     assert_eq!(
         remembers["always"],
@@ -274,7 +278,6 @@ async fn after_always_the_agent_fills_there_alone_until_the_leave_is_taken_back(
             PASSWORD
         );
     }
-    assert!(workspaces.open_use_asks(&workspace).is_empty());
     let remembers = remembered(&service, workspace_id, hers, &login).await;
     assert_eq!(
         remembers["uses"].as_array().unwrap().len(),
@@ -304,7 +307,7 @@ async fn after_always_the_agent_fills_there_alone_until_the_leave_is_taken_back(
     .await
     .expect("she takes her leave back");
     assert_eq!(taken.get("always"), None, "{taken}");
-    asked(release(workspaces, &turn, &wanted).await);
+    asks(release(workspaces, &turn, &wanted).await);
     server.shutdown().await;
 }
 
@@ -346,13 +349,9 @@ async fn a_code_and_a_value_are_released_and_what_the_vault_refuses_asks_nobody(
 
     for (item, kind) in [(&generator, "code-generator"), (&number, "value")] {
         let wanted = fill(SITE, item);
-        let open = asked(release(workspaces, &turn, &wanted).await);
-        assert_eq!(open.detail["use"]["item"]["kind"], kind);
-        workspaces
-            .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Always)
-            .await
-            .expect("allowed always")
-            .expect("it says what was allowed");
+        let facts = asks(release(workspaces, &turn, &wanted).await);
+        assert_eq!(fact(&facts, "Item"), kind);
+        always_fill(workspaces, (&workspace, &owner, &ada), "scout", item).await;
     }
     let code = text(release(workspaces, &turn, &fill(SITE, &generator)).await);
     assert_eq!(code.field(), PageField::Code);
@@ -384,10 +383,6 @@ async fn a_code_and_a_value_are_released_and_what_the_vault_refuses_asks_nobody(
             "{why}: {reason}"
         );
     }
-    assert!(
-        workspaces.open_use_asks(&workspace).is_empty(),
-        "nobody was asked"
-    );
     server.shutdown().await;
 }
 
@@ -454,17 +449,13 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
             "{why}"
         );
     }
-    assert!(
-        workspaces.open_use_asks(&workspace).is_empty(),
-        "nobody was asked"
-    );
     let bound = vec![named(person_vault::FILL_PAGE)];
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
         bound: Some(&bound),
     };
-    asked(release(workspaces, &turn, &wanted).await);
+    asks(release(workspaces, &turn, &wanted).await);
 
     // Bob's ask of the same agent fills from the same workspace item, and is put to him.
     let bobs = on_turn(&bob, &workspace, "scout");
@@ -473,8 +464,11 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
         caller: &bobs,
         bound: None,
     };
-    let open = asked(release(workspaces, &his, &wanted).await);
-    assert_eq!(open.person, hex::encode(bob.user_public_key));
+    asks(release(workspaces, &his, &wanted).await);
+    assert_eq!(
+        tilo_actions::remote::asked::asked_person(&bobs),
+        Some(hex::encode(bob.user_public_key))
+    );
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
     server.shutdown().await;
 }

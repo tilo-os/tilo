@@ -2,8 +2,6 @@
 //! asking its person first by default; a key a person made for their own
 //! programs is that person, held to what they may.
 
-use std::sync::{Arc, Mutex};
-
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_action_policy::agent_answers::{self, AnswerScope};
@@ -12,42 +10,15 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_KIND,
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::super::tests::{admit, caller, governed, offered, request, settled};
+use super::super::tests::{
+    Answering, admit, answered, caller, governed, offered, request, settled,
+};
 use super::super::{ADD_MEMBER, ServiceWorkspaceActions};
 use crate::workspaces::tests::{governor, signed_pre_admission, test_host};
-use crate::workspaces::{AsksPeople, PersonAnswer, PreAdmitRequest, Workspaces};
+use crate::workspaces::{PreAdmitRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
-
-/// The person at their approving devices, answering every question with
-/// `answer`, and what they were asked.
-pub(crate) struct Person {
-    answer: ConfirmationAnswer,
-    asked: Mutex<Vec<PendingConfirmation>>,
-}
-
-impl Person {
-    pub(crate) fn answering(answer: ConfirmationAnswer) -> Arc<Self> {
-        Arc::new(Self {
-            answer,
-            asked: Mutex::default(),
-        })
-    }
-
-    pub(crate) fn asked(&self) -> Vec<PendingConfirmation> {
-        self.asked.lock().unwrap().clone()
-    }
-}
-
-impl AsksPeople for Person {
-    fn ask(&self, _person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
-        self.asked.lock().unwrap().push(question);
-        let answer = self.answer.clone();
-        Box::pin(async move { Ok(answer) })
-    }
-}
 
 /// The agent `claude` a device of `person`'s own was handed its session to.
 fn agent_of(person: &DeviceCert) -> Caller {
@@ -66,7 +37,32 @@ async fn demote(
         ADD_MEMBER,
         json!({"person": hex::encode(member.user_public_key), "role": "commenter"}),
     );
-    let receipt = settled(actions.in_workspace(workspace_id).invoke(caller, asked)).await?;
+    in_workspace(actions, workspace_id, caller, asked).await
+}
+
+/// `request` by `caller` over the workspace's own line, answered by its person where it waits
+/// for them and one answers ([`Answering`]): what it produced, or why not.
+async fn in_workspace(
+    actions: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    caller: &Caller,
+    request: tilo_actions::remote::InvokeRequest,
+) -> Result<Value, ActionCallError> {
+    let first = settled(
+        actions
+            .in_workspace(workspace_id)
+            .invoke(caller, request.clone()),
+    )
+    .await;
+    let workspaces = actions.shared.workspaces.get().unwrap();
+    let receipt = answered(
+        workspaces,
+        (Some(workspace_id), None),
+        caller,
+        &request,
+        first,
+    )
+    .await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
         other => panic!("governance completes: {other:?}"),
@@ -110,8 +106,7 @@ async fn an_agent_governs_as_its_grants_answer_and_asks_its_person_by_default() 
     let agent = agent_of(&owner);
 
     // An agent nobody handed a session to holds no grant here.
-    let allowing = Person::answering(ConfirmationAnswer::AllowOnce);
-    workspaces.ask_people(allowing.clone());
+    let allowing = Answering::approving();
     let stranger =
         Caller::delegated_agent("stranger", owner.user_public_key, owner.device_public_key);
     let refused = demote(&actions, here, &stranger, &ada).await;
@@ -122,14 +117,15 @@ async fn an_agent_governs_as_its_grants_answer_and_asks_its_person_by_default() 
     demote(&actions, here, &agent, &ada).await.unwrap();
     let asked = allowing.asked();
     assert_eq!(asked.len(), 1, "the person is asked once");
-    assert_eq!(asked[0].agent_id, "claude");
-    assert_eq!(asked[0].workspace, workspace_id.to_string());
-    // Their no changes nothing.
-    let declining = Person::answering(ConfirmationAnswer::Deny);
-    workspaces.ask_people(declining.clone());
+    assert!(
+        matches!(&asked[0].by, tilo_actions::remote::asked::AskedBy::Agent(named) if named.id == "claude"),
+        "{asked:?}"
+    );
+    // Their no admits nothing.
+    let declining = Answering::declining();
     let refused = demote(&actions, here, &agent, &ada).await;
     assert!(
-        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("did not allow")),
+        matches!(&refused, Err(ActionCallError::ConfirmationRequired(_))),
         "{refused:?}"
     );
 
@@ -321,8 +317,7 @@ async fn what_its_person_allows_under_agents_runs_unasked_within_their_account()
     let here = (workspace.as_str(), workspace_id);
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let agent = agent_of(&owner);
-    let declining = Person::answering(ConfirmationAnswer::Deny);
-    workspaces.ask_people(declining.clone());
+    let declining = Answering::declining();
     let make = || {
         let mut asked = request("", CREATE_WORKSPACE, json!({"name": "The agent's"}));
         asked.target = tilo_actions::remote::RemoteActionTarget {
@@ -338,7 +333,16 @@ async fn what_its_person_allows_under_agents_runs_unasked_within_their_account()
 
     // By default it asks its person first, who says no here.
     assert!(demote(&actions, here, &agent, &ada).await.is_err());
-    let refused = settled(in_workspace.invoke(&agent, make())).await;
+    let making = make();
+    let first = settled(in_workspace.invoke(&agent, making.clone())).await;
+    let refused = answered(
+        workspaces,
+        (Some(workspace_id), Some(&owner)),
+        &agent,
+        &making,
+        first,
+    )
+    .await;
     assert!(refused.is_err(), "{refused:?}");
     assert_eq!(declining.asked().len(), 2);
 
@@ -355,7 +359,16 @@ async fn what_its_person_allows_under_agents_runs_unasked_within_their_account()
     .await;
     demote(&actions, here, &agent, &ada).await.unwrap();
     set_under_agents(workspaces, &workspace, &owner, ACCOUNT_APP, "allow").await;
-    let created = settled(in_workspace.invoke(&agent, make())).await;
+    let making = make();
+    let first = settled(in_workspace.invoke(&agent, making.clone())).await;
+    let created = answered(
+        workspaces,
+        (Some(workspace_id), Some(&owner)),
+        &agent,
+        &making,
+        first,
+    )
+    .await;
     assert!(created.is_ok(), "{created:?}");
     assert_eq!(declining.asked().len(), 2, "allowed, nobody is asked");
     server.shutdown().await;
@@ -370,8 +383,7 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let allowing = Person::answering(ConfirmationAnswer::AllowOnce);
-    workspaces.ask_people(allowing.clone());
+    let allowing = Answering::approving();
 
     // Ada removes nobody herself, so her agent is refused before she is asked:
     // her yes would be refused after.
@@ -382,12 +394,7 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
             json!({"person": hex::encode(bo.user_public_key)}),
         )
     };
-    let refused = settled(
-        actions
-            .in_workspace(workspace_id)
-            .invoke(&agent_of(&ada), remove()),
-    )
-    .await;
+    let refused = in_workspace(&actions, workspace_id, &agent_of(&ada), remove()).await;
     assert!(refused.is_err(), "{refused:?}");
     assert!(allowing.asked().is_empty(), "{:?}", allowing.asked());
 
@@ -403,14 +410,8 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
         )
         .await
         .unwrap();
-    let refusing = Person::answering(ConfirmationAnswer::Deny);
-    workspaces.ask_people(refusing.clone());
-    let refused = settled(
-        actions
-            .in_workspace(workspace_id)
-            .invoke(&agent_of(&ada), remove()),
-    )
-    .await;
+    let refusing = Answering::declining();
+    let refused = in_workspace(&actions, workspace_id, &agent_of(&ada), remove()).await;
     assert!(refused.is_err(), "{refused:?}");
     assert_eq!(refusing.asked().len(), 1, "the administrator is asked");
     let members = workspaces.summary(&workspace).await.unwrap().members;
@@ -422,7 +423,7 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
     );
 
     // What passes her checks is hers to answer.
-    workspaces.ask_people(allowing.clone());
+    let allowing = Answering::approving();
     demote(&actions, (&workspace, workspace_id), &agent_of(&ada), &bo)
         .await
         .unwrap();

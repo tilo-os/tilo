@@ -8,10 +8,10 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::server_account::{self, Reason, ServerAccount};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvocationReceipt, InvokeRequest,
+    ReceiptStatus,
 };
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_server_protocol::certify::ConfirmationAnswer;
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_server_protocol::workspaces::{
     AdminRefusal, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER,
@@ -23,10 +23,22 @@ use tilo_user_identity::{
 };
 
 use super::super::ServiceWorkspaceActions;
-use super::super::agents::tests::Person;
-use super::super::tests::{caller, settled};
+use super::super::tests::{Answering, answered, caller, settled};
 use crate::workspaces::tests::{governor, guest_device, test_host};
 use crate::workspaces::{IssueInvitationRequest, OwnWorkspaceOffer, WaitListSecrets, Workspaces};
+
+/// `request` by `caller` on the connection `device` certified to the host, answered by its
+/// person where it waits for them and one answers ([`Answering`]).
+async fn on_host(
+    host: &ServiceWorkspaceActions,
+    device: &DeviceCert,
+    caller: &Caller,
+    request: InvokeRequest,
+) -> Result<InvocationReceipt, ActionCallError> {
+    let first = settled(host.as_host(device).invoke(caller, request.clone())).await;
+    let workspaces = host.shared.workspaces.get().unwrap();
+    answered(workspaces, (None, Some(device)), caller, &request, first).await
+}
 
 fn own_request(argument: Value) -> InvokeRequest {
     let mut request = super::super::tests::request("", CREATE_OWN_WORKSPACE, argument);
@@ -42,7 +54,7 @@ async fn invoke(
     device: &DeviceCert,
     request: InvokeRequest,
 ) -> Result<Value, ActionCallError> {
-    let receipt = settled(host.as_host(device).invoke(&caller(device), request)).await?;
+    let receipt = on_host(&host, device, &caller(device), request).await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
         other => panic!("a host operation completes at once: {other:?}"),
@@ -690,7 +702,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     // Its person allows what their agents ask of them.
-    workspaces.ask_people(Person::answering(ConfirmationAnswer::AllowOnce));
+    Answering::approving();
     let home = open(workspaces).await;
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -731,7 +743,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     // The grant asks as its session makes it: its person's agent.
     let agent =
         Caller::authenticated(all.user_public_key, all.device_public_key).delegated_to("grant");
-    let receipt = settled(host.as_host(&all).invoke(&agent, own_request(json!({}))))
+    let receipt = on_host(&host, &all, &agent, own_request(json!({})))
         .await
         .unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
@@ -763,7 +775,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     );
     // A key the grant mints for that workspace alone redeems the person's
     // invitation the grant asks for, as the grant did.
-    let again = settled(host.as_host(&all).invoke(&agent, own_request(json!({}))))
+    let again = on_host(&host, &all, &agent, own_request(json!({})))
         .await
         .unwrap();
     let ReceiptStatus::Completed { output } = again.status else {
@@ -789,9 +801,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     workspaces.create("Someone else's").await.unwrap();
     let mut list = own_request(json!({}));
     list.target.address.action = tilo_server_protocol::workspaces::LIST_WORKSPACES.into();
-    let listed = settled(host.as_host(&all).invoke(&agent, list))
-        .await
-        .unwrap();
+    let listed = on_host(&host, &all, &agent, list).await.unwrap();
     let ReceiptStatus::Completed { output } = listed.status else {
         panic!("the grant lists: {listed:?}");
     };
@@ -882,9 +892,7 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
     // A backend's key reads what its person's workspaces keep and ran.
     let agent =
         Caller::authenticated(all.user_public_key, all.device_public_key).delegated_to("grant");
-    let receipt = settled(host.as_host(&all).invoke(&agent, read()))
-        .await
-        .unwrap();
+    let receipt = on_host(&host, &all, &agent, read()).await.unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
         panic!("the grant reads its person's account: {receipt:?}");
     };
@@ -905,7 +913,7 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
     sign_device_cert(&mut consented, &root).unwrap();
     let assistant = Caller::authenticated(consented.user_public_key, consented.device_public_key)
         .delegated_to("assistant");
-    let refused = settled(host.as_host(&consented).invoke(&assistant, read())).await;
+    let refused = on_host(&host, &consented, &assistant, read()).await;
     assert!(
         matches!(refused, Err(ActionCallError::UnknownAction)),
         "{refused:?}"
@@ -923,7 +931,7 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
     sign_device_cert(&mut minted, &grant_key).unwrap();
     let narrow = Caller::authenticated(minted.user_public_key, minted.device_public_key)
         .delegated_to("minted");
-    let refused = settled(host.as_host(&minted).invoke(&narrow, read())).await;
+    let refused = on_host(&host, &minted, &narrow, read()).await;
     assert!(
         matches!(refused, Err(ActionCallError::UnknownAction)),
         "{refused:?}"
@@ -970,12 +978,9 @@ async fn own_as_key(
     cert: &DeviceCert,
     argument: Value,
 ) -> CreatedWorkspace {
-    let receipt = settled(
-        host.as_host(cert)
-            .invoke(&as_key(cert), own_request(argument)),
-    )
-    .await
-    .unwrap();
+    let receipt = on_host(&host, cert, &as_key(cert), own_request(argument))
+        .await
+        .unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
         panic!("the key's person's workspace is answered: {receipt:?}");
     };
@@ -991,9 +996,18 @@ async fn govern(
     argument: Value,
 ) -> Result<Value, ActionCallError> {
     let request = super::super::tests::request(&workspace.workspace, verb, argument);
-    let receipt = settled(
+    let key = as_key(cert);
+    let first = settled(
         host.in_workspace(workspace.workspace_id)
-            .invoke(&as_key(cert), request),
+            .invoke(&key, request.clone()),
+    )
+    .await;
+    let receipt = answered(
+        host.shared.workspaces.get().unwrap(),
+        (Some(workspace.workspace_id), None),
+        &key,
+        &request,
+        first,
     )
     .await?;
     match receipt.status {
@@ -1050,8 +1064,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let consented_key = SigningKey::from_bytes(&rand::random());
     let all = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
     let consented = certified(&ada, &consented_key, all);
-    let ada_asked = Person::answering(ConfirmationAnswer::AllowOnce);
-    workspaces.ask_people(ada_asked.clone());
+    let ada_asked = Answering::approving();
     let entering = own_as_key(&host, &consented, json!({"workspace": workspace.workspace})).await;
     join(workspaces, &entering, &consented).await;
     govern(
@@ -1479,7 +1492,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     // Its person allows what their agents ask of them.
-    workspaces.ask_people(Person::answering(ConfirmationAnswer::AllowOnce));
+    Answering::approving();
     let home = open(workspaces).await;
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -1509,11 +1522,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
         DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16])),
     );
     assert!(matches!(
-        settled(
-            host.as_host(&narrow)
-                .invoke(&as_key(&narrow), delete_request(&workspace))
-        )
-        .await,
+        on_host(&host, &narrow, &as_key(&narrow), delete_request(&workspace)).await,
         Err(ActionCallError::UnknownAction)
     ));
     // Nor does anyone else, who learns only that it is not theirs.
@@ -1526,12 +1535,9 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     assert!(record.exists(), "a refusal deletes nothing");
 
     // Its owner's key deletes it.
-    let receipt = settled(
-        host.as_host(&server)
-            .invoke(&as_key(&server), delete_request(&workspace)),
-    )
-    .await
-    .unwrap();
+    let receipt = on_host(&host, &server, &as_key(&server), delete_request(&workspace))
+        .await
+        .unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
         panic!("the owner deletes their workspace: {receipt:?}");
     };
@@ -1570,11 +1576,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     );
 
     // Deleting it again, or making it again under its identity, is refused.
-    let again = settled(
-        host.as_host(&server)
-            .invoke(&as_key(&server), delete_request(&workspace)),
-    )
-    .await;
+    let again = on_host(&host, &server, &as_key(&server), delete_request(&workspace)).await;
     assert!(
         matches!(&again, Err(ActionCallError::Refused { reason }) if AdminRefusal::from_reason(reason) == Some(AdminRefusal::NotYourOwn)),
         "{again:?}"
@@ -1757,7 +1759,7 @@ fn waits(result: &Result<impl std::fmt::Debug, ActionCallError>) {
 async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
     let (host, workspaces, _, stranger, _state) = held_host().await;
     // Its person allows what their agents ask of them.
-    workspaces.ask_people(Person::answering(ConfirmationAnswer::AllowOnce));
+    Answering::approving();
     waits(&create_own(&host, &stranger, json!({})).await);
     waits(&create_own(&host, &stranger, json!({"name": "Mine"})).await);
     let root = SigningKey::from_bytes(&rand::random());
@@ -1767,9 +1769,11 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
         DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
     );
     waits(
-        &settled(
-            host.as_host(&grant)
-                .invoke(&as_key(&grant), own_request(json!({"name": "Agent's"}))),
+        &on_host(
+            &host,
+            &grant,
+            &as_key(&grant),
+            own_request(json!({"name": "Agent's"})),
         )
         .await,
     );
@@ -1778,13 +1782,7 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
         &SigningKey::from_bytes(&rand::random()),
         DeviceCapabilities::server_key_grant(),
     );
-    waits(
-        &settled(
-            host.as_host(&server)
-                .invoke(&as_key(&server), own_request(json!({}))),
-        )
-        .await,
-    );
+    waits(&on_host(&host, &server, &as_key(&server), own_request(json!({}))).await);
     let mut keep = own_request(json!({"list": {"workspaces": []}}));
     keep.target.address.action = tilo_server_protocol::workspaces::KEEP_PERSONAL.into();
     waits(&invoke(&host, &stranger, keep).await);
@@ -1806,7 +1804,7 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
 async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
     let (host, workspaces, lounge, stranger, _state) = held_host().await;
     // Its person allows what their agents ask of them.
-    workspaces.ask_people(Person::answering(ConfirmationAnswer::AllowOnce));
+    Answering::approving();
     let root = SigningKey::from_bytes(&rand::random());
     let person = root.verifying_key().to_bytes();
     let page = certified(
@@ -1848,9 +1846,11 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
         &SigningKey::from_bytes(&rand::random()),
         DeviceCapabilities::agent_grant(AgentScope::Workspace(work)),
     );
-    let refused = settled(
-        host.as_host(&narrow)
-            .invoke(&as_key(&narrow), own_request(json!({"name": "Another"}))),
+    let refused = on_host(
+        &host,
+        &narrow,
+        &as_key(&narrow),
+        own_request(json!({"name": "Another"})),
     )
     .await;
     assert!(

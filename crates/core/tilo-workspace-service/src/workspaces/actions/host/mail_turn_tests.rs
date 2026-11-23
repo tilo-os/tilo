@@ -2,7 +2,7 @@
 //! turn reads, searches and drafts with no device behind it wherever the
 //! workspace's policy lets that member reach its mail; every other turn
 //! reaches nothing and is offered nothing; and a message a turn would send is
-//! set apart until its person answers, leaves as they were shown it, once,
+//! set apart until its person approves it, leaves as they were shown it, once,
 //! and is found again after the server stopped.
 
 #![allow(
@@ -17,21 +17,20 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
+use tilo_actions::remote::asked::{AskedFacts, asked_person};
 use tilo_actions::remote::person_accounts::{
     self, FetchedMail, FetchedMessage, FoundMail, MailAccounts, MailArrivals, StartedSend,
 };
-use tilo_actions::remote::person_asking::Words;
-use tilo_actions::remote::{ActionCallError, Caller};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{admit, governed};
 use super::accounts_tests::asking;
 use super::mail_assistant_tests::{lunch, lunch_with};
-use super::turn_use_tests::{not_hosted_turns, on_turn};
-use crate::workspaces::hosted_use::{AskedSend, HostedTurn, SEND_CARRIER, TurnMail};
+use super::turn_use_tests::{approved, asks, not_hosted_turns, on_turn};
+use crate::workspaces::hosted_use::HostedTurn;
 use crate::workspaces::mail_watch::testing::{Watched, keep};
-use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
 use crate::workspaces::tests::{governor, test_host as test_server};
 use crate::workspaces::{RemoveMemberRequest, WorkspaceId, Workspaces};
 
@@ -94,7 +93,7 @@ impl Mail {
         turn: &HostedTurn<'_>,
         action: &str,
         argument: Value,
-    ) -> Result<TurnMail, ActionCallError> {
+    ) -> Result<Value, ActionCallError> {
         self.workspaces
             .mail_for_turn(turn, &asking(action, argument))
             .await
@@ -108,34 +107,22 @@ impl Mail {
             .collect()
     }
 
-    /// `turn` begins `begun` and asks for it to be sent: what its person is
-    /// to be shown.
-    async fn sends(&self, turn: &HostedTurn<'_>, begun: Value) -> AskedSend {
+    /// `turn` begins `begun` and asks for it to be sent, which waits for its person: the
+    /// call, and what they are shown.
+    async fn sends(&self, turn: &HostedTurn<'_>, begun: Value) -> (InvokeRequest, AskedFacts) {
         let started: StartedSend = done(self.asks(turn, person_accounts::BEGIN_SEND, begun).await);
-        let sending = json!({"send": started.send});
-        asked(self.asks(turn, person_accounts::SEND, sending).await)
+        let sending = asking(person_accounts::SEND, json!({"send": started.send}));
+        let shown = asks(self.workspaces.mail_for_turn(turn, &sending).await);
+        (sending, shown)
     }
 
-    /// The ask a question about `asked` waits under, kept as whoever carries
-    /// out the turn keeps it and claimed as the one reader of its person's
-    /// answer claims it.
-    fn claimed(&self, asked: &AskedSend) -> KeptAsk {
-        let new = NewAsk {
-            workspace: self.workspace.clone(),
-            agent: SCOUT.to_owned(),
-            name: "Scout".to_owned(),
-            carrier: SEND_CARRIER.to_owned(),
-            kept: serde_json::to_value(asked).unwrap(),
-            always: None,
-            words: Words::default(),
-            asked_in: Value::Null,
-        };
-        let kept = self
-            .workspaces
-            .keep_ask(&self.ada.user_public_key, new)
-            .unwrap()
-            .expect("a new ask is kept");
-        self.workspaces.claim_ask(&kept.ask).unwrap()
+    /// `request` of `turn` again, as its person's approve admits it.
+    async fn approve(
+        &self,
+        turn: &HostedTurn<'_>,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        approve_in(&self.workspaces, turn, request).await
     }
 
     /// Remove Ada from the workspace as its owner does, so its policy no
@@ -164,20 +151,33 @@ impl Mail {
     }
 }
 
+/// `request` of `turn` in `workspaces` again, as its person's approve admits it.
+async fn approve_in(
+    workspaces: &Workspaces,
+    turn: &HostedTurn<'_>,
+    request: &InvokeRequest,
+) -> Result<Value, ActionCallError> {
+    workspaces
+        .mail_for_turn(turn, &approved(request, &turn.workspace.to_string()))
+        .await
+}
+
 /// What an answered request carries, read as `T`.
-fn done<T: serde::de::DeserializeOwned>(answer: Result<TurnMail, ActionCallError>) -> T {
+fn done<T: serde::de::DeserializeOwned>(answer: Result<Value, ActionCallError>) -> T {
     match answer {
-        Ok(TurnMail::Done(value)) => serde_json::from_value(value).expect("the answer reads"),
+        Ok(value) => serde_json::from_value(value).expect("the answer reads"),
         other => panic!("the turn is answered: {other:?}"),
     }
 }
 
-/// The message a send answered that its person is asked about.
-fn asked(answer: Result<TurnMail, ActionCallError>) -> AskedSend {
-    match answer {
-        Ok(TurnMail::Asks(asked)) => *asked,
-        other => panic!("its person is asked first: {other:?}"),
-    }
+/// What its person is shown of a send that waits for them, a row to a line.
+fn words(shown: &AskedFacts) -> String {
+    shown
+        .facts
+        .iter()
+        .map(|fact| format!("{}: {}", fact.label, fact.value))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// One message of the inbox, as a request to read it names it.
@@ -229,7 +229,7 @@ async fn a_members_turn_reads_searches_and_drafts() {
     let begun: StartedSend = done(mail.asks(&turn, person_accounts::BEGIN_SEND, lunch()).await);
     let keeping = json!({"send": begun.send});
     let kept = mail.asks(&turn, person_accounts::SAVE_DRAFT, keeping).await;
-    assert!(matches!(kept, Ok(TurnMail::Done(_))), "{kept:?}");
+    assert!(matches!(kept, Ok(_)), "{kept:?}");
     let asked = mail.servers.asked();
     for what in [
         "fetch ada@example.test inbox",
@@ -400,7 +400,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
     let mut bound = bound;
     bound.push(named(person_accounts::SEND, Answer::Allow));
     let turn = mail.turn(&sub, Some(&bound));
-    asked(mail.asks(&turn, person_accounts::SEND, sending).await);
+    asks(mail.asks(&turn, person_accounts::SEND, sending).await);
     assert!(
         mail.left().is_empty(),
         "a rule of its bound is no answer of its person's: it still asks"
@@ -448,10 +448,7 @@ async fn a_send_from_a_turn_is_set_apart_and_shows_its_person_everything() {
             "{why}: {refused:?}"
         );
         let kept = mail.asks(&turn, person_accounts::SAVE_DRAFT, sending).await;
-        assert!(
-            matches!(kept, Ok(TurnMail::Done(_))),
-            "{why}: it stays begun"
-        );
+        assert!(matches!(kept, Ok(_)), "{why}: it stays begun");
     }
     assert!(mail.left().is_empty(), "nothing left");
 
@@ -462,15 +459,13 @@ async fn a_send_from_a_turn_is_set_apart_and_shows_its_person_everything() {
     }));
     let started: StartedSend = done(mail.asks(&turn, person_accounts::BEGIN_SEND, begun).await);
     let sending = json!({"send": started.send});
-    let shown = asked(
+    let shown = asks(
         mail.asks(&turn, person_accounts::SEND, sending.clone())
             .await,
     );
-    assert_eq!(shown.send, started.send);
-    assert_eq!(shown.account, ACCOUNT);
-    assert_eq!(shown.person, asker);
-    assert_eq!(shown.workspace, mail.workspace_id.to_string());
-    let words = shown.words();
+    assert_eq!(shown.on.as_deref(), Some(ACCOUNT));
+    assert_eq!(asked_person(&scout), Some(asker));
+    let words = words(&shown);
     for line in [
         "From: ada@example.test",
         "Goes to: 3 addresses",
@@ -501,18 +496,13 @@ async fn a_send_from_a_turn_is_set_apart_and_shows_its_person_everything() {
             "{action}: {again:?}"
         );
     }
-    // The question could not be put: it is a begun one again.
-    mail.workspaces.send_not_asked(&shown);
-    let kept = mail.asks(&turn, person_accounts::SAVE_DRAFT, sending).await;
-    assert!(matches!(kept, Ok(TurnMail::Done(_))), "{kept:?}");
     assert!(mail.left().is_empty());
     server.shutdown().await;
 }
 
-/// On its person's answer the message that waited leaves as it was shown,
-/// once. An ask that is another person's, a question that showed something
-/// else, her "no", and the workspace no longer letting her send mail send
-/// nothing, and after each answer what waited is gone.
+/// On its person's approve the message that waited leaves as it was shown, once. A message
+/// written anew after it was shown, a send nobody approved, and the workspace no longer
+/// letting her send mail send nothing, and after each approve what waited is gone.
 #[tokio::test]
 async fn only_what_its_person_was_shown_leaves_and_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -521,65 +511,55 @@ async fn only_what_its_person_was_shown_leaves_and_once() {
     let mail = Mail::on(server.workspaces(), &owner).await;
     let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
     let turn = mail.turn(&scout, None);
-    let workspaces = &mail.workspaces;
+    let root = mail
+        .workspaces
+        .workspace_root(&mail.workspace_id.to_string());
 
-    // Allowed: it leaves, and a second reader of the answer finds nothing.
-    let shown = mail.sends(&turn, lunch()).await;
-    let claimed = mail.claimed(&shown);
-    let anothers = KeptAsk {
-        person: "b0".repeat(32),
-        ..claimed.clone()
-    };
-    let not_hers = workspaces.send_asked(&anothers, true).await;
-    assert!(not_hers.is_err(), "{not_hers:?}");
-    assert!(mail.left().is_empty(), "another person's ask sends nothing");
-    let sent = workspaces.send_asked(&claimed, true).await;
-    assert!(matches!(sent, Ok(Some(_))), "{sent:?}");
+    // Approved: it leaves, and a second approve of the same call finds nothing.
+    let (sending, _) = mail.sends(&turn, lunch()).await;
+    let sent = mail.approve(&turn, &sending).await;
+    assert!(sent.is_ok(), "{sent:?}");
     assert_eq!(mail.left(), [LUNCH_LEFT]);
-    let twice = workspaces.send_asked(&claimed, true).await;
+    let twice = mail.approve(&turn, &sending).await;
     assert!(twice.is_err(), "{twice:?}");
-    workspaces.forget_ask(&claimed);
 
-    // A question that showed something else than what waits sends nothing.
-    let shown = mail.sends(&turn, lunch()).await;
-    let mut other = shown.clone();
-    other.rows.retain(|(_, value)| value != "bo@example.test");
-    let claimed = mail.claimed(&other);
-    let refused = workspaces.send_asked(&claimed, true).await;
+    // A message written anew where it waits is not what was shown, and sends nothing.
+    let (sending, _) = mail.sends(&turn, lunch()).await;
+    let waiting = std::fs::read_dir(root.join("asked-sends").join(mail.workspace_id.to_string()))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path().join("meta.json"))
+        .find(|meta| meta.is_file())
+        .expect("the message waits");
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&waiting).unwrap()).unwrap();
+    kept["message"]["to"] = json!("eve@elsewhere.test");
+    std::fs::write(&waiting, serde_json::to_vec(&kept).unwrap()).unwrap();
+    let refused = mail.approve(&turn, &sending).await;
     assert!(
-        matches!(&refused, Err(why) if why.contains("not what you were shown")),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("not what you were shown")),
         "{refused:?}"
     );
-    workspaces.forget_ask(&claimed);
-    let gone = workspaces.send_asked(&mail.claimed(&shown), true).await;
+    let gone = mail.approve(&turn, &sending).await;
     assert!(
         gone.is_err(),
-        "what waited is gone with the answer: {gone:?}"
+        "what waited is gone with the approve: {gone:?}"
     );
 
-    // Her "no".
-    let shown = mail.sends(&turn, lunch()).await;
-    let claimed = mail.claimed(&shown);
-    assert_eq!(workspaces.send_asked(&claimed, false).await, Ok(None));
-    let after = workspaces.send_asked(&claimed, true).await;
-    assert!(after.is_err(), "{after:?}");
+    // Nobody approved it: it waits, and nothing leaves.
+    mail.sends(&turn, lunch()).await;
 
     // The workspace stopped letting her send while the question waited.
-    let shown = mail.sends(&turn, lunch()).await;
+    let (sending, _) = mail.sends(&turn, lunch()).await;
     mail.remove_ada().await;
-    let refused = workspaces.send_asked(&mail.claimed(&shown), true).await;
-    assert!(
-        matches!(&refused, Err(why) if why.contains("no longer send mail")),
-        "{refused:?}"
-    );
+    let refused = mail.approve(&turn, &sending).await;
+    assert!(refused.is_err(), "{refused:?}");
 
     assert_eq!(mail.left(), [LUNCH_LEFT], "one message left, once");
     server.shutdown().await;
 }
 
-/// A message set apart and the ask it waits under are found again after the
-/// server stopped: on its person's answer it leaves once, and nobody claims
-/// the answer or sends the message a second time.
+/// A message set apart is found again after the server stopped: on its person's approve it
+/// leaves once, and a second approve sends nothing.
 #[tokio::test]
 async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     let dir = tempfile::tempdir().unwrap();
@@ -591,21 +571,8 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
             .await;
     let mail = Mail::on(server.workspaces(), &owner).await;
     let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
-    let turn = mail.turn(&scout, None);
-    let shown = mail.sends(&turn, lunch()).await;
-    let new = NewAsk {
-        workspace: mail.workspace.clone(),
-        agent: SCOUT.to_owned(),
-        name: "Scout".to_owned(),
-        carrier: SEND_CARRIER.to_owned(),
-        kept: serde_json::to_value(&shown).unwrap(),
-        always: None,
-        words: Words::default(),
-        asked_in: Value::Null,
-    };
-    let person = mail.ada.user_public_key;
-    let kept = mail.workspaces.keep_ask(&person, new).unwrap().unwrap();
-    let workspace = mail.workspace.clone();
+    let (sending, _) = mail.sends(&mail.turn(&scout, None), lunch()).await;
+    let workspace_id = mail.workspace_id;
     assert!(mail.left().is_empty());
     drop(mail);
 
@@ -615,17 +582,16 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     let workspaces = server.workspaces();
     let servers = Arc::new(Watched::answering());
     workspaces.carry_mail_through(servers.clone());
-    let open = workspaces.open_asks(&workspace);
-    assert_eq!(open.len(), 1, "the ask is found again: {open:?}");
-    assert_eq!(open[0].ask, kept.ask);
-    assert_eq!(open[0].carrier, SEND_CARRIER);
-    let claimed = workspaces.claim_ask(&kept.ask).unwrap();
-    let sent = workspaces.send_asked(&claimed, true).await;
-    assert!(matches!(sent, Ok(Some(_))), "{sent:?}");
+    let turn = HostedTurn {
+        workspace: workspace_id,
+        caller: &scout,
+        bound: None,
+    };
+    let sent = approve_in(workspaces, &turn, &sending).await;
+    assert!(sent.is_ok(), "{sent:?}");
     assert_eq!(servers.asked(), [LUNCH_LEFT]);
 
-    assert!(workspaces.claim_ask(&kept.ask).is_err(), "claimed once");
-    let twice = workspaces.send_asked(&claimed, true).await;
+    let twice = approve_in(workspaces, &turn, &sending).await;
     assert!(twice.is_err(), "{twice:?}");
     assert_eq!(servers.asked(), [LUNCH_LEFT], "nothing leaves twice");
     server.shutdown().await;

@@ -30,6 +30,102 @@ use crate::workspaces::tests::{
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
+/// `request` again, as its person's approve of it in `workspace` admits it: what only the
+/// dispatch hands a provider, once their approve of the call's asked record admits it again.
+pub(crate) fn approved(request: &InvokeRequest, workspace: &str) -> InvokeRequest {
+    use tilo_actions::remote::Confirmation;
+    use tilo_actions::remote::asked::{Approval, RecordRef};
+    let mut again = request.clone();
+    again.confirmation = Some(Confirmation::Asked(Approval {
+        record: RecordRef {
+            workspace: workspace.to_owned(),
+            record: request.invocation.0.to_string(),
+        },
+        choice: None,
+    }));
+    again
+}
+
+thread_local! {
+    /// The person a test's calls wait for, where one answers ([`Answering`]).
+    static ANSWERING: std::cell::RefCell<Option<std::sync::Arc<Answering>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The person the calls of a test wait for, answering every one the same way from the moment
+/// they are made, and what they were shown.
+pub(crate) struct Answering {
+    approves: bool,
+    asked: std::sync::Mutex<Vec<tilo_actions::remote::asked::AskedFacts>>,
+}
+
+impl Answering {
+    /// From now on in this test, the person approves every call that waits for them.
+    pub(crate) fn approving() -> std::sync::Arc<Self> {
+        Self::answering(true)
+    }
+
+    /// From now on in this test, the person declines every call that waits for them.
+    pub(crate) fn declining() -> std::sync::Arc<Self> {
+        Self::answering(false)
+    }
+
+    fn answering(approves: bool) -> std::sync::Arc<Self> {
+        let answering = std::sync::Arc::new(Self {
+            approves,
+            asked: std::sync::Mutex::default(),
+        });
+        ANSWERING.set(Some(std::sync::Arc::clone(&answering)));
+        answering
+    }
+
+    /// What they were shown, call by call.
+    pub(crate) fn asked(&self) -> Vec<tilo_actions::remote::asked::AskedFacts> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+/// `first`, the answer to `request` by `caller` on the connection `certificate` certified (to
+/// the workspace `workspace_id`, or to the host), as the person it waits for answers it, where
+/// it waits for one and a person answers ([`Answering`]): approved, what the same call answers
+/// as their approve admits it again; declined, it is admitted no more.
+pub(crate) async fn answered(
+    workspaces: &Workspaces,
+    (workspace_id, certificate): (Option<WorkspaceId>, Option<&DeviceCert>),
+    caller: &Caller,
+    request: &InvokeRequest,
+    first: Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
+) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
+    let Err(ActionCallError::ConfirmationRequired(facts)) = &first else {
+        return first;
+    };
+    let Some(answering) = ANSWERING.with_borrow(Clone::clone) else {
+        return first;
+    };
+    answering.asked.lock().unwrap().push((**facts).clone());
+    if !answering.approves {
+        return first;
+    }
+    let workspace = workspace_id.map(|id| id.to_string()).unwrap_or_default();
+    let value = workspaces
+        .invoke(
+            workspace_id,
+            caller,
+            certificate,
+            &approved(request, &workspace),
+        )
+        .await?;
+    Ok(tilo_actions::remote::InvocationReceipt {
+        invocation: request.invocation,
+        status: ReceiptStatus::Completed {
+            output: tilo_actions::ActionOutput {
+                value: Some(value),
+                ..tilo_actions::ActionOutput::default()
+            },
+        },
+    })
+}
+
 /// What a pending answer comes to, on this runtime.
 pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
     let (sender, receiver) = tokio::sync::oneshot::channel();

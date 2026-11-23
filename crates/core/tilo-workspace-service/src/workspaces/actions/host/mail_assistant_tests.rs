@@ -18,23 +18,24 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tilo_action_policy::turn::Turn;
+use tilo_actions::remote::asked::{AskedFacts, asked_person};
 use tilo_actions::remote::person_accounts::{
     self, FetchedMail, FetchedMessage, FoundMail, MailAccounts, MailArrivals, StartedSend,
 };
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CatalogueQuery, ReceiptStatus,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::asking;
+use super::turn_use_tests::{approved, asked_by, asks, fact};
+use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost;
 use crate::workspaces::mail_watch::testing::{Watched, keep};
 use crate::workspaces::tests::{governor, test_host};
-use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 const ACCOUNT: &str = "ada@example.test";
 const ASSISTANT: &str = "assistant";
@@ -114,6 +115,52 @@ impl Setup {
     ) -> Result<Value, ActionCallError> {
         asked_of(&self.page(), caller, action, argument).await
     }
+
+    /// `action` asked by `caller` over Ada's page, which waits for its person's yes: the call,
+    /// and what she is shown.
+    async fn asks(
+        &self,
+        caller: &Caller,
+        action: &str,
+        argument: Value,
+    ) -> (InvokeRequest, AskedFacts) {
+        let request = asking(action, argument);
+        let facts = asks(answered(&self.page(), caller, &request).await);
+        (request, facts)
+    }
+
+    /// `request` by `caller` again, as Ada's approve of it admits it.
+    async fn approve(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        self.workspaces
+            .invoke(
+                Some(self.workspace_id),
+                caller,
+                Some(&self.device),
+                &approved(request, &self.workspace_id.to_string()),
+            )
+            .await
+    }
+
+    /// `action` asked by `caller` over Ada's page and, where it waits for her yes, approved
+    /// by her: what it answered, and what she was shown.
+    async fn allowed(
+        &self,
+        caller: &Caller,
+        action: &str,
+        argument: Value,
+    ) -> (Result<Value, ActionCallError>, Option<AskedFacts>) {
+        let request = asking(action, argument);
+        match answered(&self.page(), caller, &request).await {
+            Err(ActionCallError::ConfirmationRequired(facts)) => {
+                (self.approve(caller, &request).await, Some(*facts))
+            }
+            answer => (answer, None),
+        }
+    }
 }
 
 /// What `caller` is answered when it asks `action` of `page`, or why not.
@@ -123,7 +170,16 @@ pub(super) async fn asked_of(
     action: &str,
     argument: Value,
 ) -> Result<Value, ActionCallError> {
-    let receipt = settled(page.invoke(caller, asking(action, argument))).await?;
+    answered(page, caller, &asking(action, argument)).await
+}
+
+/// `request` asked by `caller` over `page`, answered at once.
+async fn answered(
+    page: &(impl ActionProvider + Sync),
+    caller: &Caller,
+    request: &InvokeRequest,
+) -> Result<Value, ActionCallError> {
+    let receipt = settled(page.invoke(caller, request.clone())).await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
         other => panic!("the host answers at once, not {other:?}"),
@@ -189,38 +245,6 @@ async fn send_lunch(
         json!({"send": begun.send}),
     )
     .await
-}
-
-/// A person who answers every question one way, or not at all, and what
-/// they were asked.
-struct Asked {
-    answer: Option<ConfirmationAnswer>,
-    questions: Mutex<Vec<([u8; 32], PendingConfirmation)>>,
-}
-
-impl Asked {
-    fn answering(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
-        Arc::new(Self {
-            answer,
-            questions: Mutex::default(),
-        })
-    }
-
-    /// How many questions the person was put.
-    fn count(&self) -> usize {
-        self.questions.lock().unwrap().len()
-    }
-}
-
-impl AsksPeople for Asked {
-    fn ask(&self, person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
-        self.questions.lock().unwrap().push((person, question));
-        let answer = self
-            .answer
-            .clone()
-            .ok_or_else(|| "nobody answered".to_owned());
-        Box::pin(async move { answer })
-    }
 }
 
 /// `caller` lists and fetches the workspace's one account over `page`.
@@ -308,20 +332,10 @@ async fn a_members_agent_reads_and_searches_and_its_changes_ask_first() {
             .await,
     );
     let keeping = json!({"send": begun.send});
-    let unasked = setup
-        .ask(&agent, person_accounts::SAVE_DRAFT, keeping.clone())
+    let (draft, _) = setup
+        .asks(&agent, person_accounts::SAVE_DRAFT, keeping)
         .await;
-    assert!(
-        matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
-        "a draft with nobody to ask through: {unasked:?}"
-    );
-    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-    setup.workspaces.ask_people(allowing.clone());
-    setup
-        .ask(&agent, person_accounts::SAVE_DRAFT, keeping)
-        .await
-        .unwrap();
-    assert_eq!(allowing.count(), 1, "she was asked about the draft");
+    setup.approve(&agent, &draft).await.unwrap();
 
     // In a turn this host runs for her: her agent, certified by a device of hers.
     let in_turn = Caller::delegated_agent(
@@ -346,82 +360,58 @@ async fn a_members_agent_reads_and_searches_and_its_changes_ask_first() {
             "fetch ada@example.test sent",
         ]
     );
-    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
-    setup.workspaces.ask_people(refusing.clone());
+    // Each change waits for her, and nothing of one is done until she approves it.
     for action in CHANGES {
-        let refused = setup.ask(&agent, action, message.clone()).await;
-        assert!(
-            matches!(refused, Err(ActionCallError::Refused { .. })),
-            "{action}: {refused:?}"
-        );
+        setup.asks(&agent, action, message.clone()).await;
     }
-    assert_eq!(refusing.count(), CHANGES.len(), "each change asked her");
+    assert_eq!(setup.servers.asked().len(), 5, "no change was made");
 }
 
-/// Sending still asks. A message the person's assistant would send is put
-/// to its person first: with nobody to ask through, or no answer, their
-/// confirmation is still wanted and nothing leaves; a refusal sends
-/// nothing; and only their allowing it sends the message, once. The person
-/// sending their own message is asked nothing.
+/// Sending still asks. A message the person's assistant would send waits for its person,
+/// showing them who it goes to and what it says; nothing leaves until they approve it, and
+/// then it leaves once. The person sending their own message is asked nothing.
 #[tokio::test]
 async fn a_message_the_assistant_would_send_waits_for_its_person() {
     let setup = Setup::new().await;
     let page = setup.page();
     let agent = setup.agent(ASSISTANT);
 
-    let unasked = send_lunch(&page, &agent).await;
-    assert!(
-        matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
-        "with nobody to ask through: {unasked:?}"
+    let begun: StartedSend = read(
+        setup
+            .ask(&agent, person_accounts::BEGIN_SEND, lunch())
+            .await,
     );
-
-    let silent = Asked::answering(None);
-    setup.workspaces.ask_people(silent.clone());
-    let unanswered = send_lunch(&page, &agent).await;
-    assert!(
-        matches!(
-            unanswered,
-            Err(ActionCallError::ConfirmationRequired { .. })
-        ),
-        "with no answer: {unanswered:?}"
-    );
-    let (person, question) = silent.questions.lock().unwrap()[0].clone();
+    let (sending, question) = setup
+        .asks(&agent, person_accounts::SEND, json!({"send": begun.send}))
+        .await;
     assert_eq!(
-        person, setup.device.user_public_key,
+        asked_person(&agent),
+        Some(hex::encode(setup.device.user_public_key)),
         "her agent, her answer"
     );
-    assert_eq!(question.agent_id, ASSISTANT);
-    assert_eq!(question.action_label, "send this message");
-    assert_eq!(question.resource_label, ACCOUNT);
+    assert!(asked_by(&question, ASSISTANT, ASSISTANT), "{question:?}");
+    assert_eq!(question.verb, "send");
+    assert_eq!(question.on.as_deref(), Some(ACCOUNT));
     for (label, value) in [
         ("To", "bo@example.test"),
         ("Subject", "Lunch"),
         ("Message", "Friday at one works."),
     ] {
-        let shown = (label.to_owned(), value.to_owned());
-        assert!(question.arguments.contains(&shown), "{label} is shown");
+        assert_eq!(fact(&question, label), value, "{label} is shown");
     }
-
-    setup
-        .workspaces
-        .ask_people(Asked::answering(Some(ConfirmationAnswer::Deny)));
-    let denied = send_lunch(&page, &agent).await;
     assert!(
-        matches!(denied, Err(ActionCallError::Refused { .. })),
-        "{denied:?}"
+        setup.servers.asked().is_empty(),
+        "nothing leaves before she answers"
     );
-    assert!(setup.servers.asked().is_empty(), "nothing left unallowed");
 
-    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-    setup.workspaces.ask_people(allowing.clone());
-    send_lunch(&page, &agent).await.unwrap();
+    setup.approve(&agent, &sending).await.unwrap();
     let sent = "send ada@example.test to bo@example.test: Lunch";
     assert_eq!(setup.servers.asked(), [sent]);
-    assert_eq!(allowing.count(), 1, "one question for one message");
 
-    send_lunch(&page, &setup.ada()).await.unwrap();
+    send_lunch(&page, &setup.ada())
+        .await
+        .expect("her own message asks her nothing");
     assert_eq!(setup.servers.asked(), [sent, sent]);
-    assert_eq!(allowing.count(), 1, "her own message asks her nothing");
 }
 
 /// A workspace's mail is its members'. Somebody who is no member, and their
@@ -492,9 +482,6 @@ async fn the_persons_own_computer_connects_an_account_they_move_in() {
             "bos-password" => Ok("signed in".into()),
             _ => Err("IMAP server rejected the credential".into()),
         });
-    setup
-        .workspaces
-        .ask_people(Asked::answering(Some(ConfirmationAnswer::AllowOnce)));
     let own_computer = setup
         .ada()
         .delegated_to(tilo_actions::remote::device_agent_id(
@@ -513,21 +500,22 @@ async fn the_persons_own_computer_connects_an_account_they_move_in() {
         })
     };
 
-    let refused = setup
-        .ask(&own_computer, person_accounts::ADD_MAIL, adding("wrong"))
+    let (refused, _) = setup
+        .allowed(&own_computer, person_accounts::ADD_MAIL, adding("wrong"))
         .await;
     assert!(
         matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("rejected")),
         "{refused:?}"
     );
-    let added = setup
-        .ask(
+    let (added, asked) = setup
+        .allowed(
             &own_computer,
             person_accounts::ADD_MAIL,
             adding("bos-password"),
         )
-        .await
-        .unwrap();
+        .await;
+    assert!(asked.is_some(), "she is asked before it is kept");
+    let added = added.unwrap();
     assert_eq!(added["address"], "ada@lab.example.test", "{added}");
     let listed: MailAccounts = read(
         setup
@@ -553,8 +541,6 @@ async fn the_question_names_every_address_the_message_goes_to() {
     let setup = Setup::new().await;
     let page = setup.page();
     let agent = setup.agent(ASSISTANT);
-    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-    setup.workspaces.ask_people(allowing.clone());
 
     let unseen = "eve@elsewhere.test";
     let to = format!("bo@example.test,{}{unseen}", " ".repeat(700));
@@ -567,14 +553,11 @@ async fn the_question_names_every_address_the_message_goes_to() {
     }});
     let begun: StartedSend =
         read(asked_of(&page, &agent, person_accounts::BEGIN_SEND, message).await);
-    asked_of(
-        &page,
-        &agent,
-        person_accounts::SEND,
-        json!({"send": begun.send}),
-    )
-    .await
-    .expect("the person allowed what they were shown");
+    let (left, question) = setup
+        .allowed(&agent, person_accounts::SEND, json!({"send": begun.send}))
+        .await;
+    left.expect("the person allowed what they were shown");
+    let question = question.expect("she was asked");
 
     // The message left, addressed to both.
     let left = setup.servers.asked();
@@ -588,12 +571,10 @@ async fn the_question_names_every_address_the_message_goes_to() {
     );
 
     // What the person was shown before they allowed it.
-    assert_eq!(allowing.count(), 1);
-    let (_, question) = allowing.questions.lock().unwrap()[0].clone();
     let shown: Vec<(&str, &str)> = question
-        .arguments
+        .facts
         .iter()
-        .map(|(label, value)| (label.as_str(), value.trim_end()))
+        .map(|fact| (fact.label.as_str(), fact.value.trim_end()))
         .collect();
     assert!(
         shown.iter().any(|(_, value)| value.contains(unseen)),
@@ -622,7 +603,8 @@ const LUNCH_LEFT: &str = "send ada@example.test to bo@example.test: Lunch";
 /// so what leaves is what the question let through.
 struct Sending {
     setup: Setup,
-    allowing: Arc<Asked>,
+    /// What she was shown, question by question.
+    shown: Mutex<Vec<AskedFacts>>,
 }
 
 impl Sending {
@@ -632,10 +614,10 @@ impl Sending {
     }
 
     async fn made() -> Self {
-        let setup = Setup::new().await;
-        let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-        setup.workspaces.ask_people(allowing.clone());
-        Self { setup, allowing }
+        Self {
+            setup: Setup::new().await,
+            shown: Mutex::default(),
+        }
     }
 
     /// Her assistant begins `begun`, answered the id it is sent by.
@@ -648,12 +630,21 @@ impl Sending {
         Ok(serde_json::from_value::<StartedSend>(started).unwrap().send)
     }
 
-    /// Her assistant asks for the message begun as `send` to be sent.
+    /// Her assistant asks for the message begun as `send` to be sent, which she approves
+    /// where it waits for her.
     async fn send_begun(&self, send: &str) -> Result<Value, Refusal> {
         let agent = self.setup.agent(ASSISTANT);
-        self.setup
-            .ask(&agent, person_accounts::SEND, json!({"send": send}))
-            .await
+        let (answer, shown) = self
+            .setup
+            .allowed(&agent, person_accounts::SEND, json!({"send": send}))
+            .await;
+        self.shown.lock().unwrap().extend(shown);
+        answer
+    }
+
+    /// How many questions she was put.
+    fn count(&self) -> usize {
+        self.shown.lock().unwrap().len()
     }
 
     /// Her assistant begins `begun` and asks for it to be sent.
@@ -665,13 +656,13 @@ impl Sending {
     /// The values of the rows called `label` in the question she was put
     /// last, in its order.
     fn rows(&self, label: &str) -> Vec<String> {
-        let questions = self.allowing.questions.lock().unwrap();
-        let (_, question) = questions.last().expect("she was asked");
+        let shown = self.shown.lock().unwrap();
+        let question = shown.last().expect("she was asked");
         question
-            .arguments
+            .facts
             .iter()
-            .filter(|(row, _)| row == label)
-            .map(|(_, value)| value.clone())
+            .filter(|fact| fact.label == label)
+            .map(|fact| fact.value.clone())
             .collect()
     }
 
@@ -686,7 +677,7 @@ impl Sending {
         let Err(Refusal::Refused { reason }) = answer else {
             panic!("{what} is refused, not {answer:?}");
         };
-        assert_eq!(self.allowing.count(), 0, "{what}: she is asked nothing");
+        assert_eq!(self.count(), 0, "{what}: she is asked nothing");
         let left = self.setup.servers.asked();
         assert!(left.is_empty(), "{what}: nothing leaves, not {left:?}");
         reason
@@ -915,7 +906,7 @@ async fn a_message_the_workspace_holds_leaves_once() {
     let sending = Sending::new().await;
     let begun = lunch_with(&json!({"messageId": "outbox-1@example.test"}));
     let first = sending.send(begun.clone()).await.expect("it leaves");
-    let asked = sending.allowing.count();
+    let asked = sending.count();
     let again = sending
         .send(begun)
         .await
@@ -927,7 +918,7 @@ async fn a_message_the_workspace_holds_leaves_once() {
         "the server is handed the message once"
     );
     assert_eq!(
-        sending.allowing.count(),
+        sending.count(),
         asked,
         "its person is not asked about a message that left"
     );
@@ -970,49 +961,38 @@ async fn files_and_an_invitation_are_named_once_they_are_whole() {
     assert_eq!(sending.setup.servers.asked(), [LUNCH_LEFT]);
 }
 
-/// A person who allows what they are asked while, before their answer is
-/// in, the begun message is written anew where it is kept.
-struct RewrittenMeanwhile {
-    sends: std::path::PathBuf,
-    to: &'static str,
-    asked: Mutex<Vec<PendingConfirmation>>,
-}
-
-impl AsksPeople for RewrittenMeanwhile {
-    fn ask(&self, _: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
-        self.asked.lock().unwrap().push(question);
-        for begun in std::fs::read_dir(&self.sends).unwrap().flatten() {
-            let meta = begun.path().join("meta.json");
-            let mut kept: Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
-            kept["message"]["to"] = json!(self.to);
-            kept["message"]["subject"] = json!("Plans");
-            std::fs::write(&meta, serde_json::to_vec(&kept).unwrap()).unwrap();
-        }
-        Box::pin(async { Ok(ConfirmationAnswer::AllowOnce) })
-    }
-}
-
-/// The message that leaves is the one that was shown: what is sent is what
-/// was read before the person was asked, never what the begun message says
-/// by the time their answer is in.
+/// What leaves is what its person was shown: a begun message written anew where it is kept,
+/// after they were asked and before their approve, leaves on that approve neither as it was
+/// shown nor as it was rewritten.
 #[tokio::test]
-async fn the_message_that_leaves_is_the_one_that_was_shown() {
+async fn a_message_written_anew_after_it_was_shown_does_not_leave() {
     let setup = Setup::new().await;
-    let rewriting = Arc::new(RewrittenMeanwhile {
-        sends: setup
-            .workspaces
-            .workspace_root(&setup.workspace_id.to_string())
-            .join("sends"),
-        to: "eve@elsewhere.test",
-        asked: Mutex::default(),
-    });
-    setup.workspaces.ask_people(rewriting.clone());
+    let agent = setup.agent(ASSISTANT);
+    let begun: StartedSend = read(
+        setup
+            .ask(&agent, person_accounts::BEGIN_SEND, lunch())
+            .await,
+    );
+    let (sending, question) = setup
+        .asks(&agent, person_accounts::SEND, json!({"send": begun.send}))
+        .await;
+    assert_eq!(fact(&question, "To"), "bo@example.test");
+    let sends = setup
+        .workspaces
+        .workspace_root(&setup.workspace_id.to_string())
+        .join("sends");
+    for begun in std::fs::read_dir(&sends).unwrap().flatten() {
+        let meta = begun.path().join("meta.json");
+        let mut kept: Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+        kept["message"]["to"] = json!("eve@elsewhere.test");
+        kept["message"]["subject"] = json!("Plans");
+        std::fs::write(&meta, serde_json::to_vec(&kept).unwrap()).unwrap();
+    }
 
-    send_lunch(&setup.page(), &setup.agent(ASSISTANT))
-        .await
-        .expect("she allowed what she was shown");
-    let asked = rewriting.asked.lock().unwrap();
-    let shown = ("To".to_owned(), "bo@example.test".to_owned());
-    assert!(asked[0].arguments.contains(&shown), "{:?}", asked[0]);
-    assert_eq!(setup.servers.asked(), [LUNCH_LEFT]);
+    let refused = setup.approve(&agent, &sending).await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("not what you were shown")),
+        "{refused:?}"
+    );
+    assert!(setup.servers.asked().is_empty(), "nothing left");
 }

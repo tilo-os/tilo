@@ -1,7 +1,8 @@
-//! A secret used by reference by a turn the server carries out itself: the turn is
-//! one it carries out or it is refused, the agent's own grants decide what it reaches, the first use asks its person, their
-//! "Always" lets that agent use that item there without asking, and they
-//! read that leave and take it back.
+//! A secret used by reference by a turn the server carries out itself: the turn is one it
+//! carries out or it is refused, the agent's own grants decide what it reaches, a use no grant
+//! covers waits for its person's yes and runs once on their approve, the grant their "always"
+//! gives lets that agent use that item there without asking, and they read that grant and take
+//! it back.
 
 #![allow(
     clippy::unwrap_used,
@@ -13,21 +14,22 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Level, Rule, TreePath};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::{
     self, InvalidRequest, NotPermitted, Refused, UnknownAction,
 };
-use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
+use tilo_actions::remote::asked::{Approval, AskedBy, AskedFacts, Named, RecordRef};
+use tilo_actions::remote::{
+    Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+};
 use tilo_actions::remote::{person_accounts, person_models, person_vault};
 use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{admit, caller, governed};
 use super::vault_tests::{a_provider, ask, ask_at, files_holding, kept_item};
 use crate::workspaces::fixtures::test_host;
-use crate::workspaces::hosted_use::{
-    CARRIED_OUT, HostedTurn, NOTHING_WAITS, OpenAsk, TurnUse, UseAnswer,
-};
+use crate::workspaces::hosted_use::HostedTurn;
 use crate::workspaces::tests::governor;
 use crate::workspaces::{WorkspaceId, Workspaces};
 
@@ -136,18 +138,71 @@ async fn remembered(
     .expect("a person reads what their item remembers")
 }
 
-/// The ask a use answered with, when it asked.
-pub(super) fn asked(taken: Result<TurnUse, ActionCallError>) -> OpenAsk {
+/// What `taken` shows its person, where it waits for their yes.
+pub(super) fn asks<T: std::fmt::Debug>(taken: Result<T, ActionCallError>) -> AskedFacts {
     match taken {
-        Ok(TurnUse::Asks(open)) => *open,
-        other => panic!("the person is asked first: {other:?}"),
+        Err(ActionCallError::ConfirmationRequired(facts)) => *facts,
+        other => panic!("it waits for its person's yes: {other:?}"),
     }
 }
 
-/// The first use of an item by a turn the server carries out asks its person and
-/// uses nothing. What is kept for the question holds the reference and no
-/// secret, the same use asked again does not ask twice, and a question
-/// that shows something else than the server asked, or a "no", uses nothing.
+pub(super) use super::super::tests::approved;
+
+/// Whether `facts` name the agent `id`, known to its person as `name`, as who asks.
+pub(super) fn asked_by(facts: &AskedFacts, id: &str, name: &str) -> bool {
+    matches!(&facts.by, AskedBy::Agent(Named { id: by, name: called }) if by == id && called == name)
+}
+
+/// The fact `facts` show under `label`.
+pub(super) fn fact<'a>(facts: &'a AskedFacts, label: &str) -> &'a str {
+    facts
+        .facts
+        .iter()
+        .find(|fact| fact.label == label)
+        .map_or_else(
+            || panic!("no {label} among {facts:?}"),
+            |fact| fact.value.as_str(),
+        )
+}
+
+/// The grant `ada`'s "always" gives `agent` for the use `target` makes of `item` at `places`,
+/// written in `workspace` by its owner `owner`: what the workspace then lets stand.
+pub(super) async fn always(
+    workspaces: &Workspaces,
+    (workspace, owner, ada): (&str, &DeviceCert, &DeviceCert),
+    agent: &str,
+    (target, item, places): (&RemoteActionTarget, &Value, &[&str]),
+) {
+    let id = item
+        .as_str()
+        .unwrap()
+        .trim_start_matches("vault.item:")
+        .to_owned();
+    let mut places = places.to_vec();
+    places.sort_unstable();
+    let node = TreePath::workspace(workspace)
+        .app(&target.provider)
+        .kind(person_vault::use_word(target))
+        .resource(format!("{id}/{}", json!(places)))
+        .action(&target.address.action);
+    let grant = Grant::new(
+        format!("test:always:{agent}:{id}"),
+        Grantee::agent(agent),
+        node,
+        KindSet::of(ActionKind::Outside),
+        Answer::Allow,
+        Grantee::person(hex::encode(ada.user_public_key)),
+    );
+    workspaces
+        .put_workspace_grants(workspace, owner, rand::random(), vec![grant])
+        .await
+        .unwrap();
+}
+
+/// The first use of an item by a turn the server carries out waits for its person and uses
+/// nothing. What they are shown names the agent, its reason, the item by its kind and where it
+/// goes, never the item's reference or its secret, and offers always; asked again, it waits
+/// again. A decline never admits the call again, so nothing is used.
 #[tokio::test]
 async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -161,7 +216,6 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     let login = a_mail_login(&service, workspace_id, hers).await;
     let proved = proving(workspaces);
     let scout = on_turn(&ada, &workspace, "scout");
-    let asker = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -170,25 +224,29 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     assert_eq!(workspaces.uses_offered(&turn).await.len(), 2);
 
     let adding = add_mail("ada@example.test", "imap.example.test", &login);
-    let open = asked(
-        workspaces
-            .use_for_turn(&turn, &adding, json!({"part": "p0"}))
-            .await,
-    );
-    assert_eq!(open.agent, "scout");
-    assert_eq!(open.name, "Scout");
-    assert_eq!(open.person, asker);
-    assert_eq!(open.workspace, workspace);
-    assert_eq!(open.reason, "You asked me to read your mail.");
-    assert_eq!(open.asked_in, json!({"part": "p0"}));
-    assert_eq!(open.detail["use"]["ask"], json!(open.ask));
+    let facts = asks(workspaces.use_for_turn(&turn, &adding).await);
+    assert!(asked_by(&facts, "scout", "Scout"), "{facts:?}");
     assert_eq!(
-        open.detail["use"]["item"],
-        json!({"kind": "login", "belongsTo": [IMAP, SMTP]})
+        tilo_actions::remote::asked::asked_person(&scout),
+        Some(hex::encode(ada.user_public_key)),
+        "it asks the person whose turn it is"
     );
-    // What the person is shown says where it signs in and withholds the item.
-    let shown = open.detail.to_string();
-    assert!(shown.contains("ada@example.test"), "{shown}");
+    assert_eq!(facts.words, "You asked me to read your mail.");
+    assert_eq!(fact(&facts, "Item"), "login");
+    assert_eq!(fact(&facts, "Goes to"), format!("{IMAP} {SMTP}"));
+    assert_eq!(
+        fact(&facts, "Account"),
+        "ada@example.test",
+        "where it signs in"
+    );
+    assert_eq!(facts.verb, MAIL_USE);
+    assert_eq!(
+        facts.plural.as_deref(),
+        Some("vault items"),
+        "always is offered"
+    );
+    // What the person is shown withholds the item.
+    let shown = serde_json::to_string(&facts).unwrap();
     let id = login.as_str().unwrap().trim_start_matches("vault.item:");
     assert!(!shown.contains(id) && !shown.contains(PASSWORD), "{shown}");
     assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
@@ -197,43 +255,11 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
         json!({"uses": []})
     );
 
-    // Asked the same again, the one question stands.
+    // Asked the same again, it waits again: the dispatch keeps one record per call.
     let again = add_mail("ada@example.test", "imap.example.test", &login);
-    assert_eq!(
-        workspaces.use_for_turn(&turn, &again, json!({})).await,
-        Ok(TurnUse::Waits)
-    );
-    assert_eq!(workspaces.open_use_asks(&workspace), vec![open.clone()]);
-    assert!(workspaces.open_use_asks("another-workspace").is_empty());
+    assert_eq!(asks(workspaces.use_for_turn(&turn, &again).await), facts);
 
-    // A question that shows something else than this server asked uses
-    // nothing, and the ask is spent with it.
-    let mut other = open.detail.clone();
-    other["use"]["item"]["belongsTo"] = json!(["imap://imap.attacker.example:993"]);
-    let refused = workspaces
-        .answer_use(&turn, &open.ask, &other, UseAnswer::Always)
-        .await;
-    assert!(
-        matches!(&refused, Err(Refused { reason }) if reason.contains("not the one this server asked")),
-        "{refused:?}"
-    );
-    let spent = workspaces
-        .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Once)
-        .await;
-    assert!(
-        matches!(&spent, Err(Refused { reason }) if reason.contains("Nothing waits")),
-        "{spent:?}"
-    );
-
-    // A "no" uses nothing either.
-    let open = asked(workspaces.use_for_turn(&turn, &adding, json!({})).await);
-    assert_eq!(
-        workspaces
-            .answer_use(&turn, &open.ask, &open.detail, UseAnswer::No)
-            .await,
-        Ok(None)
-    );
-    assert!(workspaces.open_use_asks(&workspace).is_empty());
+    // Declined, the call is never admitted again: nothing is used and no grant stands.
     assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
     let remembers = remembered(&service, workspace_id, hers, &login).await;
     assert_eq!(remembers, json!({"uses": []}), "no use and no leave");
@@ -241,9 +267,9 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     server.shutdown().await;
 }
 
-/// Allowed once, a use is made once: it signs in with what the item keeps,
-/// answers the account and never the password, is written down, and leaves
-/// no leave behind, so the next use asks again.
+/// Approved, a use is made once: it signs in with what the item keeps, answers the account
+/// and never the password, is written down, and leaves no leave behind, so the next use asks
+/// again. That an approve admits its call once is the asked store's (`asked_resolve`).
 #[tokio::test]
 async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
     let dir = tempfile::tempdir().unwrap();
@@ -265,23 +291,17 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
     let add = |address: &str| add_mail(address, "imap.example.test", &login);
 
     let wanted = add("ada@example.test");
-    let first = workspaces.use_for_turn(&turn, &wanted, json!({})).await;
-    let open = asked(first);
+    asks(workspaces.use_for_turn(&turn, &wanted).await);
     let account = workspaces
-        .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Once)
+        .use_for_turn(&turn, &approved(&wanted, &workspace))
         .await
-        .expect("allowed once, it is made")
-        .expect("it answers the account");
+        .expect("approved, it is made");
     assert_eq!(account["address"], "ada@example.test");
     assert!(!account.to_string().contains(PASSWORD), "{account}");
     assert_eq!(
         proved.lock().unwrap().clone(),
         vec![format!("ada@example.test with {PASSWORD}")]
     );
-    let twice = workspaces
-        .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Once)
-        .await;
-    assert!(matches!(twice, Err(Refused { .. })), "{twice:?}");
     let remembers = remembered(&service, workspace_id, hers, &login).await;
     assert_eq!(
         remembers["uses"].as_array().unwrap().len(),
@@ -295,8 +315,7 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
 
     // The next account asks again.
     let wanted = add("news@example.test");
-    let next = workspaces.use_for_turn(&turn, &wanted, json!({})).await;
-    asked(next);
+    asks(workspaces.use_for_turn(&turn, &wanted).await);
     assert_eq!(proved.lock().unwrap().len(), 1, "nothing more signed in");
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
     server.shutdown().await;
@@ -344,10 +363,10 @@ async fn she_alone_takes_the_leave_back(
     .expect("she takes the leave back")
 }
 
-/// After "Always" the same agent uses the same item at the same servers
-/// without asking, each use written down, while another agent of hers is
-/// still asked. The person reads the leave and takes it back from their own
-/// device, which no agent does, and then the next use asks again.
+/// With the grant "always" gives, the same agent uses the same item at the same servers
+/// without asking, each use written down, while another agent of hers is still asked. The
+/// person reads the leave and takes it back from their own device, which no agent does, and
+/// then the next use asks again.
 #[tokio::test]
 async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back() {
     let dir = tempfile::tempdir().unwrap();
@@ -368,15 +387,20 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
     };
     let add = |address: &str| add_mail(address, "imap.example.test", &login);
 
-    // "Always" writes the leave and makes the use.
+    // "Always" writes the leave, and the approved call is made.
     let wanted = add("news@example.test");
-    let first = workspaces.use_for_turn(&turn, &wanted, json!({})).await;
-    let open = asked(first);
+    asks(workspaces.use_for_turn(&turn, &wanted).await);
+    always(
+        workspaces,
+        (&workspace, &owner, &ada),
+        "scout",
+        (&wanted.target, &login, &[IMAP, SMTP]),
+    )
+    .await;
     workspaces
-        .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Always)
+        .use_for_turn(&turn, &approved(&wanted, &workspace))
         .await
-        .expect("allowed always, it is made")
-        .expect("it answers the account");
+        .expect("allowed always, it is made");
     let remembers = remembered(&service, workspace_id, hers, &login).await;
     assert_eq!(
         remembers["always"],
@@ -396,13 +420,12 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
     // From now on that agent uses that item there without a question, and
     // each use is written down.
     let second = workspaces
-        .use_for_turn(&turn, &add("work@example.test"), json!({}))
+        .use_for_turn(&turn, &add("work@example.test"))
         .await;
     assert!(
-        matches!(&second, Ok(TurnUse::Done(account)) if account["address"] == "work@example.test"),
+        matches!(&second, Ok(account) if account["address"] == "work@example.test"),
         "{second:?}"
     );
-    assert!(workspaces.open_use_asks(&workspace).is_empty());
     assert_eq!(proved.lock().unwrap().len(), 2);
     let remembers = remembered(&service, workspace_id, hers, &login).await;
     assert_eq!(
@@ -424,90 +447,15 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
         ..turn
     };
     let wanted = add("more@example.test");
-    let theirs = workspaces.use_for_turn(&others, &wanted, json!({})).await;
-    asked(theirs);
+    asks(workspaces.use_for_turn(&others, &wanted).await);
 
     // She takes the leave back, and then her agent is asked again.
     let taken = she_alone_takes_the_leave_back(&service, workspace_id, &ada, &login).await;
     assert_eq!(taken.get("always"), None, "{taken}");
     assert_eq!(taken["uses"].as_array().unwrap().len(), 2);
     let wanted = add("late@example.test");
-    let late = workspaces.use_for_turn(&turn, &wanted, json!({})).await;
-    asked(late);
+    asks(workspaces.use_for_turn(&turn, &wanted).await);
     assert_eq!(proved.lock().unwrap().len(), 2, "nothing more signed in");
-    assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
-    server.shutdown().await;
-}
-
-/// An answer is carried out by the one reader that claimed it. A server that
-/// stops while it carries one out finds the ask started when it is back:
-/// nobody claims it again, whoever carries out the agents' turns reads that it was
-/// interrupted, and nothing was signed in to.
-#[tokio::test]
-async fn an_answer_is_claimed_once_and_not_carried_out_again_after_the_server_stopped() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let as_ada = caller(&ada);
-    let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
-    let proved = proving(workspaces);
-    let scout = on_turn(&ada, &workspace, "scout");
-    let turn = HostedTurn {
-        workspace: workspace_id,
-        caller: &scout,
-        bound: None,
-    };
-    let adding = add_mail("ada@example.test", "imap.example.test", &login);
-    let open = asked(
-        workspaces
-            .use_for_turn(&turn, &adding, json!({"part": "p0"}))
-            .await,
-    );
-
-    let claimed = workspaces
-        .claim_use(&open.ask)
-        .expect("the first reader of the answer claims it");
-    assert!(claimed.started && !claimed.interrupted);
-    let second = workspaces.claim_use(&open.ask);
-    assert!(
-        matches!(&second, Err(Refused { reason }) if reason == CARRIED_OUT),
-        "{second:?}"
-    );
-    let unknown = workspaces.claim_use("0123456789abcdef0123456789abcdef");
-    assert!(
-        matches!(&unknown, Err(Refused { reason }) if reason == NOTHING_WAITS),
-        "{unknown:?}"
-    );
-    // While it is claimed, the same use asked again puts no second question.
-    assert_eq!(
-        workspaces.use_for_turn(&turn, &adding, json!({})).await,
-        Ok(TurnUse::Waits)
-    );
-
-    // The server stops before the claimed answer was carried out, and starts
-    // again on what it kept.
-    server.shutdown().await;
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let kept = workspaces.open_use_asks(&workspace);
-    assert_eq!(kept.len(), 1, "the ask is found again: {kept:?}");
-    assert_eq!(kept[0].ask, open.ask);
-    assert_eq!(kept[0].asked_in, json!({"part": "p0"}));
-    assert!(kept[0].started && kept[0].interrupted, "{:?}", kept[0]);
-    let again = workspaces.claim_use(&open.ask);
-    assert!(
-        matches!(&again, Err(Refused { reason }) if reason == CARRIED_OUT),
-        "nobody carries it out a second time: {again:?}"
-    );
-    workspaces.use_interrupted(&kept[0]);
-    assert!(workspaces.open_use_asks(&workspace).is_empty());
-    assert!(
-        proved.lock().unwrap().is_empty(),
-        "nothing was signed in to"
-    );
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
     server.shutdown().await;
 }
@@ -574,16 +522,12 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
             caller: &asks,
             bound: None,
         };
-        let refused = workspaces.use_for_turn(&turn, &adding, json!({})).await;
+        let refused = workspaces.use_for_turn(&turn, &adding).await;
         assert_eq!(refused, Err(UnknownAction), "{who}");
         assert!(workspaces.uses_offered(&turn).await.is_empty(), "{who}");
     }
 
     assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
-    assert!(
-        workspaces.open_use_asks(&workspace).is_empty(),
-        "nobody was asked"
-    );
 
     // The same agent, asked by Ada and by Bo, is offered the same uses and reaches the same
     // item: each ask is put to whoever asked.
@@ -607,18 +551,21 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
         workspaces.uses_offered(&hers).await,
         workspaces.uses_offered(&his).await
     );
-    let open = asked(workspaces.use_for_turn(&his, &adding, json!({})).await);
+    let facts = asks(workspaces.use_for_turn(&his, &adding).await);
     assert_eq!(
-        open.person, bo_id,
+        tilo_actions::remote::asked::asked_person(his.caller),
+        Some(bo_id),
         "the workspace's item asks whoever asked"
     );
-    assert_eq!(open.agent, "scout");
-    let open = asked(workspaces.use_for_turn(&hers, &adding, json!({})).await);
-    assert_eq!(open.person, ada_id);
-    assert_eq!(open.agent, "scout");
+    assert!(asked_by(&facts, "scout", "Scout"), "{facts:?}");
+    let facts = asks(workspaces.use_for_turn(&hers, &adding).await);
+    assert_eq!(
+        tilo_actions::remote::asked::asked_person(hers.caller),
+        Some(ada_id)
+    );
+    assert!(asked_by(&facts, "scout", "Scout"), "{facts:?}");
 
     assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
-    assert_eq!(workspaces.open_use_asks(&workspace).len(), 2);
     assert_eq!(
         remembered(&service, workspace_id, (&ada, &as_ada), &login).await,
         json!({"uses": []})
@@ -664,9 +611,7 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
         .await
         .unwrap();
     assert_eq!(
-        workspaces
-            .use_for_turn(&turn(&scout), &adding, json!({}))
-            .await,
+        workspaces.use_for_turn(&turn(&scout), &adding).await,
         Err(NotPermitted),
         "the agent is kept from the vault"
     );
@@ -675,14 +620,10 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
         remembered(&service, workspace_id, (&ada, &as_ada), &login).await["uses"].is_array(),
         "Ada still reads the item herself"
     );
-    let open = asked(
-        workspaces
-            .use_for_turn(&turn(&other), &adding, json!({}))
-            .await,
-    );
-    assert_eq!(
-        open.agent, "other",
-        "another agent is not held by the grant"
+    let facts = asks(workspaces.use_for_turn(&turn(&other), &adding).await);
+    assert!(
+        asked_by(&facts, "other", "Scout"),
+        "another agent is not held by the grant: {facts:?}"
     );
 
     workspaces
@@ -696,14 +637,10 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
         )
         .await
         .unwrap();
-    let open = asked(
-        workspaces
-            .use_for_turn(&turn(&scout), &adding, json!({}))
-            .await,
-    );
-    assert_eq!(
-        open.agent, "scout",
-        "without the grant the agent reaches the item"
+    let facts = asks(workspaces.use_for_turn(&turn(&scout), &adding).await);
+    assert!(
+        asked_by(&facts, "scout", "Scout"),
+        "without the grant the agent reaches the item: {facts:?}"
     );
     server.shutdown().await;
 }
@@ -767,17 +704,13 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
             caller: &scout,
             bound: Some(&bound),
         };
-        let refused = workspaces.use_for_turn(&turn, &adding, json!({})).await;
+        let refused = workspaces.use_for_turn(&turn, &adding).await;
         assert_eq!(refused, Err(NotPermitted), "{why}");
         assert!(
             workspaces.uses_offered(&turn).await.is_empty(),
             "{why}: it is not offered what it would be refused"
         );
     }
-    assert!(
-        workspaces.open_use_asks(&workspace).is_empty(),
-        "nobody was asked"
-    );
 
     let bound = vec![named(person_accounts::ADD_MAIL_WITH_ITEM, Answer::Allow)];
     let turn = HostedTurn {
@@ -787,7 +720,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
     };
     let offered = workspaces.uses_offered(&turn).await;
     assert_eq!(offered.len(), 1, "the one use its bound names");
-    asked(workspaces.use_for_turn(&turn, &adding, json!({})).await);
+    asks(workspaces.use_for_turn(&turn, &adding).await);
     assert!(
         proved.lock().unwrap().is_empty(),
         "a rule of its bound is no leave of its person's: it still asks"
@@ -841,7 +774,7 @@ async fn a_use_the_vault_refuses_asks_nobody() {
             "That item is not kept here",
         ),
     ] {
-        let refused = workspaces.use_for_turn(&turn, &asking, json!({})).await;
+        let refused = workspaces.use_for_turn(&turn, &asking).await;
         assert!(
             matches!(&refused, Err(Refused { reason }) if reason == words),
             "{words}: {refused:?}"
@@ -851,35 +784,31 @@ async fn a_use_the_vault_refuses_asks_nobody() {
         person_models::target(person_models::SET_KEY_FROM_ITEM),
         json!({"provider": provider, "key": login}),
     );
-    let wrong_kind = workspaces.use_for_turn(&turn, &as_key, json!({})).await;
+    let wrong_kind = workspaces.use_for_turn(&turn, &as_key).await;
     assert!(
         matches!(&wrong_kind, Err(Refused { .. })),
         "a login is no key: {wrong_kind:?}"
     );
     // A password typed where the reference belongs is refused unread.
     let typed = add_mail("ada@example.test", "imap.example.test", &json!(PASSWORD));
-    let unread = workspaces.use_for_turn(&turn, &typed, json!({})).await;
+    let unread = workspaces.use_for_turn(&turn, &typed).await;
     assert!(
         matches!(&unread, Err(InvalidRequest { reason }) if !reason.contains(PASSWORD)),
         "{unread:?}"
     );
     let other = request(person_accounts::target(person_accounts::LIST), json!({}));
     assert_eq!(
-        workspaces.use_for_turn(&turn, &other, json!({})).await,
+        workspaces.use_for_turn(&turn, &other).await,
         Err(UnknownAction),
         "only the uses by reference are taken here"
-    );
-    assert!(
-        workspaces.open_use_asks(&workspace).is_empty(),
-        "nobody was asked"
     );
     assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
     server.shutdown().await;
 }
 
-/// A provider's key goes the same way as a mail sign-in: asked for first,
-/// with the question saying which key and where, and after "Always" kept
-/// without a question, each use written down.
+/// A provider's key goes the same way as a mail sign-in: asked for first, with the question
+/// saying which key and where, and with the grant "always" gives kept without a question, each
+/// use written down.
 #[tokio::test]
 async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     let dir = tempfile::tempdir().unwrap();
@@ -911,20 +840,24 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
         )
     };
 
-    let open = asked(workspaces.use_for_turn(&turn, &keeping(), json!({})).await);
-    assert_eq!(
-        open.detail["use"]["item"],
-        json!({"kind": "key", "belongsTo": ["https://models.example"]})
-    );
+    let first = keeping();
+    let facts = asks(workspaces.use_for_turn(&turn, &first).await);
+    assert_eq!(fact(&facts, "Item"), "key");
+    assert_eq!(fact(&facts, "Goes to"), "https://models.example");
+    always(
+        workspaces,
+        (&workspace, &owner, &ada),
+        "scout",
+        (&first.target, &api_key, &["https://models.example"]),
+    )
+    .await;
     let view = workspaces
-        .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Always)
+        .use_for_turn(&turn, &approved(&first, &workspace))
         .await
-        .expect("allowed always, the key is kept")
-        .expect("it answers the provider");
+        .expect("allowed always, the key is kept");
     assert_eq!(view["configured"], json!(true), "{view}");
-    let alone = workspaces.use_for_turn(&turn, &keeping(), json!({})).await;
-    assert!(matches!(alone, Ok(TurnUse::Done(_))), "{alone:?}");
-    assert!(workspaces.open_use_asks(&workspace).is_empty());
+    let alone = workspaces.use_for_turn(&turn, &keeping()).await;
+    assert!(alone.is_ok(), "{alone:?}");
     let kept = ask_at(
         &service,
         workspace_id,

@@ -20,16 +20,15 @@ use tilo_actions::remote::{
     person_vault,
 };
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::ServiceWorkspaceActions;
-use super::tests::{admit, ask_own, caller, governed, request, settled};
+use super::tests::{Answering, admit, answered, ask_own, caller, governed, request, settled};
+use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::test_host;
 use crate::workspaces::person_model::scripted::{Reply, ScriptedProvider};
 use crate::workspaces::person_model::{Interaction, ModelRefusal};
 use crate::workspaces::tests::governor;
-use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 const ADA_KEY: &str = "sk-ada-linked-through-settings";
 const BO_KEY: &str = "sk-bo-linked-through-settings";
@@ -50,38 +49,6 @@ fn soon() -> tilo_clock::time::Instant {
     tilo_clock::now()
         .checked_add(tilo_test_env::hang_bound())
         .unwrap()
-}
-
-/// A person who answers every question one way, or not at all, and what
-/// they were asked.
-struct Asked {
-    answer: Option<ConfirmationAnswer>,
-    questions: Mutex<Vec<([u8; 32], PendingConfirmation)>>,
-}
-
-impl Asked {
-    fn answering(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
-        Arc::new(Self {
-            answer,
-            questions: Mutex::default(),
-        })
-    }
-
-    /// How many questions the person was put.
-    fn count(&self) -> usize {
-        self.questions.lock().unwrap().len()
-    }
-}
-
-impl AsksPeople for Asked {
-    fn ask(&self, person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
-        self.questions.lock().unwrap().push((person, question));
-        let answer = self
-            .answer
-            .clone()
-            .ok_or_else(|| "nobody answered".to_owned());
-        Box::pin(async move { answer })
-    }
 }
 
 /// The lines a subscriber wrote.
@@ -283,7 +250,16 @@ async fn ask_as(
     request.target = person_models::target(verb);
     let provider = host.in_workspace_as(workspace_id, device);
     let invocation = request.invocation;
-    let mut receipt = settled(provider.invoke(caller, request)).await?;
+    let first = settled(provider.invoke(caller, request.clone())).await;
+    let workspaces = host.shared.workspaces.get().unwrap();
+    let mut receipt = answered(
+        workspaces,
+        (Some(workspace_id), Some(device)),
+        caller,
+        &request,
+        first,
+    )
+    .await?;
     // An ask of the workspace's model is accepted, then followed until it
     // ends.
     if matches!(receipt.status, ReceiptStatus::Accepted) {
@@ -447,8 +423,7 @@ async fn her_yes_replaces_the_key(
     agent: &Caller,
     provider: &str,
 ) {
-    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-    workspaces.ask_people(allowing.clone());
+    let allowing = Answering::approving();
     let replaced = ask_as(
         host,
         workspace_id,
@@ -463,7 +438,7 @@ async fn her_yes_replaces_the_key(
     .expect("she allowed the change");
     assert_eq!(replaced["configured"], json!(true), "{replaced}");
     assert!(!replaced.to_string().contains(REPLACED_KEY));
-    assert_eq!(allowing.count(), 1, "one question for one change");
+    assert_eq!(allowing.asked().len(), 1, "one question for one change");
 }
 
 /// A member of another workspace and a device of nobody (`strangers`), a local agent
@@ -590,14 +565,19 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
             "{verb} with nobody to ask through: {unasked:?}"
         );
     }
-    workspaces.ask_people(Asked::answering(Some(ConfirmationAnswer::Deny)));
+    let refusing = Answering::declining();
     for (verb, argument) in changes() {
         let refused = ask_as(&host, workspace_id, &ada, &agent, (verb, argument)).await;
         assert!(
-            matches!(refused, Err(ActionCallError::Refused { .. })),
-            "{verb} she refused: {refused:?}"
+            matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
+            "{verb} she declined: {refused:?}"
         );
     }
+    assert_eq!(
+        refusing.asked().len(),
+        changes().len(),
+        "each change asked her"
+    );
     let hers = ask_own(&host, workspace_id, &ada, person_models::LIST, json!({}))
         .await
         .unwrap();
