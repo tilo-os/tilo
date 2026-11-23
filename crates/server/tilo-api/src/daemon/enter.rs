@@ -425,3 +425,121 @@ pub fn certify_refused(error: &tilo_actions::remote::ActionCallError) -> String 
             .to_owned(),
     }
 }
+
+/// Log this computer in at the server `host` names (the line it keeps in `web-host.json`), as
+/// the device whose key is `key` and whose certificate `cert` the person's root signed here: a
+/// computer that holds the root needs no ticket, since nobody else is asked to certify it. The
+/// server's own list of the person's workspaces names the one the login enters first (`asked`,
+/// else [`choose_workspace`]'s); the daemon serving the login then takes every other one of that
+/// list in as well, and answers the server's asks for the content it holds of them.
+///
+/// # Errors
+/// `host` names no address, the server is not reached or refuses this device, or it keeps no
+/// workspace of the person's (none called `asked`).
+pub async fn log_in_at(
+    key: &SigningKey,
+    cert: &tilo_user_identity::DeviceCert,
+    host: tilo_server_protocol::web::PageHost,
+    asked: Option<&str>,
+) -> Result<Device> {
+    let address: ServerAddress = host
+        .address
+        .ok_or_else(|| anyhow!("that server names no address to reach it at"))?
+        .into();
+    let host_origin = host
+        .origin
+        .clone()
+        .unwrap_or_else(|| format!("{IROH_ONLY}{}", address.endpoint_addr.id));
+    let device = Device {
+        site: host.origin.map_or_else(
+            || "https://tilo.sh/".to_owned(),
+            |origin| format!("{origin}/"),
+        ),
+        host_origin,
+        // Where the session starts, until the server's list names the workspace it enters.
+        workspace: tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key),
+        workspace_name: None,
+        // The person's own device: no agent's run.
+        agent: String::new(),
+        cert: cert.clone(),
+        server_cert: host.server_cert,
+        server_address: Some(address.clone()),
+    };
+    let signed = signed_over_iroh(&device, &address)?;
+    let session = Entered::connect(&signed, Arc::new(key.clone()));
+    let listed = async {
+        session.connected().await.map_err(|refusal| {
+            debug_why("dialing the server", &refusal);
+            anyhow!("{refusal}")
+        })?;
+        session
+            .personal_list(
+                &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                None,
+            )
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))
+    }
+    .await;
+    session.close();
+    let (workspace, name) = choose_workspace(&listed?.workspaces, asked)?;
+    Ok(Device {
+        workspace,
+        workspace_name: Some(name).filter(|name| !name.trim().is_empty()),
+        ..device
+    })
+}
+
+/// The workspace a held login enters: the one `asked` names (its id, or its name in any case),
+/// else the first the person made of their own, else the first they were let in to. A login names
+/// no workspace to have every one of the person's: the peer it starts gives each of the others a
+/// folder as well, so the one entered first is only where it starts.
+///
+/// # Errors
+/// `asked` names none of them, or there are none.
+pub fn choose_workspace(
+    listed: &[tilo_server_session::workspaces::PersonalWorkspace],
+    asked: Option<&str>,
+) -> Result<(String, String)> {
+    let pick = |found: &tilo_server_session::workspaces::PersonalWorkspace| {
+        (found.workspace.clone(), found.name.clone())
+    };
+    if let Some(asked) = asked.map(str::trim).filter(|asked| !asked.is_empty()) {
+        return listed
+            .iter()
+            .find(|found| {
+                found.workspace.eq_ignore_ascii_case(asked)
+                    || found.name.eq_ignore_ascii_case(asked)
+            })
+            .map(pick)
+            .ok_or_else(|| {
+                anyhow!(
+                    "You have no workspace called \"{asked}\" there; {}",
+                    names_of(listed)
+                )
+            });
+    }
+    let first = |own: bool| {
+        listed
+            .iter()
+            .filter(|found| !own || found.role.as_deref() == Some("owner"))
+            .min_by_key(|found| {
+                (
+                    found.made_at_ms.unwrap_or(i64::MAX),
+                    found.workspace.clone(),
+                )
+            })
+    };
+    first(true)
+        .or_else(|| first(false))
+        .map(pick)
+        .ok_or_else(|| anyhow!("You have no workspace there yet: make one in Tilo first."))
+}
+
+fn names_of(listed: &[tilo_server_session::workspaces::PersonalWorkspace]) -> String {
+    let names: Vec<_> = listed
+        .iter()
+        .map(|found| format!("\"{}\"", found.name))
+        .collect();
+    format!("yours are {}.", names.join(", "))
+}
