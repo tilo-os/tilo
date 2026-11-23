@@ -8,16 +8,20 @@
 )]
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use runtime_bundle::{
-    BUNDLE_MANIFEST_FILENAME, BuildOptions, BundleError, BundleManifest, Identity, PayloadCheck,
-    VerifyOptions, build_bundle_with, enable_bundle_verity, verify_bundle_verity_with,
+    BundleError, PayloadCheck, VerifyOptions, enable_bundle_verity, verify_bundle_verity_with,
     verify_bundle_with, verity,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_test_env::require_capability;
+
+mod common;
+use common::{
+    DYLIB, policy, read_manifest, replace_with_one_byte_changed, signed_bundle, write_manifest,
+};
 
 /// The payload-read assertion measures the whole process's reads, so the
 /// tests here, which all read files, run one at a time.
@@ -25,79 +29,6 @@ static READS: Mutex<()> = Mutex::new(());
 
 fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
     READS.lock_recover()
-}
-
-const DYLIB: &str = "lib/libruntime_dylib.so";
-
-struct Fixture {
-    _work: tempfile::TempDir,
-    bundle: PathBuf,
-    publisher: String,
-}
-
-/// A signed bundle under `parent` whose toolkit dylib is `dylib_size` bytes.
-fn signed_bundle(parent: &Path, dylib_size: usize, signed: bool) -> Fixture {
-    let work = tempfile::tempdir_in(parent).unwrap();
-    let host = work.path().join("host");
-    for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
-        let path = host.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, format!("STUB: {rel}\n")).unwrap();
-    }
-    let dylib = work.path().join("libruntime_dylib.so");
-    let bytes: Vec<u8> = (0..=250u8).cycle().take(dylib_size).collect();
-    fs::write(&dylib, bytes).unwrap();
-    let identity = Identity::generate();
-    let identity_path = work.path().join("id.json");
-    fs::write(&identity_path, identity.to_json_bytes()).unwrap();
-    let bundle = work.path().join("bundle");
-    build_bundle_with(
-        &bundle,
-        "2026.10",
-        &BuildOptions {
-            from: Some(&host),
-            arch: Some("x86_64"),
-            identity: signed.then_some(identity_path.as_path()),
-            extra_libs: &[dylib],
-            extra_bins: &[],
-        },
-    )
-    .unwrap();
-    Fixture {
-        _work: work,
-        bundle,
-        publisher: identity.public_key_hex(),
-    }
-}
-
-fn policy(publisher: &str) -> VerifyOptions {
-    VerifyOptions {
-        require_publisher: Some(publisher.to_string()),
-        require_signature: true,
-        require_arch: None,
-    }
-}
-
-fn read_manifest(bundle: &Path) -> BundleManifest {
-    toml::from_str(&fs::read_to_string(bundle.join(BUNDLE_MANIFEST_FILENAME)).unwrap()).unwrap()
-}
-
-fn write_manifest(bundle: &Path, manifest: &BundleManifest) {
-    fs::write(
-        bundle.join(BUNDLE_MANIFEST_FILENAME),
-        toml::to_string_pretty(manifest).unwrap(),
-    )
-    .unwrap();
-}
-
-/// Replace the file at `path` with the same bytes but one, as anyone who can
-/// write the per-user runtime directory can: the file itself may be immutable,
-/// its directory entry is not.
-fn replace_with_one_byte_changed(path: &Path) {
-    let mut bytes = fs::read(path).unwrap();
-    bytes[0] ^= 1;
-    fs::remove_file(path).unwrap();
-    fs::write(path, bytes).unwrap();
 }
 
 /// A temporary directory on a filesystem with fs-verity: under

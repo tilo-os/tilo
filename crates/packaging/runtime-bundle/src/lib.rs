@@ -2035,7 +2035,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-            matches!(err, BundleError::UnsupportedArch(_));
+            assert!(matches!(err, BundleError::UnsupportedArch(_)));
         }
 
         phase build_fails_when_no_sources_resolve;
@@ -2054,7 +2054,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-            matches!(err, BundleError::NoSources { .. });
+            assert!(matches!(err, BundleError::NoSources { .. }));
         }
 
         phase extra_libs_land_at_lib_root_and_are_hashed_and_verify;
@@ -2361,7 +2361,7 @@ mod tests {
             .unwrap();
             fs::write(out.path().join("lib/lib64/extra.so"), b"surprise").unwrap();
             let err = verify_bundle(out.path()).unwrap_err();
-            matches!(err, BundleError::FileUnlisted { .. });
+            assert!(matches!(err, BundleError::FileUnlisted { .. }));
         }
 
         phase metadata_verify_checks_shape_but_deliberately_not_content;
@@ -2494,7 +2494,7 @@ mod tests {
             fs::write(&bundle_toml, toml::to_string_pretty(&manifest).unwrap()).unwrap();
 
             let err = verify_bundle(out.path()).unwrap_err();
-            matches!(err, BundleError::BadSignature);
+            assert!(matches!(err, BundleError::BadSignature));
         }
 
         phase require_signature_refuses_unsigned_bundle;
@@ -2522,7 +2522,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-            matches!(err, BundleError::NotSigned);
+            assert!(matches!(err, BundleError::NotSigned));
         }
 
         phase signing_preimage_is_domain_separated;
