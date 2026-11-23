@@ -1,4 +1,3 @@
-use super::*;
 use crate::certified::{IntentRecord, now_ns};
 use crate::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, Role};
 use crate::join::{JoinBootstrap, JoinTransportRequest, TransportHint, VerifiedJoin};
