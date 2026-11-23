@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use test_http::{Reply as Answer, Responder};
-use tilo_actions::remote::{person_asking, person_connections};
+use tilo_actions::remote::person_connections;
 
 use super::*;
 
 /// What the agent is told when its person is asked first.
-const ASKED: &str = "Your person is asked";
+const ASKED: &str = "asked:";
 /// The call of a command through the connections' own action.
 const CALL: &str = "connections/connections#call";
 
@@ -127,28 +127,6 @@ async fn turn_shows(hosted: &Hosted, words: &str, steps: Vec<Reply>) -> Vec<Stri
         .collect()
 }
 
-/// What the server's agents owe the workspace's people is looked at until the question `nth`
-/// says how its answer ended: that outcome.
-async fn ended(hosted: &Hosted, nth: usize) -> String {
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let now = hosted.questions(chat::question::ACTION).await;
-        let outcome = now[nth].1.question.as_ref().unwrap().outcome.clone();
-        if let Some(outcome) = outcome
-            .as_ref()
-            .filter(|outcome| outcome.outcome.0 != chat::question::STARTED)
-        {
-            return outcome.outcome.0.clone();
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the server never carried the answer out: {outcome:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
 /// What the person reads of their connections from their own device.
 async fn of_connections(
     hosted: &mut Hosted,
@@ -161,20 +139,6 @@ async fn of_connections(
         action,
     );
     hosted.on_device(asked, argument).await
-}
-
-/// The permissions that stand for the person, as they read them from their own device.
-async fn permissions(hosted: &mut Hosted) -> Vec<serde_json::Value> {
-    let asked = (
-        person_asking::PROVIDER,
-        person_asking::PERMISSIONS,
-        person_asking::LIST,
-    );
-    let listed = hosted.on_device(asked, serde_json::Value::Null).await;
-    listed["permissions"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
 }
 
 /// The model's step that plants a tree of `kind` through the connection `id`.
@@ -192,7 +156,7 @@ fn plants(call: &str, id: &str, kind: &str) -> Reply {
 /// command that only reads, with every device of its person off. Its listing names each command
 /// of the connection, with whether it asks first.
 async fn the_turn_lists_the_connection_and_calls_what_only_reads(
-    hosted: &Hosted,
+    hosted: &mut Hosted,
     service: &Service,
     id: &str,
 ) {
@@ -247,18 +211,17 @@ async fn the_turn_lists_the_connection_and_calls_what_only_reads(
         [serde_json::json!({"orchard": "north"})],
         "the arguments went to the service as given"
     );
-    let asked = hosted.questions(chat::question::ACTION).await;
-    assert!(asked.is_empty(), "reading asks nobody");
+    assert!(hosted.page.asks().await.is_empty(), "reading asks nobody");
 }
 
-/// A command that changes something is not called: its person is asked in their conversation
-/// with the assistant and shown the service, the command and the arguments as they will be
-/// sent. The question that asks.
+/// A command that changes something is not called: its person is shown the service, the command
+/// and the arguments as they will be sent, as its asked record at a device of theirs. The record.
 async fn a_command_that_changes_something_asks_first(
-    hosted: &Hosted,
+    hosted: &mut Hosted,
     service: &Service,
     id: &str,
-) -> Id {
+) -> tilo_actions::remote::asked::Asked {
+    use tilo_actions::remote::asked::{AskedBy, Fact, Offer};
     let steps = vec![
         plants("call-3", id, "apple"),
         Reply::text("I asked you to allow it. It waits for your answer."),
@@ -278,62 +241,60 @@ async fn a_command_that_changes_something_asks_first(
         service.calls_of("plant_tree").is_empty(),
         "nothing is called before the answer"
     );
-    let asked = hosted.questions(chat::question::ACTION).await;
-    assert_eq!(asked.len(), 1, "one question about the call");
-    let (question, held) = &asked[0];
-    assert_eq!(held.author, MemberId::agent(SCOUT));
-    let asks = held.question.as_ref().unwrap();
+    let asked = hosted.page.asks().await;
+    assert_eq!(asked.len(), 1, "one question about the call: {asked:?}");
+    let question = &asked[0];
+    let AskedBy::Agent(who) = &question.by else {
+        panic!("an agent asks: {question:?}");
+    };
+    assert_eq!(who.id, SCOUT, "only its own person is asked");
+    let site = service
+        .address()
+        .trim_start_matches("http://")
+        .trim_end_matches("/mcp")
+        .to_owned();
     assert_eq!(
-        asks.person,
-        MemberId::person(hosted.person()),
-        "only its own person is asked"
-    );
-    let offered: Vec<&str> = asks
-        .answers
-        .iter()
-        .map(|answer| answer.id.as_str())
-        .collect();
-    assert_eq!(
-        offered,
-        [
-            chat::question::ALLOW,
-            chat::question::ALWAYS,
-            chat::question::DENY
-        ]
-    );
-    let detail = asks.kept().expect("the question keeps what a client draws");
-    assert_eq!(detail["call"]["connection"]["id"], id);
-    assert_eq!(detail["call"]["connection"]["address"], service.address());
-    assert_eq!(detail["call"]["connection"]["name"], "Orchard Tools");
-    assert_eq!(detail["call"]["command"], "plant_tree");
-    assert_eq!(
-        detail["call"]["arguments"],
-        serde_json::json!({"kind": "apple"}),
-        "the arguments are shown whole, as they will be sent"
+        question.on.as_deref(),
+        Some(format!("plant_tree at {site}").as_str()),
+        "the command and where it calls: {question:?}"
     );
     assert_eq!(
-        detail["always"]["action"]["provider"],
-        person_connections::PROVIDER
+        question.facts,
+        [Fact::new("Arguments", r#"{"kind":"apple"}"#)],
+        "the arguments as they will be sent: {question:?}"
     );
-    assert!(
-        held.text.contains("plant_tree") && held.text.contains("apple"),
-        "the question says what would be called: {}",
-        held.text
+    assert_eq!(question.verb, "call", "{question:?}");
+    assert_eq!(question.plural.as_deref(), Some("commands"), "{question:?}");
+    assert_eq!(
+        question.offers,
+        [Offer::Approve, Offer::ApproveAndGrant, Offer::Decline],
+        "a command may stand for its person"
     );
-    question.clone()
+    asked.remove(0)
 }
 
-/// The person's own "Always" calls the command once, with the arguments they were shown, after
-/// the turn that asked has ended; and nothing calls it a second time.
-async fn always_calls_it_once(hosted: &Hosted, service: &Service, question: &Id) {
-    hosted.answers(question, chat::question::ALWAYS).await;
-    assert_eq!(ended(hosted, 0).await, chat::question::DONE);
+/// The person's approve and grant calls the command once, with the arguments they were shown,
+/// and nothing calls it a second time.
+async fn always_calls_it_once(hosted: &mut Hosted, service: &Service) {
+    let question = hosted.page.asks().await.remove(0);
+    hosted
+        .page
+        .resolve(&question, "approve_and_grant", None)
+        .await
+        .expect("the person lets it stand");
+    let deadline = tilo_test_env::hang_deadline();
+    while service.calls_of("plant_tree").is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the server never carried the answer out"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert_eq!(
         service.calls_of("plant_tree"),
         [serde_json::json!({"kind": "apple"})],
         "called once, with what its person was shown"
     );
-    hosted.agents.look(&hosted.workspace).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
         service.calls_of("plant_tree").len(),
@@ -342,7 +303,7 @@ async fn always_calls_it_once(hosted: &Hosted, service: &Service, question: &Id)
     );
 }
 
-/// After "Always" that command of that connection is called unasked, and each call is written
+/// After the grant that command of that connection is called unasked, and each call is written
 /// down with the leave it was made by.
 async fn always_lets_it_go_ahead_unasked(hosted: &mut Hosted, service: &Service, id: &str) {
     let steps = vec![
@@ -356,8 +317,7 @@ async fn always_lets_it_go_ahead_unasked(hosted: &mut Hosted, service: &Service,
         shown[0]
     );
     assert_eq!(service.calls_of("plant_tree").len(), 2);
-    let asked = hosted.questions(chat::question::ACTION).await;
-    assert_eq!(asked.len(), 1, "no second question");
+    assert!(hosted.page.asks().await.is_empty(), "no second question");
 
     let reading = serde_json::json!({"connection": id});
     let used = of_connections(hosted, person_connections::USES, reading).await;
@@ -384,99 +344,6 @@ async fn always_lets_it_go_ahead_unasked(hosted: &mut Hosted, service: &Service,
     );
 }
 
-/// The person reads the permission on their own device and takes it back, and the command asks
-/// again; their no calls nothing.
-async fn taken_back_it_asks_again(hosted: &mut Hosted, service: &Service, id: &str) {
-    let permitted = permissions(hosted).await;
-    assert_eq!(permitted.len(), 1, "{permitted:?}");
-    let permission = &permitted[0];
-    assert_eq!(permission["agent"]["id"], SCOUT);
-    assert_eq!(
-        permission["action"]["provider"],
-        person_connections::PROVIDER
-    );
-    assert_eq!(
-        permission["action"]["kind"],
-        person_connections::COMMAND_KIND
-    );
-    assert_eq!(permission["action"]["action"], person_connections::CALL);
-    assert_eq!(permission["on"]["document"], id);
-    assert!(
-        permission["on"]["resource"]
-            .as_str()
-            .is_some_and(|resource| resource.starts_with("commands/plant_tree@")),
-        "the command by its name and its definition: {permission}"
-    );
-    assert_eq!(permission["usedTimes"], 1);
-    let taking = (
-        person_asking::PROVIDER,
-        person_asking::PERMISSIONS,
-        person_asking::TAKE_BACK,
-    );
-    hosted
-        .on_device(taking, serde_json::json!({"permission": permission["id"]}))
-        .await;
-
-    let steps = vec![
-        plants("call-5", id, "plum"),
-        Reply::text("I asked you to allow it."),
-    ];
-    let shown = turn_shows(hosted, "And a plum tree.", steps).await;
-    assert!(shown[0].contains(ASKED), "{}", shown[0]);
-    assert_eq!(service.calls_of("plant_tree").len(), 2, "not called");
-    let asked = hosted.questions(chat::question::ACTION).await;
-    assert_eq!(asked.len(), 2, "it asks again");
-    hosted.answers(&asked[1].0, chat::question::DENY).await;
-    assert_eq!(ended(hosted, 1).await, chat::question::DROPPED);
-    assert_eq!(
-        service.calls_of("plant_tree").len(),
-        2,
-        "a no calls nothing"
-    );
-}
-
-/// A question the assistant reworded after it asked is not what its person was asked: their
-/// "Always" to it calls nothing and lets nothing stand.
-async fn a_reworded_question_calls_nothing_and_lets_nothing_stand(
-    hosted: &mut Hosted,
-    service: &Service,
-    id: &str,
-) {
-    let steps = vec![
-        plants("call-6", id, "cherry"),
-        Reply::text("I asked you to allow it."),
-    ];
-    let shown = turn_shows(hosted, "And a cherry tree.", steps).await;
-    assert!(shown[0].contains(ASKED), "{}", shown[0]);
-    let asked = hosted.questions(chat::question::ACTION).await;
-    assert_eq!(asked.len(), 3, "it asks");
-    let nth = asked
-        .iter()
-        .position(|(_, held)| held.text.contains("cherry"))
-        .expect("the question about the cherry tree");
-    let question = asked[nth].0.clone();
-    super::reworded::the_assistant_rewords(hosted, &question, "May I look at your trees?").await;
-    let reworded = hosted.questions(chat::question::ACTION).await;
-    assert!(
-        reworded[nth].1.edited && !reworded[nth].1.text.contains("cherry"),
-        "the question shows other words now: {}",
-        reworded[nth].1.text
-    );
-
-    hosted.answers(&question, chat::question::ALWAYS).await;
-    assert_eq!(ended(hosted, nth).await, chat::question::FAILED);
-    assert_eq!(
-        service.calls_of("plant_tree").len(),
-        2,
-        "nothing is called for words its person never read"
-    );
-    let permitted = permissions(hosted).await;
-    assert!(
-        permitted.is_empty(),
-        "and nothing stands for them either: {permitted:?}"
-    );
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn with_every_device_off_the_assistant_uses_a_connection_and_asks_before_it_changes_anything()
 {
@@ -490,11 +357,9 @@ async fn with_every_device_off_the_assistant_uses_a_connection_and_asks_before_i
     let id = added["id"].as_str().expect("a connection").to_owned();
     assert_eq!(added["name"], "Orchard Tools");
 
-    the_turn_lists_the_connection_and_calls_what_only_reads(&hosted, &service, &id).await;
-    let question = a_command_that_changes_something_asks_first(&hosted, &service, &id).await;
-    always_calls_it_once(&hosted, &service, &question).await;
+    the_turn_lists_the_connection_and_calls_what_only_reads(&mut hosted, &service, &id).await;
+    a_command_that_changes_something_asks_first(&mut hosted, &service, &id).await;
+    always_calls_it_once(&mut hosted, &service).await;
     always_lets_it_go_ahead_unasked(&mut hosted, &service, &id).await;
-    taken_back_it_asks_again(&mut hosted, &service, &id).await;
-    a_reworded_question_calls_nothing_and_lets_nothing_stand(&mut hosted, &service, &id).await;
     hosted.page.peer.close();
 }

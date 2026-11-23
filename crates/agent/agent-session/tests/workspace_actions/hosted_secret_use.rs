@@ -2,9 +2,9 @@
 //! no device of theirs on while it works.
 //!
 //! The whole chain through the server's own interfaces: the assistant needs a mail account and asks
-//! for the password, first in the conversation, which refuses it, then through the vault; the
-//! server asks the person's own device in the system's protected field, keeps what they type in the
-//! workspace's vault on the server and tells the assistant the reference; the turn that follows
+//! for the password through the vault; the server keeps the ask as a record at the person's own
+//! device, naming the vault's own add as what answers it; she keeps the password in the
+//! workspace's vault herself and approves the ask, which answers with the reference; the turn that follows
 //! holds only the reference and calls the use; the first use asks the person; they answer "Always";
 //! the server signs in and adds the account; the second use asks nothing. The password is in no
 //! message, no tool result, no model request, no log line and nowhere on the server's disk in the
@@ -29,7 +29,7 @@ pub(super) const PASSWORD: &str = "only-the-mail-server-may-read-this";
 const IMAP: &str = "imap://imap.example.test:993";
 const SMTP: &str = "smtp://smtp.example.test:465";
 /// What the agent is told when its person is asked first.
-const ASKED: &str = "Your person is asked in the conversation";
+const ASKED: &str = "asked:";
 
 /// Every log line the test's process writes, at every level.
 #[derive(Clone, Default)]
@@ -131,99 +131,7 @@ pub(super) struct Hosted {
     pub(super) address: iroh::EndpointAddr,
 }
 
-/// The person at their own devices: every question the server puts to them there, each waiting
-/// for the answer the test gives it, as their shell's sheet waits for theirs.
-#[derive(Default)]
-pub(super) struct Devices {
-    asked: Mutex<Vec<AskedThere>>,
-}
-
-/// A question put to the person's devices, and where its answer goes.
-pub(super) struct AskedThere {
-    pub(super) question: tilo_server_protocol::certify::PendingConfirmation,
-    answer: Option<tokio::sync::oneshot::Sender<tilo_server_protocol::certify::ConfirmationAnswer>>,
-}
-
-impl tilo_server::workspaces::AsksPeople for Devices {
-    fn ask(
-        &self,
-        _person: [u8; 32],
-        question: tilo_server_protocol::certify::PendingConfirmation,
-    ) -> tilo_server::workspaces::PersonAnswer {
-        let (answer, answered) = tokio::sync::oneshot::channel();
-        self.asked.lock().unwrap().push(AskedThere {
-            question,
-            answer: Some(answer),
-        });
-        Box::pin(async move {
-            answered
-                .await
-                .map_err(|_| "nobody answered in time".to_owned())
-        })
-    }
-}
-
-impl Devices {
-    /// The questions put to the person's devices, once there are `many`, oldest first.
-    pub(super) async fn asked(
-        &self,
-        many: usize,
-    ) -> Vec<tilo_server_protocol::certify::PendingConfirmation> {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let asked: Vec<_> = self
-                .asked
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|asked| asked.question.clone())
-                .collect();
-            if asked.len() >= many {
-                return asked;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "her devices were asked {} times, not {many}",
-                asked.len()
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-
-    /// How many questions were put to the person's devices so far.
-    pub(super) fn count(&self) -> usize {
-        self.asked.lock().unwrap().len()
-    }
-
-    /// The person answers the question at `place` with `answer`, on the device that shows it.
-    pub(super) fn answer(
-        &self,
-        place: usize,
-        answer: tilo_server_protocol::certify::ConfirmationAnswer,
-    ) {
-        let sender = self.asked.lock().unwrap()[place]
-            .answer
-            .take()
-            .expect("a question is answered once");
-        sender
-            .send(answer)
-            .expect("the server waits for the answer");
-    }
-
-    /// Nobody answers the question at `place`: it lapses.
-    pub(super) fn lapse(&self, place: usize) {
-        drop(self.asked.lock().unwrap()[place].answer.take());
-    }
-}
-
 impl Hosted {
-    /// The person's devices from now on, where the server asks them: theirs to answer.
-    pub(super) fn her_devices(&self) -> Arc<Devices> {
-        let devices = Arc::new(Devices::default());
-        self.workspaces.ask_people(devices.clone());
-        devices
-    }
-
     pub(super) async fn start() -> Self {
         Self::start_placing(None).await
     }
@@ -476,36 +384,6 @@ impl Hosted {
             .join("\n")
     }
 
-    /// The assistant is woken once by what the server tells it, and answers `says`: everything
-    /// its model was sent for that turn.
-    pub(super) async fn woken_with(&self, says: &str) -> String {
-        self.model.then(Reply::text(says));
-        let deadline = tilo_test_env::hang_deadline();
-        let turns = loop {
-            let turns = self.agents.turns(&self.workspace).await.unwrap();
-            if !turns.is_empty() {
-                break turns;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the assistant was never told what came of it"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        };
-        assert_eq!(turns.len(), 1, "it is told once: {turns:?}");
-        tokio::time::timeout(
-            Duration::from_secs(60),
-            self.agents.answer(&self.workspace, &turns[0]),
-        )
-        .await
-        .expect("the turn ends")
-        .unwrap();
-        format!(
-            "{:?}",
-            self.model.asked().last().expect("it was asked").request
-        )
-    }
-
     /// What the model was shown of its last tool call: the request that followed it.
     pub(super) fn last_tool_result(&self) -> String {
         let asked = self.model.asked();
@@ -565,30 +443,17 @@ fn add_mail(call: &str, address: &str, reference: &str) -> Reply {
     )
 }
 
-/// The assistant asks for the password. It tries the conversation first, with a question that
-/// offers no answers, which its person could answer only in words, and is refused: no question
-/// is posted. Its ask through the vault ends at once; the server asks her own device in the
-/// protected field, in the system's words, keeps what she types in the workspace's vault, and
-/// wakes the assistant once with the reference. The reference.
+/// The assistant asks for the password through the vault. The system keeps the ask as a record
+/// at a device of hers, whose words are the system's and which names the vault's own add as what
+/// answers it; no question is posted in the conversation. She keeps the password in the vault
+/// herself and approves the ask, and the assistant is told the reference. The reference.
 pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
-    hosted: &Hosted,
+    hosted: &mut Hosted,
 ) -> String {
-    let conversation = hosted.conversation();
-    let devices = hosted.her_devices();
     hosted
         .turn(
             "Please connect my mail, ada@example.test.",
             vec![
-                does(
-                    "call-2",
-                    "chat/Messages#ask",
-                    &serde_json::json!({
-                        "channel": conversation.as_str(),
-                        "text": "I need the sign-in of ada@example.test.",
-                        "kind": "secret",
-                        "detail": {"kind": "login", "belongsTo": [IMAP, SMTP], "username": "ada"},
-                    }),
-                ),
                 does(
                     "call-3",
                     "vault/vault#ask",
@@ -596,19 +461,13 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
                         "kind": "login", "belongsTo": [IMAP, SMTP], "username": "ada",
                     }),
                 ),
-                Reply::text("I asked you for the password. Type it where your device asks."),
+                Reply::text("I asked you for the password."),
             ],
         )
         .await;
-    let results = hosted.tool_results();
-    assert_eq!(
-        results.matches("reply in the conversation").count(),
-        1,
-        "the question without answers is refused, and says where words go: {results}"
-    );
     assert!(
-        hosted.last_tool_result().contains("protected field"),
-        "the ask through the vault says she is asked where it cannot read: {}",
+        hosted.last_tool_result().contains(ASKED),
+        "the ask through the vault says she is asked: {}",
         hosted.last_tool_result()
     );
     let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
@@ -619,39 +478,108 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
         "no question was posted in the conversation"
     );
 
-    // Her device is asked in the system's protected field, in the system's words.
-    let asked = devices.asked(1).await;
-    let ask = asked[0].ask.as_ref().expect("a question in words");
-    assert!(ask.secret && ask.choices.is_empty(), "{ask:?}");
-    for said in [
-        format!("asks for the password of ada at {IMAP} and {SMTP}."),
-        "never sees what you type: your vault keeps it for those places alone.".to_owned(),
-    ] {
-        assert!(ask.question.contains(&said), "{said:?}: {}", ask.question);
-    }
-    devices.answer(
-        0,
-        tilo_server_protocol::certify::ConfirmationAnswer::Secret(
-            tilo_server_protocol::certify::TypedSecret::new(PASSWORD.to_owned()),
-        ),
+    // The question waits as its record at her own device, in the system's words, and names the
+    // vault's own add as what answers it.
+    let asked = hosted.page.asks().await;
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let ask = &asked[0];
+    assert_eq!(
+        ask.takes.as_deref(),
+        Some("tilo.vault/vault#add"),
+        "{ask:?}"
+    );
+    assert_eq!(ask.verb, "keep", "{ask:?}");
+    assert!(
+        ask.words.contains(&format!(
+            "asks for the password of ada at {IMAP} and {SMTP}."
+        )),
+        "in the system's words: {ask:?}"
+    );
+    assert!(
+        ask.facts
+            .contains(&tilo_actions::remote::asked::Fact::new("kind", "login")),
+        "{ask:?}"
+    );
+    assert!(
+        ask.facts.contains(&tilo_actions::remote::asked::Fact::new(
+            "belongsTo",
+            format!("{IMAP} {SMTP}")
+        )),
+        "{ask:?}"
     );
 
-    // The assistant is woken once with the reference the workspace's vault keeps it under.
-    let told = hosted.woken_with("Thanks, it is in your vault now.").await;
-    let at = told
-        .find("vault.item:")
-        .expect("the assistant is told the reference");
-    let reference = told[at..at + "vault.item:".len() + 32].to_owned();
+    // She keeps it in the workspace's vault herself, as the system's protected field fills the
+    // vault's own add.
+    let kept = hosted
+        .on_device(
+            (
+                person_vault::PROVIDER,
+                person_vault::RESOURCE,
+                person_vault::ADD,
+            ),
+            serde_json::json!({
+                "kind": "login",
+                "belongsTo": [IMAP, SMTP],
+                "username": "ada",
+                "secret": PASSWORD,
+            }),
+        )
+        .await;
+    let reference = kept["reference"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the vault keeps it: {kept}"))
+        .to_owned();
     assert!(
         person_vault::ItemRef::parse(&reference).is_some(),
         "{reference}"
     );
+
+    // Her approve answers the ask with the reference the vault keeps it under, which the
+    // assistant is told.
+    hosted
+        .model
+        .then(Reply::text("Thanks, it is in your vault now."));
+    let ask = hosted.page.asks().await.remove(0);
+    hosted
+        .page
+        .resolve(&ask, "approve", None)
+        .await
+        .expect("the person approves the ask");
+    let told = resumed(hosted, &reference).await;
+    assert!(told.contains(&reference), "{told}");
     reference
 }
 
+/// Drive the server's turns until its model was shown `until` in a tool's result: what it was
+/// shown then. A turn the answer resumes is taken by whoever is here to drive it.
+async fn resumed(hosted: &mut Hosted, until: &str) -> String {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        Box::pin(hosted.agents.look(&hosted.workspace))
+            .await
+            .unwrap();
+        for turn in hosted.agents.turns(&hosted.workspace).await.unwrap() {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(60),
+                Box::pin(hosted.agents.answer(&hosted.workspace, &turn)),
+            )
+            .await;
+        }
+        let told = hosted.tool_results();
+        if told.contains(until) {
+            return told;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the assistant was never told {until:?}: {told}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// The turn that holds the reference calls the use. Nobody watches, so the server asks the
-/// person and uses nothing. They answer "Always", and the server signs in and adds the account.
-pub(super) async fn the_first_use_asks_and_always_signs_in(hosted: &Hosted, reference: &str) {
+/// person and uses nothing. They approve and grant, and the server signs in and adds the account.
+pub(super) async fn the_first_use_asks_and_always_signs_in(hosted: &mut Hosted, reference: &str) {
     hosted
         .turn(
             "It is in my vault now.",
@@ -670,21 +598,14 @@ pub(super) async fn the_first_use_asks_and_always_signs_in(hosted: &Hosted, refe
         hosted.proved.lock().unwrap().is_empty(),
         "nothing signed in unasked"
     );
-    let asked = hosted.questions(chat::question::ACTION).await;
-    assert_eq!(asked.len(), 1, "one question about the use");
-    let (question, held) = &asked[0];
-    let asks = held.question.as_ref().unwrap();
-    assert_eq!(asks.person, MemberId::person(hosted.person()));
+    let asked = hosted.page.asks().await;
+    assert_eq!(asked.len(), 1, "one question about the use: {asked:?}");
+    let question = &asked[0];
     assert_eq!(
-        held.text, "You asked me to read your mail.",
+        question.words, "You asked me to read your mail.",
         "why, in the agent's words"
     );
-    let kept = asks.kept().expect("question detail");
-    assert_eq!(
-        kept.pointer("/use/item/belongsTo"),
-        Some(&serde_json::json!([IMAP, SMTP]))
-    );
-    let shown = format!("{:?} {}", asks.draft(), asks.detail.0);
+    let shown = format!("{question:?}");
     assert!(
         shown.contains("ada@example.test"),
         "what it signs in to: {shown}"
@@ -694,22 +615,24 @@ pub(super) async fn the_first_use_asks_and_always_signs_in(hosted: &Hosted, refe
         !shown.contains(id),
         "the item's address is withheld: {shown}"
     );
+    assert!(
+        question
+            .offers
+            .contains(&tilo_actions::remote::asked::Offer::ApproveAndGrant),
+        "always is offered: {question:?}"
+    );
 
-    hosted.answers(question, chat::question::ALWAYS).await;
-    hosted.agents.look(&hosted.workspace).await.unwrap();
+    let question = hosted.page.asks().await.remove(0);
+    hosted
+        .page
+        .resolve(&question, "approve_and_grant", None)
+        .await
+        .expect("the person lets it stand");
     let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let now = hosted.questions(chat::question::ACTION).await;
-        let outcome = now[0].1.question.as_ref().unwrap().outcome.clone();
-        if outcome
-            .as_ref()
-            .is_some_and(|outcome| outcome.outcome.0 == chat::question::DONE)
-        {
-            break;
-        }
+    while hosted.proved.lock().unwrap().is_empty() {
         assert!(
             Instant::now() < deadline,
-            "the server never carried the answer out: {outcome:?}"
+            "the server never carried the answer out"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -741,11 +664,7 @@ async fn the_second_use_asks_nothing(hosted: &mut Hosted, reference: &str) {
         !told.contains(OUTSIDE),
         "a use of the vault answers this server's own words, no content from outside: {told}"
     );
-    assert_eq!(
-        hosted.questions(chat::question::ACTION).await.len(),
-        1,
-        "no second question"
-    );
+    assert!(hosted.page.asks().await.is_empty(), "no second question");
     assert_eq!(
         hosted.proved.lock().unwrap().len(),
         2,
@@ -851,8 +770,8 @@ async fn the_password_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, line
 async fn the_assistant_signs_in_to_mail_with_a_password_it_never_sees() {
     let lines = logged();
     let mut hosted = Hosted::start().await;
-    let reference = the_password_goes_from_the_persons_device_to_their_vault(&hosted).await;
-    the_first_use_asks_and_always_signs_in(&hosted, &reference).await;
+    let reference = the_password_goes_from_the_persons_device_to_their_vault(&mut hosted).await;
+    the_first_use_asks_and_always_signs_in(&mut hosted, &reference).await;
     the_second_use_asks_nothing(&mut hosted, &reference).await;
     the_password_is_nowhere_a_model_or_a_reader_looks(&hosted, &lines).await;
     hosted.page.peer.close();
@@ -860,13 +779,13 @@ async fn the_assistant_signs_in_to_mail_with_a_password_it_never_sees() {
 
 /// A use that was refused: the agent is not told that its person is asked, nobody is asked,
 /// and nothing signed in.
-async fn refused_and_nobody_is_asked(hosted: &Hosted, told: &str) {
+async fn refused_and_nobody_is_asked(hosted: &mut Hosted, told: &str) {
     assert!(
         !told.contains(ASKED),
         "the agent is told it was refused: {told}"
     );
     assert!(
-        hosted.questions(chat::question::ACTION).await.is_empty(),
+        hosted.page.asks().await.is_empty(),
         "nobody is asked about a use that names no item of theirs"
     );
     assert!(
@@ -880,7 +799,7 @@ async fn refused_and_nobody_is_asked(hosted: &Hosted, told: &str) {
 /// it was written and is refused there: nobody is asked, and nothing signs in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reference_the_vault_does_not_hold_is_refused_by_the_use_and_nobody_is_asked() {
-    let hosted = Hosted::start().await;
+    let mut hosted = Hosted::start().await;
     let elsewhere = format!("vault.item:{}", "0123456789abcdef".repeat(2));
     hosted
         .turn(
@@ -896,7 +815,7 @@ async fn a_reference_the_vault_does_not_hold_is_refused_by_the_use_and_nobody_is
         !told.contains("is a resource of the workspace"),
         "a secret's reference is no path of the workspace, and is not refused as one: {told}"
     );
-    refused_and_nobody_is_asked(&hosted, &told).await;
+    refused_and_nobody_is_asked(&mut hosted, &told).await;
     hosted.page.peer.close();
 }
 
@@ -922,7 +841,7 @@ async fn a_path_where_a_secret_is_taken_reads_no_resource_and_opens_nothing() {
             )
             .await;
         let told = hosted.last_tool_result();
-        refused_and_nobody_is_asked(&hosted, &told).await;
+        refused_and_nobody_is_asked(&mut hosted, &told).await;
     }
     hosted.page.peer.close();
 }
@@ -1014,7 +933,7 @@ async fn another_persons_item_is_refused_by_the_use_and_stays_unused() {
         told.contains("That item is not kept here"),
         "her own vault answers for the reference, and it holds no such item: {told}"
     );
-    refused_and_nobody_is_asked(&hosted, &told).await;
+    refused_and_nobody_is_asked(&mut hosted, &told).await;
 
     // His item is as he kept it: it remembers no use and no leave.
     let uses = on_page(

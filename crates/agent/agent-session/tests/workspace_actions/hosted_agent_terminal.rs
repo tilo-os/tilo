@@ -197,9 +197,6 @@ impl OnTheirServer {
         message
     }
 
-    /// The questions about an action the conversation holds, oldest first.
-    /// Ada answers the question `message` asks with `answer`, at a device of hers.
-    /// The server looks until the question `message` asks says what came of its answer.
     /// What the model was shown, every request's last message, for a failed assertion.
     fn shown(&self) -> String {
         self.model

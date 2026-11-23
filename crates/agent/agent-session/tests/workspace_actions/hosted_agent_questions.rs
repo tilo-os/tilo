@@ -177,20 +177,6 @@ impl Hosted {
         .await;
     }
 
-    /// The questions about an action the conversation holds, oldest first.
-    /// The questions of any kind that wait in the conversation, oldest first.
-    /// One change to the conversation's document, written as `who` at `at_ms`: whether the document
-    /// took it. Nothing an agent may call answers a question, so an answer is no action of the
-    /// server's service: it is written as a device writes it.
-    /// `who` answers the question `message` asks with `answer`, at `at_ms`: whether the document
-    /// took the answer.
-    /// The server looks at the workspace, and the question `message` asks is read once what came
-    /// of its answer is said for good.
-    /// The message `message`, as the document holds it now.
-    /// The question `message` asks, as the document holds it now.
-    /// What stands for the person, as their own device reads it from the server.
-    /// The questions that wait for the person, as their own device reads them from the server.
-    /// The messages of the conversation that carry the cause `key`.
     /// The server looks until the agent's reply to `message` ended: the reply.
     async fn replied(&self, message: &Id) -> Held {
         let deadline = tilo_test_env::hang_deadline();
