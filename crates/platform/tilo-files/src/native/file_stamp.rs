@@ -37,7 +37,7 @@ impl FileStamp {
     /// Old enough that a later write cannot share its modification time ([`SETTLE`]).
     #[must_use]
     pub fn settled(self) -> bool {
-        SystemTime::now()
+        tilo_clock::wall()
             .duration_since(self.modified)
             .is_ok_and(|age| age >= SETTLE)
     }

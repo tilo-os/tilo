@@ -263,18 +263,17 @@ pub fn readings_of(
             let hashed;
             let bytes: &[u8] = match &copy {
                 Some(ResourceCopy::Document(bytes)) => bytes,
-                Some(ResourceCopy::Read(value)) => {
-                    hashed = value.to_string();
-                    hashed.as_bytes()
-                }
                 Some(ResourceCopy::Reading {
                     revision: Some(revision),
                     ..
                 }) => revision.as_bytes(),
-                Some(ResourceCopy::Reading {
-                    value,
-                    revision: None,
-                }) => {
+                Some(
+                    ResourceCopy::Read(value)
+                    | ResourceCopy::Reading {
+                        value,
+                        revision: None,
+                    },
+                ) => {
                     hashed = value.to_string();
                     hashed.as_bytes()
                 }

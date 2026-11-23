@@ -990,7 +990,7 @@ fn decide_as_document_edit(
     // and a checkpoint carries its writes' own, so neither reaches the stamp's
     // rule.
     let mut invokers: Vec<Option<Acting>> = Vec::new();
-    for change in changes.iter().flatten() {
+    for change in changes.into_iter().flatten() {
         let nameless = matches!(
             ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()),
             Err(crate::claim::ClaimError::NoInvoker)

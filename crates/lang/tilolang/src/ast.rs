@@ -210,6 +210,11 @@ pub enum SearchEntryKind {
     Sort { field: Ident, order: Ident },
     /// `hide to`: a field kept out of filters.
     Hide { field: Ident },
+    /// `kind conversation`: what a resource of the type is to the system's search, which draws
+    /// it as one and sends to it (`conversation`, `message`, `person` or `agent`).
+    Kind { kind: Ident },
+    /// `people person`: a field naming who the resource is with, an `Actor` or a set of them.
+    People { field: Ident },
 }
 
 /// `enum Name { a, b(x: T, y: U), c }`: values are written `.a`, `.b(x: 1, y: 2)`.
