@@ -117,6 +117,8 @@ mod german_surfaces;
 mod hosted_browser;
 #[path = "hosted_windows.rs"]
 mod hosted_windows;
+#[path = "idle_notes.rs"]
+mod idle_notes;
 #[path = "import_readiness.rs"]
 mod import_readiness;
 #[path = "input_method.rs"]
