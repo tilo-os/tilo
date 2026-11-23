@@ -6,7 +6,10 @@ use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::service::{AlbumPage, ArtistPage, HomePage, Lyrics, SearchPage, Service, ServiceError};
+use crate::service::{
+    AlbumPage, ArtistPage, HomePage, Lyrics, SearchPage, Service, ServiceError, SpotifyOp,
+    SpotifyReply,
+};
 use crate::wire::{self, Ask, FromConnector};
 
 /// [`Service`] over the socket to the music connector process.
@@ -170,6 +173,18 @@ impl Service for RemoteService {
             },
             |answer| match answer {
                 FromConnector::Pinned { address, .. } => Some(address),
+                _ => None,
+            },
+        )
+    }
+    fn spotify(&self, op: &SpotifyOp) -> Result<SpotifyReply, ServiceError> {
+        self.answered(
+            &Ask::Spotify {
+                request: self.next.fetch_add(1, Ordering::Relaxed),
+                op: op.clone(),
+            },
+            |answer| match answer {
+                FromConnector::Spotify { reply, .. } => Some(reply),
                 _ => None,
             },
         )

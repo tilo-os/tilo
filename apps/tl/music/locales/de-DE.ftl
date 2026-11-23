@@ -494,6 +494,18 @@ d-6tpcfsjw = Empfehlungen
     .w-catalogue = Catalogue
     .w-youtube-music = YouTube Music
     .w-off = Off
+    .w-spotify = Spotify
+    .w-sign-in-on-spotify = Sign in on Spotify
+    .w-i-signed-in = I signed in
+    .w-previous = Previous
+    .w-pause = Pause
+    .w-play = Play
+    .w-next = Next
+    .w-refresh = Refresh
+    .w-disconnect = Disconnect
+    .w-playing-here = Playing here
+    .w-play-here = Play here
+    .w-connect-spotify = Connect Spotify
 
 d-osqkr7ab = Warteschlange
     .w-queue = Queue
@@ -506,3 +518,86 @@ d-pf6yvngz = Songtext
     .w-nothing-playing = Nothing playing
 
 d-6oildalu = Suchen~present
+
+d-iyodtvzu = Spotify-Gerät
+    .doc = Ein Ort, an dem Spotify spielt: ein Telefon, ein Computer, ein Lautsprecher oder der Browser der Person.
+    .noun = { $count ->
+        [one] Gerät
+       *[other] Geräte
+    }
+    .untitled = Unbekanntes Gerät
+
+d-4ruem7bk = Schlüssel
+    .doc = Die Id des Geräts, wie Spotify sie nennt.
+
+d-fysa7usi = Name
+
+d-ajgkhxtc = Art
+    .doc = `computer`, `smartphone`, `speaker`, `tv`, `cast` oder eine andere, die Spotify nennt.
+
+d-njju5rcv = Aktiv
+    .doc = Ob, was läuft, hier läuft.
+
+d-daqeango = Lautstärke
+    .doc = Wie laut es ist, `0..=100`, wenn Spotify es sagt.
+
+d-cjoykprs = Geräte
+    .doc = Die Orte, an denen Spotify spielt, und die Anmeldung der Person bei Spotify.
+
+d-d6agrwhu = Spotify-Zustand
+    .doc = `off`, `connecting`, `connected` oder `trouble`.
+
+d-wzbxwvai = Spotify-Konto
+
+d-q6fvzfwi = Spotify-Abo
+    .doc = `premium`, `free`, `open` oder leer, wie Spotify es sagt.
+
+d-bnnshdna = Spotify-Problem
+
+d-rwf7lfs6 = Anmeldeadresse
+    .doc = Die Seite, auf der die Person sich anmeldet, während `spotify_state` `connecting` sagt.
+
+d-gghnswba = Spotify aktiv
+    .doc = Das Gerät, auf dem Spotify spielt, als sein Schlüssel; leer, wenn keines.
+
+d-sdkihe6k = Spotify jetzt
+    .doc = Was dort läuft, wie Menschen es lesen.
+
+d-22kwzmah = Spotify spielt
+
+d-sbgoce2w = Gerät
+
+d-cpsa6nlq = Spotify verbinden
+    .doc = Verbindet das Spotify der Person: die Seite, auf der sie sich anmeldet, steht im Spotify-Abschnitt.
+
+d-bgomdthz = Ich habe mich angemeldet
+    .doc = Nimmt die Anmeldung an, die die Person auf Spotifys Seite gegeben hat.
+
+d-c3zailpi = Spotify trennen
+    .doc = Vergisst die Spotify-Anmeldung dieses Geräts.
+
+d-lyxtlmu3 = Geräte aktualisieren
+    .doc = Liest die Orte, an denen Spotify spielt.
+
+d-s5u526ny = Wiedergabe übertragen
+    .doc = Bewegt, was läuft, zu `d`, von Anfang an.
+
+d-amt56qpq = Auf Spotify abspielen
+    .doc = Spielt `uri` auf Spotify ab, wo es spielt: leer spielt, was lief.
+
+d-7vrw7iss = Auf Spotify pausieren
+    .doc = Pausiert, was auf Spotify läuft.
+
+d-y4ceqqvs = Weiter auf Spotify
+    .doc = Spielt, was auf Spotify folgt.
+
+d-moryk2vk = Zurück auf Spotify
+    .doc = Spielt, was auf Spotify davor lief.
+
+d-clxyvglt = Was auf Spotify läuft
+    .doc = Liest, was jetzt auf Spotify läuft.
+
+d-s5u526ny-d = Gerät
+
+d-amt56qpq-uri = Adresse
+

@@ -81,6 +81,20 @@ type Playlist (origin: music.playlist, untitled: "Untitled playlist") {
     found_for: Text = ""
 }
 
+/// A place Spotify plays on: a phone, a computer, a speaker or the person's browser. What plays
+/// can be moved to it, and steered while it is there.
+type SpotifyDevice (origin: music.device, untitled: "Unknown device") {
+    /// The device's id, as Spotify names it.
+    key: Text
+    name: Text
+    /// `computer`, `smartphone`, `speaker`, `tv`, `cast` or another Spotify names.
+    kind: Text = ""
+    /// Whether what plays plays here.
+    active: Bool = false
+    /// How loud it is, `0..=100`, when Spotify says.
+    volume: Int = 0
+}
+
 /// One titled section of the catalogue's home page.
 type Section (origin: music.section, untitled: "Section") {
     key: Text
@@ -146,6 +160,21 @@ type Library (title: name) {
     playing: Option<playback.Playback>
     /// Every session this app made, kept as the resources they are; `playing` names the one.
     sessions: Collection<playback.Playback>
+    /// The places Spotify plays on, and the person's sign-in to it.
+    devices: Collection<SpotifyDevice>
+    /// `off`, `connecting`, `connected` or `trouble`.
+    spotify_state: Text = "off"
+    spotify_account: Text = ""
+    /// `premium`, `free`, `open` or empty, as Spotify says.
+    spotify_product: Text = ""
+    spotify_trouble: Text = ""
+    /// The page the person signs in on, while `spotify_state` says `connecting`.
+    connect_url: Text = ""
+    /// The device Spotify plays on, as its key; empty when nothing does.
+    spotify_active: Text = ""
+    /// What plays there, as people read it.
+    spotify_now: Text = ""
+    spotify_playing: Bool = false
     /// `youtube` or `off`: which catalogue the app asks.
     catalogue: Text = "youtube"
     /// What the catalogue's last fetch is doing, and why it failed.
@@ -187,6 +216,8 @@ default view artist for Artist
 default view playlist for Playlist
 
 default view mixtape for Mixtape
+
+default view device for SpotifyDevice
 
 /// The app's window: the places of the library, the songs, the catalogue's pages, and the
 /// player under them.
@@ -648,8 +679,72 @@ view taste_page(lib: Library) {
                 ui.Button("YouTube Music", toggled: lib.catalogue == "youtube") {
                     on press: set_catalogue(lib, "youtube")
                 }
+                ui.Button("Spotify", toggled: lib.catalogue == "spotify") {
+                    on press: set_catalogue(lib, "spotify")
+                }
                 ui.Button("Off") {
                     on press: set_catalogue(lib, "off")
+                }
+            }
+            ui.Section("Spotify") {
+                if lib.spotify_state == "connecting" {
+                    ui.Link(lib.connect_url, label: "Sign in on Spotify")
+                    ui.Button("I signed in", icon: .check) {
+                        on press: finish_spotify(lib)
+                    }
+                } else if lib.spotify_state == "connected" {
+                    text(spotify_account_line(lib), role: .caption, secondary: true)
+                    if lib.spotify_now != "" {
+                        text(lib.spotify_now, role: .subheading)
+                    }
+                    row(gap: .tight, align: .center, wrap: true) {
+                        ui.Button("Previous", icon: .skip_back) {
+                            on press: remote_previous(lib)
+                        }
+                        ui.Button(
+                            if lib.spotify_playing { "Pause" } else { "Play" },
+                            icon: if lib.spotify_playing { .pause } else { .play },
+                        ) {
+                            on press: if lib.spotify_playing {
+                                remote_pause(lib)
+                            } else {
+                                remote_play(lib)
+                            }
+                        }
+                        ui.Button("Next", icon: .skip_forward) {
+                            on press: remote_next(lib)
+                        }
+                        ui.Button("Refresh", icon: .refresh) {
+                            on press: spotify_devices(lib)
+                        }
+                        ui.Button("Disconnect", icon: .x) {
+                            on press: disconnect_spotify(lib)
+                        }
+                    }
+                    for d in lib.devices {
+                        ui.ListItem(item: d) {
+                            ui.ListRow(
+                                title: d.name,
+                                secondary: device_line(d),
+                                icon: if d.active { .speaker } else { .monitor },
+                            )
+                        }
+                        ui.Button(
+                            if d.active { "Playing here" } else { "Play here" },
+                            toggled: d.active,
+                        ) {
+                            on press: transfer_playback(lib, d)
+                        }
+                    }
+                } else if lib.spotify_state == "trouble" {
+                    text(lib.spotify_trouble, role: .caption, secondary: true)
+                    ui.Button("Connect Spotify", icon: .link) {
+                        on press: connect_spotify(lib)
+                    }
+                } else {
+                    ui.Button("Connect Spotify", icon: .link) {
+                        on press: connect_spotify(lib)
+                    }
                 }
             }
         }
@@ -732,7 +827,11 @@ fn item_of(t: Track) -> playback.Item {
 /// record, so the song continues on this device or another.
 action play_song(t: Track) (icon: .play) {
     let lib = root Library
-    playback.play_list(session(lib), [item_of(t)], at: 0)
+    if t.stream.starts_with("spotify:") {
+        outside("music.spotify", ["play", t.stream])
+    } else {
+        playback.play_list(session(lib), [item_of(t)], at: 0)
+    }
 }
 
 /// Plays an album's songs from the top.
@@ -882,24 +981,41 @@ action search(lib: Library, query: Text) uses time (icon: .search) {
     require query != "" "Type something to search for"
     lib.search_state = "searching"
     lib.search_trouble = ""
-    outside("music.search", query)
+    if lib.catalogue == "spotify" {
+        outside("music.spotify", ["search", query])
+    } else {
+        outside("music.search", query)
+    }
 }
 
 /// Asks the catalogue for its home page.
 action refresh(lib: Library) uses time (icon: .refresh) {
     lib.home_state = "loading"
     lib.home_trouble = ""
-    outside("music.home", "")
+    if lib.catalogue == "spotify" {
+        outside("music.spotify", ["home", ""])
+    } else {
+        outside("music.home", "")
+    }
 }
 
 /// Asks the catalogue for an artist's page.
 action refresh_artist(a: Artist) (icon: .refresh) {
-    outside("music.artist", a.key)
+    if a.key.starts_with("spotify:") {
+        let lib = root Library
+        if lib.catalogue == "spotify" { outside("music.spotify", ["artist", a.key]) }
+    } else {
+        outside("music.artist", a.key)
+    }
 }
 
 /// Asks the catalogue for a playlist's songs.
 action open_playlist(p: Playlist) (icon: .refresh, label: "Refresh") {
-    outside("music.playlist", p.key)
+    if p.key.starts_with("spotify:") {
+        outside("music.spotify", ["playlist", p.key])
+    } else {
+        outside("music.playlist", p.key)
+    }
 }
 
 /// Does what a suggestion on the home page names.
@@ -907,10 +1023,24 @@ action open_suggestion(lib: Library, row: Suggestion) uses time {
     if row.kind == "track" {
         if let song = lib.tracks.find(t -> t.key == row.target) { play_song(song) }
     } else if row.kind == "album" {
-        outside("music.album", row.target)
+        if row.target.starts_with("spotify:") {
+            outside("music.spotify", ["album", row.target])
+        } else {
+            outside("music.album", row.target)
+        }
     } else if row.kind == "artist" {
-        outside("music.artist", row.target)
-    } else if row.kind == "playlist" { outside("music.playlist", row.target) }
+        if row.target.starts_with("spotify:") {
+            outside("music.spotify", ["artist", row.target])
+        } else {
+            outside("music.artist", row.target)
+        }
+    } else if row.kind == "playlist" {
+        if row.target.starts_with("spotify:") {
+            outside("music.spotify", ["playlist", row.target])
+        } else {
+            outside("music.playlist", row.target)
+        }
+    }
 }
 
 /// Asks for what plays to be sung, into the song's own record.
@@ -955,7 +1085,64 @@ action set_cover(m: Mixtape, file: File) {
 /// Chooses which catalogue the app asks.
 action set_catalogue(lib: Library, which: Text) {
     lib.catalogue = which
-    if which == "youtube" { outside("music.home", "") }
+    if which == "youtube" {
+        outside("music.home", "")
+    } else if which == "spotify" {
+        outside("music.spotify", ["status", ""])
+        outside("music.spotify", ["devices", ""])
+    }
+}
+
+/// Connects the person's Spotify: the page they sign in on is shown in the Spotify section.
+action connect_spotify(lib: Library) (icon: .link, label: "Connect Spotify") {
+    lib.spotify_state = "connecting"
+    lib.spotify_trouble = ""
+    outside("music.spotify", ["connect", ""])
+}
+
+/// Takes the sign-in the person gave on Spotify's page.
+action finish_spotify(lib: Library) (icon: .check, label: "I signed in") {
+    outside("music.spotify", ["finish", ""])
+}
+
+/// Forgets this device's Spotify sign-in.
+action disconnect_spotify(lib: Library) (icon: .x, label: "Disconnect Spotify") {
+    outside("music.spotify", ["disconnect", ""])
+}
+
+/// Reads the places Spotify plays on.
+action spotify_devices(lib: Library) (icon: .speaker, label: "Refresh devices") {
+    outside("music.spotify", ["devices", ""])
+}
+
+/// Moves what plays to `d`, from the beginning.
+action transfer_playback(lib: Library, d: SpotifyDevice) (icon: .play) {
+    outside("music.spotify", ["transfer", d.key])
+}
+
+/// Plays `uri` on Spotify, where it plays: empty plays what was playing.
+action remote_play(lib: Library, uri: Text = "") (icon: .play, label: "Play on Spotify") {
+    outside("music.spotify", ["play", uri])
+}
+
+/// Pauses what plays on Spotify.
+action remote_pause(lib: Library) (icon: .pause, label: "Pause on Spotify") {
+    outside("music.spotify", ["pause", ""])
+}
+
+/// Plays what follows on Spotify.
+action remote_next(lib: Library) (icon: .skip_forward, label: "Next on Spotify") {
+    outside("music.spotify", ["next", ""])
+}
+
+/// Plays what played before on Spotify.
+action remote_previous(lib: Library) (icon: .skip_back, label: "Previous on Spotify") {
+    outside("music.spotify", ["previous", ""])
+}
+
+/// Reads what plays on Spotify now.
+action spotify_now(lib: Library) (icon: .music, label: "What plays on Spotify") {
+    outside("music.spotify", ["now", ""])
 }
 
 /// Turns one of the recommendations' switches.
@@ -989,6 +1176,21 @@ action prefer_artist(lib: Library, a: Artist) {
         lib.taste.preferred.add(a.key)
         lib.taste.dismissed.remove(a.key)
     }
+}
+
+/// Who is signed in to Spotify, and what it lets them do.
+fn spotify_account_line(lib: Library) -> Text {
+    let account = if lib.spotify_account == "" {
+        "Spotify"
+    } else {
+        lib.spotify_account
+    }
+    if lib.spotify_product == "" { account } else { "{account} · {lib.spotify_product}" }
+}
+
+/// A device, as a row says it: playing here, or what it is.
+fn device_line(d: SpotifyDevice) -> Text {
+    if d.active { "Playing here" } else if d.kind != "" { d.kind } else { "Spotify device" }
 }
 
 /// A file's name without its extension: what a song opened from a device is called.

@@ -19,6 +19,10 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true }
 # The device's network: the queries, the pictures and the songs an answer names, fetched here
 # because the app's window never has one.
 tilo-net = { path = "../../platform/tilo-net", default-features = false, features = ["blocking"], optional = true }
+# Spotify's Web API, and the system account vault its OAuth grant is kept in (`tilo-spotify`
+# over `account-credentials`): the same store Settings' accounts use, never the app's records.
+tilo-spotify = { path = "../tilo-spotify", optional = true }
+reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
 tilo-files = { path = "../../platform/tilo-files" }
 # The cache directory the moved client keeps its answers in, and the URLs it parses.
 tilo-paths = { path = "../../platform/tilo-paths" }
@@ -34,7 +38,7 @@ default = ["live", "connector"]
 # The YouTube Music client, and the connector process that holds it: the network the tilolang
 # host never has. A build without it, or a session with no connector running, answers from a
 # test's own service instead.
-live = ["dep:tilo-innertube", "dep:rustypipe", "dep:ui", "dep:tilo-net"]
+live = ["dep:tilo-innertube", "dep:rustypipe", "dep:ui", "dep:tilo-net", "dep:tilo-spotify", "dep:reqwest"]
 # The connector process's loop: the action API it takes instances from, and the socket each
 # reaches it over (`tilo-launcher run --tilolang-connector music`).
 connector = ["dep:runtime-portal"]

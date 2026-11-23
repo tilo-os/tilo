@@ -201,6 +201,12 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
         "Keeps a song on this device for playing with no network: (the address its bytes play \
          from, and its name). The copy's address is written into the song's `offline`.",
     ),
+    (
+        "music.spotify",
+        "Asks Spotify's own Web API: (what to do, and what it is about). It begins and finishes \
+         the person's sign-in, reads their library and the devices Spotify plays on, and moves \
+         playback between them; the catalogue pages it finds are written as any catalogue's.",
+    ),
 ];
 
 pub const KINDS: &[OriginKind] = &[
@@ -1065,6 +1071,26 @@ pub const KINDS: &[OriginKind] = &[
                 "found_for",
                 "Text",
                 "The search that found it, empty for none.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "music.device",
+        doc: "A place Spotify plays on: a phone, a computer, a speaker or the person's browser.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The device's id, as Spotify names it."),
+            field("name", "Text", "What people read of it."),
+            field(
+                "kind",
+                "Text",
+                "`computer`, `smartphone`, `speaker`, `tv`, `cast` or another Spotify names.",
+            ),
+            field("active", "Bool", "Whether what plays plays here."),
+            field(
+                "volume",
+                "Int",
+                "How loud it is, `0..=100`, when Spotify says.",
             ),
         ],
     },

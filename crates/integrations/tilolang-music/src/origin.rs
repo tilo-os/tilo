@@ -26,7 +26,8 @@ use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
 use crate::service::{
     AlbumItem, AlbumPage, ArtistItem, ArtistPage, HomePage, HomeSection, Item, Lyrics,
-    PlaylistItem, SearchPage, Service, ServiceError, TrackItem,
+    PlaylistItem, SearchPage, Service, ServiceError, SpotifyDevice, SpotifyOp, SpotifyReply,
+    TrackItem,
 };
 
 /// What the origin reads of each music kind it keeps in step, from the package's metadata.
@@ -37,12 +38,14 @@ struct Types {
     playlists_field: String,
     suggestions_field: String,
     sections_field: String,
+    devices_field: String,
     track: OriginType,
     album: OriginType,
     artist: OriginType,
     playlist: OriginType,
     suggestion: OriginType,
     section: OriginType,
+    device: OriginType,
     root: ResourceRef,
     root_ty: OriginType,
 }
@@ -57,6 +60,7 @@ enum Pending {
     Stream { key: String },
     Lyrics { title: String, artist: String },
     Pin { url: String, name: String },
+    Spotify(SpotifyOp),
 }
 
 /// What a request came back with.
@@ -69,6 +73,7 @@ enum Answered {
     Stream(String),
     Lyrics { title: String, lyrics: Lyrics },
     Pinned { url: String, address: String },
+    Spotify(SpotifyOp, SpotifyReply),
 }
 
 struct Waiting {
@@ -131,6 +136,7 @@ impl MusicOrigin {
         let playlist = kind("music.playlist")?;
         let suggestion = kind("music.suggestion")?;
         let section = kind("music.section")?;
+        let device = kind("music.device")?;
         let (_, root_ty) = package.main()?;
         let declared = package.meta.types.iter().find(|t| t.id == root_ty)?;
         let collection_of = |name: &str| {
@@ -147,12 +153,14 @@ impl MusicOrigin {
             playlists_field: collection_of("Playlist")?,
             suggestions_field: collection_of("Suggestion")?,
             sections_field: collection_of("Section")?,
+            devices_field: collection_of("SpotifyDevice")?,
             track,
             album,
             artist,
             playlist,
             suggestion,
             section,
+            device,
             // The root as the store made it: its id is the workspace's one resource of its
             // type, not the type's own id.
             root: host.root_of(app).ok()?,
@@ -192,6 +200,7 @@ impl MusicOrigin {
                 url: url.clone(),
                 name: name.clone(),
             },
+            Pending::Spotify(op) => Pending::Spotify(op.clone()),
         }
     }
 
@@ -251,6 +260,9 @@ fn answer(service: &dyn Service, pending: &Pending) -> Result<Answered, ServiceE
             url: url.clone(),
             address,
         }),
+        Pending::Spotify(op) => service
+            .spotify(op)
+            .map(|reply| Answered::Spotify(op.clone(), reply)),
     }
 }
 
@@ -352,6 +364,7 @@ impl Origin for MusicOrigin {
                 | "music.stream"
                 | "music.lyrics"
                 | "music.pin"
+                | "music.spotify"
         )
     }
 
@@ -403,6 +416,14 @@ impl Origin for MusicOrigin {
                 url: first,
                 name: text(1),
             },
+            "music.spotify" => {
+                let Some(op) = spotify_ask(&first, &text(1)) else {
+                    return Delivery::Rejected(format!(
+                        "the music origin has no Spotify operation `{first}`"
+                    ));
+                };
+                Pending::Spotify(op)
+            }
             _ => return Delivery::Rejected(format!("the music origin serves no `{capability}`")),
         };
         self.ask(pending);
@@ -510,7 +531,12 @@ impl MusicOrigin {
     ) -> Result<bool, RuntimeError> {
         let mut writes = Vec::new();
         match answered {
-            Err(error) => Self::state_writes(t, pending, "failed", &error.0, &mut writes),
+            Err(error) => {
+                Self::state_writes(t, pending, "failed", &error.0, &mut writes);
+                if matches!(pending, Pending::Spotify(_)) {
+                    Self::spotify_trouble(t, &error.0, &mut writes);
+                }
+            }
             Ok(Answered::Search(page)) => {
                 writes.extend(search_writes(host, t, page));
                 Self::state_writes(t, pending, "done", "", &mut writes);
@@ -541,6 +567,9 @@ impl MusicOrigin {
             Ok(Answered::Pinned { url, address }) => {
                 writes.extend(pin_writes(host, t, url, address));
             }
+            Ok(Answered::Spotify(op, reply)) => {
+                writes.extend(spotify_writes(host, t, op, reply));
+            }
         }
         if writes.is_empty() {
             return Ok(false);
@@ -548,6 +577,24 @@ impl MusicOrigin {
         host.runtime()
             .write_origin("music", None, |change| change.write(writes))?;
         Ok(true)
+    }
+
+    /// Why Spotify could not do what it was asked: the app shows it in its Spotify section.
+    fn spotify_trouble(t: &Types, why: &str, writes: &mut Vec<OriginWrite>) {
+        let mut fields = Vec::new();
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_state",
+            Self::text("trouble"),
+        );
+        put(&t.root_ty, &mut fields, "spotify_trouble", Self::text(why));
+        if !fields.is_empty() {
+            writes.push(OriginWrite::Set {
+                target: t.root.clone(),
+                fields,
+            });
+        }
     }
 
     /// What the app reads back of its own fetch: the state it stands in and why it failed.
@@ -561,6 +608,11 @@ impl MusicOrigin {
         let (what, why) = match pending {
             Pending::Search { .. } => ("search_state", "search_trouble"),
             Pending::Home => ("home_state", "home_trouble"),
+            Pending::Spotify(op) => match op.name() {
+                "search" => ("search_state", "search_trouble"),
+                "home" => ("home_state", "home_trouble"),
+                _ => return,
+            },
             _ => return,
         };
         let mut fields = Vec::new();
@@ -575,6 +627,217 @@ impl MusicOrigin {
     }
 }
 
+/// The Spotify operation an effect names, with its one argument.
+fn spotify_ask(name: &str, arg: &str) -> Option<SpotifyOp> {
+    let device = || arg.to_owned();
+    Some(match name {
+        "connect" => SpotifyOp::Connect,
+        "finish" => SpotifyOp::Finish,
+        "disconnect" => SpotifyOp::Disconnect,
+        "status" => SpotifyOp::Status,
+        "devices" => SpotifyOp::Devices,
+        "transfer" => SpotifyOp::Transfer { device: device() },
+        "play" => SpotifyOp::Play {
+            uri: device(),
+            device: String::new(),
+        },
+        "pause" => SpotifyOp::Pause { device: device() },
+        "next" => SpotifyOp::Next { device: device() },
+        "previous" => SpotifyOp::Previous { device: device() },
+        "now" => SpotifyOp::Now,
+        "search" => SpotifyOp::Search { query: device() },
+        "home" => SpotifyOp::Home,
+        "album" => SpotifyOp::Album { key: device() },
+        "artist" => SpotifyOp::Artist { key: device() },
+        "playlist" => SpotifyOp::Playlist { key: device() },
+        _ => return None,
+    })
+}
+
+/// What Spotify answered, written where the app reads it: its catalogue pages as any
+/// catalogue's, and the person's sign-in, devices and what plays into the library's own fields.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one write for each part of an answer, in the order the library reads them"
+)]
+fn spotify_writes(
+    host: &Host,
+    t: &Types,
+    op: &SpotifyOp,
+    reply: &SpotifyReply,
+) -> Vec<OriginWrite> {
+    let mut writes = Vec::new();
+    if let Some(page) = &reply.search {
+        writes.extend(search_writes(host, t, page));
+    }
+    if let Some(page) = &reply.home {
+        writes.extend(home_writes(host, t, page));
+    }
+    match op {
+        SpotifyOp::Album { .. } => {
+            if let Some(page) = &reply.album {
+                writes.extend(release_writes(host, t, &t.album, &t.albums_field, page));
+            }
+        }
+        SpotifyOp::Artist { .. } => {
+            if let Some(page) = &reply.artist {
+                writes.extend(artist_writes(host, t, page));
+            }
+        }
+        SpotifyOp::Playlist { .. } => {
+            if let Some(page) = &reply.playlist {
+                writes.extend(release_writes(
+                    host,
+                    t,
+                    &t.playlist,
+                    &t.playlists_field,
+                    page,
+                ));
+            }
+        }
+        _ => {}
+    }
+    let mut fields = Vec::new();
+    let state = if !reply.url.is_empty() {
+        "connecting"
+    } else if matches!(op, SpotifyOp::Disconnect) {
+        "off"
+    } else if !reply.account.is_empty() {
+        "connected"
+    } else {
+        ""
+    };
+    if !state.is_empty() {
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_state",
+            MusicOrigin::text(state),
+        );
+    }
+    if !reply.url.is_empty() {
+        put(
+            &t.root_ty,
+            &mut fields,
+            "connect_url",
+            MusicOrigin::text(&reply.url),
+        );
+    }
+    if !reply.account.is_empty() {
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_account",
+            MusicOrigin::text(&reply.account),
+        );
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_product",
+            MusicOrigin::text(&reply.product),
+        );
+        put(
+            &t.root_ty,
+            &mut fields,
+            "connect_url",
+            MusicOrigin::text(""),
+        );
+    }
+    if matches!(op, SpotifyOp::Disconnect) {
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_account",
+            MusicOrigin::text(""),
+        );
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_product",
+            MusicOrigin::text(""),
+        );
+        put(
+            &t.root_ty,
+            &mut fields,
+            "connect_url",
+            MusicOrigin::text(""),
+        );
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_now",
+            MusicOrigin::text(""),
+        );
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_active",
+            MusicOrigin::text(""),
+        );
+    }
+    if !reply.now.is_empty() || !reply.active.is_empty() || reply.playing {
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_now",
+            MusicOrigin::text(&reply.now),
+        );
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_playing",
+            Value::Bool(reply.playing),
+        );
+    }
+    if !reply.active.is_empty() {
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_active",
+            MusicOrigin::text(&reply.active),
+        );
+    }
+    put(
+        &t.root_ty,
+        &mut fields,
+        "spotify_trouble",
+        MusicOrigin::text(""),
+    );
+    if !fields.is_empty() {
+        writes.push(OriginWrite::Set {
+            target: t.root.clone(),
+            fields,
+        });
+    }
+    if !reply.devices.is_empty() {
+        let items: Vec<(String, Vec<(String, Value)>)> = reply
+            .devices
+            .iter()
+            .map(|device| (device.key.clone(), device_fields(&t.device, device)))
+            .collect();
+        writes.extend(upsert_writes(
+            host,
+            &t.device,
+            &t.root,
+            &t.devices_field,
+            "key",
+            &items,
+        ));
+    }
+    writes
+}
+
+fn device_fields(ty: &OriginType, device: &SpotifyDevice) -> Vec<(String, Value)> {
+    let pairs = vec![
+        ("key", MusicOrigin::text(&device.key)),
+        ("name", MusicOrigin::text(&device.name)),
+        ("kind", MusicOrigin::text(&device.kind)),
+        ("active", Value::Bool(device.active)),
+        ("volume", Value::Int(device.volume)),
+    ];
+    declared(ty, pairs)
+}
+
 fn track_fields(ty: &OriginType, tr: &TrackItem, found_for: &str) -> Vec<(String, Value)> {
     let mut pairs = vec![
         ("key", MusicOrigin::text(&tr.key)),
@@ -587,6 +850,11 @@ fn track_fields(ty: &OriginType, tr: &TrackItem, found_for: &str) -> Vec<(String
         ("plays", Value::Int(tr.plays)),
         ("cover", MusicOrigin::text(&tr.cover)),
     ];
+    // A Spotify song plays on Spotify's own device, not from bytes this device fetches: its
+    // address is the URI that plays it, which the app hands back to Spotify.
+    if tr.key.starts_with("spotify:") {
+        pairs.push(("stream", MusicOrigin::text(&tr.key)));
+    }
     if !found_for.is_empty() {
         pairs.push(("found_for", MusicOrigin::text(found_for)));
     }

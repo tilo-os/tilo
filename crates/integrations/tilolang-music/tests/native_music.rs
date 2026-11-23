@@ -20,7 +20,7 @@ use std::sync::atomic::AtomicBool;
 
 use tilolang_music::{
     AlbumItem, AlbumPage, ArtistItem, ArtistPage, HomePage, HomeSection, Item, LyricLine, Lyrics,
-    MusicOrigin, Scripted, SearchPage, Service, TrackItem,
+    MusicOrigin, Scripted, SearchPage, Service, SpotifyDevice, SpotifyReply, TrackItem,
 };
 use tilolang_tilo::host::Host;
 use tilolang_tilo::origin::{Origin, OriginCx};
@@ -476,11 +476,15 @@ fn the_live_view_shows_the_song_and_each_control_is_an_action() {
 }
 
 #[test]
-fn the_catalogue_switch_leaves_the_music_origin_for_spotify() {
+fn the_catalogue_switch_asks_spotify_through_the_music_origin() {
     let host = workspace();
     let origin = MusicOrigin::new(
         Arc::new(scripted()) as Arc<dyn Service>,
         Arc::new(AtomicBool::new(false)),
+    );
+    assert!(
+        origin.serves("music.spotify"),
+        "Spotify is the music origin's to ask"
     );
     invoke(
         &host,
@@ -490,8 +494,97 @@ fn the_catalogue_switch_leaves_the_music_origin_for_spotify() {
             Value::text("spotify"),
         ],
     );
+}
+
+/// A field of the library, as text.
+fn library_text(host: &Host, field: &str) -> String {
+    let root = host.root_of(APP).unwrap();
+    match host
+        .runtime()
+        .read(&root, &field_id(host, "Library", field))
+        .unwrap()
+    {
+        Value::Text(text) => text,
+        other => panic!("Library.{field} is text: {other:?}"),
+    }
+}
+
+/// The sign-in, the devices and a move between them, through the origin: what the person's
+/// Spotify is, written where the library reads it.
+#[test]
+fn spotify_sign_in_devices_and_transfer_reach_the_library() {
+    let host = workspace();
+    let mut scripted = scripted();
+    scripted.spotify.insert(
+        "connect".to_owned(),
+        SpotifyReply {
+            url: "https://accounts.spotify.com/authorize?client_id=tilo".to_owned(),
+            ..SpotifyReply::default()
+        },
+    );
+    scripted.spotify.insert(
+        "finish".to_owned(),
+        SpotifyReply {
+            account: "Ada".to_owned(),
+            product: "premium".to_owned(),
+            ..SpotifyReply::default()
+        },
+    );
+    scripted.spotify.insert(
+        "devices".to_owned(),
+        SpotifyReply {
+            devices: vec![
+                SpotifyDevice {
+                    key: "kitchen".to_owned(),
+                    name: "Kitchen".to_owned(),
+                    kind: "speaker".to_owned(),
+                    active: false,
+                    volume: 40,
+                },
+                SpotifyDevice {
+                    key: "laptop".to_owned(),
+                    name: "Laptop".to_owned(),
+                    kind: "computer".to_owned(),
+                    active: true,
+                    volume: 80,
+                },
+            ],
+            active: "laptop".to_owned(),
+            now: "First Light — Aurora Skies".to_owned(),
+            playing: true,
+            ..SpotifyReply::default()
+        },
+    );
+    let mut origin = MusicOrigin::new(
+        Arc::new(scripted) as Arc<dyn Service>,
+        Arc::new(AtomicBool::new(false)),
+    );
+    let step = |origin: &mut MusicOrigin, op: &str, arg: &str| {
+        let payload = serde_json::json!([op, arg]);
+        deliver(&host, origin, "music.spotify", &payload);
+    };
+    step(&mut origin, "connect", "");
     assert!(
-        !origin.serves("spotify.home"),
-        "Spotify is its own origin's"
+        library_text(&host, "connect_url").starts_with("https://accounts.spotify.com/"),
+        "the page the person signs in on is the library's"
+    );
+    assert_eq!(library_text(&host, "spotify_state"), "connecting");
+    step(&mut origin, "finish", "");
+    assert_eq!(library_text(&host, "spotify_state"), "connected");
+    assert_eq!(library_text(&host, "spotify_account"), "Ada");
+    assert_eq!(library_text(&host, "spotify_product"), "premium");
+    step(&mut origin, "devices", "");
+    let root = host.root_of(APP).unwrap();
+    let Ok(Value::List(devices)) = host
+        .runtime()
+        .read(&root, &field_id(&host, "Library", "devices"))
+    else {
+        panic!("the library holds its devices");
+    };
+    assert_eq!(devices.len(), 2, "both places Spotify plays on");
+    assert_eq!(library_text(&host, "spotify_active"), "laptop");
+    assert_eq!(
+        library_text(&host, "spotify_now"),
+        "First Light — Aurora Skies"
     );
 }

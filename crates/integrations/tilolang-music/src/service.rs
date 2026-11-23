@@ -197,6 +197,13 @@ pub trait Service: Send + Sync {
     /// address every window of the workspace reads them at (`tilo-blob://…`): what keeping a
     /// song offline is.
     fn pin(&self, url: &str, name: &str) -> Result<String, ServiceError>;
+
+    /// What Spotify answers to `op`: its catalogue, and the person's own sign-in, library,
+    /// devices and playback. A catalogue that is not Spotify says so.
+    fn spotify(&self, op: &SpotifyOp) -> Result<SpotifyReply, ServiceError> {
+        let _ = op;
+        Err(ServiceError("this catalogue has no Spotify".into()))
+    }
 }
 
 /// The service over YouTube Music's own client (`tilo-innertube`, which stands on rustypipe).
@@ -465,6 +472,10 @@ impl Service for Live {
     fn pin(&self, url: &str, name: &str) -> Result<String, ServiceError> {
         crate::files::pin(url, name).map_err(ServiceError)
     }
+
+    fn spotify(&self, op: &SpotifyOp) -> Result<SpotifyReply, ServiceError> {
+        crate::spotify::shared()?.op(op)
+    }
 }
 
 impl Item {
@@ -499,6 +510,123 @@ impl Item {
     }
 }
 
+/// A place Spotify plays on: a phone, a computer, a speaker or the person's browser.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyDevice {
+    /// The device's id, as Spotify names it.
+    pub key: String,
+    pub name: String,
+    /// `computer`, `smartphone`, `speaker`, `tv`, `cast` or another it names.
+    pub kind: String,
+    /// Whether what plays plays here.
+    pub active: bool,
+    /// How loud it is, `0..=100`, when Spotify says.
+    pub volume: i64,
+}
+
+/// What a question to Spotify's own Web API is: the parts of a catalogue the app shows, and
+/// the person's own sign-in, library and devices.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpotifyOp {
+    /// Begin the sign-in: the answer carries the page the person signs in on.
+    Connect,
+    /// Take the sign-in the person gave on Spotify's page.
+    Finish,
+    /// Forget this device's Spotify sign-in.
+    Disconnect,
+    /// Who is signed in, and whether Spotify lets them play.
+    Status,
+    /// The places Spotify plays on.
+    Devices,
+    /// Move what plays to `device`, from the beginning.
+    Transfer {
+        device: String,
+    },
+    /// Play `uri` on `device` (its own, when empty).
+    Play {
+        uri: String,
+        device: String,
+    },
+    /// Pause what plays on `device`.
+    Pause {
+        device: String,
+    },
+    /// What plays after this one plays.
+    Next {
+        device: String,
+    },
+    /// What plays before this one plays.
+    Previous {
+        device: String,
+    },
+    /// What plays now, and where.
+    Now,
+    /// What Spotify's catalogue finds for `query`.
+    Search {
+        query: String,
+    },
+    /// What the person keeps in Spotify: their songs and playlists.
+    Home,
+    Album {
+        key: String,
+    },
+    Artist {
+        key: String,
+    },
+    Playlist {
+        key: String,
+    },
+}
+
+impl SpotifyOp {
+    /// The name a reply is looked up by in a script: the op without its arguments.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Connect => "connect",
+            Self::Finish => "finish",
+            Self::Disconnect => "disconnect",
+            Self::Status => "status",
+            Self::Devices => "devices",
+            Self::Transfer { .. } => "transfer",
+            Self::Play { .. } => "play",
+            Self::Pause { .. } => "pause",
+            Self::Next { .. } => "next",
+            Self::Previous { .. } => "previous",
+            Self::Now => "now",
+            Self::Search { .. } => "search",
+            Self::Home => "home",
+            Self::Album { .. } => "album",
+            Self::Artist { .. } => "artist",
+            Self::Playlist { .. } => "playlist",
+        }
+    }
+}
+
+/// What Spotify answered: a catalogue page, the person's sign-in, or their devices.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyReply {
+    /// The page the person signs in on, from [`SpotifyOp::Connect`].
+    pub url: String,
+    /// What the person is called, signed in.
+    pub account: String,
+    /// `premium`, `free`, `open` or empty, as Spotify says.
+    pub product: String,
+    /// The devices Spotify plays on.
+    pub devices: Vec<SpotifyDevice>,
+    /// The device what plays plays on, empty when nothing does.
+    pub active: String,
+    /// What plays now, as people read it: the song and who sings it.
+    pub now: String,
+    /// Whether it plays.
+    pub playing: bool,
+    pub search: Option<SearchPage>,
+    pub home: Option<HomePage>,
+    pub album: Option<AlbumPage>,
+    pub artist: Option<ArtistPage>,
+    pub playlist: Option<AlbumPage>,
+}
+
 /// A service that answers from a script, for a test or a development session: the same answers
 /// every time, in the order they were written.
 #[derive(Default)]
@@ -511,6 +639,8 @@ pub struct Scripted {
     pub lyrics: std::collections::BTreeMap<String, Lyrics>,
     /// The content address each pinned URL is kept at.
     pub pinned: std::collections::BTreeMap<String, String>,
+    /// What Spotify answers, by [`SpotifyOp::name`].
+    pub spotify: std::collections::BTreeMap<String, SpotifyReply>,
 }
 
 impl Service for Scripted {
@@ -565,6 +695,13 @@ impl Service for Scripted {
             .get(url)
             .cloned()
             .ok_or_else(|| ServiceError(format!("nothing scripted for {url:?}")))
+    }
+
+    fn spotify(&self, op: &SpotifyOp) -> Result<SpotifyReply, ServiceError> {
+        self.spotify
+            .get(op.name())
+            .cloned()
+            .ok_or_else(|| ServiceError(format!("no Spotify scripted for {op:?}")))
     }
 }
 

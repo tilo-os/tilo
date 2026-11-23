@@ -23375,6 +23375,7 @@ dependencies = [
 name = "tilolang-music"
 version = "0.1.0"
 dependencies = [
+ "reqwest",
  "runtime-portal",
  "rustypipe",
  "serde",
@@ -23384,6 +23385,7 @@ dependencies = [
  "tilo-innertube",
  "tilo-net",
  "tilo-paths",
+ "tilo-spotify",
  "tilo-test-env",
  "tilolang-runtime",
  "tilolang-tilo",

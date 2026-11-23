@@ -27,6 +27,8 @@ pub mod origin;
 #[cfg(unix)]
 pub mod remote;
 pub mod service;
+#[cfg(feature = "live")]
+pub mod spotify;
 pub mod wire;
 
 pub use origin::MusicOrigin;
@@ -34,7 +36,8 @@ pub use origin::MusicOrigin;
 pub use remote::RemoteService;
 pub use service::{
     AlbumItem, AlbumPage, ArtistItem, ArtistPage, HomePage, HomeSection, Item, Live, LyricLine,
-    Lyrics, PlaylistItem, Scripted, SearchPage, Service, ServiceError, TrackItem, scripted,
+    Lyrics, PlaylistItem, Scripted, SearchPage, Service, ServiceError, SpotifyDevice, SpotifyOp,
+    SpotifyReply, TrackItem, scripted,
 };
 
 /// The origin kept in step with YouTube over the connector at the far end of `stream`, waking

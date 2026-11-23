@@ -7,7 +7,9 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-use crate::service::{AlbumPage, ArtistPage, HomePage, Lyrics, SearchPage, ServiceError};
+use crate::service::{
+    AlbumPage, ArtistPage, HomePage, Lyrics, SearchPage, ServiceError, SpotifyOp, SpotifyReply,
+};
 
 /// The largest frame either side accepts: an artist's page with its songs fits many times over.
 pub const MAX_FRAME: usize = 64 << 20;
@@ -48,6 +50,11 @@ pub enum Ask {
         url: String,
         name: String,
     },
+    /// Spotify's own Web API: its catalogue, and the person's sign-in, library and devices.
+    Spotify {
+        request: u64,
+        op: SpotifyOp,
+    },
 }
 
 /// The id a question is asked under.
@@ -61,7 +68,8 @@ pub const fn request_of(ask: &Ask) -> u64 {
         | Ask::Playlist { request, .. }
         | Ask::Stream { request, .. }
         | Ask::Lyrics { request, .. }
-        | Ask::Pin { request, .. } => *request,
+        | Ask::Pin { request, .. }
+        | Ask::Spotify { request, .. } => *request,
     }
 }
 
@@ -101,6 +109,11 @@ pub enum FromConnector {
         request: u64,
         address: String,
     },
+    /// What Spotify answered.
+    Spotify {
+        request: u64,
+        reply: SpotifyReply,
+    },
     /// The catalogue could not answer, or refused: why.
     Failed {
         request: u64,
@@ -120,6 +133,7 @@ pub const fn kind_of(answer: &FromConnector) -> &'static str {
         FromConnector::Stream { .. } => "a stream",
         FromConnector::Lyrics { .. } => "lyrics",
         FromConnector::Pinned { .. } => "a pinned song",
+        FromConnector::Spotify { .. } => "Spotify",
         FromConnector::Failed { .. } => "a failure",
     }
 }
@@ -137,6 +151,7 @@ impl FromConnector {
             | Self::Stream { request, .. }
             | Self::Lyrics { request, .. }
             | Self::Pinned { request, .. }
+            | Self::Spotify { request, .. }
             | Self::Failed { request, .. } => *request,
         }
     }

@@ -494,6 +494,18 @@ d-6tpcfsjw = Taste page
     .w-catalogue = Catalogue
     .w-youtube-music = YouTube Music
     .w-off = Off
+    .w-spotify = Spotify
+    .w-sign-in-on-spotify = Sign in on Spotify
+    .w-i-signed-in = I signed in
+    .w-previous = Previous
+    .w-pause = Pause
+    .w-play = Play
+    .w-next = Next
+    .w-refresh = Refresh
+    .w-disconnect = Disconnect
+    .w-playing-here = Playing here
+    .w-play-here = Play here
+    .w-connect-spotify = Connect Spotify
 
 d-osqkr7ab = Queue
     .w-queue = Queue
@@ -506,3 +518,86 @@ d-pf6yvngz = Lyrics
     .w-nothing-playing = Nothing playing
 
 d-6oildalu = Search~present
+
+d-iyodtvzu = Spotify device
+    .doc = A place Spotify plays on: a phone, a computer, a speaker or the person's browser.
+    .noun = { $count ->
+        [one] device
+       *[other] devices
+    }
+    .untitled = Unknown device
+
+d-4ruem7bk = Key
+    .doc = The device's id, as Spotify names it.
+
+d-fysa7usi = Name
+
+d-ajgkhxtc = Kind
+    .doc = `computer`, `smartphone`, `speaker`, `tv`, `cast` or another Spotify names.
+
+d-njju5rcv = Active
+    .doc = Whether what plays plays here.
+
+d-daqeango = Volume
+    .doc = How loud it is, `0..=100`, when Spotify says.
+
+d-cjoykprs = Devices
+    .doc = The places Spotify plays on, and the person's sign-in to it.
+
+d-d6agrwhu = Spotify state
+    .doc = `off`, `connecting`, `connected` or `trouble`.
+
+d-wzbxwvai = Spotify account
+
+d-q6fvzfwi = Spotify product
+    .doc = `premium`, `free`, `open` or empty, as Spotify says.
+
+d-bnnshdna = Spotify trouble
+
+d-rwf7lfs6 = Connect URL
+    .doc = The page the person signs in on, while `spotify_state` says `connecting`.
+
+d-gghnswba = Spotify active
+    .doc = The device Spotify plays on, as its key; empty when nothing does.
+
+d-sdkihe6k = Spotify now
+    .doc = What plays there, as people read it.
+
+d-22kwzmah = Spotify playing
+
+d-sbgoce2w = Device
+
+d-cpsa6nlq = Connect Spotify
+    .doc = Connects the person's Spotify: the page they sign in on is shown in the Spotify section.
+
+d-bgomdthz = I signed in
+    .doc = Takes the sign-in the person gave on Spotify's page.
+
+d-c3zailpi = Disconnect Spotify
+    .doc = Forgets this device's Spotify sign-in.
+
+d-lyxtlmu3 = Refresh devices
+    .doc = Reads the places Spotify plays on.
+
+d-s5u526ny = Transfer playback
+    .doc = Moves what plays to `d`, from the beginning.
+
+d-amt56qpq = Play on Spotify
+    .doc = Plays `uri` on Spotify, where it plays: empty plays what was playing.
+
+d-7vrw7iss = Pause on Spotify
+    .doc = Pauses what plays on Spotify.
+
+d-y4ceqqvs = Next on Spotify
+    .doc = Plays what follows on Spotify.
+
+d-moryk2vk = Previous on Spotify
+    .doc = Plays what played before on Spotify.
+
+d-clxyvglt = What plays on Spotify
+    .doc = Reads what plays on Spotify now.
+
+d-s5u526ny-d = Device
+
+d-amt56qpq-uri = Address
+
