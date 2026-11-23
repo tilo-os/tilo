@@ -422,12 +422,13 @@ mod surface_tests {
         let view = serde_json::to_value(DevicesView::from(&reading)).expect("the view serialises");
         let section_fields = section.as_object().expect("the section is an object");
         let view_fields = view.as_object().expect("the view is an object");
+        // Which fields, not their order: the workspace's serde_json keeps insertion order.
         assert_eq!(
             view_fields
                 .keys()
-                .map(String::from)
-                .collect::<Vec<String>>(),
-            ["chosen", "devices", "playing"],
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<&str>>(),
+            std::collections::BTreeSet::from(["chosen", "devices", "playing"]),
             "the view reads the devices, what plays and what would be sent"
         );
         for key in view_fields.keys() {
