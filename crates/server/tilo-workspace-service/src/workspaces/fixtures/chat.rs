@@ -138,7 +138,10 @@ pub async fn post_with(
         let before = message_ids(&page);
         let mut arguments = serde_json::json!({ "channel": channel, "text": text });
         if let Some(attachment) = attachment {
-            arguments["attachments"] = serde_json::json!([attachment]);
+            arguments
+                .as_object_mut()
+                .expect("a post's arguments are an object")
+                .insert("attachments".into(), serde_json::json!([attachment]));
         }
         page.invoke(
             &tilo_actions::api::ActionAddress::new(
