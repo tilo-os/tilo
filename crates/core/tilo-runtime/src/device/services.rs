@@ -265,6 +265,13 @@ impl Daemon {
         self.workspaces.copies()
     }
 
+    /// Every counter of the workspace service this device runs: the documents its reads opened,
+    /// and the traffic its sessions carried.
+    #[must_use]
+    pub fn metrics(&self) -> tilo_workspace_service::metrics::MetricsSnapshot {
+        self.workspaces.service().metrics()
+    }
+
     /// Where this device's endpoint is dialled: the address its workspaces' other devices ask
     /// its actions at (`tilo-actions/1`).
     #[must_use]
@@ -1212,6 +1219,15 @@ fn broker_services(
             )));
     }
     Ok(ProcessServices {
+        // The records of the workspaces this device keeps, read for the apps, agents and programs
+        // it serves: each capture opens the record's document here, and counts it.
+        committed_documents: Some(Arc::new(
+            tilo_workspace_service::apps::service_reads::ServiceReads::new(
+                parts.workspaces.copies().clone(),
+                parts.workspaces.service().metrics_counter(),
+            ),
+        )
+            as Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>),
         native_certificates: Some(Arc::new(Certificates {
             policy_time,
             workspaces: Arc::downgrade(parts.workspaces),

@@ -29,13 +29,21 @@ use crate::workspaces::Workspaces;
 #[derive(Clone)]
 pub struct ServiceReads {
     workspaces: Workspaces,
+    /// The service's counters: one document read each time a capture opens a record.
+    metrics: std::sync::Arc<crate::metrics::Metrics>,
 }
 
 impl ServiceReads {
-    /// Reads of the resources of the workspaces `workspaces` governs.
+    /// Reads of the resources of the workspaces `workspaces` governs, counted in `metrics`.
     #[must_use]
-    pub const fn new(workspaces: Workspaces) -> Self {
-        Self { workspaces }
+    pub const fn new(
+        workspaces: Workspaces,
+        metrics: std::sync::Arc<crate::metrics::Metrics>,
+    ) -> Self {
+        Self {
+            workspaces,
+            metrics,
+        }
     }
 
     /// The workspaces to answer from.
@@ -132,6 +140,9 @@ impl NativeDocumentReads for ServiceReads {
             if !workspaces.holds_resource(workspace, app, resource) {
                 return Ok::<NativeDocumentRead, String>(NativeDocumentRead::Absent);
             }
+            // One read of one record's document, whether it answers the whole record, the part
+            // past the revision the reader held, or that nothing changed since it.
+            self.metrics.inc_documents_read();
             // A reader that holds a revision reads again only what changed: the capture below
             // says which, cheaper than saving the whole document.
             if let Some(known) = known_revision

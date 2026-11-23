@@ -85,6 +85,14 @@ pub struct MetricsSnapshot {
     /// presence forwarded to subscribers as they arrived, not replay.
     #[serde(default)]
     pub bytes_sent_live: u64,
+    /// Documents read out of the workspaces this device or server keeps: one per
+    /// capture of a record's document, whether it answered the whole record, the
+    /// part of it past the revision the reader already has, or that nothing
+    /// changed. A refresh that reads only what changed shows here as the
+    /// documents it read, not as every record in its workspace. Zero in
+    /// snapshots from servers that predate the counter.
+    #[serde(default)]
+    pub documents_read: u64,
     /// Peer sessions connected when the snapshot was taken (a gauge, unlike
     /// the counters above).
     #[serde(default, skip_serializing_if = "is_zero")]

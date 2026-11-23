@@ -26,8 +26,8 @@ use crate::Reaching;
 use crate::app_serving::AppActionServer;
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::metrics::Metrics;
-use crate::registry::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
+use crate::registry::WorkspaceRegistry;
 use crate::transport::MAX_FRAME_BYTES;
 use tilo_peer_state::transport::{StreamFuture, StreamRecv, StreamSend, Transport};
 use tilo_server_protocol::{WorkSetting, WorkspaceId};
@@ -718,6 +718,7 @@ impl WorkspaceService {
     pub fn document_reads(&self) -> Arc<dyn crate::apps::services::NativeDocumentReads> {
         Arc::new(crate::apps::service_reads::ServiceReads::new(
             self.workspaces.clone(),
+            self.metrics_counter(),
         ))
     }
 
@@ -736,6 +737,12 @@ impl WorkspaceService {
     #[must_use]
     pub fn metrics(&self) -> crate::metrics::MetricsSnapshot {
         self.sessions.metrics.snapshot()
+    }
+
+    /// The counters this service bumps, for a reader its embedder serves beside it.
+    #[must_use]
+    pub fn metrics_counter(&self) -> Arc<crate::metrics::Metrics> {
+        Arc::clone(&self.sessions.metrics)
     }
 
     /// End the in-process sessions and stop the service's work. The embedder
@@ -1308,7 +1315,6 @@ impl ServerProtocol {
             )
             .await
     }
-
 }
 
 /// The device's own host, as its native owner joins the workspaces placed on it.

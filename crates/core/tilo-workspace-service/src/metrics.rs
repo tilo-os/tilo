@@ -56,6 +56,8 @@ pub struct Metrics {
     bytes_sent: AtomicU64,
     /// Bytes of live fan-out frames written to peer sessions.
     bytes_sent_live: AtomicU64,
+    /// Documents read out of this service's workspaces, one per capture.
+    documents_read: AtomicU64,
     /// Egress per server workspace.
     workspaces: RwLock<HashMap<WorkspaceId, WorkspaceCounters>>,
     /// Egress per connected session, keyed by a serial number.
@@ -143,6 +145,11 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Count one document read out of the workspaces this service holds.
+    pub fn inc_documents_read(&self) {
+        self.documents_read.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Charge a frame of `bytes` that a session is about to write to `workspace`'s
     /// egress; `live` marks live fan-out (a delta or presence forwarded as it
     /// arrived), as opposed to replay, replies and positions. The session's
@@ -228,6 +235,7 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
             bytes_sent_live: self.bytes_sent_live.load(Ordering::Relaxed),
+            documents_read: self.documents_read.load(Ordering::Relaxed),
             sessions_open: u64::try_from(self.sessions.lock_recover().len()).unwrap_or(u64::MAX),
             workspaces: self.workspace_egress(),
         }

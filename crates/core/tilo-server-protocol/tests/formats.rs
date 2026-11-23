@@ -100,6 +100,7 @@ fn json_encodings_are_pinned() {
         subscriber_dropped_backpressure: 11,
         bytes_sent: 12,
         bytes_sent_live: 13,
+        documents_read: 17,
         sessions_open: 0,
         workspaces: BTreeMap::from([(
             WorkspaceId::from_u128(14),
@@ -123,6 +124,7 @@ fn json_encodings_are_pinned() {
   "subscriber_dropped_backpressure": 11,
   "bytes_sent": 12,
   "bytes_sent_live": 13,
+  "documents_read": 17,
   "workspaces": {
     "00000000-0000-0000-0000-00000000000e": {
       "bytes_sent": 15,
@@ -158,6 +160,7 @@ fn json_encodings_are_pinned() {
         MetricsSnapshot {
             bytes_sent: 0,
             bytes_sent_live: 0,
+            documents_read: 0,
             workspaces: BTreeMap::new(),
             ..snapshot
         }
