@@ -173,25 +173,26 @@ async fn lounge_on(
     }
 }
 
-/// [`lounge`] with its member's own subscription to the node's host, as the member's phone
-/// or laptop reaches it.
-pub(super) async fn lounge_with_client() -> (Lounge, crate::ServerClient) {
-    lounge_reading_with_client(0).await
+/// [`lounge`] with its member's own link to the node's host, as the member's phone or laptop
+/// reaches it.
+pub(super) async fn lounge_with_link() -> (Lounge, Session) {
+    lounge_reading_with_link(0).await
 }
 
-/// [`lounge_with_client`] over [`lounge_reading`].
-async fn lounge_reading_with_client(capacity: usize) -> (Lounge, crate::ServerClient) {
+/// [`lounge_with_link`] over [`lounge_reading`].
+async fn lounge_reading_with_link(capacity: usize) -> (Lounge, Session) {
     // The host is heap-held from the moment it exists: a node's state is far larger than a
-    // test's future wants to keep in its frame while the member's subscription is set up.
+    // test's future wants to keep in its frame while the member's link is set up.
     let lounge = Box::new(lounge_reading(capacity).await);
-    let client = Box::pin(subscribed_member(
+    let session = Box::pin(member_session(
         &lounge.server,
         &lounge.member_key,
-        lounge.member_cert.clone(),
+        &lounge.member_cert,
         lounge.workspace_id,
+        capacity,
     ))
     .await;
-    (*lounge, client)
+    (*lounge, session)
 }
 
 /// A node governs a workspace whose record its members write sealed. It reads
@@ -314,92 +315,126 @@ pub(super) async fn retained_writes(
         .collect()
 }
 
-/// A member's own client to `relay`'s host, subscribed to `workspace_id`'s
-/// workspace, as the member's phone or laptop reaches it.
-pub(super) async fn subscribed_member(
-    server: &crate::workspaces::fixtures::TestHost,
+/// A member device's link to `host`'s workspace, as the member's phone or laptop reaches it:
+/// a dialer to the host, the member handshake on the link's first stream, and the workspace's
+/// records dialled over it.
+pub(super) struct Session {
+    /// The link this device reads the workspace over.
+    pub(super) link: tilo_peer_state::direct::DirectSync,
+    /// Every frame the link brings this device, missing none of the workspace's frames.
+    pub(super) heard: tilo_peer_state::direct::Reader,
+    pairing: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+impl Session {
+    /// Send `message` to the host, as this device's own write travels.
+    ///
+    /// # Panics
+    ///
+    /// The frame could not be kept.
+    pub(super) fn send(&self, message: NeighbourMsg) {
+        self.link.send(message).unwrap();
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.pairing.abort();
+    }
+}
+
+/// `key`'s device, `cert`'s, linked to `host`'s workspace `workspace_id`: the link it reads the
+/// workspace over, caught up, with room for only `capacity` frames heard and not read yet when
+/// it is above zero.
+pub(super) async fn member_session(
+    host: &crate::workspaces::fixtures::TestHost,
     key: &ed25519_dalek::SigningKey,
-    cert: DeviceCert,
+    cert: &DeviceCert,
     workspace_id: WorkspaceId,
-) -> crate::ServerClient {
+    capacity: usize,
+) -> Session {
+    let home = tilo_test_env::relay::relay().await;
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-        .relay_mode(iroh::RelayMode::Disabled)
+        .relay_mode(iroh::RelayMode::Custom(home.relays()))
         .bind()
         .await
         .unwrap();
-    let client = crate::ServerClient::connect_to_pinned_host(
+    let workspaces = host.workspaces();
+    let host_device = workspaces.host_device();
+    let host_cert = workspaces.device_cert().clone();
+    let dialer = tilo_server_client::link::Dialer::from_endpoint(
+        tilo_server_client::ServerAddress::at(host.node_addr()),
         endpoint,
-        server.node_addr(),
-        cert,
-        key.clone(),
-        tilo_user_identity::RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    client
-        .send(crate::Envelope::Subscribe { workspace_id })
-        .unwrap();
-    tilo_test_env::within("the member's subscription", async {
-        while !matches!(client.recv().await, Some(crate::Envelope::Ready { .. })) {}
+    );
+    let mut state = workspaces
+        .state(&workspace_id.to_string())
+        .await
+        .expect("the host holds the workspace");
+    // A device holds its own certificate, whether or not the workspace's roster names it yet:
+    // a link dialled from that copy proves the device by it, and the host decides its
+    // admission.
+    if !state
+        .certificates()
+        .iter()
+        .any(|kept| kept.device_public_key == cert.device_public_key)
+    {
+        let _ = state.receive_from(
+            tilo_peer_state::TransportOrigin::ServerDelta(host_device),
+            NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                cert: Box::new(cert.clone()),
+                revocations: Vec::new(),
+            },
+            std::time::SystemTime::now(),
+        );
+    }
+    let mut link = tilo_peer_state::direct::DirectSync::new(state, key.clone());
+    if capacity > 0 {
+        link = link.with_heard_capacity(capacity);
+    }
+    let heard = link.reader();
+    let mut caught_up = link.caught_up();
+    let link_end = dialer
+        .link(tilo_server_client::link::Purpose::Records)
+        .await
+        .expect("the host answers a records link");
+    link_end
+        .prove_member(cert, key, &host_cert)
+        .await
+        .expect("the host proves the member");
+    let dialed = link
+        .dial_over(std::sync::Arc::new(link_end), host_device)
+        .await
+        .expect("the link opens");
+    let pairing = {
+        let link = link.clone();
+        tokio::spawn(async move { dialed.run(&link).await })
+    };
+    tilo_test_env::within("the device catches up with the host", async {
+        caught_up.wait_for(|set| *set).await.unwrap();
     })
     .await;
-    client
+    Session {
+        link,
+        heard,
+        pairing,
+    }
 }
 
-/// Send `delta`, `member`'s write, to the server `client` reaches.
-pub(super) fn send_members_delta(
-    client: &crate::ServerClient,
-    workspace_id: WorkspaceId,
-    member: &ed25519_dalek::SigningKey,
-    delta: &crate::CoeditPayload,
-) {
-    client
-        .send(crate::Envelope::Delta {
-            workspace_id,
-            author_device_public_key: member.verifying_key().to_bytes(),
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: delta.encode().unwrap(),
-            signature: [0; 64],
-        })
-        .unwrap();
-}
-
-/// Send `message`, a sealed write of the member `key` signs, to the server `client` reaches,
-/// as the member's own writes travel.
-pub(super) fn send_sealed(
-    client: &crate::ServerClient,
-    workspace_id: WorkspaceId,
-    key: &ed25519_dalek::SigningKey,
-    message: &NeighbourMsg,
-) {
-    let (channel, _) = neighbour_wire::retention(message, false).unwrap();
-    send_members_delta(
-        client,
-        workspace_id,
-        key,
-        &crate::CoeditPayload::RetainedDelta {
-            channel,
-            body: postcard::to_stdvec(message).unwrap(),
-        },
-    );
-}
-
-/// `member` writes `line` as the document's title and sends it to the server
-/// sealed, as the member's own writes travel.
+/// `member` writes `line` as the document's title and sends it to the host sealed, as the
+/// member's own writes travel.
 pub(super) fn seal_and_send_title(
     member: &SealingMember,
-    client: &crate::ServerClient,
+    session: &Session,
     workspace: &str,
-    workspace_id: WorkspaceId,
-    key: &ed25519_dalek::SigningKey,
     line: &str,
 ) {
     let ((), message) = member.seal(workspace, |doc| {
         doc.put(ROOT, "title", line).unwrap();
         doc.commit_edit("fixture", "title", &member.person());
     });
-    send_sealed(client, workspace_id, key, &message);
+    session.send(message);
 }
 
 /// A newcomer opening `held` in order: the record as a device joining now reads it.
@@ -455,17 +490,10 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
             member,
             ..
         },
-        client,
-    ) = lounge_with_client().await;
+        session,
+    ) = lounge_with_link().await;
     for index in 0..WRITES {
-        seal_and_send_title(
-            &member,
-            &client,
-            &workspace,
-            workspace_id,
-            &member_key,
-            &format!("line {index}"),
-        );
+        seal_and_send_title(&member, &session, &workspace, &format!("line {index}"));
     }
     follows(&workspaces, &workspace, "line 399").await;
     // The member's engine folds the history it holds into one checkpoint
@@ -475,26 +503,10 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
         .await
         .try_into()
         .unwrap();
-    let (channel, _) = neighbour_wire::retention(&compaction, false).unwrap();
-    send_members_delta(
-        &client,
-        workspace_id,
-        &member_key,
-        &crate::CoeditPayload::Checkpoint {
-            channel,
-            body: postcard::to_stdvec(&compaction).unwrap(),
-        },
-    );
+    session.send(compaction);
     // What a newcomer is sent past the checkpoint travels as itself.
     for index in WRITES..WRITES + 3 {
-        seal_and_send_title(
-            &member,
-            &client,
-            &workspace,
-            workspace_id,
-            &member_key,
-            &format!("line {index}"),
-        );
+        seal_and_send_title(&member, &session, &workspace, &format!("line {index}"));
     }
     // What a newcomer is sent, opened: the member's checkpoint, then the
     // writes after it.
@@ -674,28 +686,21 @@ async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
         .set_surfaces(collab_types::Surfaces::from_source(std::sync::Arc::new(
             LateSurface(std::sync::Arc::clone(&here)),
         )));
-    let client = subscribed_member(&server, &member_key, member_cert, workspace_id).await;
+    let session = Box::pin(member_session(
+        &server,
+        &member_key,
+        &member_cert,
+        workspace_id,
+        0,
+    ))
+    .await;
     let mut followed = workspaces.document_writes();
     for index in 0..WRITES {
         let ((), message) = member.seal(&workspace, |doc| {
             doc.put(ROOT, "title", format!("line {index}")).unwrap();
             doc.commit_edit("fixture", "title", &member.person());
         });
-        let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
-        client
-            .send(crate::Envelope::Delta {
-                workspace_id,
-                author_device_public_key: member_key.verifying_key().to_bytes(),
-                authored_at_ns: tilo_clock::unix_now_ns(),
-                delta: crate::CoeditPayload::RetainedDelta {
-                    channel,
-                    body: postcard::to_stdvec(&message).unwrap(),
-                }
-                .encode()
-                .unwrap(),
-                signature: [0; 64],
-            })
-            .unwrap();
+        session.send(message);
     }
     tilo_test_env::within("the governor follows every write", async {
         let mut seen = 0;
@@ -1160,20 +1165,13 @@ async fn a_write_from_another_device_over_the_link_wakes_the_write_watch() {
     server.shutdown().await;
 }
 
-/// A session client's write is admitted beside the link's, and wakes whoever
-/// follows the workspace's records once, not once for each admission.
+/// A member's write over its link wakes whoever follows the workspace's records
+/// once, not once for each admission.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_session_clients_write_wakes_the_write_watch_once() {
-    let (lounge, client) = lounge_with_client().await;
+async fn a_linked_write_wakes_the_write_watch_once() {
+    let (lounge, session) = lounge_with_link().await;
     let mut followed = lounge.workspaces.document_writes();
-    seal_and_send_title(
-        &lounge.member,
-        &client,
-        &lounge.workspace,
-        lounge.workspace_id,
-        &lounge.member_key,
-        "once",
-    );
+    seal_and_send_title(&lounge.member, &session, &lounge.workspace, "once");
     tilo_test_env::within("the write wakes the workspace's followers", async {
         loop {
             let write = followed.recv().await.unwrap();
@@ -1189,7 +1187,7 @@ async fn a_session_clients_write_wakes_the_write_watch_once() {
         followed.try_recv().is_err(),
         "one write wakes a follower once"
     );
-    drop(client);
+    drop(session);
     let Lounge {
         server, workspaces, ..
     } = lounge;
@@ -1197,58 +1195,53 @@ async fn a_session_clients_write_wakes_the_write_watch_once() {
     server.shutdown().await;
 }
 
-/// A workspace's members write on whatever carrier their runtime runs: a page
-/// through a server session, a desktop over the workspace's direct link. What
-/// one writes reaches every other member live, once, on either carrier, and
-/// never comes back to its own: each linked device hears each of the page's
-/// writes once, and the page's device and the other device each get each of a
-/// device's writes once, all sealed as their authors wrote them.
+/// A member's write reaches every other member once over the link it is sent on, and never
+/// comes back to its own: each linked device hears each of the writer's writes once, live, and
+/// the writer hears none of its own, all sealed as their authors wrote them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::too_many_lines,
-    reason = "one end-to-end scenario: both carriers, the echo check and the cleanup"
+    reason = "one end-to-end scenario: both directions, the echo check and the cleanup"
 )]
-async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
+async fn a_write_reaches_every_member_once() {
     const WRITES: u64 = 6;
-    let (lounge, page) = lounge_with_client().await;
+    let (lounge, mut writer) = lounge_with_link().await;
     let mut peers = [Peer::link(&lounge, 5).await, Peer::link(&lounge, 6).await];
-    let page_author = lounge.member_key.verifying_key().to_bytes();
+    let writer_author = lounge.member_key.verifying_key().to_bytes();
 
     let started = std::time::Instant::now();
     for line in 0..WRITES {
         seal_and_send_title(
             &lounge.member,
-            &page,
+            &writer,
             &lounge.workspace,
-            lounge.workspace_id,
-            &lounge.member_key,
-            &format!("from the page {line}"),
+            &format!("from the writer {line}"),
         );
     }
     for peer in &mut peers {
         assert_eq!(
-            peer.hears(page_author, WRITES).await,
+            peer.hears(writer_author, WRITES).await,
             (1..=WRITES).collect::<Vec<_>>(),
-            "a linked device hears each of the page's writes once, live"
+            "a linked device hears each of the writer's writes once, live"
         );
     }
     eprintln!(
-        "{WRITES} writes of a server session reached two linked devices in {:?}",
+        "{WRITES} writes of one device reached two linked devices in {:?}",
         started.elapsed()
     );
 
-    let [writer, other] = &mut peers;
-    // The page's device reads the workspace over its link, as a device's
-    // runtime does; its session only carries the page's own writes.
-    let mut page_reads = Peer::link(&lounge, 3).await;
+    // Another device of the workspace writes too, on its own link: what it writes reaches the
+    // first device and the writer's, once, and the writer hears no echo of the other's nor of
+    // any of its own.
+    let [other, reader] = &mut peers;
     let sealing = SealingMember::join(
         &lounge.workspaces,
         &lounge.workspace,
         (APP, RESOURCE),
-        writer.key.clone(),
+        other.key.clone(),
     )
     .await;
-    let peer_author = writer.key.verifying_key().to_bytes();
+    let other_author = other.key.verifying_key().to_bytes();
     let started = std::time::Instant::now();
     for line in 0..WRITES {
         let ((), message) = sealing.seal(&lounge.workspace, |doc| {
@@ -1260,47 +1253,26 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
             matches!(&message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some()),
             "the device writes sealed"
         );
-        writer.link.send(message).unwrap();
+        other.link.send(message).unwrap();
     }
     assert_eq!(
-        other.hears(peer_author, WRITES).await,
+        reader.hears(other_author, WRITES).await,
         (1..=WRITES).collect::<Vec<_>>(),
         "the other linked device hears each of the device's writes once"
     );
-    assert_eq!(
-        page_reads.hears(peer_author, WRITES).await,
-        (1..=WRITES).collect::<Vec<_>>(),
-        "the page's device hears each of the device's writes once over its link"
-    );
-    eprintln!(
-        "{WRITES} writes of a linked device reached the other device and the page's link in {:?}",
-        started.elapsed()
-    );
-
-    // Nothing the writer wrote came back to it, and nothing reached it twice:
-    // the link carries in order, so an echo of any write would arrive before
-    // the page's next one.
-    seal_and_send_title(
-        &lounge.member,
-        &page,
-        &lounge.workspace,
-        lounge.workspace_id,
-        &lounge.member_key,
-        "the page again",
-    );
     let heard = &mut writer.heard;
-    let echoed = tilo_test_env::within("the writer hears the page again", async {
+    let echoed = tilo_test_env::within("the writer hears the other device's writes", async {
         let mut echoed = Vec::new();
         loop {
             let frame = heard.recv().await.unwrap();
-            if write_of(&frame.message, page_author) == Some(WRITES + 1) {
+            if write_of(&frame.message, other_author) == Some(WRITES) {
                 return echoed;
             }
-            if let Some(seq) = write_of(&frame.message, peer_author) {
-                echoed.push(("the device's own", seq, frame.retained));
+            if let Some(seq) = write_of(&frame.message, writer_author) {
+                echoed.push(("its own", seq, frame.retained));
             }
-            if let Some(seq) = write_of(&frame.message, page_author) {
-                echoed.push(("the page's", seq, frame.retained));
+            if let Some(seq) = write_of(&frame.message, other_author) {
+                echoed.push(("the other device's", seq, frame.retained));
             }
         }
     })
@@ -1309,11 +1281,14 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
         echoed.is_empty(),
         "no write came back to its author or reached the writer twice: {echoed:?}"
     );
+    eprintln!(
+        "{WRITES} writes of a linked device reached the other device and the writer's link in {:?}",
+        started.elapsed()
+    );
     for peer in peers {
         peer.pairing.abort();
     }
-    page_reads.pairing.abort();
-    drop(page);
+    drop(writer);
     let Lounge {
         server, workspaces, ..
     } = lounge;
@@ -1321,36 +1296,34 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
     server.shutdown().await;
 }
 
-/// A desktop whose reader of the workspace's link falls behind, and a host
-/// whose reader of it does, still read every write once after catching up from
-/// the workspace's history: the device each of the page's writes, the host the
+/// A device whose reader of the workspace's link falls behind, and a host whose
+/// reader of it does, still read every write once after catching up from the
+/// workspace's history: the device each of the writer's writes, the host the
 /// device's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn readers_that_fell_behind_read_every_write_once() {
     const WRITES: u64 = 6;
-    let (lounge, page) = lounge_reading_with_client(2).await;
+    let (lounge, writer) = lounge_reading_with_link(2).await;
     let mut peer = Peer::reading(&lounge, 5, 2).await;
-    let page_author = lounge.member_key.verifying_key().to_bytes();
+    let writer_author = lounge.member_key.verifying_key().to_bytes();
 
-    // The page writes while the device reads nothing: its link has room for two.
+    // The writer writes while the device reads nothing: its link has room for two.
     let started = std::time::Instant::now();
     for line in 0..WRITES {
         seal_and_send_title(
             &lounge.member,
-            &page,
+            &writer,
             &lounge.workspace,
-            lounge.workspace_id,
-            &lounge.member_key,
-            &format!("from the page {line}"),
+            &format!("from the writer {line}"),
         );
     }
     // Every write reached the device's link before the device reads one.
     let mut landed = peer.link.changes();
-    tilo_test_env::within("the page's writes reach the device", async {
+    tilo_test_env::within("the writer's writes reach the device", async {
         landed
             .wait_for(|_| {
                 peer.link.cursors().iter().any(|cursor| {
-                    cursor.lineage.author == page_author && cursor.after_seq == WRITES
+                    cursor.lineage.author == writer_author && cursor.after_seq == WRITES
                 })
             })
             .await
@@ -1359,9 +1332,9 @@ async fn readers_that_fell_behind_read_every_write_once() {
     .await;
     let caught_up = std::time::Instant::now();
     assert_eq!(
-        peer.hears(page_author, WRITES).await,
+        peer.hears(writer_author, WRITES).await,
         (1..=WRITES).collect::<Vec<_>>(),
-        "a device that fell behind reads each of the page's writes once"
+        "a device that fell behind reads each of the writer's writes once"
     );
     eprintln!(
         "a device that fell behind {WRITES} writes caught up in {:?} ({:?} after the first write)",
@@ -1433,18 +1406,18 @@ async fn readers_that_fell_behind_read_every_write_once() {
     lounge.server.shutdown().await;
 }
 
-/// A page wrote parts of a chained record through its server session, and the
-/// host wrote a record and a part of its own, before the workspace's link kept
-/// any of it: the server retains them, the link's history does not. A server
-/// session replays a joining page only a chain's head and sends an older part
-/// once asked; a desktop decides on its link's replay alone, and a record it
-/// holds nothing of after that replay is one its app makes anew. The server's
-/// start hands the link what it retains before it serves anyone
+/// A device wrote parts of a chained record over the workspace's link, and the
+/// host wrote a record and a part of its own, before the workspace's store kept
+/// any of it: the store keeps them, the link's history does not. The store
+/// replays a joining device only a chain's head and sends an older part once
+/// asked; a desktop decides on its link's replay alone, and a record it holds
+/// nothing of after that replay is one its app makes anew. The server's start
+/// hands the link what it keeps before it serves anyone
 /// ([`Workspaces::recall`]): a device that links holds every one of them once it
 /// caught up, the parts behind the head included, and reads them rather than
 /// making them again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_kept_it() {
+async fn a_device_linking_later_holds_every_part_written_before_the_link_kept_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     // The host after the restart holds the channel keys the one before it took part with.
@@ -1468,14 +1441,15 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
         .unwrap();
     let member =
         SealingMember::join(&workspaces, &workspace, (APP, RESOURCE), member_key.clone()).await;
-    let page = Box::pin(subscribed_member(
+    let writer = Box::pin(member_session(
         &server,
         &member_key,
-        member_cert.clone(),
+        &member_cert,
         workspace_id,
+        0,
     ))
     .await;
-    // The page's parts: two behind the chain's head, and the head.
+    // The writer's parts: two behind the chain's head, and the head.
     let mut written = Vec::new();
     for index in [0, 1, 3] {
         let record = neighbour_wire::document_part(RESOURCE, index);
@@ -1484,7 +1458,7 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
             doc.put(ROOT, "title", format!("part {index}")).unwrap();
             doc.commit_edit("fixture", "title", &part.person());
         });
-        send_sealed(&page, workspace_id, &member_key, &message);
+        writer.send(message);
         written.push(record);
     }
     // The host's own: a part behind the head, as a host seeds or repairs one.
@@ -1501,7 +1475,7 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
     // replays what the server keeps only into the records the governor holds:
     // both have to be there before this host stops, or the restart races the
     // write it replays.
-    tilo_test_env::within("the server and the governor hold the page's parts", async {
+    tilo_test_env::within("the store and the host keep the writer's parts", async {
         for record in written.iter().filter(|record| record.as_str() != RESOURCE) {
             while retained_writes(&server, workspace_id, record)
                 .await
@@ -1517,11 +1491,11 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
         }
     })
     .await;
-    drop(page);
+    drop(writer);
     drop(workspaces);
     server.shutdown().await;
 
-    // The link's history as it stood before the server carried session writes to it.
+    // The link's history as it stood before the store carried the device's writes to it.
     std::fs::remove_dir_all(dir.path().join("store")).unwrap();
     let server =
         crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;

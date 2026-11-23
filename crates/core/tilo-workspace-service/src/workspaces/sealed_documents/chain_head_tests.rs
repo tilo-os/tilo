@@ -9,7 +9,7 @@
 )]
 
 use super::fixtures::SealingMember;
-use super::tests::{Lounge, Peer, lounge_with_client, seal_and_send_title, title};
+use super::tests::{Lounge, Peer, Session, lounge_with_link, seal_and_send_title, title};
 use neighbour_wire::NeighbourMsg;
 
 /// The chain the members write, of the lounge's app.
@@ -17,21 +17,14 @@ const CHAIN: &str = "messages";
 
 /// The member starts part `index` of the chain through its own session, as
 /// a device's writes reach the host, until the host holds it.
-async fn write_part(lounge: &Lounge, client: &crate::ServerClient, index: u64) {
+async fn write_part(lounge: &Lounge, session: &Session, index: u64) {
     let record = neighbour_wire::document_part(CHAIN, index);
     let part: SealingMember = lounge
         .member
         .part(&lounge.workspaces, &lounge.workspace, &record)
         .await;
     let line = format!("part {index}");
-    seal_and_send_title(
-        &part,
-        client,
-        &lounge.workspace,
-        lounge.workspace_id,
-        &lounge.member_key,
-        &line,
-    );
+    seal_and_send_title(&part, session, &lounge.workspace, &line);
     tilo_test_env::within("the host holds the part", async {
         loop {
             let held = lounge
@@ -50,10 +43,10 @@ async fn write_part(lounge: &Lounge, client: &crate::ServerClient, index: u64) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
-    let (lounge, client) = lounge_with_client().await;
+    let (lounge, session) = lounge_with_link().await;
     let app = super::tests::APP;
     for index in 0..2 {
-        write_part(&lounge, &client, index).await;
+        write_part(&lounge, &session, index).await;
     }
     assert!(
         lounge.workspaces.chain_head_has_part(
@@ -73,7 +66,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
         );
     }
     // A part started after reaches the linked device as it starts.
-    write_part(&lounge, &client, 2).await;
+    write_part(&lounge, &session, 2).await;
     let next = neighbour_wire::document_part(CHAIN, 2);
     tilo_test_env::within("the chain's next part reaches the linked device", async {
         loop {
@@ -87,7 +80,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
     })
     .await;
     peer.pairing.abort();
-    drop((client, peer));
+    drop((session, peer));
     let Lounge {
         server, workspaces, ..
     } = lounge;
@@ -99,7 +92,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
 /// takes as a chain to start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_chain_with_no_part_answers_its_head_with_nothing() {
-    let (lounge, client) = lounge_with_client().await;
+    let (lounge, session) = lounge_with_link().await;
     let head = neighbour_wire::chain_head("nothing yet");
     assert!(
         !lounge
@@ -108,7 +101,7 @@ async fn a_chain_with_no_part_answers_its_head_with_nothing() {
         "a chain with no part has none: its head is answered with nothing, a chain to start"
     );
     // The first part the chain starts makes its head answer with it.
-    write_part(&lounge, &client, 0).await;
+    write_part(&lounge, &session, 0).await;
     assert!(
         lounge.workspaces.chain_head_has_part(
             &lounge.workspace,
@@ -117,7 +110,7 @@ async fn a_chain_with_no_part_answers_its_head_with_nothing() {
         ),
         "the part the chain started is held, and its head answers with it"
     );
-    drop(client);
+    drop(session);
     let Lounge {
         server, workspaces, ..
     } = lounge;

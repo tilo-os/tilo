@@ -9,8 +9,8 @@
 use super::super::Workspaces;
 use super::fixtures::SealingMember;
 use super::tests::{
-    APP, Lounge, RESOURCE, follows_field, lounge_with_client, newcomer_opens, retained_writes,
-    send_members_delta, send_sealed,
+    APP, Lounge, RESOURCE, Session, follows_field, lounge_with_link, newcomer_opens,
+    retained_writes,
 };
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::{CommitNamed as _, SignedOp};
@@ -65,24 +65,14 @@ async fn governor_writes_sealed(
 /// sealed and sent to the server as its own writes travel.
 fn send_member_fields(
     member: &SealingMember,
-    client: &crate::ServerClient,
+    session: &Session,
     workspace: &str,
-    workspace_id: WorkspaceId,
-    key: &ed25519_dalek::SigningKey,
     field: &str,
     from: usize,
     to: usize,
 ) {
     for index in from..to {
-        send_member_field(
-            member,
-            client,
-            workspace,
-            workspace_id,
-            key,
-            field,
-            &format!("{field} {index}"),
-        );
+        send_member_field(member, session, workspace, field, &format!("{field} {index}"));
     }
 }
 
@@ -90,10 +80,8 @@ fn send_member_fields(
 /// server sealed, as the member's own writes travel.
 fn send_member_field(
     member: &SealingMember,
-    client: &crate::ServerClient,
+    session: &Session,
     workspace: &str,
-    workspace_id: WorkspaceId,
-    key: &ed25519_dalek::SigningKey,
     field: &str,
     line: &str,
 ) {
@@ -101,33 +89,23 @@ fn send_member_field(
         document.put(ROOT, field, line).unwrap();
         document.commit_edit("fixture", field, &member.person());
     });
-    send_sealed(client, workspace_id, key, &message);
+    session.send(message);
 }
 
 /// The governor and `member` each write the resource sealed, and the node
 /// follows both: the governor's writes as it makes them, the member's as its
 /// own writes travel.
 async fn both_authors_write(
-    (workspaces, workspace, workspace_id): (&Workspaces, &str, WorkspaceId),
-    (governor, member, key, client): (
+    (workspaces, workspace): (&Workspaces, &str),
+    (governor, member, session): (
         &DeviceCert,
         &SealingMember,
-        &ed25519_dalek::SigningKey,
-        &crate::ServerClient,
+        &Session,
     ),
     writes: usize,
 ) {
     governor_writes_sealed(workspaces, workspace, governor, "governor", writes).await;
-    send_member_fields(
-        member,
-        client,
-        workspace,
-        workspace_id,
-        key,
-        "member",
-        0,
-        writes,
-    );
+    send_member_fields(member, session, workspace, "member", 0, writes);
     follows_field(
         workspaces,
         workspace,
@@ -166,7 +144,6 @@ async fn the_host_checks_a_checkpoint_it_holds_the_keys_of() {
             server,
             workspaces,
             workspace,
-            workspace_id,
             governor,
             governor_key,
             member_key,
@@ -174,18 +151,10 @@ async fn the_host_checks_a_checkpoint_it_holds_the_keys_of() {
             member,
             ..
         },
-        client,
-    ) = lounge_with_client().await;
+        session,
+    ) = lounge_with_link().await;
     for index in 0..WRITES {
-        send_member_field(
-            &member,
-            &client,
-            &workspace,
-            workspace_id,
-            &member_key,
-            "member",
-            &format!("member {index}"),
-        );
+        send_member_field(&member, &session, &workspace, "member", &format!("member {index}"));
     }
     follows_field(
         &workspaces,
@@ -205,15 +174,7 @@ async fn the_host_checks_a_checkpoint_it_holds_the_keys_of() {
         panic!("a compaction is a document write")
     };
     let (author, seq) = (*envelope.author.as_bytes(), envelope.seq);
-    send_members_delta(
-        &client,
-        workspace_id,
-        &member_key,
-        &crate::CoeditPayload::Checkpoint {
-            channel: neighbour_wire::retention(&compaction, false).unwrap().0,
-            body: postcard::to_stdvec(&compaction).unwrap(),
-        },
-    );
+    session.send(compaction.clone());
 
     // The host checks the checkpoint it holds the record's keys of, and keeps that it did.
     let host = governor.device_public_key;
@@ -304,13 +265,13 @@ async fn a_compaction_folds_the_writes_of_every_author_a_newcomer_replays() {
             member,
             ..
         },
-        client,
-    ) = lounge_with_client().await;
+        session,
+    ) = lounge_with_link().await;
     // The governor writes the resource sealed, as it does for its members,
     // and the member does too.
     both_authors_write(
-        (&workspaces, &workspace, workspace_id),
-        (&governor, &member, &member_key, &client),
+        (&workspaces, &workspace),
+        (&governor, &member, &session),
         MEMBER_WRITES,
     )
     .await;
@@ -329,22 +290,12 @@ async fn a_compaction_folds_the_writes_of_every_author_a_newcomer_replays() {
         .await
         .try_into()
         .unwrap();
-    send_members_delta(
-        &client,
-        workspace_id,
-        &member_key,
-        &crate::CoeditPayload::Checkpoint {
-            channel: neighbour_wire::retention(&compaction, false).unwrap().0,
-            body: postcard::to_stdvec(&compaction).unwrap(),
-        },
-    );
+    session.send(compaction.clone());
     // What a newcomer is sent past the checkpoint travels as itself.
     send_member_fields(
         &member,
-        &client,
+        &session,
         &workspace,
-        workspace_id,
-        &member_key,
         "member",
         MEMBER_WRITES,
         MEMBER_WRITES + AFTER,
