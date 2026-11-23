@@ -1,0 +1,38 @@
+{
+  "app": "capabilities-unused-agent",
+  "said": "Agent chat: an agent answers in Chat, and a turn can be stopped",
+  "live": "tl",
+  "apps": "chat",
+  "rust": {
+    "id": "so.tilo.lang.chat",
+    "package": "chat"
+  },
+  "tl": {
+    "id": "so.tilo.lang.chat",
+    "package": "chat",
+    "session_args": ["--shell", "screen"]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: no model provider is configured yet",
+      "ops": [
+        {"theme": false},
+        {"serve": {"model-providers": true}},
+        {"act": ["models", "list"]},
+        {"targets": true}
+      ],
+      "dark": true
+    },
+    {
+      "id": "open-chat",
+      "said": "Open Chat",
+      "ops": [
+        {"launch": true},
+        {"wait_for": "window"},
+        {"actions": "agent"},
+        {"targets": true}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "app": "capabilities-unused-styles",
+  "said": "Shell styles: a person makes a shipped style their own and shows it",
+  "live": "rust",
+  "apps": "",
+  "rust": {},
+  "tl": {
+    "session_args": ["--shell", "screen"]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the shell draws",
+      "ops": [
+        {"theme": false},
+        {"state": {"chrome.session_locked": false}},
+        {"targets": true}
+      ],
+      "dark": true
+    },
+    {
+      "id": "make-it-mine",
+      "said": "Make the shipped Strips style mine: it is copied into my own package",
+      "ops": [
+        {"act": ["session-authoring", "make-it-mine", {"style": "so.tilo.shell:strips"}]}
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "check-it",
+      "said": "Check the copy: it compiles with no diagnostics",
+      "ops": [
+        {"act": ["session-authoring", "check", {"package": "mine.shell"}]}
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "install-it",
+      "said": "Install it: the style is offered without a restart",
+      "ops": [
+        {"act": ["session-authoring", "install", {"package": "mine.shell"}]},
+        {"targets": true},
+        {"actions": "style"}
+      ],
+      "budget_ms": 120000
+    }
+  ]
+}
