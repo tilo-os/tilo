@@ -318,6 +318,9 @@ d-lg5gedbh = Items
 
 d-mdhllpbo = Projects
 
+d-c7peh6l3 = Origins
+    .doc = Where the tasks and threads here were first written: one for each place they came from.
+
 d-auinwnh3 = Numbers
     .doc = The highest number given so far: the next task's is one more.
 
@@ -669,8 +672,25 @@ d-xrr33hkc-files = Files
 
 d-xrr33hkc-p = P
 
-d-jfoiwgwq = Import issue
+d-6tlw3ran = Add origin
     .doc = Starts a task's work on another tracker's issue: its origin, its page there and its number, and a task of the same origin already here is that task, so importing it again makes none.
+    .did = named where it came from
+
+d-6tlw3ran-author = Author
+
+d-6tlw3ran-source = Source
+
+d-6tlw3ran-handle = Handle
+
+d-6tlw3ran-url = Url
+
+d-6tlw3ran-reference = Reference
+
+d-6tlw3ran-created = Created
+
+d-6tlw3ran-updated = Updated
+
+d-jfoiwgwq = Import issue
     .did = imported an issue
     .w-an-imported-issue-needs-a-key = An imported issue needs a key
 

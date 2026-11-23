@@ -282,6 +282,8 @@ type Tasks {
     /// Every task, in the order people put them.
     items: Collection<Task>
     projects: Collection<Project>
+    /// Where the tasks and threads here were first written: one for each place they came from.
+    origins: Collection<Origin>
     /// The highest number given so far: the next task's is one more.
     numbers: Int merge counter
 }
@@ -848,6 +850,30 @@ action import_files(files: List<File>, p: Option<Project> = .none) -> List<Task>
 
 /// Starts a task's work on another tracker's issue: its origin, its page there and its number,
 /// and a task of the same origin already here is that task, so importing it again makes none.
+/// Names where a task imported here was first written: one origin per place it came from.
+action add_origin(
+    tasks: Tasks,
+    author: Text,
+    source: Text,
+    handle: Text = "",
+    url: Text = "",
+    reference: Text = "",
+    created: Option<Time> = .none,
+    updated: Option<Time> = .none,
+) -> Origin (icon: .link, label: "Add origin", did: "named where it came from") {
+    tasks.origins.insert(
+        Origin(
+            author: author,
+            handle: if handle == "" { .none } else { .some(handle) },
+            source: source,
+            url: if url == "" { .none } else { .some(url) },
+            reference: if reference == "" { .none } else { .some(reference) },
+            created: created,
+            updated: updated,
+        ),
+    )
+}
+
 action import_issue(origin: Origin, title: Text, key: Text, status: Status = .backlog) -> Task (
     icon: .download,
     label: "Import issue",

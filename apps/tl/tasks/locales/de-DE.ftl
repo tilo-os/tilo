@@ -290,6 +290,9 @@ d-lg5gedbh = Einträge
 
 d-mdhllpbo = Projekte
 
+d-c7peh6l3 = Herkünfte
+    .doc = Wo die Aufgaben und Threads hier zuerst geschrieben wurden: eine je Ort, aus dem sie kamen.
+
 d-auinwnh3 = Nummernstand
     .doc = Die höchste bisher vergebene Nummer: die nächste Aufgabe bekommt die nächste.
 
@@ -641,8 +644,25 @@ d-xrr33hkc-files = Dateien
 
 d-xrr33hkc-p = P
 
-d-jfoiwgwq = Vorgang importieren
+d-6tlw3ran = Herkunft hinzufügen
     .doc = Beginnt die Arbeit an einem Vorgang eines anderen Trackers: seine Herkunft, seine Seite dort und seine Nummer; eine Aufgabe derselben Herkunft ist schon hier, also entsteht beim erneuten Import keine.
+    .did = genannt, woher sie kam
+
+d-6tlw3ran-author = Autor
+
+d-6tlw3ran-source = Quelle
+
+d-6tlw3ran-handle = Kürzel
+
+d-6tlw3ran-url = Adresse
+
+d-6tlw3ran-reference = Referenz
+
+d-6tlw3ran-created = Erstellt
+
+d-6tlw3ran-updated = Aktualisiert
+
+d-jfoiwgwq = Vorgang importieren
     .did = einen Vorgang importiert
     .w-an-imported-issue-needs-a-key = Ein importierter Vorgang braucht einen Schlüssel
 
