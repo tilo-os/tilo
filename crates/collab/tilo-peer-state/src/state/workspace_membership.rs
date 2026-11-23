@@ -149,6 +149,9 @@ impl StatePeer {
                 key,
                 now,
             ),
+            Change::RetiredSetMemberRoles { .. } => {
+                Err("roles are assigned one at a time".to_owned())
+            }
             Change::DefineRole { .. }
             | Change::RemoveRole { .. }
             | Change::SetMemberCustomRole { .. } => {

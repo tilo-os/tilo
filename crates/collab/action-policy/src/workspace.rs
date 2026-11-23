@@ -119,6 +119,15 @@ pub enum Change {
     RemoveRole {
         id: String,
     },
+    /// The whole-set role assignment the builds since custom roles numbered
+    /// here: kept in its place so every later change reads as the change those
+    /// builds wrote, an ownership transfer above all. No build wrote one, and
+    /// a workspace refuses it.
+    #[serde(rename = "set_member_roles")]
+    RetiredSetMemberRoles {
+        person: String,
+        roles: BTreeSet<String>,
+    },
     /// Assign or remove one custom role without replacing other assignments.
     SetMemberCustomRole {
         person: String,
@@ -158,6 +167,7 @@ impl Change {
             Self::TransferOwnership { .. } => governance::TRANSFER_OWNERSHIP,
             Self::Grant(_)
             | Self::DefineRole { .. }
+            | Self::RetiredSetMemberRoles { .. }
             | Self::SetMemberCustomRole { assigned: true, .. } => governance::GRANT,
             Self::Revoke(_)
             | Self::RemoveRole { .. }
@@ -178,6 +188,7 @@ impl Change {
             | Self::Restrict { person, .. }
             | Self::Unrestrict { person }
             | Self::SetRole { person, .. }
+            | Self::RetiredSetMemberRoles { person, .. }
             | Self::SetMemberCustomRole { person, .. }
             | Self::TransferOwnership { person } => Some(person),
             Self::Grant(_)
@@ -975,6 +986,8 @@ impl WorkspacePolicy {
                     |grant| !matches!(&grant.grantee, Grantee::CustomRole(role) if role == &id),
                 );
             }
+            // Refused by `check_change` before it is reached.
+            Change::RetiredSetMemberRoles { .. } => {}
             Change::SetMemberCustomRole {
                 person,
                 role,
@@ -1102,6 +1115,9 @@ impl WorkspacePolicy {
             Change::Revoke(id) => self.check_revocation(id),
             Change::DefineRole { id, name } => Self::check_role_definition(id, name),
             Change::RemoveRole { id } => self.require_custom_role(id),
+            Change::RetiredSetMemberRoles { .. } => Err(Refusal::NotPermitted(
+                "roles are assigned one at a time".to_owned(),
+            )),
             Change::SetMemberCustomRole {
                 person,
                 role,

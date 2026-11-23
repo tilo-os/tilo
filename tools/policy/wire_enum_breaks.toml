@@ -678,7 +678,7 @@ reason = "the search request and answer went: a workspace's search is the `tilo.
 [[break]]
 file = "crates/collab/action-policy/src/workspace.rs"
 enum = "Change"
-reason = "`SetMemberRoles`, a whole-set role assignment no build ever wrote, went. It was added after the stored governance this tree still reads was written, so that governance numbers its variants without it and reads as it was written again; only frames written in the few days between its addition and its removal shift, and those are development data"
+reason = "`SetMemberRoles` went and came back as `RetiredSetMemberRoles` in its place. It held that place from the first build with custom roles, so every workspace those builds kept numbers `SetMemberCustomRole` and `TransferOwnership` after it; while it was gone a kept ownership transfer did not read, the workspace replayed to the owner it was handed away from, and its state no longer opened. Only operations written in the hours it was gone read differently now"
 
 [[break]]
 file = "crates/runtime/linux-vm/src/hosted/control.rs"
