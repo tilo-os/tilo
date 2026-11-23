@@ -61,12 +61,18 @@ class InstallerRelease(unittest.TestCase):
             self.assertNotIn("secrets", found[f"package/linux-{arch}"])
             self.assertEqual(["tag:imager-v*"], found[f"release/linux-{arch}"]["on"])
             self.assertIn(f"release/linux-{arch}", found[f"sign/linux-{arch}"]["needs"])
+            # A tag's installer offers the media that tag built.
+            self.assertIn("release-catalog/imager", found[f"release/linux-{arch}"]["needs"])
+            self.assertIn(f"medium/imager-{arch}", found["release-catalog/imager"]["needs"])
         publish = found["publish-github-release"]
         self.assertEqual(["tag:imager-v*"], publish["on"])
-        for gate in ("release-assets/imager", "install/linux-x86_64", "install/linux-aarch64",
-                     "wine/windows-x86_64-install", "install/macos-x86_64", "install/macos-aarch64",
-                     "sign/linux-x86_64", "sign/windows-x86_64"):
-            self.assertIn(gate, publish["needs"])
+        for arch in ARCHES:
+            for gate in (f"install/linux-{arch}", f"install/macos-{arch}", f"sign/linux-{arch}",
+                         f"sign/windows-{arch}", f"sign/macos-{arch}", f"sign/medium-{arch}"):
+                self.assertIn(gate, publish["needs"])
+        self.assertIn("wine/windows-x86_64-install", publish["needs"])
+        # The dry run never waits on a tag's signing; the tag gathers the signed set itself.
+        self.assertEqual(["idle"], found["release-assets/imager"]["on"])
         for surface in ("publish-winget", "publish-homebrew-tap"):
             self.assertIn("publish-github-release", found[surface]["needs"])
             self.assertEqual(["tag:imager-v*"], found[surface]["on"])
