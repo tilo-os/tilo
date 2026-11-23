@@ -372,9 +372,19 @@ fn an_app_that_ends_before_its_window_could_open_says_why() {
         shown.contains("Probe could not open"),
         "the tab says the app could not open: {shown}"
     );
+    // What the app printed is kept behind the card's Details, where the person reads it.
+    let detailed = crate::common::wait_for(&mut session, "the card's Details", |session| {
+        session.a11y_windows().into_iter().find_map(|(_, _, tree)| {
+            tree.nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Details"))
+                .and_then(|(_, node)| node.description())
+                .map(str::to_owned)
+        })
+    });
     assert!(
-        shown.contains("the display refused this app"),
-        "with what the app said: {shown}"
+        detailed.contains("the display refused this app"),
+        "with what the app said: {detailed}"
     );
 }
 

@@ -329,11 +329,19 @@ fn an_app_that_ends_without_ever_showing_a_window_could_not_open() {
             shown.iter().any(|text| text.contains("could not open")),
             "{n}: the person is told Canvas could not open: {shown:?}"
         );
+        // What the app printed waits behind the card's Details, kept in the app's own words for
+        // whoever opens them.
+        let detailed = desktop.with_widgets(|widgets| {
+            widgets.relayout();
+            let host = widgets.host_mut();
+            let id = host.a11y_node_named("Details")?;
+            host.a11y_node(id)?.description().map(str::to_owned)
+        });
         assert!(
-            shown
-                .iter()
-                .any(|text| text.contains("the display refused this app")),
-            "{n}: with what Canvas said: {shown:?}"
+            detailed
+                .as_deref()
+                .is_some_and(|details| details.contains("the display refused this app")),
+            "{n}: with what Canvas said: {detailed:?}"
         );
     }
 }

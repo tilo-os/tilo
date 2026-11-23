@@ -396,10 +396,10 @@ mod tests {
                     tilo_desktop_search::providers::settings::SETTINGS_APP
                 );
                 assert_eq!(open.workspace, "workspace");
-                assert_eq!(
-                    open.arguments.get("anchor").and_then(|a| a.as_str()),
-                    Some(PROVIDERS_ANCHOR)
-                );
+                // The page is the row's own resource, which its `open-pane` action shows: the
+                // anchor is not a second argument carried along beside it.
+                assert_eq!(open.address.resource, PROVIDERS_ANCHOR);
+                assert!(open.arguments.is_empty(), "the page needs no argument");
             }
         }
 
