@@ -317,13 +317,27 @@ impl TestGroupKeys {
             .send_modify(|handed| *handed = handed.wrapping_add(1));
     }
 
-    /// Hand the fixture every group's keys `other` holds, as a group lets a device in after it
-    /// opened.
-    pub fn hand_what_is_held_by(&self, other: &Self) {
-        let held = other.held.lock().expect("the other fixture's keys").clone();
-        self.held.lock().expect("the fixture's keys").extend(held);
-        self.handed
-            .send_modify(|handed| *handed = handed.wrapping_add(1));
+    /// Hand the fixture the keys of `workspace`'s every-member group that `other` holds, as the
+    /// group lets a new member in: never the keys of a group of fewer readers.
+    ///
+    /// # Panics
+    ///
+    /// `workspace` is no workspace's id, or `other` holds no keys of its group.
+    pub fn hand_every_member_of(&self, other: &Self, workspace: &str) {
+        let group = collab_types::reader_group(
+            collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),
+            collab_types::EVERY_MEMBER,
+        )
+        .expect("every member's group")
+        .to_string();
+        let keys = other
+            .held
+            .lock()
+            .expect("the other fixture's keys")
+            .get(&group)
+            .expect("the other fixture holds every member's keys")
+            .clone();
+        self.hand(workspace, keys);
     }
 
     /// The groups a read asked the person's other devices for the frames of, and the epoch this

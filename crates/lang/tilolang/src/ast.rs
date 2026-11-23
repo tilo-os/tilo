@@ -140,8 +140,18 @@ pub struct TypeDecl {
     pub title: Option<TitleDecl>,
     /// `(untitled: "Untitled")`: what a record is called while its title is empty.
     pub untitled: Option<UntitledDecl>,
+    /// `(readers: author)`: who reads a record of the type, when not every member.
+    pub readers: Option<ReadersDecl>,
     pub fields: Vec<FieldDecl>,
     pub search: Option<SearchBlock>,
+    pub span: Span,
+}
+
+/// Who reads a type's records (`readers: author until sent`, `readers: members`), and where it
+/// says so.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadersDecl {
+    pub rule: crate::meta::ReaderRule,
     pub span: Span,
 }
 

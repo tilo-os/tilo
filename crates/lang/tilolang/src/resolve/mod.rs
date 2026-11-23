@@ -371,6 +371,7 @@ impl Env {
                 origin: t.origin.clone(),
                 title: t.title.clone(),
                 untitled: t.untitled.clone(),
+                readers: t.readers.clone(),
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -712,6 +713,40 @@ impl Resolver<'_> {
                     untitled.span,
                     format!(
                         "`{}` has no text field, so nothing of it is its title and it is never untitled; give it one (`title: Text`), say which field names it (`title: <field>`), or leave `untitled:` off",
+                        t.name.name
+                    ),
+                );
+            }
+        }
+    }
+
+    /// A type that says who reads its records names fields it has: a `Bool` its author hands the
+    /// record to every member by (`readers: author until sent`), or a `Set<Actor>` of the members
+    /// who read it (`readers: members`).
+    fn check_readers(&mut self, decls: &[&ast::TypeDecl]) {
+        use crate::meta::ReaderRule;
+        for t in decls {
+            let Some(readers) = &t.readers else { continue };
+            let (field, wanted, ty) = match &readers.rule {
+                ReaderRule::Author { until: None } => continue,
+                ReaderRule::Author { until: Some(field) } => (field, "a `Bool`", Ty::Bool),
+                ReaderRule::Field { field } => {
+                    (field, "a `Set<Actor>`", Ty::Set(Box::new(Ty::Actor)))
+                }
+            };
+            let held = self
+                .env
+                .types
+                .iter()
+                .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+                .and_then(|info| info.field(field))
+                .map(|f| f.ty.clone());
+            if held.as_ref() != Some(&ty) {
+                self.err(
+                    "E144",
+                    readers.span,
+                    format!(
+                        "`{}` is read by its `author`, or by the members a `Set<Actor>` field names; `{field}` is to be {wanted} field of it",
                         t.name.name
                     ),
                 );

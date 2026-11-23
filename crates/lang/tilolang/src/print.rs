@@ -992,6 +992,9 @@ impl Printer<'_> {
                 if let Some(untitled) = &t.untitled {
                     options.push(format!("untitled: {}", quote(&untitled.words)));
                 }
+                if let Some(readers) = &t.readers {
+                    options.push(format!("readers: {}", readers.rule));
+                }
                 let options = if options.is_empty() {
                     String::new()
                 } else {

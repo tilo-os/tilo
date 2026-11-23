@@ -341,6 +341,7 @@ mod tests {
             label: "Board".to_owned(),
             version: 1,
             person: false,
+            readers: None,
             verbs: vec![VerbSurface {
                 id: "defer".to_owned(),
                 name: "defer".to_owned(),

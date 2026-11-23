@@ -82,13 +82,19 @@ action pin(n: Note, pinned: Bool = not n.pinned) (icon: .pin, on: n.pinned) {
 window's title, a reference to it, its history and its title field's placeholder all read those
 words, translated in the app's catalogue, so no view writes the fallback itself. A type's resources
 are named by its first text field; `(title: subject)` names the one that does it instead, as a
-draft whose first field is the address it goes from is called by its subject:
+draft whose first field is the address it goes from is called by its subject. Every member
+reads a type's resources unless it says who does: `(readers: author)` makes each one its author's
+alone, sealed to the keys of their devices, so no other member lists, finds, counts or opens it;
+`until sent` hands it to every member once its `Bool` field `sent` holds, for good (setting it
+back is refused); `(readers: guests)` seals it to the people a `Set<Actor>` field names, and a
+change of them moves it to the new ones. The store works out the readers; no action names them:
 
 ```
-type Draft (title: subject, untitled: "New message") {
+type Draft (title: subject, untitled: "New message", readers: author until sent) {
     from: Text
     to: Text
     subject: Text
+    sent: Bool = false
 }
 ```
 

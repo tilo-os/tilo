@@ -567,6 +567,7 @@ impl ResourceStore {
     /// A store sending its commands to `port`.
     #[must_use]
     pub fn new(port: Rc<dyn Port>) -> Self {
+        port.declare(crate::personal::readers());
         Self {
             inner: Rc::new(Inner {
                 port,
@@ -743,7 +744,7 @@ impl ResourceStore {
 
     /// Takes in the types `meta` declares, so its resources are stored as their kinds.
     pub fn declare(&self, meta: &Meta) {
-        self.inner.kinds.borrow_mut().declare(meta, &[]);
+        self.declare_with(meta, &[]);
     }
 
     /// [`Self::declare`], with `former` — the retired declarations of the package's ids lock,
@@ -751,6 +752,19 @@ impl ResourceStore {
     /// the declaration that carries its id now.
     pub fn declare_with(&self, meta: &Meta, former: &[(String, String)]) {
         self.inner.kinds.borrow_mut().declare(meta, former);
+        self.inner.port.declare(tilo_resource_store::Schema {
+            readers: meta
+                .types
+                .iter()
+                .filter_map(|ty| {
+                    Some((
+                        crate::meta::MetaExt::kind_of(meta, &ty.name),
+                        ty.readers.clone()?,
+                    ))
+                })
+                .collect(),
+            ..tilo_resource_store::Schema::default()
+        });
     }
 
     /// What every loaded package's types are stored as.
@@ -3538,8 +3552,14 @@ impl ResourceStore {
                     kind: held.kind.clone(),
                     id: id.clone(),
                     resource: Resource {
-                        // Every member of the workspace reads what an app writes.
-                        readers: "*".to_owned(),
+                        // The store works out who reads a resource whose type says, and one
+                        // nested in another is read by whoever reads that one; every member
+                        // reads the rest.
+                        readers: if held.parent.is_some() || self.ruled(&held.kind) {
+                            String::new()
+                        } else {
+                            collab_types::EVERY_MEMBER.to_owned()
+                        },
                         parent: held.parent.clone(),
                         order: held.order.clone(),
                         fields: held.fields.clone(),
@@ -3560,6 +3580,15 @@ impl ResourceStore {
         removes.reverse();
         puts.extend(removes);
         puts
+    }
+
+    /// Whether the type of `kind` says who reads its resources.
+    fn ruled(&self, kind: &str) -> bool {
+        self.inner
+            .kinds
+            .borrow()
+            .of_kind(kind)
+            .is_some_and(|entry| entry.readers.is_some())
     }
 
     /// The listing of the collection `field` of `at`, read page by page from the store.

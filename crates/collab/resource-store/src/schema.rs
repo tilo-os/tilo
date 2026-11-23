@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tilo_actions::CREATE_ACTION;
-use tilo_actions::surface::{FieldType, NamedType, RESOURCE_UNIT, Surface, TypeField};
+use tilo_actions::surface::{FieldType, NamedType, RESOURCE_UNIT, ReaderRule, Surface, TypeField};
 
 /// The verb a change that sets a resource's field names: the field edit any editable field
 /// takes, which writes only fields that are not read-only.
@@ -19,6 +19,8 @@ pub struct Schema {
     pub types: Vec<Type>,
     /// Each verb's write-set; a schema that declares none checks no change's verb.
     pub verbs: Vec<Verb>,
+    /// Who reads a resource of each kind that says, by kind: the store places it by this alone.
+    pub readers: BTreeMap<String, ReaderRule>,
 }
 
 /// What one verb writes: each kind it writes resources of, and the kinds it may write that
@@ -212,7 +214,15 @@ impl Schema {
                 nested: BTreeSet::new(),
             }))
             .collect();
-        Self { types, verbs }
+        Self {
+            types,
+            verbs,
+            readers: surface
+                .readers
+                .iter()
+                .map(|rule| (surface.kind.clone(), rule.clone()))
+                .collect(),
+        }
     }
 
     /// What the verb `name` writes, when it is declared.

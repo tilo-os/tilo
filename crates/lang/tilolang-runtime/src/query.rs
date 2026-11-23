@@ -987,10 +987,7 @@ mod tests {
                     doc: String::new(),
                     default: None,
                 }],
-                search: tilolang::meta::SearchMeta::default(),
-                origin: None,
-                title: None,
-                untitled: None,
+                ..TypeMeta::default()
             };
             let clock = Clock::at("2026-01-01T00:00:00Z").unwrap().in_zone(0);
             let resolve_with = |text: &str| {

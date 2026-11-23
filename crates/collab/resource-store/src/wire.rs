@@ -227,11 +227,27 @@ impl std::error::Error for Refused {}
 /// # Errors
 /// When `command` is a read, or the store refused the write.
 pub fn write(store: &mut Store, command: Command) -> Result<Vec<Written>, Box<Refused>> {
+    let command = placed_by_rules(store, command)?;
+    write_placed(store, command)
+}
+
+/// [`write`] of a command whose resources are placed already.
+fn write_placed(store: &mut Store, command: Command) -> Result<Vec<Written>, Box<Refused>> {
     let mut written = Vec::new();
     match write_into(store, command, &mut written) {
         Ok(()) => Ok(written),
         Err(error) => Err(Box::new(Refused { error, written })),
     }
+}
+
+/// `command` with each resource it puts placed with the readers its type's rule gives it.
+fn placed_by_rules(store: &Store, command: Command) -> Result<Command, Box<Refused>> {
+    store.placed_by_rules(command).map_err(|error| {
+        Box::new(Refused {
+            error,
+            written: Vec::new(),
+        })
+    })
 }
 
 /// Draft the writes a command makes, keeping the live store untouched. A refused batch returns
@@ -240,9 +256,10 @@ pub fn write(store: &mut Store, command: Command) -> Result<Vec<Written>, Box<Re
 /// # Errors
 /// When the command is a read or the store refused a step.
 pub fn draft(store: &mut Store, command: Command) -> Result<Vec<Written>, Box<Refused>> {
+    let command = placed_by_rules(store, command)?;
     let mut scope = DraftScope::default();
     scope.add(&command);
-    store.stage(&scope, |staged| write(staged, command))
+    store.stage(&scope, |staged| write_placed(staged, command))
 }
 
 /// The live index rows and placement counters a command may consult while staging.

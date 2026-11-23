@@ -4,8 +4,9 @@
 //! The runtime holds those slots while a window is open ([`tilolang_runtime::view_state`]); the
 //! store keeps them, so what a person picked is still theirs after a restart and reaches their
 //! other devices. Each person's state of one app is one resource of the kind [`KIND`] in the
-//! device's resource store ([`id_of`]), which only that person reads: its readers are the person,
-//! so it is placed in a document of theirs alone and reaches only their devices.
+//! device's resource store ([`id_of`]), which only that person reads: its kind's readers are its
+//! author ([`crate::surface::personal_surface`]), so the store places it in a document of theirs
+//! alone and it reaches only their devices.
 //!
 //! The resource indexes nothing; its content holds the state:
 //!
@@ -76,6 +77,20 @@ pub fn actor(id: &str) -> Actor {
 #[must_use]
 pub fn person_of(who: &Actor) -> Option<&str> {
     who.member_id()?.person_id()
+}
+
+/// What a store is told of the kind: its author alone reads it. Only that, so the store checks
+/// no change's verb against this one surface.
+#[must_use]
+pub fn readers() -> tilo_resource_store::Schema {
+    tilo_resource_store::Schema {
+        readers: std::iter::once((
+            KIND.to_owned(),
+            tilo_resource_store::ReaderRule::Author { until: None },
+        ))
+        .collect(),
+        ..tilo_resource_store::Schema::default()
+    }
 }
 
 /// The id of `person`'s own state of the app `app` in the store.
@@ -348,10 +363,8 @@ pub fn keep(port: &dyn Port, app: &str, person: &str, keeps: &[Keep]) -> Result<
             let made = Command::Put {
                 kind: KIND.to_owned(),
                 id: id.clone(),
-                resource: Resource {
-                    readers: person.to_ascii_lowercase(),
-                    ..Resource::default()
-                },
+                // Its readers are its author's alone, as its kind says.
+                resource: Resource::default(),
                 stamp,
             };
             Command::Batch(vec![made, edit])
@@ -642,6 +655,7 @@ mod tests {
         phase her_state_is_read_by_her_alone;
         {
             let store = std::rc::Rc::new(std::cell::RefCell::new(tilo_resource_store::Store::new()));
+            store.borrow_mut().declare(readers());
             let hers = As { store: std::rc::Rc::clone(&store), reader: "ada" };
             let his = As { store, reader: "bo" };
             keep(&hers, APP, "AdA", &[view("AdA", "1/tasks", "place", Json::from("today"))])

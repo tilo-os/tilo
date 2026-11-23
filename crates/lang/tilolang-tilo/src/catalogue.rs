@@ -20,7 +20,6 @@ use serde::Deserialize;
 use tilo_actions::ActionKind;
 use tilo_actions::surface::{FieldType, NamedType, Surface, VerbSurface};
 use tilolang::meta::NamedRootMeta;
-use tilolang::meta::SearchMeta;
 use tilolang::types::Ty;
 use tilolang_runtime::meta::{
     ActionMeta, DefaultMeta, EffectClass, EnumMeta, FieldMeta, MergeKind, PackageMeta, ParamMeta,
@@ -620,10 +619,7 @@ impl Reader<'_> {
                     name,
                     doc: named.doc.clone(),
                     fields,
-                    search: SearchMeta::default(),
-                    origin: None,
-                    title: None,
-                    untitled: None,
+                    ..TypeMeta::default()
                 });
             }
         }
@@ -655,10 +651,7 @@ impl Reader<'_> {
                 surface.label.clone()
             },
             fields,
-            search: SearchMeta::default(),
-            origin: None,
-            title: None,
-            untitled: None,
+            ..TypeMeta::default()
         });
     }
 

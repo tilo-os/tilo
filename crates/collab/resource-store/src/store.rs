@@ -52,6 +52,8 @@ use crate::query::{Filter, Page, Query};
 use crate::schema::Schema;
 use crate::value::{Cell, Value};
 
+mod readers;
+
 /// The most resources one document holds before the next one starts.
 pub const DOCUMENT_LIMIT: usize = 4096;
 
@@ -130,6 +132,8 @@ pub enum StoreError {
     Document(automerge::AutomergeError),
     /// A read was given where a write was asked for.
     NotAWrite,
+    /// A write places a resource where its type's reader rule does not.
+    Readers(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -138,6 +142,7 @@ impl std::fmt::Display for StoreError {
             Self::Missing { kind, id } => write!(f, "there is no {kind} `{id}`"),
             Self::Document(error) => write!(f, "the document refused the change: {error}"),
             Self::NotAWrite => write!(f, "that is a read, not a write"),
+            Self::Readers(reason) => f.write_str(reason),
         }
     }
 }
@@ -205,6 +210,8 @@ pub struct Store {
     changed: BTreeSet<u64>,
     /// The resource types every app declared: what a peer's change is checked against.
     schema: Schema,
+    /// The reader rule of each kind whose type names its readers, as [`Store::declare`] took it.
+    rules: BTreeMap<String, tilo_actions::surface::ReaderRule>,
     /// Per document, the changes it refused: kept beside it, never applied, and refusing
     /// every change built on them.
     refused: HashMap<String, BTreeSet<ChangeHash>>,
@@ -1885,6 +1892,7 @@ impl Store {
 
     /// Takes the types `schema` declares into those a peer's change is checked against.
     pub fn declare(&mut self, schema: Schema) {
+        self.rules.extend(schema.readers);
         for ty in schema.types {
             self.schema.types.retain(|held| held.name != ty.name);
             self.schema.types.push(ty);
@@ -1932,6 +1940,7 @@ impl Store {
             crate::admit::within_verb(schema, &touched, stamp.as_ref())
                 .map_err(Refusal::Undeclared)?;
         }
+        self.judge_readers(doc_id, readers, &touched, &received.change)?;
         let admitted = admit.admit(&Proposal {
             doc: doc_id,
             readers,

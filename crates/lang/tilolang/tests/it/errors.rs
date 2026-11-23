@@ -900,3 +900,22 @@ tilo_test_env::scenario! {
         assert!(d.message.contains("would never end"), "{}", d.message);
     }
 }
+
+tilo_test_env::scenario! {
+    /// E144: the fields a type's readers are named by: a `Bool` that hands a record to every
+    /// member, a `Set<Actor>` of the people who read it.
+    fn reader_fields_e144;
+
+    phase a_reader_rule_names_a_field_of_the_right_type;
+    {
+        let typed = |readers: &str| {
+            format!("type Draft (readers: {readers}) {{\n    sent: Bool\n    to: Set<Actor>\n    note: Text\n}}\n")
+        };
+        for fine in ["author", "author until sent", "to"] {
+            assert!(!codes(&typed(fine)).contains(&"E144".to_owned()), "{fine} reads");
+        }
+        for wrong in ["author until note", "author until gone", "note", "gone"] {
+            expect("E144", &typed(wrong));
+        }
+    }
+}

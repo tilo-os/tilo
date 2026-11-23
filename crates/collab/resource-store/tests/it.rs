@@ -2113,7 +2113,7 @@ mod store {
                 ],
                 nested: Vec::new(),
             }],
-            verbs: Vec::new(),
+            ..Schema::default()
         };
         let mut here = Store::new();
         let mut there = Store::new();

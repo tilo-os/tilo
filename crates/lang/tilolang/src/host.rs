@@ -704,20 +704,14 @@ pub fn host_meta() -> PackageMeta {
                     "Whether a person proposed the action, to accept or dismiss, rather than the authority asking about one as it was applied.",
                 ),
             ],
-            search: crate::meta::SearchMeta::default(),
-            origin: None,
-            title: None,
-            untitled: None,
+            ..TypeMeta::default()
         })
         .chain(std::iter::once(TypeMeta {
             id: format!("host-{}", RESOURCE_TYPE_NAME.to_lowercase()),
             name: RESOURCE_TYPE_NAME.to_owned(),
             doc: "Any resource of the workspace, of whichever app: what `find` and `grep` answer across apps. `.of(T)` keeps those of one type.".to_owned(),
             fields: Vec::new(),
-            search: crate::meta::SearchMeta::default(),
-            origin: None,
-            title: None,
-            untitled: None,
+            ..TypeMeta::default()
         }))
         .chain(std::iter::once(TypeMeta {
             id: NOTICE_TYPE.to_string(),
@@ -730,10 +724,7 @@ pub fn host_meta() -> PackageMeta {
                 notice_field(NOTICE_OPENS, "opens", "Resource", MergeKind::Register, "The resource choosing the notification opens."),
                 notice_field(NOTICE_SEEN, "seen", "Bool", MergeKind::Register, "Whether the person has opened or dismissed it."),
             ],
-            search: crate::meta::SearchMeta::default(),
-            origin: None,
-            title: None,
-            untitled: None,
+            ..TypeMeta::default()
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
@@ -752,10 +743,7 @@ pub fn host_meta() -> PackageMeta {
                         default: None,
                     })
                     .collect(),
-                search: crate::meta::SearchMeta::default(),
-                origin: None,
-                title: None,
-                untitled: None,
+                ..TypeMeta::default()
             }
         }))
         .collect(),

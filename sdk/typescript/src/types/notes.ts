@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@8e0b31b4c4399681";
+export const SURFACE = "so.tilo.notes@0e0640a6e4f771c3";
 
 /** The arguments of `pin`. */
 export interface PinArgs {

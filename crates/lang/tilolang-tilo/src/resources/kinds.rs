@@ -76,6 +76,8 @@ pub struct TypeEntry {
     /// The texts, plain or rich, a resource is named by in turn while the ones before are
     /// empty: the field the type says names it, else each text as the type declares them.
     pub texts: Vec<FieldId>,
+    /// Who reads its resources, when not every member (`readers: author`).
+    pub readers: Option<tilolang::meta::ReaderRule>,
 }
 
 impl TypeEntry {
@@ -233,6 +235,7 @@ impl Kinds {
             fields,
             title,
             texts,
+            readers: declared.readers.clone(),
         }
     }
 

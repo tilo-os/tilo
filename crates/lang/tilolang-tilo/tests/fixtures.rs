@@ -100,13 +100,45 @@ impl Workspace {
     /// Take in every document `other` holds, as sync does: each merged into this one's own.
     /// Whether anything changed here.
     pub fn take_in(&self, other: &Self) -> bool {
+        self.take_in_as(other, None)
+    }
+
+    /// As [`Self::take_in`], on a device of `person` when one is named: a document sealed to
+    /// readers they are not among reaches it, but its keys do not, so it opens none of it.
+    pub fn take_in_as(&self, other: &Self, person: Option<&str>) -> bool {
+        // A document opens by the reader set its id names (a record's content names it too):
+        // every member's, or one of the sets the person is among.
+        let theirs: std::collections::BTreeSet<String> = other
+            .0
+            .documents()
+            .iter()
+            .filter_map(|doc| other.0.readers(doc))
+            .filter(|readers| {
+                person.is_some_and(|person| readers.split(',').any(|reader| reader == person))
+            })
+            .map(|readers| collab_types::reader_set_name(&readers))
+            .collect();
+        let opens = |doc: &str| {
+            person.is_none()
+                || collab_types::store_document_readers(doc).is_none_or(|named| {
+                    named == collab_types::EVERY_MEMBER || theirs.contains(named)
+                })
+        };
         let mut changed = false;
-        for doc in other.0.documents() {
+        for doc in other.0.documents().into_iter().filter(|doc| opens(doc)) {
             if let Some(bytes) = other.0.save(&doc) {
                 changed |= self.0.merge(&doc, &bytes).unwrap();
             }
         }
         changed
+    }
+
+    /// The store answering `command` as this device's person reads it.
+    pub fn command(
+        &self,
+        command: tilo_resource_store::wire::Command,
+    ) -> tilo_resource_store::wire::Reply {
+        tilolang_tilo::resources::Port::command(&*self.0, command).unwrap()
     }
 
     /// The store over this workspace, as a host opens it.
@@ -224,7 +256,7 @@ impl Replica {
     /// replicas receive each other's changes in is theirs, so what they read must not depend
     /// on it.
     pub fn send_to(&self, other: &Self) {
-        if other.doc.take_in(&self.doc) {
+        if other.doc.take_in_as(&self.doc, Some(&other.name)) {
             other.host.store().moved();
             let _ = other.watch.take();
         }

@@ -156,7 +156,7 @@ RemovePersonResourceArgs = TypedDict("RemovePersonResourceArgs", {
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.photos.Photo`."""
-    __surface__ = "so.tilo.photos@2c97b3746e6faaf0"
+    __surface__ = "so.tilo.photos@9c2a59e4da63f1a1"
     rv4vs7su: str  # name
     r55t3rg3: str  # picture
     vwrtdas3: str  # thumb
@@ -294,7 +294,7 @@ class Photo(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.photos.Album`."""
-    __surface__ = "so.tilo.photos@2c97b3746e6faaf0"
+    __surface__ = "so.tilo.photos@9c2a59e4da63f1a1"
     unujaudz: str  # name
     k7fl2y27: list[str]  # photos
 
@@ -329,14 +329,14 @@ class Album(Resource):
 
 class Person(Resource):
     """Person — `tl.so.tilo.photos.Person`."""
-    __surface__ = "so.tilo.photos@2c97b3746e6faaf0"
+    __surface__ = "so.tilo.photos@9c2a59e4da63f1a1"
     segahwtp: str  # name
     vbzsnqg5: list[str]  # photos
 
 
 class Library(Resource):
     """Library — `tl.so.tilo.photos.Library`."""
-    __surface__ = "so.tilo.photos@2c97b3746e6faaf0"
+    __surface__ = "so.tilo.photos@9c2a59e4da63f1a1"
     moeuycny: list[Entry[Photo]]  # photos
     tqa4lyow: list[Entry[Album]]  # albums
     xr5mtp2m: list[Entry[Person]]  # people
@@ -489,5 +489,5 @@ class Library(Resource):
 
 class Photos(Resource):
     """Photos — `tl.so.tilo.photos`."""
-    __surface__ = "so.tilo.photos@2c97b3746e6faaf0"
+    __surface__ = "so.tilo.photos@9c2a59e4da63f1a1"
 

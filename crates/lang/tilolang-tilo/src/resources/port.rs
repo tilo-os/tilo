@@ -6,8 +6,8 @@ use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use tilo_resource_store::Store;
 use tilo_resource_store::wire::{self, Command, Reply};
+use tilo_resource_store::{Schema, Store};
 
 /// The device's store, as an app asks it. Each command is answered before the next is sent.
 pub trait Port {
@@ -16,6 +16,10 @@ pub trait Port {
     /// # Errors
     /// Why the store refused it, or why it could not be asked.
     fn command(&self, command: Command) -> Result<Reply, String>;
+
+    /// Takes in what `schema` declares of the kinds the store holds: who reads each that says.
+    /// A store the workspace keeps has every published surface's already.
+    fn declare(&self, _schema: Schema) {}
 }
 
 /// A store held in this process: everything in it is the device's person's to read. Kept on
@@ -79,6 +83,13 @@ impl LocalPort {
             .documents()
             .map(str::to_owned)
             .collect()
+    }
+
+    /// Who reads the document `doc`: its reader set's text; `None` for a document the store
+    /// placed no resource in.
+    #[must_use]
+    pub fn readers(&self, doc: &str) -> Option<String> {
+        self.store.borrow().index().readers(doc).map(str::to_owned)
     }
 
     /// The heads of the document `doc`: they move with every write to it, here or merged in.
@@ -162,6 +173,10 @@ impl LocalPort {
 }
 
 impl Port for LocalPort {
+    fn declare(&self, schema: Schema) {
+        self.store.borrow_mut().declare(schema);
+    }
+
     fn command(&self, command: Command) -> Result<Reply, String> {
         // A workspace on this device alone: every turn is this device's.
         if let Command::Turn { answer, .. } = command {

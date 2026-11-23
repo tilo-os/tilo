@@ -42,6 +42,7 @@ mod member;
 mod member_access;
 mod path;
 mod person;
+mod readers;
 pub mod roles;
 pub mod share;
 pub mod turn;
@@ -83,5 +84,6 @@ pub use member::{
 pub use member_access::MemberAccess;
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use person::{PersonId, PersonIdError};
+pub use readers::ReaderRule;
 pub use roles::{Preset, PresetError, Rule};
 pub use workspace::{Change, PersonGrants, Refusal, WorkspacePolicy};

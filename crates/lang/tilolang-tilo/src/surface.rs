@@ -10,8 +10,8 @@
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 use tilo_actions::surface::{
-    FieldSurface, FieldType, NamedType, ParamSurface, ReturnsSurface, Surface, TypeCase, TypeField,
-    TypeSet, VerbSurface,
+    FieldSurface, FieldType, NamedType, ParamSurface, ReaderRule, ReturnsSurface, Surface,
+    TypeCase, TypeField, TypeSet, VerbSurface,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilolang_runtime::Words;
@@ -553,6 +553,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
             label: ty.name.clone(),
             version: VERSION,
             person: false,
+            readers: ty.readers.clone(),
             verbs,
             fields,
             types: types.into_types(),
@@ -570,6 +571,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         label: crate::publish::app_name(words, meta),
         version: VERSION,
         person: meta.uses_personal_profile(),
+        readers: None,
         verbs: loose,
         fields: Vec::new(),
         types: types.into_types(),
@@ -587,6 +589,7 @@ pub fn host_surface() -> Surface {
         label: "tilolang".to_owned(),
         version: VERSION,
         person: false,
+        readers: None,
         verbs: Vec::new(),
         fields: Vec::new(),
         types: Vec::new(),
@@ -624,6 +627,7 @@ pub fn personal_surface() -> Surface {
         label: "Your place in the app".to_owned(),
         version: VERSION,
         person: false,
+        readers: Some(ReaderRule::Author { until: None }),
         verbs,
         fields: Vec::new(),
         types: Vec::new(),

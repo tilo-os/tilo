@@ -312,7 +312,7 @@ pub struct StateMeta {
     pub ty: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeMeta {
     pub id: String,
     pub name: String,
@@ -334,7 +334,12 @@ pub struct TypeMeta {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub untitled: Option<String>,
+    /// `(readers: author)`: who reads a record of the type, when not every member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readers: Option<ReaderRule>,
 }
+
+pub use tilo_action_policy::ReaderRule;
 
 /// What search, a list's filters and agents offer of a type: its filters in order (the first are the
 /// visible chips), the default order and the fields kept out of filters.

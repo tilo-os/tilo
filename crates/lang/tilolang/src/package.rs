@@ -716,6 +716,7 @@ fn build_meta(
                     origin: info.origin.clone(),
                     title: info.title.clone(),
                     untitled: info.untitled.clone(),
+                    readers: info.readers.clone(),
                 });
             }
             Item::Action(a) => {

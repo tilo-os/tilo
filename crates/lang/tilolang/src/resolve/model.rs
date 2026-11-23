@@ -29,6 +29,7 @@ pub struct TypeInfo {
     pub origin: Option<String>,
     pub title: Option<String>,
     pub untitled: Option<String>,
+    pub readers: Option<crate::meta::ReaderRule>,
 }
 
 impl TypeInfo {
