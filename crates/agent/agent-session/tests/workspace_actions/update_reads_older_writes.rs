@@ -1,5 +1,5 @@
 //! A server updated from a build that named each app's surface by the hash of its `surface.toml`
-//! still lists, over the API, the issues that build wrote. Every change names the
+//! still lists, over the API, the articles that build wrote. Every change names the
 //! surface of the app version that made it, and the server keeps each surface its workspaces'
 //! changes name in its content store, in the form it was named by: an earlier build kept the
 //! `surface.toml` itself there, and the changes it wrote name the hash of those bytes. The update
@@ -10,14 +10,14 @@ use super::*;
 use collab_types::surface::{KindSurface, SurfaceFile};
 use serde_json::{Value, json};
 
-const ISSUES: usize = 12;
+const ARTICLES: usize = 12;
 /// How long after the restart a listing may take to answer with what was written before.
 const BOUND: Duration = Duration::from_secs(60);
 
 /// The app the earlier build wrote with, and the `surface.toml` it carried for it.
 const EARLIER: [(&str, &str); 1] = [(
-    "so.tilo.tasks",
-    include_str!("../../../../../apps/tasks/surface.toml"),
+    "so.tilo.feeds",
+    include_str!("../../../../../apps/feeds/surface.toml"),
 )];
 
 /// How the earlier build decided changes: by the surface a change names, read from the content
@@ -136,13 +136,16 @@ async fn written_before_listed_after() {
         workspace["result"]["workspace"]["id"].as_str().unwrap()
     );
     let writes = [
-        ("tasks", "open", json!({})),
+        ("feeds", "open", json!({})),
         (
-            "tasks/tasks.issues",
-            "create-many",
-            json!({"issues": (0..ISSUES)
-                .map(|at| json!({"title": format!("Issue {at}"), "status": "todo"}))
-                .collect::<Vec<_>>()}),
+            "feeds/feeds.articles",
+            "receive",
+            json!({
+                "feed": "feed-1",
+                "articles": (0..ARTICLES)
+                    .map(|at| json!({"title": format!("Article {at}")}))
+                    .collect::<Vec<_>>(),
+            }),
         ),
     ];
     for (resource, action, args) in writes {
@@ -165,7 +168,7 @@ async fn written_before_listed_after() {
 
     let started = Instant::now();
     let mut last = Value::Null;
-    'listed: for (path, rows) in [("tasks/tasks.issues", ISSUES)] {
+    'listed: for (path, rows) in [("feeds/feeds.articles", ARTICLES)] {
         while started.elapsed() < BOUND {
             let (status, page) = call(
                 &on_server.api,

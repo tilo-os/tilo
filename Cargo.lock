@@ -16658,45 +16658,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
-name = "tasks"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "runtime-dylib",
- "serde_json",
- "tasks",
- "tasks-model",
- "tilo-app",
- "tilo-files",
- "tilo-rich-text",
- "tilo-test-env",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "tasks-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-app-id",
- "tilo-document",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "tasks-model-wasm"
-version = "0.1.0"
-dependencies = [
- "tasks-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17112,7 +17073,6 @@ dependencies = [
  "slides",
  "snippets",
  "speed-test",
- "tasks",
  "tempfile",
  "terminal",
  "test-server",
@@ -19983,7 +19943,6 @@ dependencies = [
  "publisher-model-wasm",
  "remote-model-wasm",
  "scratchpad-model-wasm",
- "tasks-model-wasm",
  "workspace-hack",
 ]
 
@@ -23186,7 +23145,7 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "store",
- "tasks-model",
+ "clocks-model",
  "tempfile",
  "test-http",
  "thiserror 2.0.21",
@@ -28768,9 +28727,6 @@ dependencies = [
  "tantivy-tokenizer-api",
  "tar",
  "target-lexicon",
- "tasks",
- "tasks-model",
- "tasks-model-wasm",
  "tempfile",
  "termcolor",
  "terminal",

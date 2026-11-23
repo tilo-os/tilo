@@ -3,7 +3,7 @@
 Every device holding a workspace's keys applies an installed app's actions from
 the `model.wasm` its package carries (`crates/sdk/tilo-model-guest`,
 `tilo-model-engine`). An app keeps one by keeping a guest crate beside it
-(`apps/tasks` -> `apps/tasks-model-wasm`); the module itself is the app-models
+(`apps/clocks` -> `apps/clocks-model-wasm`); the module itself is the app-models
 check's output, which the image's packing must stage into the payload without
 building it again. An app that declares a model and has no module built is not
 shipped: nothing could apply its actions.
@@ -18,7 +18,7 @@ import unittest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / 'os/scripts/pack-apps.sh'
 MODULE = b'the wasm module a device applies the app actions with'
-APP_ID = 'so.tilo.tasks'
+APP_ID = 'so.tilo.clocks'
 
 
 class Packer:
@@ -40,15 +40,15 @@ class Packer:
         (self.store / 'registry.toml').write_text('[[entry]]\nid="existing"\n')
         (self.repo / 'os/scripts').mkdir(parents=True)
         (self.repo / 'tools').symlink_to(REPO / 'tools')
-        app = self.repo / 'apps/tasks'
+        app = self.repo / 'apps/clocks'
         app.mkdir(parents=True)
-        shutil.copy(REPO / 'apps/tasks/tilo-app.toml', app / 'tilo-app.toml')
-        shutil.copy(REPO / 'apps/tasks/surface.toml', app / 'surface.toml')
-        (self.repo / 'apps/tasks-model-wasm').mkdir()
-        (self.repo / 'apps/tasks-model-wasm/Cargo.toml').write_text(
-            '[package]\nname = "tasks-model-wasm"\nversion = "0.1.0"\n')
-        (self.bins / 'tasks').write_text('#!/bin/sh\n')
-        (self.bins / 'tasks').chmod(0o755)
+        shutil.copy(REPO / 'apps/clocks/tilo-app.toml', app / 'tilo-app.toml')
+        shutil.copy(REPO / 'apps/clocks/surface.toml', app / 'surface.toml')
+        (self.repo / 'apps/clocks-model-wasm').mkdir()
+        (self.repo / 'apps/clocks-model-wasm/Cargo.toml').write_text(
+            '[package]\nname = "clocks-model-wasm"\nversion = "0.1.0"\n')
+        (self.bins / 'clocks').write_text('#!/bin/sh\n')
+        (self.bins / 'clocks').chmod(0o755)
         bundle = root / 'bundle'
         bundle.write_text('''#!/bin/bash
 set -eu
@@ -79,8 +79,8 @@ printf '[[entry]]\\nid="{APP_ID}"\\n' >> '{self.store}/registry.toml'
         self.bundle, self.package_bin, self.install = bundle, pack, install
 
     def with_module(self):
-        (self.models / 'tasks').mkdir()
-        (self.models / 'tasks/model.wasm').write_bytes(MODULE)
+        (self.models / 'clocks').mkdir()
+        (self.models / 'clocks/model.wasm').write_bytes(MODULE)
         return self
 
     def environment(self):
@@ -119,7 +119,7 @@ class ModelTests(unittest.TestCase):
             packer = Packer(Path(directory))
             tapps = packer.root / 'tapps'
             tapps.mkdir()
-            (tapps / 'tasks.tapp').write_text('tapp')
+            (tapps / 'clocks.tapp').write_text('tapp')
 
             def prebuilt(listing):
                 (packer.root / 'pack').write_text(f'''#!/bin/bash
@@ -138,12 +138,12 @@ esac
 ''')
                 return packer.pack(TAPP_DIR=str(tapps))
 
-            refused = prebuilt('  bin/tasks  (blake3:abc, 16 bytes)')
+            refused = prebuilt('  bin/clocks  (blake3:abc, 16 bytes)')
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn('carries no model.wasm', refused.stderr)
 
             accepted = prebuilt('  model.wasm  (blake3:abc, 44 bytes)\n'
-                                '  bin/tasks  (blake3:def, 16 bytes)')
+                                '  bin/clocks  (blake3:def, 16 bytes)')
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
 

@@ -20,7 +20,9 @@ from story import Failed, Story, until, walk  # noqa: E402
 SHELL = "so.tilo.session"
 SHOW_PAIR_DEVICE = ("session:invite", "show-pair-device")
 SESSION = BUILD / "bin/tilo-session"
-APPS = "tasks file-explorer settings activity"
+APPS = "file-explorer settings activity"
+# The tilolang apps beside them, by their directory under apps/tl.
+TILOLANG = ("tasks",)
 
 
 def steps(story: Story) -> None:
@@ -29,7 +31,7 @@ def steps(story: Story) -> None:
     shared: dict = {}
 
     def laptop_opens():
-        took = laptop.start(apps=APPS)
+        took = laptop.start(apps=APPS, tilolang=TILOLANG)
         laptop.name_self("Ada")
         story.timing("Ada's session start, to its first frame", took["tookMs"])
         story.timing("Ada's session start, to its first frame, with the development launcher's installing", took["launcherMs"])

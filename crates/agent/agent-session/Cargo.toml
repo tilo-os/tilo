@@ -64,7 +64,6 @@ shortcuts = { path = "../../../apps/shortcuts" }
 slides = { path = "../../../apps/slides" }
 snippets = { path = "../../../apps/snippets" }
 speed-test = { path = "../../../apps/speed-test" }
-tasks = { path = "../../../apps/tasks" }
 terminal = { path = "../../../apps/terminal", default-features = false, features = [] }
 themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }

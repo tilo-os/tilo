@@ -120,9 +120,9 @@ exclude = [
 # (tools/tests/test_nested_sandboxes.py fails while the two disagree).
 isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session", "tilo-net"] }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
-# setup in .config/nextest.toml names them for both packages, and for the session the four the
-# chat-siblings and tasks-siblings setups name (Chat, the launcher that starts it beside the
-# session, the runtime it runs on, for `it`'s `chat_2x2`, and Tasks for its `closed_tasks`):
+# setup in .config/nextest.toml names them for both packages, and for the session the three the
+# chat-siblings setup names (Chat, the launcher that starts it beside the session, and the
+# runtime it runs on, for `it`'s `chat_2x2`):
 # built once by this family's build and kept with its test binaries,
 # each shard is handed them (NEXTEST_BIN_EXE_<bin>) and the setups build nothing. The app host's
 # trust test installs with the installer it finds beside its own build (`tilo-install`), which
@@ -142,7 +142,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "launcher:tilo-launcher@fast=dev-overrides", "tilo-runtime:tilo-runtime@fast", "tasks:tasks@fast", "passwords:passwords@fast", "model-providers:model-providers@fast", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process"] }
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "launcher:tilo-launcher@fast=dev-overrides", "tilo-runtime:tilo-runtime@fast", "passwords:passwords@fast", "model-providers:model-providers@fast", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -624,7 +624,7 @@ default = false
 # the `model.wasm` a package carries so every device holding a workspace's keys
 # applies the app's actions with no build of its own. One mechanism for every
 # app (tools/ci/app-models.sh): an app keeps its model as a guest crate beside
-# it (`apps/tasks` → `apps/tasks-model-wasm`), and the module is what that
+# it (`apps/scratchpad` → `apps/scratchpad-model-wasm`), and the module is what that
 # crate builds for wasm32. A run that asks for a package's output runs this
 # first.
 [[check]]
@@ -641,15 +641,15 @@ default = false
 # here, where the module is in place. `workspace-unify` comes beside the
 # package so its features resolve as the test family's build gives them.
 # The server's test is handed a package the image's pack path built
-# (tools/ci/pack-tasks-tapp.sh), so what it applies an action from is a package
-# an image would install, not one the test staged. Both packages' commands name
-# workspace-unify beside them so their units are the `test` and `test-x86_64`
+# (tools/ci/pack-clocks-tapp.sh), so what it applies an action from is a package
+# an image would install, not one the test staged. The command names
+# workspace-unify beside the package so its units are the `test` and `test-x86_64`
 # families' units and the compiler cache serves them: a narrowed `-p` selection
 # otherwise resolves its dependencies' features on its own and compiles them again.
 [[check]]
 name = "test-packaged-model"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -euo pipefail\nexport TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\"\nbash tools/ci/pack-tasks-tapp.sh /target/packaged-model\nTILO_APP_PACKAGE=/target/packaged-model/so.tilo.tasks.tapp cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\ncargo test --locked -p tilo-agent-session -p workspace-unify --test it an_agent_applies_a_packaged -- --ignored\n"
+run = "set -euo pipefail\nexport TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\"\nbash tools/ci/pack-clocks-tapp.sh /target/packaged-model\nTILO_APP_PACKAGE=/target/packaged-model/so.tilo.clocks.tapp cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\n"
 needs = ["app-models"]
 
 [[check]]

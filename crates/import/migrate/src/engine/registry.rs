@@ -156,7 +156,7 @@ pub const SOURCES: &[Row] = &[
         title: "Linear",
         engine: Engine::Service,
         connect: Some(""),
-        resources: &["tasks/tasks.tracker"],
+        resources: &["tasks"],
     },
     Row {
         key: "forgejo",
@@ -164,7 +164,7 @@ pub const SOURCES: &[Row] = &[
         title: "Forgejo (or Gitea) issues",
         engine: Engine::Service,
         connect: Some("--url https://forge.example/owner/repo"),
-        resources: &["tasks/tasks.tracker"],
+        resources: &["tasks"],
     },
 ];
 

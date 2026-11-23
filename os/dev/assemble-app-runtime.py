@@ -686,7 +686,7 @@ def prepare_tilolang_applications(args, entries):
 
 def model_entries(repo, entries):
     """The applications that keep a model: a guest crate beside the app
-    (apps/tasks -> apps/tasks-model-wasm), whose module the pack requires."""
+    (apps/clocks -> apps/clocks-model-wasm), whose module the pack requires."""
     return [entry for entry in entries
             if (repo / 'apps' / (entry['dir'] + '-model-wasm') / 'Cargo.toml').is_file()]
 

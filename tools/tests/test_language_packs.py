@@ -41,7 +41,7 @@ class LanguagePackTests(unittest.TestCase):
     def test_a_crate_whose_declarations_are_named_from_its_catalogue_is_packed(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             repo = pathlib.Path(scratch) / "repo"
-            crate(repo, "tasks-model", '#[resource(kind = "tasks.list")]\nimpl List {}\n',
+            crate(repo, "clocks-model", '#[resource(kind = "tasks.list")]\nimpl List {}\n',
                   {"en-US": "tasks-list = List\n", "de-DE": "tasks-list = Liste\n"})
             crate(repo, "jobs", "#[derive(Clone, tilo_resource::Effect)]\nenum Job {}\n",
                   {"en-US": "a = A\n", "de-DE": "a = Ä\n"})
@@ -51,7 +51,7 @@ class LanguagePackTests(unittest.TestCase):
             out = pathlib.Path(scratch) / "packs"
             self.assertEqual(packs.build(repo, out), 0)
             self.assertEqual(sorted(p.name for p in (out / "de").iterdir()),
-                             ["jobs.ftl", "tasks-model.ftl"])
+                             ["clocks-model.ftl", "jobs.ftl"])
 
     def test_a_crate_using_declared_names_is_packed(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
@@ -66,9 +66,9 @@ class LanguagePackTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in (out / "de").iterdir()),
                              ["tray.ftl"])
 
-    def test_the_repository_packs_the_tasks_models_german(self) -> None:
+    def test_the_repository_packs_the_clocks_models_german(self) -> None:
         found = {(locale, name) for locale, name, _ in packs.catalogues(ROOT)}
-        self.assertIn(("de-DE", "tasks-model"), found)
+        self.assertIn(("de-DE", "clocks-model"), found)
 
     def test_one_pack_per_language_whatever_region_a_crate_names(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:

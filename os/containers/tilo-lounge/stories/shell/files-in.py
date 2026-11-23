@@ -39,7 +39,9 @@ DOCUMENT = "letter.txt"
 LETTER = "The keys are under the flowerpot"
 CLI = os.environ.get("TILO_CLI_BIN", "")
 SWITCHER = "Switch workspace, now in "
-APPS = "file-explorer settings terminal tasks sheets pdf-viewer photos activity"
+APPS = "file-explorer settings terminal sheets pdf-viewer photos activity"
+# The tilolang apps beside them, by their directory under apps/tl.
+TILOLANG = ("tasks",)
 
 
 def photo(width: int, height: int) -> bytes:
@@ -101,13 +103,13 @@ def run_command(one: Person, *args: str, deadline: float = 120.0) -> subprocess.
 
 def steps(story: Story) -> None:
     ada = story.person("Ada")
-    ada.prepare(APPS)
+    ada.prepare(APPS, TILOLANG)
     if not CLI or not Path(CLI).is_file():
         raise Failed(f"no tilo command to run: TILO_CLI_BIN names {CLI!r}")
     workspace = {}
 
     def opening():
-        took = ada.start(apps=APPS)
+        took = ada.start(apps=APPS, tilolang=TILOLANG)
         story.timing("Ada's session start, to its first frame", took["tookMs"])
         story.timing("Ada's session start, to its first frame, with the development launcher's installing", took["launcherMs"])
         until("Ada's shell to hold a workspace", lambda: (

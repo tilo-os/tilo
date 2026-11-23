@@ -201,15 +201,6 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "rdeps(compat-service) or rdeps(launcher) or rdeps(tilo-app-cli) or rdeps(tilo-capture) or rdeps(tilo-media) or rdeps(tilo-projector) or rdeps(tilo-spotify) or rdeps(tilo-tts) or package(tilo-session) or package(tilo-session-client) or package(tilo-test-env)"
 setup = "headless-audio"
 
-# Tasks' own package, which the closed-app test starts without a window, and the launcher the
-# session starts it through (it looks for one beside itself first): the app's code is what writes
-# the workspace's tracker there, so the record the agent's step changes is the app's.
-[scripts.setup.tasks-siblings]
-command = [
-    "bash", "tools/build-sibling-binaries.sh",
-    "tasks:tasks", "launcher:tilo-launcher",
-]
-
 # A branched device's vault and provider keys are read through the apps that keep them:
 # Passwords and Model Providers, as a desktop starts them.
 [scripts.setup.vault-siblings]
@@ -228,23 +219,13 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(device_branch::)"
 setup = "vault-siblings"
 
-[[profile.default.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(it) and test(closed_tasks::)"
-setup = "tasks-siblings"
-
-[[profile.ci.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(it) and test(closed_tasks::)"
-setup = "tasks-siblings"
-
 # The installed apps the session opens and times against the splash budgets their own manifests
 # declare, and the launcher that starts them: each is a program of another package, which Cargo
 # builds for no test of the session's.
 [scripts.setup.app-open-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tasks:tasks", "tilo-runtime:tilo-runtime",
+    "tilo-runtime:tilo-runtime",
     "passwords:passwords", "model-providers:model-providers", "launcher:tilo-launcher",
 ]
 

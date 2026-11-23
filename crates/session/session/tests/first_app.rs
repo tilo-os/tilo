@@ -24,7 +24,7 @@ use crate::common::people::Person;
 
 /// The app each fresh session opens first: a window of the session's own, as a person's first app
 /// is.
-const TASKS: &str = "so.tilo.tasks";
+const APP: &str = "so.tilo.passwords";
 
 /// What the shell calls a workspace nobody has named yet: the name the fresh workspace is founded
 /// under, and the one every surface names it by from the first frame.
@@ -41,13 +41,13 @@ fn a_fresh_sessions_first_app_opens_in_the_seed_workspace_named_workspace() {
     for at in 0..SESSIONS {
         let label = format!("fresh session {at}");
         let mut device = ada.device(&label);
-        device.install_tasks();
+        device.install_passwords();
         device.start();
         // The first thing this session does is open an app, while its workspace is still being
         // founded: the open waits for the founding and lands in that workspace, and nothing of it
         // is refused.
-        device.open(TASKS);
-        device.wait_for_window(TASKS);
+        device.open(APP);
+        device.wait_for_window(APP);
         // The session's own fresh workspace is the one in front, and it is the only one: what
         // opened is what landed in it.
         let seed = device.showing().expect("a workspace in front");
@@ -59,18 +59,18 @@ fn a_fresh_sessions_first_app_opens_in_the_seed_workspace_named_workspace() {
         let windows = device.ask(&json!({"op": "windows"}));
         let window = windows["answer"]["windows"]
             .as_array()
-            .and_then(|rows| rows.iter().find(|row| row["app_id"] == TASKS).cloned())
+            .and_then(|rows| rows.iter().find(|row| row["app_id"] == APP).cloned())
             .unwrap_or_default();
         assert_eq!(
             window["workspace"],
             json!(WORKSPACE),
-            "{label}: {TASKS} opened in the workspace the shell started with, named by the word the \
+            "{label}: {APP} opened in the workspace the shell started with, named by the word the \
              shell gives a workspace nobody has named yet and never by its id: {windows}\n{}",
             device.diagnostic()
         );
         assert!(
             window["rect"].is_array(),
-            "{label}: {TASKS}'s window came and drew: {windows}\n{}",
+            "{label}: {APP}'s window came and drew: {windows}\n{}",
             device.diagnostic()
         );
         device.stop();

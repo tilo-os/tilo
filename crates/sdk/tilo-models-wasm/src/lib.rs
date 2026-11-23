@@ -38,4 +38,3 @@ extern crate print_centre_model_wasm;
 extern crate publisher_model_wasm;
 extern crate remote_model_wasm;
 extern crate scratchpad_model_wasm;
-extern crate tasks_model_wasm;

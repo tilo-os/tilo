@@ -3,14 +3,16 @@
 //!
 //! Their keys are typed by the person and kept in this computer's account vault; the review,
 //! the journal and every request to the service happen here. What comes over lands as the
-//! agent's invocation: an Outline document becomes a Notes page (`import-markdown`, under the id its
-//! source decides, then `move-note` under its parent), an issue from Linear or Forgejo one in
-//! Tasks (made by `create-many` in the project or area its project or team, milestone or
-//! repository there became, then `comment`, `move-under` and `link` for the issues it relates
-//! to). Items go over 200 at a time, and the actions after the first as groups of many, so a
-//! tracker of thousands of issues is a few dozen calls. Each keeps its origin: who wrote it on
-//! the service, when, its page there and the name the service gave it (`ENG-12`), so a person
-//! sees the original author and date while History says who moved it.
+//! agent's invocation, through the destination app's own typed actions: an Outline document
+//! becomes a Notes page (`import_page`, under the id its source decides, then `move-note` under
+//! its parent), and an issue from Linear or Forgejo one in Tasks (`new_project`, `rename` and
+//! `set_kind` for the project or area its project or team, milestone or repository there
+//! became; `add_origin` and `import_issue` for the issue; then `edit-text`, `file`, `move_to`,
+//! `set_status`, `label`, `estimate`, `schedule` and a priority verb for what it carries, and a
+//! comment in Discussion for each of its thread and for how it relates to another issue). Each
+//! keeps its origin: who wrote it on the service, when, its page there and the name the service
+//! gave it (`ENG-12`), so a person sees the original author and date while History says who
+//! moved it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -40,30 +42,37 @@ pub const MAIL: &str = "mail";
 /// said by the file's path.
 const NOTES: &str = "notes";
 const IMPORT_PAGE: &str = "import_page";
-/// Tasks' issues, where an issue is made, commented on, nested and linked.
-const ISSUES: &str = "tasks/tasks.issues";
-const CREATE_MANY: &str = "tasks/tasks.issues#create-many";
-const CREATE_AREA: &str = "tasks/tasks.tracker#create-area";
+/// The app that keeps the workspace's tasks, as its path starts: its root resource is where a
+/// project and an issue are made, and an item's own address (`tl:so.tilo.tasks:<id>`) is where
+/// it is changed.
+const TASKS_APP: &str = "so.tilo.tasks";
+/// The app's own resource, the root of its document, as its actions name it in arguments.
+const TASKS: &str = "tl:so.tilo.tasks";
+/// The app that keeps the comments a task's thread holds, as its path starts.
+const DISCUSSION: &str = "so.tilo.lang.discussion";
+/// Tasks' own actions: a project, its kind and its name.
+const NEW_PROJECT: &str = "new_project";
+const RENAME: &str = "rename";
+const SET_KIND: &str = "set_kind";
+/// An issue's origin, and the issue itself, made once each.
+const ADD_ORIGIN: &str = "add_origin";
+const IMPORT_ISSUE: &str = "import_issue";
+/// What an issue carries, set after it is made.
+const EDIT_TEXT: &str = "edit-text";
+const FILE: &str = "file";
+const MOVE_TO: &str = "move_to";
+const SET_STATUS: &str = "set_status";
+const ESTIMATE: &str = "estimate";
+const SCHEDULE: &str = "schedule";
+const LABEL: &str = "label";
+/// What a task's thread takes, in the Discussion app.
 const COMMENT: &str = "comment";
-const MOVE_UNDER: &str = "move-under";
-const LINK: &str = "link";
-/// How many items an import hands over at once: what one `create-many` call makes.
+/// How many items an import hands over at once.
 const LANDING_BATCH: usize = 200;
-/// The most issues one `create-many` call makes (Tasks' own bound).
-const ISSUES_PER_CALL: usize = 200;
-/// The most bytes of issues one `create-many` call carries: well within the text Tasks keeps in
-/// one part of its tracker.
-const ISSUES_BYTES: usize = 384 * 1024;
 /// The most members and bytes of arguments one grouped call carries: a group is one step of
 /// history, and one message of the workspace's session.
 const GROUP_MEMBERS: usize = 500;
 const GROUP_BYTES: usize = 256 * 1024;
-/// The most characters an issue's title has in Tasks (its own bound): a longer one is cut to it,
-/// and said whole at the top of the issue's description.
-const TITLE_CHARS: usize = 240;
-/// How Tasks names the kind of an issue a link points at.
-const ISSUE_KIND: &str = "tasks.tracker.issues";
-use tilo_app_id::apps::TASKS as TASKS_APP;
 
 /// A service reached with a key or a password: Outline, Linear, Forgejo, a mail account.
 pub struct Services;
@@ -534,12 +543,13 @@ fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
 }
 
 /// What a source's imports made in the workspace, kept beside its journal so a later import finds it:
-/// the Tasks issue each issue became and the project or area each team and project became, by
-/// their pages and keys, the links made between issues, and the links waiting for the issue
-/// they point at.
+/// the Tasks task each issue became and the project or area each team and project became, by
+/// their pages and keys, the relations said in the tasks' threads, and the relations waiting for
+/// the issue they point at.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Kept {
-    /// The Tasks issue each issue became, by its page on the service.
+    /// The Tasks task each issue became, by its page on the service, at its address there
+    /// (`tl:so.tilo.tasks:<id>`).
     #[serde(default)]
     pub issues: BTreeMap<String, String>,
     /// The import that brought each issue, by its page.
@@ -549,7 +559,7 @@ pub struct Kept {
     /// key.
     #[serde(default)]
     pub areas: BTreeMap<String, KeptArea>,
-    /// Links made, as `from-page\u{0}to-page`.
+    /// Relations said in the tasks' threads, as `from-page\u{0}to-page`.
     #[serde(default)]
     pub links: std::collections::BTreeSet<String>,
     /// Relations whose other issue had not come over yet, by that issue's page: the page of the
@@ -563,9 +573,14 @@ pub struct Kept {
     /// ([`comment_key`]).
     #[serde(default)]
     pub comments: std::collections::BTreeSet<String>,
+    /// The issues whose title's body, project, parent, priority, estimate, day and labels are
+    /// all set, by their page: an import stopped part-way finishes them, and sets none twice.
+    #[serde(default)]
+    pub applied: std::collections::BTreeSet<String>,
 }
 
-/// A project or area an import made for a team, project, repository or milestone.
+/// A project or area an import made for a team, project, repository or milestone, at its address
+/// (`tl:so.tilo.tasks:<id>`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct KeptArea {
     pub id: String,
@@ -586,6 +601,7 @@ impl Kept {
             self.issue_runs.remove(page);
             self.waiting.remove(page);
             self.parents.remove(page);
+            self.applied.remove(page);
         }
         self.comments.retain(|comment| {
             !comment
@@ -644,7 +660,7 @@ fn calls<T>(members: &[T], count: usize, bytes: usize, size: impl Fn(&T) -> usiz
     out
 }
 
-/// Apply `members` on `resource` (`tasks/tasks.issues`) as few grouped calls as a group's limits
+/// Apply `members` on `resource` (the notebook's `notes`) as few grouped calls as a group's limits
 /// allow, in order. A group lands whole or not at all: one the workspace refuses is split in
 /// halves until the member it refused is alone, so every other member still lands. Answers per
 /// member: `None` when it landed, or the workspace's refusal of it.
@@ -710,25 +726,9 @@ fn settle(
     }
 }
 
-/// The ids a call that made items answered, in the order it made them.
-fn made_ids(answer: &super::writer::Answer) -> Vec<String> {
-    answer
-        .result()
-        .and_then(|value| value.get("made"))
-        .and_then(Value::as_array)
-        .map(|made| {
-            made.iter()
-                .filter_map(|item| item.get("id").and_then(Value::as_str))
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Whether the workspace refused what it was asked, rather than not answering it: one that was
 /// still not ready after the call asked again stops the import, which the next one resumes, and
-/// is never taken as a refusal of the items asked (a list halved down to single issues, each
-/// made without its parent).
+/// is never taken as a refusal of the item asked.
 fn refused_for_good(error: &anyhow::Error) -> bool {
     super::writer::Refused::of(error).is_some_and(|refused| !refused.asks_again())
 }
@@ -775,6 +775,24 @@ impl Landing<'_, '_> {
             .map_err(|error| self.fail(error))
     }
 
+    /// Do `verb` of the resource at `path` — an app, or an app and one of its resources — with
+    /// `args`, and answer what the app said.
+    fn act(&mut self, path: &str, verb: &str, args: Value) -> Result<super::writer::Answer> {
+        let (workspace, invocation) = self.lander.workspace()?;
+        workspace.act(invocation, &format!("{path}#{verb}"), args)
+    }
+
+    /// The address of the resource `id` of Tasks, as an argument names it.
+    fn task_address(id: &str) -> String {
+        format!("{TASKS}:{id}")
+    }
+
+    /// Where Tasks' resource at `address` stands in the workspace's tree, as a call's path
+    /// names it: the app, then the resource by its own address.
+    fn task_path(address: &str) -> String {
+        format!("{TASKS_APP}/{address}")
+    }
+
     /// The project or area `group` became, made now if no import made it yet: a project in Linear
     /// (a milestone in Forgejo) becomes a project, a team (a repository) an area, each named as
     /// the service names it.
@@ -789,21 +807,28 @@ impl Landing<'_, '_> {
             group.name.trim()
         };
         let made_by = self.lander.invocation.id.clone();
-        let (workspace, invocation) = self.lander.workspace()?;
-        let made = workspace.act(invocation, CREATE_AREA, json!({"name": name, "kind": kind}))?;
+        let made = self.act(TASKS_APP, NEW_PROJECT, json!({}))?;
         let id = created_id(&made).ok_or_else(|| {
             anyhow!("Tasks made the {kind} {name} but did not say its id: {made:?}")
         })?;
+        let address = Self::task_address(&id);
+        let path = Self::task_path(&address);
+        // A new project is called what the app calls one until it is renamed here, and is a
+        // project until it is said to be an area.
+        self.act(&path, RENAME, json!({"name": name}))?;
+        if kind == "area" {
+            self.act(&path, SET_KIND, json!({"kind": kind}))?;
+        }
         self.kept.areas.insert(
             key,
             KeptArea {
-                id: id.clone(),
+                id: address.clone(),
                 run: made_by,
             },
         );
         self.keep()?;
         self.lander.count("projects", 1, 0)?;
-        Ok(id)
+        Ok(address)
     }
 
     /// The project or area an issue works towards: its project in Linear, else its team's area.
@@ -816,107 +841,138 @@ impl Landing<'_, '_> {
         }
     }
 
-    /// Make those of `issues` no import made yet, `create-many` at a time, keeping each one's id by
-    /// its page the moment the call answers. A sub-issue is made under its parent: in the same
-    /// call when the parent comes before it there, by the parent's id when an earlier call made
-    /// it, and otherwise moved under it once it comes.
+    /// Make those of `issues` no import made yet, keeping each one's address by its page the
+    /// moment Tasks answers it. A sub-issue whose parent is already here is moved under it; one
+    /// whose parent has not come over yet waits for it.
     fn make_all(
         &mut self,
         issues: &[IncomingIssue],
-        projects: &BTreeMap<String, String>,
         refused: &mut Vec<RefusedItem>,
     ) -> Result<()> {
-        let missing: Vec<(&IncomingIssue, Value)> = issues
-            .iter()
-            .filter(|issue| !self.kept.issues.contains_key(&issue.url))
-            .map(|issue| (issue, listed(issue, projects.get(&issue.url))))
-            .collect();
-        for call in calls(&missing, ISSUES_PER_CALL, ISSUES_BYTES, |(_, listed)| {
-            listed.to_string().len()
-        }) {
-            self.make(call, true, refused)?;
+        for issue in issues {
+            if self.kept.issues.contains_key(&issue.url) {
+                continue;
+            }
+            match self.make_one(issue) {
+                Ok(()) => {}
+                Err(error) if refused_for_good(&error) => {
+                    refused.push(refusal(&issue.key, &issue.identifier, &error));
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }
 
-    /// Make `issues` in one call, each under its parent when `nest`; a list Tasks refuses is
-    /// halved until the issue it refuses is alone.
-    fn make(
+    /// Make `issue` with its origin, keeping its address by its page as soon as it is made: an
+    /// import stopped after that finds it and makes it no second time.
+    fn make_one(&mut self, issue: &IncomingIssue) -> Result<()> {
+        let service = service_name(&issue.source);
+        let made = self.act(TASKS_APP, ADD_ORIGIN, origin_args(issue, service))?;
+        let origin = created_id(&made).ok_or_else(|| {
+            anyhow!("Tasks made an origin for {} but did not say its id: {made:?}", issue.key)
+        })?;
+        let made = self.act(
+            TASKS_APP,
+            IMPORT_ISSUE,
+            json!({
+                "origin": Self::task_address(&origin),
+                "title": issue_title(issue),
+                "key": issue.identifier,
+                "status": task_status(&issue.status),
+            }),
+        )?;
+        let id = created_id(&made).ok_or_else(|| {
+            anyhow!("Tasks made {} but did not say its id: {made:?}", issue.identifier)
+        })?;
+        // The address the issue is changed at, kept before anything else is asked of it.
+        let address = Self::task_address(&id);
+        self.kept.issues.insert(issue.url.clone(), address);
+        self.kept
+            .issue_runs
+            .insert(issue.url.clone(), self.lander.invocation.id.clone());
+        self.keep()
+    }
+
+    /// Set on those of `issues` what they carry, unless an earlier import set it already: a body,
+    /// the project, the issue it sits under, how urgent it is, its estimate, its day and its
+    /// labels. An issue finished here is kept as applied, so an import interrupted after some of
+    /// its issues is finished by the next one.
+    fn apply_all(
         &mut self,
-        issues: &[(&IncomingIssue, Value)],
-        nest: bool,
+        issues: &[&IncomingIssue],
+        projects: &BTreeMap<String, String>,
         refused: &mut Vec<RefusedItem>,
     ) -> Result<()> {
-        if issues.is_empty() {
-            return Ok(());
-        }
-        let mut list = Vec::with_capacity(issues.len());
-        for (at, (issue, listed)) in issues.iter().enumerate() {
-            let mut listed = listed.clone();
-            if let Some(parent) = issue.parent.as_ref().filter(|_| nest) {
-                let earlier = issues
-                    .get(..at)
-                    .and_then(|before| before.iter().position(|(other, _)| other.url == *parent));
-                let nested = match earlier {
-                    Some(place) => Some(("under", json!(place.saturating_add(1).to_string()))),
-                    None => self.kept.issues.get(parent).map(|id| ("parent", json!(id))),
-                };
-                if let (Some((field, value)), Some(fields)) = (nested, listed.as_object_mut()) {
-                    fields.insert(field.to_owned(), value);
-                }
+        for issue in issues {
+            if self.kept.applied.contains(&issue.url) {
+                continue;
             }
-            list.push(listed);
-        }
-        let (workspace, invocation) = self.lander.workspace()?;
-        match workspace.act(invocation, CREATE_MANY, json!({"issues": list})) {
-            Ok(answer) => {
-                let ids = made_ids(&answer);
-                if ids.len() != issues.len() {
-                    bail!(
-                        "Tasks made {} issues but answered {} ids: {answer:?}",
-                        issues.len(),
-                        ids.len()
-                    );
+            let Some(address) = self.kept.issues.get(&issue.url).cloned() else {
+                continue;
+            };
+            match self.apply_one(issue, &address, projects.get(&issue.url)) {
+                Ok(()) => {
+                    self.kept.applied.insert(issue.url.clone());
                 }
-                let invocation = self.lander.invocation.id.clone();
-                for ((issue, _), id) in issues.iter().zip(ids) {
-                    self.kept.issues.insert(issue.url.clone(), id);
-                    self.kept
-                        .issue_runs
-                        .insert(issue.url.clone(), invocation.clone());
-                }
-                // What a call made is kept before anything else is asked: an import stopped after
-                // it finds every issue it made, and makes none twice.
-                self.keep()
-            }
-            Err(error) if !refused_for_good(&error) => Err(error),
-            Err(error) if issues.len() == 1 => {
-                let Some((issue, listed)) = issues.first() else {
-                    return Ok(());
-                };
-                // The issue an earlier import made its parent may be gone from Tasks (deleted
-                // since): the issue comes over all the same, at the top level.
-                if nest
-                    && issue
-                        .parent
-                        .as_ref()
-                        .is_some_and(|parent| self.kept.issues.contains_key(parent))
-                {
-                    return self.make(&[(*issue, listed.clone())], false, refused);
-                }
-                refused.push(refusal(&issue.key, &issue.identifier, &error));
-                Ok(())
-            }
-            Err(_) => {
-                let (first, rest) = issues.split_at(issues.len() / 2);
-                self.make(first, nest, refused)?;
-                self.make(rest, nest, refused)
+                Err(error) if refused_for_good(&error) => refused.push(refusal(
+                    &issue.key,
+                    &reference_of(&issue.url),
+                    &error,
+                )),
+                Err(error) => return Err(error),
             }
         }
+        self.keep()
+    }
+
+    /// Set on the task at `address` what `issue` carries.
+    fn apply_one(
+        &mut self,
+        issue: &IncomingIssue,
+        address: &str,
+        project: Option<&String>,
+    ) -> Result<()> {
+        let path = Self::task_path(address);
+        if !issue.body.trim().is_empty() {
+            self.act(
+                &path,
+                EDIT_TEXT,
+                json!({"field": "notes", "value": issue.body}),
+            )?;
+        }
+        if let Some(project) = project {
+            self.act(&path, FILE, json!({"p": project}))?;
+        }
+        if let Some(parent) = &issue.parent {
+            if let Some(parent) = self.kept.issues.get(parent).cloned() {
+                self.act(&path, MOVE_TO, json!({"parent": parent, "before": null}))?;
+            } else {
+                let children = self.kept.parents.entry(parent.clone()).or_default();
+                if !children.contains(&issue.url) {
+                    children.push(issue.url.clone());
+                }
+            }
+        }
+        if let Some(priority) = issue.priority.as_deref().and_then(priority_action) {
+            self.act(&path, priority, json!({}))?;
+        }
+        if let Some(estimate) = issue.estimate {
+            self.act(&path, ESTIMATE, json!({"points": estimate}))?;
+        }
+        if let Some(due) = &issue.due {
+            self.act(&path, SCHEDULE, json!({"due": due}))?;
+        }
+        for label in &issue.labels {
+            if !label.trim().is_empty() {
+                self.act(&path, LABEL, json!({"name": label}))?;
+            }
+        }
+        Ok(())
     }
 
     /// Land `issues`: the issues first, then their comments, the sub-issues waiting for them and
-    /// how they relate, each as grouped calls.
+    /// how they relate.
     fn land_issues(&mut self, issues: &[IncomingIssue]) -> Result<Delivered> {
         let mut refused = Vec::new();
         let mut projects = BTreeMap::new();
@@ -925,11 +981,12 @@ impl Landing<'_, '_> {
                 projects.insert(issue.url.clone(), project);
             }
         }
-        self.make_all(issues, &projects, &mut refused)?;
+        self.make_all(issues, &mut refused)?;
         let made: Vec<&IncomingIssue> = issues
             .iter()
             .filter(|issue| self.kept.issues.contains_key(&issue.url))
             .collect();
+        self.apply_all(&made, &projects, &mut refused)?;
 
         // A sub-issue whose parent was not here when it was made waits for it.
         for issue in &made {
@@ -957,16 +1014,15 @@ impl Landing<'_, '_> {
         Ok(Delivered { landed, refused })
     }
 
-    /// The comments of `issues` no import brought yet, by their authors there and on their dates.
+    /// The comments of `issues` no import brought yet, said in the Discussion app about the task
+    /// each comment's issue became: each is a comment, which is all a thread is.
     fn comment_all(
         &mut self,
         issues: &[&IncomingIssue],
         refused: &mut Vec<RefusedItem>,
     ) -> Result<()> {
-        let mut members = Vec::new();
-        let mut of = Vec::new();
         for issue in issues {
-            let Some(id) = self.kept.issues.get(&issue.url) else {
+            let Some(address) = self.kept.issues.get(&issue.url).cloned() else {
                 continue;
             };
             for (at, comment) in issue.comments.iter().enumerate() {
@@ -974,42 +1030,23 @@ impl Landing<'_, '_> {
                 if comment.text.trim().is_empty() || self.kept.comments.contains(&key) {
                     continue;
                 }
-                let author = (!comment.author.trim().is_empty()).then(|| IncomingAuthor {
-                    name: comment.author.clone(),
-                    handle: comment.handle.clone(),
-                });
-                let url = if comment.url.is_empty() {
-                    issue.url.as_str()
-                } else {
-                    comment.url.as_str()
-                };
-                let origin = origin_of(
-                    author.as_ref(),
-                    service_name(&issue.source),
-                    url,
-                    None,
-                    &comment.at,
-                    &comment.updated_at,
+                let mut args = serde_json::Map::new();
+                args.insert("text".into(), json!(comment.text));
+                args.insert(
+                    tilo_actions::params::FROM_ARGUMENT.into(),
+                    made_from(&address),
                 );
-                members.push(Member {
-                    verb: COMMENT,
-                    args: json!({"issue": id, "text": comment.text, "origin": origin}),
-                });
-                of.push((*issue, key));
-            }
-        }
-        let (workspace, invocation) = self.lander.workspace()?;
-        let outcomes = grouped(workspace, invocation, ISSUES, &members)?;
-        for ((issue, key), outcome) in of.into_iter().zip(outcomes) {
-            match outcome {
-                None => {
-                    self.kept.comments.insert(key);
+                match self.act(DISCUSSION, COMMENT, Value::Object(args)) {
+                    Ok(_) => {
+                        self.kept.comments.insert(key);
+                    }
+                    Err(error) if refused_for_good(&error) => refused.push(refusal(
+                        &issue.key,
+                        &format!("a comment on {}", issue.identifier),
+                        &error,
+                    )),
+                    Err(error) => return Err(error),
                 }
-                Some(error) => refused.push(refusal(
-                    &issue.key,
-                    &format!("a comment on {}", issue.identifier),
-                    &error,
-                )),
             }
         }
         Ok(())
@@ -1021,33 +1058,32 @@ impl Landing<'_, '_> {
         issues: &[&IncomingIssue],
         refused: &mut Vec<RefusedItem>,
     ) -> Result<()> {
-        let mut members = Vec::new();
-        let mut of = Vec::new();
         for issue in issues {
             let Some(parent) = self.kept.issues.get(&issue.url).cloned() else {
                 continue;
             };
             for child in self.kept.parents.remove(&issue.url).unwrap_or_default() {
-                if let Some(id) = self.kept.issues.get(&child) {
-                    members.push(Member {
-                        verb: MOVE_UNDER,
-                        args: json!({"issue": id, "parent": parent}),
-                    });
-                    of.push(child);
+                let Some(address) = self.kept.issues.get(&child).cloned() else {
+                    continue;
+                };
+                match self.act(
+                    &Self::task_path(&address),
+                    MOVE_TO,
+                    json!({"parent": parent, "before": null}),
+                ) {
+                    Ok(_) => {}
+                    Err(error) if refused_for_good(&error) => {
+                        refused.push(refusal(&child, &reference_of(&child), &error));
+                    }
+                    Err(error) => return Err(error),
                 }
-            }
-        }
-        let (workspace, invocation) = self.lander.workspace()?;
-        let outcomes = grouped(workspace, invocation, ISSUES, &members)?;
-        for (child, outcome) in of.into_iter().zip(outcomes) {
-            if let Some(error) = outcome {
-                refused.push(refusal(&child, &reference_of(&child), &error));
             }
         }
         Ok(())
     }
 
-    /// Link each of `issues` to the issues here it relates to, and those that waited for it.
+    /// Say on each of `issues` how it relates to the issues here it relates to, and those that
+    /// waited for it: a line in its thread, which is what the workspace has to say a relation.
     fn link_all(
         &mut self,
         issues: &[&IncomingIssue],
@@ -1074,40 +1110,27 @@ impl Landing<'_, '_> {
                 pairs.push((from, issue.url.clone(), kind));
             }
         }
-        let mut members = Vec::new();
-        let mut of = Vec::new();
         let mut asked = std::collections::BTreeSet::new();
         for (from, to, kind) in pairs {
             let pair = format!("{from}\u{0}{to}");
             if self.kept.links.contains(&pair) || !asked.insert(pair.clone()) {
                 continue;
             }
-            let (Some(issue), Some(related)) =
-                (self.kept.issues.get(&from), self.kept.issues.get(&to))
-            else {
+            let Some(address) = self.kept.issues.get(&from).cloned() else {
                 continue;
             };
-            let label = format!("{} {}", relation_words(&kind), reference_of(&to));
-            members.push(Member {
-                verb: LINK,
-                args: json!({
-                    "issue": issue,
-                    "app": TASKS_APP,
-                    "kind": ISSUE_KIND,
-                    "resource": format!("tasks.issues/issues/{related}"),
-                    "label": label.trim(),
-                }),
-            });
-            of.push((from, pair));
-        }
-        let (workspace, invocation) = self.lander.workspace()?;
-        let outcomes = grouped(workspace, invocation, ISSUES, &members)?;
-        for ((from, pair), outcome) in of.into_iter().zip(outcomes) {
-            match outcome {
-                None => {
+            let said = format!("{} {}", relation_words(&kind), reference_of(&to));
+            let mut args = serde_json::Map::new();
+            args.insert("text".into(), json!(said));
+            args.insert(
+                tilo_actions::params::FROM_ARGUMENT.into(),
+                made_from(&address),
+            );
+            match self.act(DISCUSSION, COMMENT, Value::Object(args)) {
+                Ok(_) => {
                     self.kept.links.insert(pair);
                 }
-                Some(error) => {
+                Err(error) if refused_for_good(&error) => {
                     let key = issues
                         .iter()
                         .find(|issue| issue.url == from)
@@ -1118,6 +1141,7 @@ impl Landing<'_, '_> {
                         &error,
                     ));
                 }
+                Err(error) => return Err(error),
             }
         }
         Ok(())
@@ -1224,52 +1248,79 @@ fn comment_key(page: &str, at: usize) -> String {
     format!("{page}\u{0}{at}")
 }
 
-/// `issue` as `create-many` takes it, working towards `project`.
-fn listed(issue: &IncomingIssue, project: Option<&String>) -> Value {
-    let service = service_name(&issue.source);
-    let origin = origin_of(
-        issue.author.as_ref(),
-        service,
-        &issue.url,
-        Some(&issue.identifier),
-        &issue.created_at,
-        &issue.updated_at,
-    );
-    let due_ms = issue
-        .due
-        .as_deref()
-        .and_then(|due| jiff::civil::Date::strptime("%Y-%m-%d", due).ok())
-        .and_then(|day| day.at(12, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC).ok())
-        .map(|noon| noon.timestamp().as_millisecond());
-    let title = if issue.title.trim().is_empty() {
-        issue.identifier.trim()
+/// What Tasks calls the issue: its title, or the name the service gave it when it has none.
+fn issue_title(issue: &IncomingIssue) -> String {
+    let title = issue.title.trim();
+    if title.is_empty() {
+        issue.identifier.trim().to_owned()
     } else {
-        issue.title.trim()
-    };
-    let (title, body) = if title.chars().count() > TITLE_CHARS {
-        let cut: String = title.chars().take(TITLE_CHARS.saturating_sub(1)).collect();
-        let body = if issue.body.trim().is_empty() {
-            title.to_owned()
-        } else {
-            format!("{title}\n\n{}", issue.body)
-        };
-        (format!("{}…", cut.trim_end()), body)
-    } else {
-        (title.to_owned(), issue.body.clone())
-    };
+        title.to_owned()
+    }
+}
+
+/// The service an issue came from, as Tasks' `add_origin` takes it: who wrote it there, its page,
+/// the name the service gave it, and when it was written and changed there. An issue the service
+/// does not say who wrote is the service's own, so its origin is still named.
+fn origin_args(issue: &IncomingIssue, service: &str) -> Value {
+    let author = issue
+        .author
+        .as_ref()
+        .map(|author| author.name.trim())
+        .filter(|name| !name.is_empty());
     json!({
-        "title": title,
-        "body": body,
-        "status": issue.status,
-        "assignee": issue.assignee,
+        "author": author.unwrap_or(service),
+        "source": service,
+        "handle": issue
+            .author
+            .as_ref()
+            .and_then(|author| author.handle.clone())
+            .unwrap_or_default(),
         "url": issue.url,
-        "project": project,
-        "priority": issue.priority,
-        "estimate": issue.estimate,
-        "due_ms": due_ms,
-        "labels": issue.labels,
-        "origin": origin,
+        "reference": issue.identifier,
+        "created": time_arg(&issue.created_at),
+        "updated": time_arg(&issue.updated_at),
     })
+}
+
+/// A moment a source writes as RFC 3339, as Tasks takes it; `null` where the source says none.
+fn time_arg(at: &str) -> Value {
+    if at.trim().is_empty() {
+        Value::Null
+    } else {
+        json!(at.trim())
+    }
+}
+
+/// The status Tasks calls the issue's, from the service's word.
+fn task_status(status: &str) -> &'static str {
+    match status {
+        "todo" => "todo",
+        "in-progress" => "in_progress",
+        "in-review" => "in_review",
+        "done" => "done",
+        "cancelled" => "cancelled",
+        _ => "backlog",
+    }
+}
+
+/// The action that sets `priority`, when the service names one.
+fn priority_action(priority: &str) -> Option<&'static str> {
+    Some(match priority {
+        "urgent" => "set_priority_urgent",
+        "high" => "set_priority_high",
+        "medium" => "set_priority_medium",
+        "low" => "set_priority_low",
+        _ => return None,
+    })
+}
+
+/// What a comment is made from: the task it is said about, as a reference argument.
+fn made_from(address: &str) -> Value {
+    tilo_actions::params::MadeFrom {
+        resource: address.to_owned(),
+        kind: String::new(),
+    }
+    .to_json()
 }
 
 /// How the service an issue came from names itself to people.
@@ -1360,12 +1411,14 @@ fn already_imported(error: &anyhow::Error) -> bool {
         .is_some_and(|refused| refused.code() == tilo_actions::codes::NOTE_ALREADY_IMPORTED)
 }
 
-/// The id Tasks answered for the issue it made, as the record its answer names
-/// (`tasks.issues/issues/<id>`) or the id in its value.
+/// The id Tasks answered for the resource it made: the id a resource the action returned names
+/// (`{"app", "kind", "id", "label"}`), or the id in what it said it made.
 fn created_id(answer: &super::writer::Answer) -> Option<String> {
     let value = answer.result()?;
-    // What the write made, per item: its id and the address it is published
-    // under. Nothing reads an id out of what the answer says it touched.
+    if let Some(id) = value.get("id").and_then(Value::as_str) {
+        return Some(id.to_owned());
+    }
+    // What an action said it made, per item: its id and the address it is published under.
     if let Some(id) = value
         .get("made")
         .and_then(Value::as_array)
@@ -1375,7 +1428,7 @@ fn created_id(answer: &super::writer::Answer) -> Option<String> {
     {
         return Some(id.to_owned());
     }
-    for key in ["id", "issue"] {
+    for key in ["issue"] {
         if let Some(id) = value.get(key).and_then(Value::as_str) {
             return Some(id.to_owned());
         }
@@ -1478,11 +1531,21 @@ mod tests {
     fn tasks_answers_name_the_issue_they_made() {
         let id = "0f0e0d0c-0b0a-4908-8706-050403020100";
         let answered = |value: Value| Answer::of(Some(value));
-        // The typed answer every write gives: per item, its id and the
-        // address it is published under.
+        // What a tilolang action returns for the resource it made: the resource by its id.
         assert_eq!(
             created_id(&answered(json!({
-                "made": [{"id": id, "address": format!("tasks.issues/issues/{id}")}]
+                "app": "so.tilo.tasks",
+                "kind": "tl.so.tilo.tasks.Task",
+                "id": id,
+                "label": "",
+            })))
+            .as_deref(),
+            Some(id)
+        );
+        // What an action that said it made items answers: per item, its id and its address.
+        assert_eq!(
+            created_id(&answered(json!({
+                "made": [{"id": id, "address": format!("tl:so.tilo.tasks:{id}")}]
             })))
             .as_deref(),
             Some(id)

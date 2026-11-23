@@ -14,11 +14,11 @@ class ModelTests(unittest.TestCase):
     def test_a_dev_assembly_builds_the_models_its_apps_declare(self):
         with tempfile.TemporaryDirectory() as d:
             repo, target = Path(d) / 'repo', Path(d) / 'target'
-            (repo / 'apps/tasks-model-wasm').mkdir(parents=True)
-            (repo / 'apps/tasks-model-wasm/Cargo.toml').write_text('')
+            (repo / 'apps/poker-model-wasm').mkdir(parents=True)
+            (repo / 'apps/poker-model-wasm/Cargo.toml').write_text('')
             (repo / 'apps/clocks').mkdir(parents=True)
-            tasks, clocks = {'dir': 'tasks'}, {'dir': 'clocks'}
-            self.assertEqual(assembly.model_entries(repo, [tasks, clocks]), [tasks])
+            poker, clocks = {'dir': 'poker'}, {'dir': 'clocks'}
+            self.assertEqual(assembly.model_entries(repo, [poker, clocks]), [poker])
 
             calls = []
 
@@ -34,7 +34,7 @@ class ModelTests(unittest.TestCase):
             try:
                 self.assertIsNone(assembly.prepare_models(args, [clocks]))
                 self.assertEqual(calls, [])
-                runtime = assembly.prepare_models(args, [tasks, clocks])
+                runtime = assembly.prepare_models(args, [poker, clocks])
             finally:
                 assembly.run = original
             self.assertEqual(runtime, target.resolve() / 'app-models/app-model-runtime')

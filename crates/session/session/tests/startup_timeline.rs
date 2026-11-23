@@ -43,19 +43,19 @@ fn an_opened_app_writes_its_startup_timeline_with_the_launchers_marks() {
     let _settled = ui::motion::testing::settled();
     let ada = Person::new("Ada");
     let mut laptop = ada.device("Ada's laptop");
-    laptop.install_tasks();
+    laptop.install_passwords();
     laptop.start();
     tilo_test_env::wait_for("Ada's laptop showing a workspace", || {
         laptop.showing().filter(|showing| !showing.is_empty())
     });
 
-    laptop.open("so.tilo.tasks");
-    laptop.wait_for_window("so.tilo.tasks");
+    laptop.open("so.tilo.passwords");
+    laptop.wait_for_window("so.tilo.passwords");
 
     // The app writes its timeline as it goes; its first frame is the last mark of its start.
     let store = laptop.store();
-    let written = tilo_test_env::wait_for("Tasks's startup timeline up to its first frame", || {
-        let path = timeline(&store, "so.tilo.tasks")?;
+    let written = tilo_test_env::wait_for("Passwords's startup timeline up to its first frame", || {
+        let path = timeline(&store, "so.tilo.passwords")?;
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
         names(&written, "events")

@@ -181,12 +181,13 @@ tilo_test_env::scenario! {
     // no build knows is refused, never taken for a view. Browser is the one shipped app whose
     // window's page lives in its engine, so its device-bound windows and no other app's.
     {
-        let tasks = repo_root().join("apps/tasks");
+        let activity = repo_root().join("apps/activity");
         assert!(
-            !load(&tasks).window_runs_on_its_device(),
-            "a Tasks window is a view of a record"
+            !load(&activity).window_runs_on_its_device(),
+            "an Activity window is a view of a record"
         );
-        let src = std::fs::read_to_string(manifest_path(&tasks)).expect("Tasks' manifest");
+        let src =
+            std::fs::read_to_string(manifest_path(&activity)).expect("Activity's manifest");
         let said = src.replacen("[entrypoint]", "[entrypoint]\nwindow = \"device\"", 1);
         assert_ne!(said, src, "the manifest has an entrypoint to say it in");
         let manifest = Manifest::from_toml_str(&said).expect("the manifest decodes");

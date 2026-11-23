@@ -4,8 +4,8 @@ import TiloLive
 
 /// How the Tasks panel reads the tasks of the person's assistant from the rows the tracker's
 /// read answered. A task is one issue. Where it is listed is decided by the first of Tasks'
-/// own rules that fits (`tasks_model::task_state`), and the line under its name is the
-/// issue's own: nothing here adds to what the issue keeps.
+/// own rules that fits, and the line under its name is the issue's own: nothing here adds to
+/// what the issue keeps.
 enum TiloTasks {
     /// The tasks, in the order the tracker answered them.
     static func listed(_ rows: [JSON]) -> [AssistantTask] {

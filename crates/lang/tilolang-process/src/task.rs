@@ -887,7 +887,7 @@ mod tests {
         native(
             "so.tilo.tasks",
             "Tasks",
-            include_str!("../../../../apps/tasks/surface.toml"),
+            include_str!("../../tilolang-tilo/tests/native-tasks/surface.toml"),
         )
     }
 

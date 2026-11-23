@@ -136,8 +136,6 @@
   "store": {"libraries": 34736459, "tests": 1916420656},
   "swipe": {"libraries": 41117, "tests": 5703848},
   "system-extension": {"libraries": 2874300, "tests": 16849152},
-  "tasks": {"libraries": 22461195, "tests": 1837109792},
-  "tasks-model": {"libraries": 9390703, "tests": 50949904},
   "terminal": {"libraries": 28861440, "tests": 3234455120},
   "test-app-registry": {"libraries": 0, "tests": 62325840},
   "test-http": {"libraries": 1582242, "tests": 3389232},

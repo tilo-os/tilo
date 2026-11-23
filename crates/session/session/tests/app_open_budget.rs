@@ -50,17 +50,12 @@ use crate::common::people::{Device, Person};
 /// The installed apps this test opens: the apps of other packages that the run builds for
 /// `tilo-session` (t.toml's `starts`) and whose harness installs a real package and starts it in
 /// a session.
-const APPS: [&str; 3] = [
-    "so.tilo.tasks",
-    "so.tilo.passwords",
-    "so.tilo.model-providers",
-];
+const APPS: [&str; 2] = ["so.tilo.passwords", "so.tilo.model-providers"];
 
 /// Where the session asks for an app's window, as a person opening it from their applications
 /// does.
 fn install(device: &Device, app: &str) {
     match app {
-        "so.tilo.tasks" => device.install_tasks(),
         "so.tilo.passwords" => device.install_passwords(),
         "so.tilo.model-providers" => device.install_model_providers(),
         other => panic!("no install for {other}, which this test names in APPS"),

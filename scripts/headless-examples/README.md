@@ -76,9 +76,9 @@ it opens (`id`, a native app of the session build or a tilolang `package`) and,
 where they differ, the controls. A version whose `source` (by default its
 package's directory) is gone from the tree is not walked, and a version the
 baseline does not have is held to the version a person got on main (the step
-file's `live`). So the lane that deletes `apps/tasks` runs `scripts/headless-examples/walk.sh tasks`
-before and after unchanged: after, only the tilolang Tasks is walked, and it is
-held to the Rust one's baseline.
+file's `live`). A native app replaced by a tilolang one of the same name is
+walked before and after unchanged: after, only the tilolang app is walked, and
+it is held to the native one's baseline.
 
 **Families share a session.** Walks that name the same `family` (`shell`, `apps`,
 `settings`) run in one session per version, one after another, with a reset between

@@ -19,16 +19,16 @@ class SurfaceTests(unittest.TestCase):
     def test_a_source_built_image_app_ships_its_surface(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            app = root / 'repo/apps/tasks'
+            app = root / 'repo/apps/clocks'
             app.mkdir(parents=True)
-            shutil.copy(REPO / 'apps/tasks/tilo-app.toml', app / 'tilo-app.toml')
-            shutil.copy(REPO / 'apps/tasks/surface.toml', app / 'surface.toml')
+            shutil.copy(REPO / 'apps/clocks/tilo-app.toml', app / 'tilo-app.toml')
+            shutil.copy(REPO / 'apps/clocks/surface.toml', app / 'surface.toml')
             (root / 'repo/os/scripts').mkdir(parents=True)
             (root / 'repo/tools').symlink_to(REPO / 'tools')
             bins = root / 'bin'
             bins.mkdir()
-            (bins / 'tasks').write_text('#!/bin/sh\n')
-            (bins / 'tasks').chmod(0o755)
+            (bins / 'clocks').write_text('#!/bin/sh\n')
+            (bins / 'clocks').chmod(0o755)
             store, scratch, packed = root / 'store', root / 'scratch', root / 'packed'
             store.mkdir()
             scratch.mkdir()
@@ -58,7 +58,7 @@ done
             # Installing records the package in the store, as tilo-install does.
             install = root / 'install'
             install.write_text(f'''#!/bin/sh
-printf '[[entry]]\\nid="so.tilo.tasks"\\n' >> '{store}/registry.toml'
+printf '[[entry]]\\nid="so.tilo.clocks"\\n' >> '{store}/registry.toml'
 ''')
             for tool in (bundle, pack, install):
                 tool.chmod(0o755)
@@ -71,9 +71,9 @@ printf '[[entry]]\\nid="so.tilo.tasks"\\n' >> '{store}/registry.toml'
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((packed / 'surface.toml').read_bytes(),
-                             (REPO / 'apps/tasks/surface.toml').read_bytes(),
+                             (REPO / 'apps/clocks/surface.toml').read_bytes(),
                              'the payload carries the committed surface')
-            self.assertTrue((packed / 'bin/tasks').is_file())
+            self.assertTrue((packed / 'bin/clocks').is_file())
 
 
 if __name__ == '__main__':

@@ -30,12 +30,12 @@ use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 use crate::native::NativeDevice;
 use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
 
-/// The surface the laptop's write names: the tasks app's own `surface.toml`
-/// in the form it is kept by, a version of it this page does not run.
+/// The surface the laptop's write names: an app's own `surface.toml` in the
+/// form it is kept by, a version of it this page does not run.
 fn older_surface() -> Vec<u8> {
     let file = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../apps/tasks/surface.toml"
+        "/../../../apps/feeds/surface.toml"
     ))
     .unwrap();
     collab_types::surface::SurfaceFile::kept(&file)

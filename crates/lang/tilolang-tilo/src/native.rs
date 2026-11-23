@@ -1142,7 +1142,7 @@ mod tests {
         let meta = crate::catalogue::NativeSurface {
             app: "so.tilo.tasks".to_owned(),
             title: "Tasks".to_owned(),
-            surface: include_str!("../../../../apps/tasks/surface.toml").to_owned(),
+            surface: include_str!("../tests/native-tasks/surface.toml").to_owned(),
         }
         .package()
         .expect("the surface reads");

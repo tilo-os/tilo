@@ -28,9 +28,9 @@ from real_apps import Agent  # noqa: E402
 
 SHELL = "so.tilo.session"
 CHROME = "desktop:chrome"
-APPS = "file-explorer tasks settings activity"
+APPS = "file-explorer settings activity"
 # The tilolang apps beside them, by their directory under apps/tl.
-TL_APPS = ("chat",)
+TL_APPS = ("chat", "tasks")
 # The channel the agent posts in, made through Chat's own `new_channel`.
 CHANNEL = "spring"
 ACTIVITY = "so.tilo.activity"
@@ -192,14 +192,14 @@ def steps(story: Story) -> None:
             story.note(f"{app}-controls", ada.names())
 
     def task():
-        work.do(["tasks.issues#create", "tasks#create"], {"title": TASK})
-        opened("tasks", TASK, f"the issue “{TASK}” in Ada's Tasks")
+        work.do(["so.tilo.tasks#new_task", "tasks#new_task"], {"title": TASK})
+        opened("so.tilo.tasks", TASK, f"the issue “{TASK}” in Ada's Tasks")
 
     story.step("The agent adds a Tasks issue", task)
 
     def note():
-        work.do(["tasks#create"], {"title": NOTE})
-        opened("tasks", NOTE, f"the issue “{NOTE}” in Ada's Tasks")
+        work.do(["so.tilo.tasks#new_task", "tasks#new_task"], {"title": NOTE})
+        opened("so.tilo.tasks", NOTE, f"the issue “{NOTE}” in Ada's Tasks")
 
     story.step("The agent writes one more issue", note)
 

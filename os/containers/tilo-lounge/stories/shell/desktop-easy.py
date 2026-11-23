@@ -29,7 +29,9 @@ from story import PROFILE, SWITCHER, Failed, Person, Story, front, until, walk, 
 
 SETTINGS = "so.tilo.settings"
 STRIPS = "Show strips, now on "
-APPS = "tasks file-explorer settings"
+APPS = "file-explorer settings"
+# The tilolang apps beside them, by their directory under apps/tl.
+TILOLANG = ("tasks",)
 # Settings' page with the look, as Settings names it, and its light-or-dark choice.
 APPEARANCE_PAGE = "Appearance"
 MODE = "Light or dark"
@@ -145,7 +147,7 @@ def steps(story: Story) -> None:
     first: dict = {}
 
     def opens():
-        took = robin.start(apps=APPS)
+        took = robin.start(apps=APPS, tilolang=TILOLANG)
         story.timing("Robin's session start, to its first frame", took["tookMs"])
         story.timing("Robin's session start, to its first frame, with the development launcher's installing", took["launcherMs"])
         first["workspace"] = until("their workspace, named in the bar",
@@ -232,7 +234,7 @@ def steps(story: Story) -> None:
         # the one they were in, as they left them.
         made = [w.get("id") for w in workspaces(robin)]
         robin.stop()
-        took = robin.start(apps=APPS, fresh=False)
+        took = robin.start(apps=APPS, tilolang=TILOLANG, fresh=False)
         until("the workspace they were in, named in the bar",
               lambda: bar_workspace(robin) == first["workspace"], 60, 0.25)
         until("both their workspaces",

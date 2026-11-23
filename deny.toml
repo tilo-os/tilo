@@ -41,7 +41,6 @@ exclude = [
     "sheets",
     "shortcuts",
     "slides",
-    "tasks",
     "terminal",
     "tilo-console",
     "typst-editor",

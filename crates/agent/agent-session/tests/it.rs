@@ -46,16 +46,8 @@ mod action_cost;
 mod ai_transforms;
 #[path = "app_coverage.rs"]
 mod app_coverage;
-#[path = "chain_listing.rs"]
-mod chain_listing;
-#[path = "chain_reads.rs"]
-mod chain_reads;
 #[path = "empty_state_actions.rs"]
 mod empty_state_actions;
-#[path = "issue_listing.rs"]
-mod issue_listing;
-#[path = "issue_reads.rs"]
-mod issue_reads;
 #[path = "messages_for_agents.rs"]
 mod messages_for_agents;
 #[path = "part_handover.rs"]
