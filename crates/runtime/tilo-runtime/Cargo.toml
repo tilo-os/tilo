@@ -46,7 +46,7 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # `watch`: a development device follows reinstalls of the apps its tilolang hosts run.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 anyhow.workspace = true
@@ -78,7 +78,7 @@ package-store = { path = "../../packaging/package-store" }
 # module, the log targets a launch's latency and an app's output are kept
 # under, and where an earlier version of an app kept its documents.
 runtime-portal = { path = "../runtime-portal" }
-tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 tilo-app-state = { path = "../../system/app-state" }
 # The installed applications this runtime launches, read through their signed
@@ -105,9 +105,9 @@ tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 # runtime's own words (consent prompt, device grants), from Fluent. The
 # broker links it on every platform already.
 # The one per-user index the host's own search reads.
-tilo-os-search = { path = "../os-search" }
+tilo-os-search = { path = "../../integrations/os-search" }
 # The native request an app hands a host search result back with.
-tilo-host-search = { path = "../../platform/tilo-host-search" }
+tilo-host-search = { path = "../../integrations/tilo-host-search" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
@@ -150,7 +150,7 @@ uuid.workspace = true
 # Mounts the workspace files where this user can mount FUSE.
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The toolkit the Unix launch edge and its surface files are read with.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 # What a device whose machine is a server keeps beyond its own copies: certification, kept
 # content, its place among its person's servers, the packet relay it is reached through and
 # the web UI it serves.

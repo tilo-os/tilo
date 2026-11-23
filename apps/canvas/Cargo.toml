@@ -39,7 +39,7 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-paint-engine = { path = "../../crates/engines/loadable/paint", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 settings-model = { path = "../../crates/system/settings-model" }
@@ -92,7 +92,7 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../tools/test-env" }
 # A stand-in subject model on the gateway's own descriptor and wire, held
 # mid-inference to show the window keeps taking input.
-tilo-model-client = { path = "../../crates/agent/model-client", default-features = false }
+tilo-model-client = { path = "../../crates/sdk/model-client", default-features = false }
 # The reach test walks every published action (framework::testing).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 

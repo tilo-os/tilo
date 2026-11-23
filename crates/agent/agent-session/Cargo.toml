@@ -39,7 +39,7 @@ tilo-actions = { path = "../../collab/actions" }
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }
 # The kinds of work a transform's model is chosen by.
-agent-provider-config = { path = "../provider-config" }
+agent-provider-config = { path = "../../integrations/provider-config" }
 # The apps an agent can open in a browser session: those whose manifests declare
 # the web platform.
 activity = { path = "../../../apps/activity" }
@@ -103,7 +103,7 @@ tilo-automerge.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # The workspace's canvas on its front page: the shell's package, run and written as HTML as
 # a page shows an app.
-tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 tilolang-web = { path = "../../lang/tilolang-web" }
 ed25519-dalek.workspace = true
 serde.workspace = true
@@ -112,7 +112,7 @@ hex.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
 # The requests and answers of the model calls a host's agents make.
-tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../model-gateway" }
+tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../../integrations/model-gateway" }
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
@@ -140,7 +140,7 @@ tempfile.workspace = true
 uuid.workspace = true
 # The render service's side of `tilo-video-render`, the confined helper an
 # agent's video renders run in (the helper itself is its binary).
-tilo-video-render = { path = "../../media/video-render", default-features = false }
+tilo-video-render = { path = "../../engines/video-render", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -153,7 +153,7 @@ tilo-sandbox = { path = "../../platform/tilo-sandbox" }
 [target.'cfg(target_os = "linux")'.dependencies]
 # The worker's Landlock ruleset and seccomp filters, from the shared
 # primitives every confinement path uses.
-tilo-sandbox-core = { path = "../../system/sandbox-core" }
+tilo-sandbox-core = { path = "../../platform/sandbox-core" }
 seccompiler.workspace = true
 libc.workspace = true
 # A connector app, mounted only where a workspace's host runs its worker.
@@ -178,7 +178,7 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 # Text a test lays out uses the pinned catalog, never the fonts the machine
 # running it has installed.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
-accounts = { path = "../../system/accounts", features = ["person"] }
+accounts = { path = "../../integrations/accounts", features = ["person"] }
 tempfile.workspace = true
 tilo-paths.workspace = true
 tilo-server = { path = "../../server/tilo-server", features = ["agents", "test-support"] }
