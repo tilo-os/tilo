@@ -429,12 +429,9 @@ impl Session {
     /// catalogue offers it under, as a person's row or an agent's call does; then settle.
     fn open_showing(&mut self, resource: &ResourceRef) {
         let published = tilolang_tilo::publish::resource_id(APP, &resource.id_string());
-        let doing = ui::tilo_actions::ActionAddress::new(published.clone(), "open");
-        let opened = self.invoke_doing(&doing.encode(), &serde_json::json!({}));
-        assert!(
-            matches!(opened, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
-            "{published}'s open answers: {opened:?}"
-        );
+        if let Err(error) = self.invoke(None, None, &published, "open", &serde_json::Map::new()) {
+            panic!("{published}'s open answers: {error}");
+        }
         self.settle();
     }
 

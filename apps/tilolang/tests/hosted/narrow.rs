@@ -217,13 +217,10 @@ fn a_note_opens_by_its_own_open_and_back_shows_the_tree_again() {
         "the tree is in front, with nothing over it"
     );
 
-    // Its own `open`, by the address the app publishes it under: the note stands in front.
-    let doing = ui::tilo_actions::ActionAddress::new(note, "open");
-    let opened = session.invoke_doing(&doing.encode(), &serde_json::json!({}));
-    assert!(
-        matches!(opened, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
-        "the note's open answers: {opened:?}"
-    );
+    // Its own `open`, through the action API on the resource the app publishes: the note
+    // stands in front.
+    let opened = session.invoke(None, None, &note, "open", &serde_json::Map::new());
+    assert!(opened.is_ok(), "the note's open answers: {opened:?}");
     session.settle();
     assert!(
         session
