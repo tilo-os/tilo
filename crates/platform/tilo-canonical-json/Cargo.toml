@@ -20,5 +20,10 @@ serde_json.workspace = true
 # Sorts without a copy of std's sort on wasm32, keeping the browser start module small.
 tilo-sort = { version = "0.1.0", path = "../tilo-sort" }
 
+[dev-dependencies]
+# Preserve insertion order in unit tests so unsorted maps exercise the stack
+# and scratch sort paths even when this crate is tested on its own.
+serde_json = { workspace = true, features = ["preserve_order"] }
+
 [lints]
 workspace = true

@@ -252,7 +252,7 @@ fn write_escaped_str(sink: &mut dyn Sink, value: &str) {
 mod tests {
     use serde_json::{Map, Value};
 
-    use super::{append_vec, to_string, to_vec, write_bytes, write_object_bytes};
+    use super::{append_vec, is_sorted_keys, to_string, to_vec, write_bytes, write_object_bytes};
 
     const CORPUS: &[(&str, &str, &[u8])] = &[
         (
@@ -265,8 +265,39 @@ mod tests {
             r#"{"\uD83D\uDE00":4,"\uE000":3,"é":2,"z":1}"#,
             b"{\"z\":1,\"\xc3\xa9\":2,\"\xee\x80\x80\":3,\"\xf0\x9f\x98\x80\":4}",
         ),
+        (
+            "non_bmp_vs_bmp_high_key_order",
+            r#"{"\uD83D\uDE80":1,"\uFFFF":2,"\uE000":3}"#,
+            b"{\"\xee\x80\x80\":3,\"\xef\xbf\xbf\":2,\"\xf0\x9f\x9a\x80\":1}",
+        ),
+        (
+            "ascii_empty_prefix_key_order",
+            r#"{"b":1,"":2,"a":3,"ab":4,"B":5,"A":6}"#,
+            br#"{"":2,"A":6,"B":5,"a":3,"ab":4,"b":1}"#,
+        ),
+        (
+            "nested_ten_keys",
+            r#"{"k9":9,"k8":8,"k7":{"j9":9,"j8":8,"j7":7,"j6":6,"j5":5,"j4":4,"j3":3,"j2":2,"j1":1,"j0":0},"k6":6,"k5":5,"k4":4,"k3":3,"k2":2,"k1":1,"k0":0}"#,
+            br#"{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":{"j0":0,"j1":1,"j2":2,"j3":3,"j4":4,"j5":5,"j6":6,"j7":7,"j8":8,"j9":9},"k8":8,"k9":9}"#,
+        ),
         ("empty_object", "{}", b"{}"),
         ("empty_array", "[]", b"[]"),
+        ("empty_string", r#""""#, br#""""#),
+        (
+            "line_seps_fffd_and_solidus",
+            r#""\u2028\u2029\ufffd/""#,
+            b"\"\xe2\x80\xa8\xe2\x80\xa9\xef\xbf\xbd/\"",
+        ),
+        (
+            "all_32_control_bytes_value",
+            r#""\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f""#,
+            br#""\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f""#,
+        ),
+        (
+            "all_32_control_bytes_key",
+            r#"{"a":2,"\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f":1}"#,
+            br#"{"\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f":1,"a":2}"#,
+        ),
         (
             "escaped_and_unicode_string",
             r#""q\"b\\c\u0000\u0001\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u001f\u007f café 日本語 🚀""#,
@@ -290,7 +321,17 @@ mod tests {
         ("float_whole", "1.0", b"1.0"),
         ("float_tenth", "0.1", b"0.1"),
         ("float_1e20", "1e20", b"1e+20"),
+        ("float_1e21", "1e21", b"1e+21"),
         ("float_1e_neg5", "1e-5", b"0.00001"),
+        ("float_1e_neg7", "1e-7", b"1e-7"),
+        ("float_min_subnormal", "5e-324", b"5e-324"),
+        (
+            "float_max_finite",
+            "1.7976931348623157e308",
+            b"1.7976931348623157e+308",
+        ),
+        ("float_1e15", "1e15", b"1000000000000000.0"),
+        ("float_0_3_ulp", "0.30000000000000004", b"0.30000000000000004"),
         ("bool_true", "true", b"true"),
         ("bool_false", "false", b"false"),
         ("null", "null", b"null"),
@@ -348,9 +389,69 @@ mod tests {
     }
 
     #[test]
+    fn sorts_small_unsorted_objects_up_to_eight_keys() {
+        // Exercises the <= 8-key stack sort path with insertion order preserved.
+        let eight: Value =
+            serde_json::from_str(r#"{"h":8,"c":3,"g":7,"a":1,"f":6,"b":2,"e":5,"d":4}"#).unwrap();
+        let map = eight.as_object().unwrap();
+        assert_eq!(map.len(), 8);
+        assert!(
+            !is_sorted_keys(map),
+            "preserve_order must keep the 8-key map unsorted so the stack sort runs"
+        );
+        let expected = r#"{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}"#;
+        assert_eq!(to_string(&eight), expected);
+        let mut streamed = Vec::new();
+        write_object_bytes(map, |chunk| streamed.extend_from_slice(chunk));
+        assert_eq!(streamed, expected.as_bytes());
+
+        let six: Value = serde_json::from_str(r#"{"b":1,"":2,"a":3,"ab":4,"B":5,"A":6}"#).unwrap();
+        assert!(!is_sorted_keys(six.as_object().unwrap()));
+        assert_eq!(to_string(&six), r#"{"":2,"A":6,"B":5,"a":3,"ab":4,"b":1}"#);
+    }
+
+    #[test]
+    fn sorts_large_unsorted_objects_over_eight_keys() {
+        // Exercises the > 8-key scratch sort path with insertion order preserved.
+        let mut map = Map::new();
+        for key in ["m", "b", "k", "a", "j", "c", "i", "d", "h", "e", "g", "f"] {
+            map.insert(key.to_owned(), Value::from(key));
+        }
+        assert_eq!(map.len(), 12);
+        assert!(
+            !is_sorted_keys(&map),
+            "preserve_order must keep the 12-key map unsorted so the scratch sort runs"
+        );
+        let expected = r#"{"a":"a","b":"b","c":"c","d":"d","e":"e","f":"f","g":"g","h":"h","i":"i","j":"j","k":"k","m":"m"}"#;
+        let value = Value::Object(map.clone());
+        assert_eq!(to_string(&value), expected);
+        let mut streamed = Vec::new();
+        write_object_bytes(&map, |chunk| streamed.extend_from_slice(chunk));
+        assert_eq!(streamed, expected.as_bytes());
+    }
+
+    #[test]
+    fn sorts_nested_ten_key_objects_sharing_scratch() {
+        // Exercises recursive scratch slicing (base..end and truncate) with ten keys
+        // k9 down to k0 where k7 holds ten keys j9 down to j0.
+        let input = r#"{"k9":9,"k8":8,"k7":{"j9":9,"j8":8,"j7":7,"j6":6,"j5":5,"j4":4,"j3":3,"j2":2,"j1":1,"j0":0},"k6":6,"k5":5,"k4":4,"k3":3,"k2":2,"k1":1,"k0":0}"#;
+        let expected = r#"{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":{"j0":0,"j1":1,"j2":2,"j3":3,"j4":4,"j5":5,"j6":6,"j7":7,"j8":8,"j9":9},"k8":8,"k9":9}"#;
+        let value: Value = serde_json::from_str(input).unwrap();
+        let outer = value.as_object().unwrap();
+        let inner = outer.get("k7").unwrap().as_object().unwrap();
+        assert!(!is_sorted_keys(outer));
+        assert!(!is_sorted_keys(inner));
+        assert_eq!(to_string(&value), expected);
+        let mut streamed = Vec::new();
+        write_object_bytes(outer, |chunk| streamed.extend_from_slice(chunk));
+        assert_eq!(streamed, expected.as_bytes());
+    }
+
+    #[test]
     fn handles_sorted_small_and_large_nested_objects() {
-        // Large (> 8 keys) unsorted outer object with nested large unsorted inner objects
-        // exercises scratch-buffer reuse across recursion depths.
+        // With `serde_json/preserve_order` enabled in dev-dependencies, `outer` and each
+        // `inner` map stay in reverse insertion order so this checks both the unsorted
+        // > 8-key scratch-reuse path and the already-sorted / single-key fast paths.
         let mut outer = Map::new();
         for i in (0u32..12).rev() {
             let mut inner = Map::new();
@@ -359,7 +460,8 @@ mod tests {
             }
             outer.insert(format!("o{i:02}"), Value::Object(inner));
         }
-        let encoded = to_string(&Value::Object(outer.clone()));
+        assert!(!is_sorted_keys(&outer));
+        let encoded = to_string(&Value::Object(outer));
 
         let mut expected_outer = Map::new();
         for i in 0u32..12 {
@@ -369,14 +471,24 @@ mod tests {
             }
             expected_outer.insert(format!("o{i:02}"), Value::Object(inner));
         }
+        assert!(is_sorted_keys(&expected_outer));
         let expected_value = Value::Object(expected_outer);
         let expected = serde_json::to_string(&expected_value).unwrap();
         assert_eq!(encoded, expected);
         // Already-sorted fast path must produce identical bytes.
         assert_eq!(to_string(&expected_value), expected);
 
-        // Single-key object fast path.
-        let single = serde_json::json!({"only": {"b": 2, "a": 1}});
+        // Single-key object fast path wrapping an unsorted 2-key child.
+        let single: Value = serde_json::from_str(r#"{"only":{"b":2,"a":1}}"#).unwrap();
+        assert!(!is_sorted_keys(
+            single
+                .as_object()
+                .unwrap()
+                .get("only")
+                .unwrap()
+                .as_object()
+                .unwrap()
+        ));
         assert_eq!(to_string(&single), r#"{"only":{"a":1,"b":2}}"#);
     }
 }
