@@ -20,7 +20,7 @@ pub(crate) struct InviteWorkspace {
     pub(crate) handle: tilo_desktop_surface::DesktopHandle,
     pub(crate) person: String,
     pub(crate) sync: bool,
-    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
     /// The links into the workspace in front that still work, as its holder last listed them.
     pub(crate) listed: Rc<RefCell<Vec<sheet::Pending>>>,
@@ -84,9 +84,7 @@ impl InviteWorkspace {
 
     /// This device's person, by their key in hex.
     fn own_person(&self) -> Option<String> {
-        self.engine
-            .as_deref()
-            .map(|engine| hex::encode(engine.identity().device_cert.user_public_key))
+        self.view.as_deref().map(|view| hex::encode(view.person()))
     }
 
     /// Ask the session's own action `action` with `arguments`, and hand what it answered to
@@ -128,9 +126,9 @@ impl Workspace for InviteWorkspace {
     /// decides what is offered.
     fn may_invite(&self) -> bool {
         self.sync
-            && self.in_front().is_some_and(|workspace| {
-                may_invite(self.engine.as_deref(), &workspace, &self.person)
-            })
+            && self
+                .in_front()
+                .is_some_and(|workspace| may_invite(self.view.as_deref(), &workspace, &self.person))
     }
 
     fn name(&self) -> Option<String> {
@@ -141,11 +139,11 @@ impl Workspace for InviteWorkspace {
     }
 
     fn roles(&self) -> Vec<sheet::Role> {
-        let Some(engine) = self.engine.as_deref() else {
+        let Some(view) = self.view.as_deref() else {
             return Vec::new();
         };
         let workspace = self.in_front().unwrap_or_default();
-        let mut roles: Vec<sheet::Role> = engine
+        let mut roles: Vec<sheet::Role> = view
             .invitable_roles(&workspace)
             .into_iter()
             .map(|role| sheet::Role {
@@ -157,7 +155,7 @@ impl Workspace for InviteWorkspace {
         // An administrator is an Editor with the administrator grants: a
         // choice of its own on top of the roles, offered to whoever may make
         // administrators.
-        if engine.may_invite_administrator(&workspace) {
+        if view.may_invite_administrator(&workspace) {
             roles.push(sheet::Role {
                 key: "administrator".to_owned(),
                 label: domain::administrator_label(),
@@ -168,19 +166,19 @@ impl Workspace for InviteWorkspace {
     }
 
     fn people(&self) -> Vec<sheet::Person> {
-        let (Some(engine), Some(workspace)) = (self.engine.as_deref(), self.in_front()) else {
+        let (Some(view), Some(workspace)) = (self.view.as_deref(), self.in_front()) else {
             return Vec::new();
         };
-        let own = hex::encode(engine.identity().device_cert.user_public_key);
+        let own = hex::encode(view.person());
         // Everyone this device knows by name, from every workspace it is part of, the workspace in
         // front first: a link can be made for someone the person works with elsewhere too, and the
         // same people a send-to picker would offer.
         let mut seen = std::collections::HashSet::new();
         let mut people = Vec::new();
         let workspaces = std::iter::once(workspace)
-            .chain(engine.workspaces().into_iter().map(|held| held.to_string()));
+            .chain(view.workspaces().into_iter().map(|held| held.to_string()));
         for held in workspaces {
-            for member in engine.people(&held).unwrap_or_default() {
+            for member in view.people(&held).unwrap_or_default() {
                 let Some(person) = member.id.person_id().map(str::to_owned) else {
                     continue;
                 };
@@ -254,12 +252,9 @@ impl Workspace for InviteWorkspace {
 /// governance answers it: a current member whose part there grants inviting, on the device that
 /// signs the link. What the surfaces offering inviting are told; the write path asks again.
 pub(crate) fn may_invite(
-    engine: Option<&crate::engine::Engine>,
+    view: Option<&crate::workspace_view::WorkspaceView>,
     workspace: &str,
     person: &str,
 ) -> bool {
-    engine.is_some_and(|engine| {
-        hex::encode(engine.identity().device_cert.user_public_key) == person
-            && engine.may_invite(workspace)
-    })
+    view.is_some_and(|view| hex::encode(view.person()) == person && view.may_invite(workspace))
 }

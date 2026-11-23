@@ -1291,12 +1291,12 @@ pub(crate) struct SessionServices {
     founding: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// The asks held for a workspace this session is founding, until the loop delivers them.
     held: std::sync::Mutex<Vec<HeldFounding>>,
-    /// This session's engine, to tell a workspace this device holds from one it is founding even
-    /// between passes (a founding is under way while the loop waits for it).
-    engine: std::sync::OnceLock<Arc<tilo_session_client::engine::Engine>>,
     /// The session's tilolang processes, which start a task's host as they start every app's
     /// process: `None` until the session starts apps, and on a session that starts none.
     processes: std::sync::OnceLock<Arc<tilo_runtime::device::processes::Processes>>,
+    /// How the person's workspaces stand, to tell a workspace this device holds from one it is
+    /// founding even between passes (a founding is under way while the loop waits for it).
+    view: std::sync::OnceLock<Arc<crate::workspace_view::WorkspaceView>>,
     /// The apps whose records the session's services keep, the packages it runs itself: only
     /// their records are read and changed on the loop's pass. Every other app's are the
     /// workspace's, which a connection reads without waiting for a pass.
@@ -1405,8 +1405,8 @@ impl SessionServices {
             changes: Arc::default(),
             founding: std::sync::Mutex::default(),
             held: std::sync::Mutex::default(),
-            engine: std::sync::OnceLock::new(),
             processes: std::sync::OnceLock::new(),
+            view: std::sync::OnceLock::new(),
         }
     }
 
@@ -1445,14 +1445,14 @@ impl SessionServices {
     }
 
     /// Keep which of the shell's workspaces this device holds but its host has not taken it in
-    /// yet, read from `engine` on the loop's pass: a machine copied from one of the person's
+    /// yet, read from `view` on the loop's pass: a machine copied from one of the person's
     /// devices is a device of its own, and only the workspace's host admits it, once it reaches
     /// that host. Until then the workspace's apps take part in nothing there, so what is asked of
     /// them is refused at once, saying so ([`Self::awaited_reason`]).
     pub(crate) fn keep_awaiting(
         &self,
         handle: &DesktopHandle,
-        engine: &tilo_session_client::engine::Engine,
+        view: &crate::workspace_view::WorkspaceView,
     ) {
         {
             let mut at = self.awaited_at.lock_recover();
@@ -1466,7 +1466,7 @@ impl SessionServices {
             tree.workspaces
                 .iter()
                 .filter_map(|workspace| {
-                    let host = engine.awaited_host(workspace.id())?;
+                    let host = view.awaited_host(workspace.id())?;
                     Some((
                         workspace.id().to_string(),
                         awaited_sentence(
@@ -1492,10 +1492,10 @@ impl SessionServices {
         self.kept.lock_recover().insert(app.to_owned());
     }
 
-    /// Keep this session's engine: what tells a workspace this device holds from one it is
-    /// founding, even between passes.
-    pub(crate) fn keep_engine(&self, engine: Arc<tilo_session_client::engine::Engine>) {
-        let _ = self.engine.set(engine);
+    /// Keep how the person's workspaces stand: what tells a workspace this device holds from one
+    /// it is founding, even between passes.
+    pub(crate) fn keep_view(&self, view: Arc<crate::workspace_view::WorkspaceView>) {
+        let _ = self.view.set(view);
     }
 
     /// Keep the workspaces this session is founding, as of the loop's last pass: an ask of one of
@@ -1510,9 +1510,9 @@ impl SessionServices {
     pub(crate) fn founding_here(&self, workspace: &str) -> bool {
         self.founding.lock_recover().contains(workspace)
             || self
-                .engine
+                .view
                 .get()
-                .is_some_and(|engine| founding_of(engine, workspace))
+                .is_some_and(|view| founding_of(view, workspace))
     }
 
     /// Hold an ask of the workspace `workspace` until this session's founding of it lands, and
@@ -2921,21 +2921,21 @@ fn app_provider_workspace(provider: &str) -> Option<&str> {
     (!workspace.is_empty()).then_some(workspace)
 }
 
-/// Whether a founding of `workspace` is under way on `engine` now, for a provider naming it by id.
-fn founding_of(engine: &tilo_session_client::engine::Engine, workspace: &str) -> bool {
-    tilo_desktop_model::WorkspaceId::parse(workspace).is_some_and(|id| engine.is_founding(id))
+/// Whether a founding of `workspace` is under way on `view` now, for a provider naming it by id.
+fn founding_of(view: &crate::workspace_view::WorkspaceView, workspace: &str) -> bool {
+    tilo_desktop_model::WorkspaceId::parse(workspace).is_some_and(|id| view.is_founding(id))
 }
 
-/// Why nothing of `workspace` (its id) runs here yet: the shell holds it, but `engine` has not been
+/// Why nothing of `workspace` (its id) runs here yet: the shell holds it, but `view` says it has not been
 /// admitted to it by its host ([`awaited_sentence`]). `None` once admitted, for a workspace the shell
 /// does not hold, or one that is no workspace's id.
 pub(crate) fn awaited_reason(
-    engine: &tilo_session_client::engine::Engine,
+    view: &crate::workspace_view::WorkspaceView,
     handle: &DesktopHandle,
     workspace: &str,
 ) -> Option<String> {
     let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
-    let host = engine.awaited_host(id)?;
+    let host = view.awaited_host(id)?;
     let name = handle
         .read(|tree| {
             tree.workspaces

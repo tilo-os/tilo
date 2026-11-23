@@ -119,7 +119,8 @@ pub trait History {
     #[cfg(target_os = "linux")]
     fn attach(
         &self,
-        engine: &std::sync::Arc<crate::engine::Engine>,
+        certificate: &tilo_user_identity::DeviceCert,
+        view: &std::sync::Arc<crate::workspace_view::WorkspaceView>,
         reads: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         writes: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     );
@@ -174,7 +175,7 @@ struct Inner {
     models: Option<Arc<dyn crate::platform::Models>>,
     /// The workspaces this device holds, once the session opened them.
     #[cfg(target_os = "linux")]
-    engine: RefCell<Option<Arc<crate::engine::Engine>>>,
+    view: RefCell<Option<Arc<crate::workspace_view::WorkspaceView>>>,
     /// The members of each workspace, by workspace: its people named as the bar and People name
     /// them, its agents as its record of them does, and the actors each person's devices write as.
     people_of: RefCell<HashMap<WorkspaceId, Members>>,
@@ -362,7 +363,7 @@ impl Activity {
             pane,
             models,
             #[cfg(target_os = "linux")]
-            engine: RefCell::default(),
+            view: RefCell::default(),
             people_of: RefCell::default(),
             people_moved: Cell::default(),
             #[cfg(target_os = "linux")]
@@ -396,10 +397,23 @@ impl Activity {
         }))
     }
 
-    /// Show where a workspace's writes were refused from `engine` .
+    /// Read and write the person's workspaces through the device's daemon: `view` of how they
+    /// stand (where a workspace's writes were refused included), and `reads` and `writes` of
+    /// their documents, which the layouts and the history are read from and written to.
     #[cfg(target_os = "linux")]
-    fn attach_engine(&self, engine: Arc<crate::engine::Engine>) {
-        *self.0.engine.borrow_mut() = Some(engine);
+    pub(crate) fn attach_workspaces(
+        &self,
+        view: Arc<crate::workspace_view::WorkspaceView>,
+        reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+        writes: &Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
+    ) {
+        if let Some(identity) = tilo_session_client::identity::device_identity() {
+            self.0
+                .layouts
+                .attach(&identity.device_cert, &view, &reads, writes);
+        }
+        *self.0.view.borrow_mut() = Some(view);
+        self.attach_documents(reads);
     }
 
     /// Read what the workspaces hold through `reads`, the session's own read of its device's
@@ -418,18 +432,18 @@ impl Activity {
     /// Tell the person about the refusals waiting cannot change, once each until the verdict goes.
     #[cfg(target_os = "linux")]
     fn tell_refusals(&self, notifications: &crate::notifications::SessionNotifications) {
-        let Some(engine) = self.0.engine.borrow().as_ref().map(Arc::clone) else {
+        let Some(view) = self.0.view.borrow().as_ref().map(Arc::clone) else {
             return;
         };
         let mut told = self.0.told_refusals.borrow_mut();
         let mut lasting = Vec::new();
-        for (workspace, refusal) in engine.lasting_refusals() {
+        for (workspace, refusal) in view.lasting_refusals() {
             let key = (workspace.clone(), refusal.by, refusal.reason);
             lasting.push(key.clone());
             if !told.insert(key) {
                 continue;
             }
-            let label = engine
+            let label = view
                 .device_labels(&workspace)
                 .get(&refusal.by)
                 .filter(|label| !label.is_empty())
@@ -441,22 +455,6 @@ impl Activity {
             ));
         }
         told.retain(|key| lasting.contains(key));
-    }
-
-    /// Open this device's workspaces: what refused a write, and what the devices call themselves.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn open_engine(
-        &self,
-        options: &crate::Options,
-        handle: &tilo_desktop_surface::DesktopHandle,
-        reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
-        writes: &Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
-    ) -> Option<Arc<crate::engine::Engine>> {
-        let engine = crate::options::open_engine(options, handle)?;
-        self.0.layouts.attach(&engine, &reads, writes);
-        self.attach_documents(reads);
-        self.attach_engine(Arc::clone(&engine));
-        Some(engine)
     }
 
     /// Name `workspace` 's members as `members` do: who a change in its history was made by.
@@ -1035,12 +1033,11 @@ impl ActivityHost for Host {
 
     #[cfg(target_os = "linux")]
     fn refusals(&self, workspace: &str) -> Vec<wire::Refusal> {
-        let Some(engine) = self.0.engine.borrow().as_ref().map(Arc::clone) else {
+        let Some(view) = self.0.view.borrow().as_ref().map(Arc::clone) else {
             return Vec::new();
         };
-        let labels = engine.device_labels(workspace);
-        engine
-            .write_refusals(workspace)
+        let labels = view.device_labels(workspace);
+        view.write_refusals(workspace)
             .into_iter()
             .flat_map(|refusal| {
                 let label = labels
@@ -1416,7 +1413,8 @@ mod tests {
 
         fn attach(
             &self,
-            _engine: &std::sync::Arc<crate::engine::Engine>,
+            _certificate: &tilo_user_identity::DeviceCert,
+            _view: &std::sync::Arc<crate::workspace_view::WorkspaceView>,
             _reads: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
             _writes: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
         ) {

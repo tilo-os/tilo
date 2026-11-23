@@ -623,18 +623,14 @@ impl MemberListGrants {
         change: tilo_action_policy::Change,
         receipt: Option<tilo_desktop_model::WorkspaceEffectReceipt>,
     ) -> Result<(), String> {
-        let command = WorkspaceMembershipCommand::Member { change };
-        let copies = workspaces.copies();
-        if copies.is_member(&workspace).await.unwrap_or(false) {
-            let commit = copies.member_membership_write(&workspace, command).await?;
-            copies.commit_member_document(&workspace, commit).await?;
-        } else {
-            copies
-                .commit_own_membership(&workspace, command, receipt.as_ref())
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(())
+        workspaces
+            .copies()
+            .commit_own_change(
+                &workspace,
+                WorkspaceMembershipCommand::Member { change },
+                receipt.as_ref(),
+            )
+            .await
     }
 }
 

@@ -386,8 +386,8 @@ pub(crate) struct ChromeWiring {
     /// against and what it shows beside its rows.
     pub(crate) shortcuts: crate::panels::mount::Shortcuts,
     pub(crate) feeds: BarFeeds,
-    /// This device's workspaces, as their records hold them.
-    pub(crate) engine: Option<Arc<crate::engine::Engine>>,
+    /// How the person's workspaces stand, as the device's daemon publishes them.
+    pub(crate) view: Option<Arc<crate::workspace_view::WorkspaceView>>,
     /// What the desktop's control hints read and give back.
     pub(crate) hints: tilo_desktop::control_hints::HintsFeed,
     /// The keys a held Super reaches, as the session says them.
@@ -434,9 +434,9 @@ pub(crate) struct SessionChrome {
     identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
     /// Whether the person may invite someone into the workspace in front.
     invitable: Rc<Cell<bool>>,
-    /// This device's workspaces, as their records hold them: what says whether a workspace may be
-    /// deleted.
-    engine: Option<Arc<crate::engine::Engine>>,
+    /// How the person's workspaces stand, as the device's daemon publishes them: what says
+    /// whether a workspace may be deleted.
+    view: Option<Arc<crate::workspace_view::WorkspaceView>>,
     /// Who made each strip: what its maker may change of it.
     authors: RefCell<Authors>,
 }
@@ -450,7 +450,7 @@ impl SessionChrome {
         notifications_only: bool,
         sync: Option<Rc<crate::sync::Client>>,
         notes: std::sync::Arc<crate::continuations::Continuations>,
-        engine: Option<Arc<crate::engine::Engine>>,
+        view: Option<Arc<crate::workspace_view::WorkspaceView>>,
     ) -> Self {
         let BarFeeds {
             signals,
@@ -478,7 +478,7 @@ impl SessionChrome {
             shares,
             identify,
             invitable,
-            engine,
+            view,
             authors: RefCell::new(Authors::new()),
         }
     }
@@ -637,8 +637,8 @@ impl ChromeSource for SessionChrome {
                     .map(|held| (held.id(), held.owner().cloned()))
             })
             .ok_or_else(|| tilo_session_core::desktop::i18n::t("desktop-workspace-gone"))?;
-        let reads = match &self.engine {
-            Some(engine) if engine.holds(id) => engine.reads_whole(id),
+        let reads = match &self.view {
+            Some(view) if view.holds(id) => view.reads_whole(id),
             _ => owner.is_none_or(|owner| owner == self.person),
         };
         if reads {
@@ -650,18 +650,18 @@ impl ChromeSource for SessionChrome {
         }
     }
 
-    /// A workspace that exists comes on the shell once this device's engine holds it: entered
+    /// A workspace that exists comes on the shell once the device's daemon holds it: entered
     /// from the person's list or joined by an invitation, the session puts it there itself. One
     /// it holds nothing of would be founded here afresh under the existing workspace's id.
     ///
-    /// A session that takes no part in the peer network holds none of a workspace it joined and
-    /// reaches no host to hand it one: it shows the workspace with what this computer keeps of
+    /// A session that reaches no daemon holds none of a workspace it joined and reaches no host to
+    /// hand it one: it shows the workspace with what this computer keeps of
     /// it, as a join here has always left it, and nothing of it leaves this machine.
     fn may_open_workspace(&self, workspace: tilo_desktop_model::WorkspaceId) -> Result<(), String> {
-        match &self.engine {
-            Some(engine) if self.sync.is_some() && !engine.holds(workspace) => Err(
-                tilo_session_core::desktop::i18n::t("desktop-workspace-not-held"),
-            ),
+        match &self.view {
+            Some(view) if !view.holds(workspace) => Err(tilo_session_core::desktop::i18n::t(
+                "desktop-workspace-not-held",
+            )),
             _ => Ok(()),
         }
     }
@@ -670,7 +670,7 @@ impl ChromeSource for SessionChrome {
         &self,
         workspace: tilo_desktop_model::WorkspaceId,
     ) -> Result<(), String> {
-        let Some(engine) = &self.engine else {
+        let Some(view) = &self.view else {
             return Err(tilo_session_core::desktop::i18n::t(
                 "desktop-cannot-delete-workspace",
             ));
@@ -684,7 +684,7 @@ impl ChromeSource for SessionChrome {
                     .map(tilo_desktop_model::Workspace::id)
             })
             .ok_or_else(|| tilo_session_core::desktop::i18n::t("desktop-workspace-gone"))?;
-        if engine.may_delete(id) {
+        if view.may_delete(id) {
             Ok(())
         } else {
             Err(tilo_session_core::desktop::i18n::t(
@@ -807,7 +807,7 @@ pub(crate) fn host(
         asks,
         shortcuts,
         feeds,
-        engine,
+        view,
         hints,
         peek,
         wallpaper,
@@ -824,7 +824,7 @@ pub(crate) fn host(
         !crate::quick_settings::installed(&options.surfaces),
         sync,
         options.launches.notes(),
-        engine,
+        view,
     ))));
     let bar = TopBarChrome::from_tree(&tree)
         .with_chrome(source.clone())

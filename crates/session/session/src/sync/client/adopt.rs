@@ -1,7 +1,7 @@
-//! A workspace taken in: redeemed from an invitation the shell made for it, or entered as a further
-//! device of the person at the device hosting it. However this device came to take part in a
-//! workspace another device serves, its own workspace service holds a member copy of it, synced
-//! with that device: the copy every read and write of the workspace goes through.
+//! A workspace taken in: entered as a further device of the person at the device hosting it. Its
+//! own workspace service holds a member copy of it, synced with that device: the copy every read
+//! and write of the workspace goes through. An invitation is redeemed by the device's daemon
+//! (`account/workspaces#join`), never here.
 
 use std::sync::Arc;
 
@@ -9,133 +9,9 @@ use tilo_desktop_model::WorkspaceId as InviteWorkspaceId;
 use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 
 use crate::engine::Engine;
-use crate::sync::{Enrolling, Entering, REDEEM_WITHIN, SETTLE_WITHIN};
+use crate::sync::{Entering, REDEEM_WITHIN, SETTLE_WITHIN};
 use crate::workspace_keys::KeyLink;
 use tilo_network_actor::own_service::OwnService;
-
-/// Where `invitation` is redeemed: with this device's own workspace service in process when the
-/// invitation names it (an endpoint cannot dial itself), over the network otherwise.
-fn join_client(
-    endpoint: iroh::Endpoint,
-    own_service: Option<&OwnService>,
-    identity: &DeviceIdentity,
-    invitation: &str,
-) -> Result<(tilo_peer_state::join_transport::WorkspaceJoinClient, bool), String> {
-    let own = identity.device_cert.device_public_key;
-    let hosted_here = tilo_peer_state::join::decode_and_verify_invitation_text(
-        invitation,
-        None,
-        &tilo_user_identity::RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .is_ok_and(|verified| {
-        verified
-            .grant()
-            .transport
-            .iter()
-            .any(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own))
-    });
-    if !hosted_here {
-        return Ok((
-            tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint),
-            false,
-        ));
-    }
-    let client = own_service
-        .and_then(|service| service.join_client(own))
-        .ok_or_else(|| "this device's workspace service is not open".to_owned())?;
-    Ok((client, true))
-}
-
-/// Come into the workspace the shell made for the join, with the invitation it holds: this device
-/// becomes a member of the workspace, takes in what it held before it arrived, and takes part in it
-/// from then on.
-/// The workspace's state arrives as the host's answer: a person who joins late reads the whole
-/// history, not only what is recorded from now on.
-/// Renew this device's certificate before it is presented: a device that slept past the end of its
-/// certificate joins with the renewal reissued here, and a join that cannot renew says why rather
-/// than presenting what the host refuses.
-async fn renew_before_joining() -> Result<(), tilo_session_client::EnrollFailure> {
-    let before = tokio::task::spawn_blocking(crate::renewal::before_presenting).await;
-    match before {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(error.into()),
-        Err(error) => Err(format!("the renewal before this join did not finish: {error}").into()),
-    }
-}
-
-pub(super) async fn redeem(
-    endpoint: iroh::Endpoint,
-    identity: DeviceIdentity,
-    engine: Arc<Engine>,
-    network: Option<Carrier<'_>>,
-    request: Enrolling,
-    link: Option<&KeyLink>,
-    own_service: Option<&OwnService>,
-) -> Result<(), tilo_session_client::EnrollFailure> {
-    let topic = request.workspace_id;
-    renew_before_joining().await?;
-    // The workspace is joined as this computer's person: the device's own certificate signs the
-    // enrollment, so there is nothing to pick here.
-    identity.current_material(topic)?;
-    let owner = engine.owner().clone();
-    let (client, hosted_here, invitation) = match request.way {
-        tilo_workspace_directory::Way::Invitation(invitation) => {
-            let (client, hosted_here) = join_client(endpoint, own_service, &identity, &invitation)?;
-            (client, hosted_here, invitation)
-        }
-        tilo_workspace_directory::Way::Native(locator) => {
-            use tilo_peer_state::join_transport::WorkspaceJoinClient;
-            let hosted_here = endpoint.id().as_bytes() == &locator.service;
-            let client = if hosted_here {
-                own_service
-                    .and_then(|service| service.join_client(identity.device_cert.device_public_key))
-                    .ok_or("this device's workspace service is not open")?
-            } else {
-                WorkspaceJoinClient::new(endpoint)
-            };
-            let invitation = locator
-                .to_link()
-                .ok_or("the native invitation link is malformed")?;
-            (client, hosted_here, invitation)
-        }
-    };
-    let enrollment = tokio::time::timeout(
-        REDEEM_WITHIN,
-        tilo_peer_state::owner::enroll::prepare_and_complete(
-            client,
-            identity.clone(),
-            topic,
-            Some(request.workspace_id),
-            invitation,
-            owner.clone(),
-        ),
-    )
-    .await
-    .map_err(|_| "the workspace's host did not answer".to_owned())??;
-    // What the host granted is taken in here, and the peer network told to carry it: a person waiting to
-    // be let into a workspace is told when it did not happen rather than left on a peer network that
-    // stopped taking work.
-    tokio::time::timeout(SETTLE_WITHIN, async {
-        owner
-            .install(&enrollment, tilo_clock::wall())
-            .map_err(tilo_session_client::EnrollFailure::from)?;
-        take_part_in(&owner, request.workspace_id, link, network)
-            .await
-            .map_err(tilo_session_client::EnrollFailure::from)
-    })
-    .await
-    .map_err(|_| "the workspace was not taken in time".to_owned())??;
-    if !hosted_here {
-        hold_on_service(
-            own_service,
-            enrollment.bootstrap(),
-            enrollment.transport_hint(),
-        )
-        .await;
-    }
-    Ok(())
-}
 
 /// The peer network a workspace taken in is carried on: its actor, and where what it hears of the
 /// workspace goes.

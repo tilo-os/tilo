@@ -14,7 +14,7 @@ use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 use tilo_session_client::Cmd;
 use tilo_session_client::network::Event;
 
-use super::adopt::{Carrier, enter, redeem};
+use super::adopt::enter;
 use super::own_service::open as open_own_service;
 use super::{DesktopEvent, DeviceActions, Engine, Enrolled, HostCmd, KeyLink, endpoint_for};
 use tilo_network_actor::WorkspaceId;
@@ -462,10 +462,6 @@ async fn carry_host(
 ) -> Option<bool> {
     Some(match command {
         HostCmd::Network(Cmd::Stop) => return None,
-        HostCmd::Enroll(request) => {
-            asking.ask(Ask::Invitation(Box::new(request)));
-            true
-        }
         HostCmd::Enter(request) => {
             asking.ask(Ask::Entry(request));
             true
@@ -526,10 +522,8 @@ struct Asking {
     own_service: Option<OwnService>,
 }
 
-/// One thing the peer network asks a workspace's host for: someone's invitation redeemed into their
-/// workspace, or one of the person's own workspaces entered at the device serving it.
+/// One of the person's own workspaces, asked of the device serving it to take this device in.
 enum Ask {
-    Invitation(Box<super::Enrolling>),
     Entry(Box<super::Entering>),
 }
 
@@ -537,29 +531,20 @@ impl Asking {
     /// Ask `ask` beside the loop, and hand what became of it back. A session built without a
     /// workspace engine answers at once that it takes nothing in.
     fn ask(&self, ask: Ask) {
-        let (workspace_id, member, name, missing, held) = match &ask {
-            Ask::Invitation(request) => (
-                request.workspace_id,
-                false,
-                None,
-                "this session joins no workspaces",
-                false,
-            ),
-            Ask::Entry(request) => (
-                request.workspace_id,
-                true,
-                Some(request.name.clone()),
-                "this session keeps no workspaces",
-                request.held,
-            ),
-        };
+        let Ask::Entry(request) = ask;
+        let (workspace_id, member, name, held) = (
+            request.workspace_id,
+            true,
+            Some(request.name.clone()),
+            request.held,
+        );
         let landed = self.landed.clone();
         let (Some(engine), Some(identity)) = (self.engine.clone(), self.identity.clone()) else {
             let _ = landed.send(Enrolled {
                 workspace_id,
                 member,
                 name,
-                result: Err(missing.into()),
+                result: Err("this session keeps no workspaces".into()),
                 held,
             });
             return;
@@ -570,36 +555,17 @@ impl Asking {
         let channels = self.link.clone();
         let own_service = self.own_service.clone();
         tokio::spawn(async move {
-            let result = match ask {
-                Ask::Invitation(request) => {
-                    redeem(
-                        endpoint,
-                        identity,
-                        engine,
-                        Some(Carrier {
-                            network: &network,
-                            events: &events,
-                        }),
-                        *request,
-                        channels.as_deref(),
-                        own_service.as_ref(),
-                    )
-                    .await
-                }
-                Ask::Entry(request) => {
-                    enter(
-                        endpoint,
-                        identity,
-                        engine,
-                        &network,
-                        &events,
-                        *request,
-                        channels.as_deref(),
-                        own_service.as_ref(),
-                    )
-                    .await
-                }
-            };
+            let result = enter(
+                endpoint,
+                identity,
+                engine,
+                &network,
+                &events,
+                *request,
+                channels.as_deref(),
+                own_service.as_ref(),
+            )
+            .await;
             let _ = landed.send(Enrolled {
                 workspace_id,
                 member,
@@ -792,7 +758,6 @@ async fn listening(
     if let (true, Some(documents), Some(service)) = (opened, documents, service) {
         documents.follow(service.workspaces());
     }
-    let founding_link = link.clone();
     let (events, carrying, attending) =
         heard(identity.is_some(), arrivals, desktop_events, wake, link);
     // A workspace this device makes is founded on its own service from now on, carried here.
@@ -806,26 +771,13 @@ async fn listening(
                 endpoint: endpoint.clone(),
                 identity: identity.clone(),
                 engine: Arc::downgrade(engine),
-                network: Some((actor.clone(), events.clone())),
-                link: founding_link,
                 actions: actions.get().map(DeviceActions::action_service),
             }));
     }
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
     }
-    // The links out of the workspaces this device holds were made before this session, and its
-    // service kept them: whoever redeems one dials this device (`Engine::invitations_open`).
     if let (true, Some(engine)) = (opened, engine) {
-        let noting = Arc::clone(engine);
-        tokio::spawn(async move { super::own_service::note_open_links(&noting).await });
-        #[cfg(target_os = "linux")]
-        {
-            let founding = Arc::clone(engine);
-            tokio::spawn(
-                async move { super::own_service::found_person_workspace(&founding).await },
-            );
-        }
         // The workspaces this device took part in before its service held them are held there too.
         if let Some(service) = own_service.clone() {
             let holding = Arc::clone(engine);

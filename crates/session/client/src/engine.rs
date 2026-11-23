@@ -673,19 +673,6 @@ impl Engine {
         })
     }
 
-    /// Select the content keys for a session-owned document write.
-    pub fn resource_write_keys(
-        &self,
-        workspace: WorkspaceId,
-        (app, document): (&str, &str),
-    ) -> Result<SealKeys, String> {
-        self.document_seal_keys(&DocumentRoute {
-            app_id: app.to_owned(),
-            cluster_id: workspace.to_string(),
-            document: document.to_owned(),
-        })
-    }
-
     /// Keys for a new write to this document. The workspace key remains valid
     /// only while every workspace key holder may read the document.
     pub fn document_seal_keys(&self, route: &DocumentRoute) -> Result<SealKeys, String> {

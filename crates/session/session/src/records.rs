@@ -393,18 +393,16 @@ fn resource_document(store: &dyn DurableStore, record: &Held) -> Option<automerg
     crate::platform::records::document(store, &record.package, workspace, &route)
 }
 
-/// This device as search's tests start from it: an engine holding workspaces, and the session's
+/// This device as search's tests start from it: a daemon holding workspaces, and the session's
 /// copies of their records, through which a test writes an app's index as its windows do.
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 pub(crate) mod testing {
     use std::sync::Arc;
 
-    use ed25519_dalek::SigningKey;
     use ui::permissions::MemberId;
     use ui::resource::{DocumentId, ResourceType};
 
-    use crate::engine::Engine;
     use crate::engine_records::EngineRecords;
 
     /// Who writes the indexes and brings the records here.
@@ -413,7 +411,7 @@ pub(crate) mod testing {
     const OWN: &str = "notes.notebook";
 
     pub(crate) struct Device {
-        service: crate::founding_fixture::TestService,
+        service: crate::daemon_fixture::TestDaemon,
         records: EngineRecords,
         changes: crate::platform::records::Changes,
         /// Search's records of this device, until a test takes them.
@@ -422,31 +420,21 @@ pub(crate) mod testing {
     }
 
     impl Device {
-        /// A device holding each of `workspaces` on its own workspace service, with their keys.
+        /// A device holding each of `workspaces` on its daemon.
         pub(crate) fn holding(workspaces: &[&str]) -> Self {
             let state = tempfile::tempdir().expect("a state directory");
-            let root = SigningKey::from_bytes(&[0x30; 32]);
-            let key = SigningKey::from_bytes(&[0x31; 32]);
-            let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
-            let engine = Arc::new(
-                Engine::open(
-                    tilo_identity::identity_store::DeviceIdentity::kept(cert, key),
-                    Some(state.path()),
-                    std::iter::empty(),
-                )
-                .expect("this device's engine opens"),
-            );
-            let service = crate::founding_fixture::serve(&engine);
+            let service = crate::daemon_fixture::TestDaemon::start();
             for workspace in workspaces {
                 let id = tilo_desktop_model::WorkspaceId::parse(workspace).expect("a workspace");
-                service.found(&engine, id, workspace);
+                service.found(id, workspace);
             }
             let found = super::Records::of(state.path().join("data"));
             let changes = found.changes();
             let reads = service.reads();
             let records = EngineRecords::new(Arc::new(|| {}));
             records.attach(
-                Arc::clone(&engine),
+                service.view(),
+                None,
                 Arc::clone(&reads),
                 service.writes(),
                 &changes,
@@ -478,7 +466,7 @@ pub(crate) mod testing {
 
         /// The workspaces this device's service holds, as the session's roles reach them.
         pub(crate) fn workspaces(&self) -> tilo_workspace_service::workspaces::Workspaces {
-            self.service.workspaces()
+            self.service.workspaces().clone()
         }
 
         /// Keep `doc` as `app`'s `record` of `workspace`, written into the workspace as a service of

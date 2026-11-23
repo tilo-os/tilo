@@ -344,9 +344,9 @@ impl crate::Shared {
     /// as its governance names them, its agents as its record of them does (`listed`).
     fn member_names(&self, workspace: &str, listed: &[Listed]) -> chat::projection::PeopleNames {
         let people = self
-            .engine
+            .view
             .as_ref()
-            .and_then(|engine| engine.people(workspace).ok())
+            .and_then(|view| view.people(workspace).ok())
             .unwrap_or_default()
             .into_iter()
             .map(|member| (member.id, member.name));

@@ -7,7 +7,7 @@
 //! without holding its loop, so the session never waits for a copy:
 //!
 //! 1. The branch is founded in this device's engine as any workspace made here is
-//!    ([`Engine::found`]): its governance is new, its only member the person, as its owner, and
+//!    ([`crate::workspace_view::WorkspaceView::found`]): its governance is new, its only member the person, as its owner, and
 //!    its channels get keys of their own the first time a record of it is sealed.
 //! 2. Every record the source holds here is read whole, with its history, and written into the
 //!    branch as its founding write, through this device's workspace service
@@ -34,7 +34,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
@@ -46,7 +45,6 @@ use tilo_desktop_model::{
 use tilo_files::native::tree::{Copied, Strategy, clone_tree};
 use tilo_session_core::desktop::notifications::NotificationIconKind;
 
-use crate::engine::{Engine, SealKeys};
 use crate::engine_write::Polled;
 use crate::platform::notice::Notice;
 
@@ -161,26 +159,15 @@ type Sources = BTreeMap<(String, String), AutoCommit>;
 /// app that owns it, and every app that keeps it beside its own.
 type Local = BTreeMap<(String, String), Vec<PathBuf>>;
 
-/// What ticks when a read or a seal waiting for what is not here yet may answer otherwise: a write
-/// this device's workspace service took in from another device, a group's keys changing.
-fn events(engine: &Engine) -> Vec<tokio::sync::watch::Receiver<u64>> {
-    let mut events = vec![engine.arrivals().watching()];
-    events.extend(engine.keys().get().and_then(|keys| keys.changes()));
-    events
-}
-
-/// Found `record` of `app` in the branch `workspace` as `changes` , a whole document: sealed under
-/// the keys of the record's channel in the branch, which its first sealed write asks for and this
-/// device, the branch's only member, makes, waiting for them until `until`.
+/// Found `record` of `app` in the branch `workspace` as `changes` , a whole document: the
+/// device's daemon seals it under the keys of the record's channel in the branch, which this
+/// device, the branch's only member, makes.
 async fn found(
-    engine: &Engine,
     writes: &dyn tilo_peer_state::workspace_documents::DeviceWrites,
     workspace: WorkspaceId,
     (app, document): (&str, &str),
     changes: &[u8],
-    until: Instant,
 ) -> Result<(), String> {
-    let sealed = Some(seal_keys(engine, workspace, (app, document), until).await?);
     writes
         .write(
             &workspace.to_string(),
@@ -191,7 +178,7 @@ async fn found(
                 readers: None,
                 founding: true,
                 snapshot: true,
-                sealed: sealed.as_ref(),
+                sealed: None,
             },
         )
         .await
@@ -199,45 +186,23 @@ async fn found(
         .map_err(String::from)
 }
 
-/// Wait for one of `events` to tick: false once `until` passed, or when none of them can tick.
-/// The loop looks again at `until` ([`Branches::next_deadline`]).
-async fn moved(events: &mut [tokio::sync::watch::Receiver<u64>], until: Instant) -> bool {
-    if events.is_empty() {
-        return false;
-    }
-    let passed = std::future::poll_fn(|_| {
-        if Instant::now() < until {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
-    });
-    let ticked =
-        futures_util::future::select_all(events.iter_mut().map(|event| Box::pin(event.changed())));
-    match futures_util::future::select(ticked, std::pin::pin!(passed)).await {
-        futures_util::future::Either::Left(((Ok(()), _, _), _)) => Instant::now() < until,
-        _ => false,
-    }
-}
-
 /// Make the branch `to` of `from`: everything but the session, which the loop makes when this is done.
-/// What it reads and founds it awaits on the loop, waiting until `until` for what is not here yet;
-/// its copies run off the loop.
+/// What it reads and founds it awaits on the loop; its copies run off the loop. The daemon reads
+/// each of the source's records only where the workspace lets this device read it.
 pub(crate) async fn copy(
-    engine: Option<&Engine>,
+    view: Option<&crate::workspace_view::WorkspaceView>,
     writes: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     reads: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     places: Places,
     from: WorkspaceId,
     to: WorkspaceId,
-    until: Instant,
 ) -> Branched {
     let mut branched = Branched::default();
-    let reads_sources = match engine {
-        Some(engine) if engine.holds(from) && engine.holds(to) => true,
+    let reads_sources = match view {
+        Some(view) if view.holds(from) && view.holds(to) => true,
         // The source's records are this device's to read, and the branch holds none: it could not
         // be founded here.
-        Some(engine) if engine.holds(from) => {
+        Some(view) if view.holds(from) => {
             branched
                 .missing
                 .push("the branch's records: this device could not found it".to_owned());
@@ -245,20 +210,12 @@ pub(crate) async fn copy(
         }
         _ => false,
     };
-    let founds = engine.filter(|engine| engine.holds(to));
-    let can_read = engine
-        .filter(|engine| engine.holds(from))
-        .map(|engine| engine.document_read_policy(from));
+    let founds = view.is_some_and(|view| view.holds(to));
     let reads = std::sync::Arc::clone(reads);
     // Read off the session runtime: a task holding the workspace's lock may need that runtime
     // to finish its write before the read can proceed.
     let copied = tilo_rt::io::run(move || {
-        let permits = |app: &str, document_id: &str| {
-            !stays(app, document_id)
-                && can_read
-                    .as_ref()
-                    .is_none_or(|check| check(app, document_id))
-        };
+        let permits = |app: &str, document_id: &str| !stays(app, document_id);
         let sources = if reads_sources {
             read_resources(reads.as_ref(), from, &mut branched, &permits)
         } else {
@@ -272,18 +229,8 @@ pub(crate) async fn copy(
         branched.missing.push(error.to_string());
         (branched, Vec::new())
     });
-    for ((app, document), changes) in records {
-        let Some(engine) = founds else { break };
-        match found(
-            engine,
-            writes.as_ref(),
-            to,
-            (&app, &document),
-            &changes,
-            until,
-        )
-        .await
-        {
+    for ((app, document), changes) in records.into_iter().filter(|_| founds) {
+        match found(writes.as_ref(), to, (&app, &document), &changes).await {
             Ok(()) => branched.records = branched.records.saturating_add(1),
             Err(error) => branched
                 .missing
@@ -402,27 +349,6 @@ fn read_resources(
         }
     }
     sources
-}
-
-/// The keys the branch's records are sealed with: its first sealed write asks the branch's group
-/// for them, which this device, its only member, makes.
-async fn seal_keys(
-    engine: &Engine,
-    workspace: WorkspaceId,
-    route: (&str, &str),
-    until: Instant,
-) -> Result<key_group::ContentKeys, String> {
-    loop {
-        let mut events = events(engine);
-        match engine.resource_write_keys(workspace, route)? {
-            SealKeys::Here(keys) => return Ok(keys),
-            SealKeys::NoSecretStore => {
-                return Err("this device holds no secret store to keep its keys in".to_owned());
-            }
-            SealKeys::Waiting if moved(&mut events, until).await => {}
-            SealKeys::Waiting => return Err("the branch's keys did not come".to_owned()),
-        }
-    }
 }
 
 /// The relative path `path` (of the source's app directory) takes in the branch's, or `None` for
@@ -793,7 +719,7 @@ impl crate::Shared {
             ));
             return;
         };
-        let engine = self.engine.clone();
+        let view = self.view.clone();
         let writes = std::sync::Arc::clone(&self.document_writes);
         let reads = std::sync::Arc::clone(&self.document_reads);
         let until = Instant::now()
@@ -803,21 +729,28 @@ impl crate::Shared {
         let copied = Polled::new(
             Arc::clone(&self.wake_handle),
             async move {
-                if let Some(engine) = &engine
-                    && let Err(error) = engine.found(workspace, &founded).await
-                {
-                    // The workspace is the layout's from here either way; a founding that failed
-                    // is asked for again, and the person hears why.
-                    tracing::warn!(%error, %workspace, "the branch's workspace was not founded");
+                if let Some(view) = &view {
+                    match view.found(workspace, &founded).await {
+                        // The branch is copied into once the daemon's reading of it arrived; one
+                        // that did not arrive in time is copied into as far as it is held.
+                        Ok(()) => {
+                            let patience = until.saturating_duration_since(Instant::now());
+                            let _ = tokio::time::timeout(patience, view.arrived(workspace)).await;
+                        }
+                        // The workspace is the layout's from here either way; a founding that
+                        // failed is asked for again, and the person hears why.
+                        Err(error) => {
+                            tracing::warn!(%error, %workspace, "the branch's workspace was not founded");
+                        }
+                    }
                 }
                 copy(
-                    engine.as_deref(),
+                    view.as_deref(),
                     &writes,
                     &reads,
                     Places::here(),
                     from,
                     workspace,
-                    until,
                 )
                 .await
             },
@@ -1191,9 +1124,7 @@ mod tests {
         // the branch's record does not share (which left Chat's committed history blocked on a
         // restart); the conversation Chat keeps stays behind.
         {
-            let state = tempfile::tempdir().unwrap();
-            let identity = identity();
-            let device = reopened(&state, &identity);
+            let device = device();
             let (from, to) = ids();
             device.found(from, "Research");
             device.found(to, "Research branch");
@@ -1267,9 +1198,7 @@ mod tests {
             use automerge::transaction::Transactable as _;
             use tilo_automerge::ApplyIncoming as _;
             const EMOJI: &str = "tilo.workspace.emoji";
-            let state = tempfile::tempdir().unwrap();
-            let identity = identity();
-            let device = reopened(&state, &identity);
+            let device = device();
             let (from, to) = ids();
             device.found(from, "Research");
             device.found(to, "Research branch");
@@ -1356,9 +1285,7 @@ mod tests {
         // and none is reported not complete. The first branch leaves nothing in the source that the
         // next ones cannot read.
         {
-            let state = tempfile::tempdir().unwrap();
-            let identity = identity();
-            let device = reopened(&state, &identity);
+            let device = device();
             let from = ids().0;
             let targets = [
                 "7a6b5c4d-0000-4000-8000-000000000003",
@@ -1423,17 +1350,15 @@ mod tests {
         // A workspace with notes, the workspace's emoji and a conversation, branched: the branch
         // holds the notes and the emoji with their history, sealed under its own channel and naming
         // it, and not the conversation; its only member is the person, as its owner; the source holds
-        // what it held. All of it is as it was after the engine opens again.
+        // what it held. The daemon keeps all of it for the session after.
         {
-            let state = tempfile::tempdir().unwrap();
-            let identity = identity();
-            let person = hex::encode(identity.device_cert.user_public_key);
-            let device = reopened(&state, &identity);
-            let engine = &device.engine;
+            let device = device();
+            let person = hex::encode(device.service.certificate().user_public_key);
+            let view = device.service.view();
             let (from, to) = ids();
             device.found(from, "Research");
             device.found(to, "Research branch");
-            assert!(engine.holds(from) && engine.holds(to));
+            assert!(view.holds(from) && view.holds(to));
             let notes = ("so.tilo.notes", "uuid-plan");
             let emoji = collab_types::workspace_document_id("tilo.workspace.emoji");
             let mut plan = record(FROM, "plan");
@@ -1475,8 +1400,8 @@ mod tests {
                 "the conversation stays behind: {routes:?}"
             );
             // Its owner is the person who branched it, and nobody else is in it.
-            assert_eq!(engine.owner_of(TO), Ok(person.clone()));
-            let people = engine.people(TO).unwrap();
+            assert_eq!(view.owner_of(TO), Ok(person.clone()));
+            let people = view.people(TO).unwrap();
             assert!(
                 people
                     .iter()
@@ -1484,7 +1409,7 @@ mod tests {
                 "nobody but the person: {people:?}"
             );
             assert!(
-                engine.reads_whole(to),
+                view.reads_whole(to),
                 "the person reads all of their branch"
             );
 
@@ -1497,14 +1422,11 @@ mod tests {
                     .contains(&(CHAT.to_owned(), "messages".to_owned()))
             );
 
-            drop(device);
-            let device = reopened(&state, &identity);
-            let engine = &device.engine;
+            // A session that starts afresh finds the branch on the daemon, as it was.
             assert!(
-                engine.holds(to),
-                "the branch is this device's after a restart"
+                device.service.reads().workspaces().contains(&TO.to_owned()),
+                "the branch is this device's for the session after"
             );
-            assert_eq!(engine.owner_of(TO), Ok(person));
             assert_eq!(device.documents(TO).len(), 2);
             drop(device);
         }
@@ -1819,26 +1741,17 @@ mod tests {
             Arc::new(NoDocuments);
         let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
             Arc::new(NoWrites);
-        pollster::block_on(copy(
-            None,
-            &writes,
-            &reads,
-            places,
-            from,
-            to,
-            Instant::now(),
-        ))
+        pollster::block_on(copy(None, &writes, &reads, places, from, to))
     }
 
-    /// This device's engine and the workspace service it holds its workspaces on.
+    /// The device's daemon, which holds its workspaces, and the session's view of them.
     struct Device {
-        engine: Arc<Engine>,
-        service: crate::founding_fixture::TestService,
+        service: crate::daemon_fixture::TestDaemon,
     }
 
     impl Device {
         fn found(&self, workspace: WorkspaceId, name: &str) {
-            self.service.found(&self.engine, workspace, name);
+            self.service.found(workspace, name);
         }
 
         /// `from` branched into `to` , with everything this device holds here, on the app runtime
@@ -1847,13 +1760,12 @@ mod tests {
             tilo_rt::try_app()
                 .expect("the app runtime")
                 .block_on(copy(
-                    Some(self.engine.as_ref()),
+                    Some(&self.service.view()),
                     &self.service.writes(),
                     &self.service.reads(),
                     places,
                     from,
                     to,
-                    Instant::now(),
                 ))
                 .expect("the app runtime runs the branch")
         }
@@ -1876,9 +1788,9 @@ mod tests {
                 .expect("the service lists the workspace")
         }
 
-        /// Write `doc` into `workspace` as `record` of `app` , sealed, as an app's first write is.
+        /// Write `doc` into `workspace` as `record` of `app` , as an app's first write is: the
+        /// daemon seals it.
         fn write(&self, workspace: WorkspaceId, (app, record): (&str, &str), doc: &mut AutoCommit) {
-            let keys = self.service.keys_of(workspace);
             tilo_rt::try_app()
                 .expect("the app runtime")
                 .block_on(self.service.writes().write(
@@ -1890,7 +1802,7 @@ mod tests {
                         readers: None,
                         founding: true,
                         snapshot: true,
-                        sealed: Some(&keys),
+                        sealed: None,
                     },
                 ))
                 .expect("the app runtime runs the write")
@@ -1898,18 +1810,11 @@ mod tests {
         }
     }
 
-    /// A device of a person, certified for their root, that owns workspaces.
-    /// This device's engine, opened again under `state` as a session that starts afresh does.
-    fn reopened(
-        state: &tempfile::TempDir,
-        identity: &tilo_identity::identity_store::DeviceIdentity,
-    ) -> Device {
-        let engine = Arc::new(
-            Engine::open(identity.clone(), Some(state.path()), Vec::new())
-                .expect("this device's engine opens"),
-        );
-        let service = crate::founding_fixture::serve(&engine);
-        Device { engine, service }
+    /// A device whose daemon holds the person's workspaces.
+    fn device() -> Device {
+        Device {
+            service: crate::daemon_fixture::TestDaemon::start(),
+        }
     }
 
     fn identity() -> tilo_identity::identity_store::DeviceIdentity {

@@ -11,7 +11,6 @@
 //! reads the latest one.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
@@ -72,10 +71,6 @@ struct Shared {
     answered: Condvar,
     /// The session's loop, woken by an answer that changed.
     wake: tilo_service::Wake,
-    /// Whether every write the service takes asks for the resources it reaches: a resource is
-    /// then read again exactly when a write reached it, and no other device's write elsewhere
-    /// is a reason to read it.
-    following: AtomicBool,
 }
 
 impl Shared {
@@ -124,7 +119,6 @@ impl Reads {
             state: Mutex::default(),
             answered: Condvar::new(),
             wake,
-            following: AtomicBool::new(false),
         });
         let (asks, asked) = mpsc::channel::<Key>();
         let reading = Arc::clone(&shared);
@@ -182,12 +176,6 @@ impl Reads {
         answer
     }
 
-    /// Whether each write the service takes asks for the resources it reaches: from the first read
-    /// after the service opened until the service closes.
-    pub(super) fn follows_writes(&self) -> bool {
-        self.shared.following.load(Ordering::Acquire)
-    }
-
     /// Whether an answer changed since this was last asked: the loop then looks again, whatever
     /// else moved.
     pub(super) fn take_news(&self) -> bool {
@@ -236,7 +224,6 @@ impl Reads {
         };
         let shared = Arc::clone(&self.shared);
         let asks = self.asks.clone();
-        shared.following.store(true, Ordering::Release);
         runtime.spawn(async move {
             use tokio::sync::broadcast::error::RecvError;
             loop {
@@ -255,7 +242,6 @@ impl Reads {
                         }
                     }
                     Err(RecvError::Closed) => {
-                        shared.following.store(false, Ordering::Release);
                         return;
                     }
                 }

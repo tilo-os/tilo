@@ -402,6 +402,9 @@ pub struct Hosted {
     /// written through it too, and its person is who the broker admits them
     /// as. `None` when the session holds no workspaces.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    /// How the person's workspaces stand, as the device's daemon publishes them, and the actions
+    /// that change them.
+    pub view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     /// Where the endpoint this device runs under its key lands once bound:
     /// what it dials the hosts of its workspaces from. `None` when the
     /// session runs none.
@@ -1110,6 +1113,7 @@ fn broker_services(
         sealed,
         own_device,
         engine,
+        view,
         endpoint: hosted_endpoint,
         answering: _,
         service,
@@ -1355,7 +1359,7 @@ fn broker_services(
         // A node of a workspace's tree, as an app asks about it: a share, its end, or what the
         // person may do there, decided by the workspace's own governance.
         workspace_nodes: BrokerService::when(crate::workspace_nodes::WorkspaceNodes::service(
-            engine.as_ref(),
+            view.as_ref(),
         )),
         // A workspace placed on a host has its records changed there: the
         // person's actions on them are sent to the host, which decides and
@@ -1385,7 +1389,7 @@ fn broker_services(
                     // The machines the person planned to install: their plans
                     // are entries in their Servers workspace, which this
                     // session's own workspace service keeps.
-                    crate::machine_steps::MachineSteps::session(engine.clone()),
+                    crate::machine_steps::MachineSteps::session(view.clone()),
                     // The models each workspace's work runs on, which its holder keeps: this
                     // device's own service for a workspace it holds.
                     crate::model_steps::ModelSteps::session(engine.clone()),
@@ -1782,6 +1786,7 @@ mod tests {
             own_device: None,
             nearby: None,
             engine: None,
+            view: None,
             document_content: None,
             action_offload: None,
             journal_root: None,

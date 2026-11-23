@@ -18,7 +18,7 @@ use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::DeviceCapabilities;
 
-use super::{Client, Enrolling, Entering, Entry, OwnPresence};
+use super::{Client, Entering, Entry, OwnPresence};
 use crate::engine::Engine;
 use crate::platform::fabric::Continuity;
 use crate::workspace_keys::KeyLink;
@@ -86,23 +86,11 @@ impl Device {
     /// Join `workspace`, one `host` governs, with an invitation for this person, and wait until the
     /// workspace is held here.
     fn join_to(&self, host: &test_server::Host, workspace: &str, request: u8) -> WorkspaceId {
-        let workspace_id = WorkspaceId::parse(workspace).expect("a workspace id");
-        self.engine.bind(workspace_id);
-        self.network
-            .enroll(Enrolling {
-                workspace_id,
-                way: tilo_workspace_directory::Way::Invitation(host.invitation_to(
-                    workspace,
-                    self.person(),
-                    request,
-                )),
-                name: String::new(),
-            })
-            .expect("the peer network takes the enrollment");
-        self.enrolled()
-            .result
-            .expect("the workspace admits this device");
-        workspace_id
+        let _invitation = host.invitation_to(workspace, self.person(), request);
+        panic!(
+            "an invitation is redeemed by the device's daemon (account/workspaces#join), which \
+             this harness does not start"
+        )
     }
 
     /// What became of this device's enrollment or entry, once its host answered.

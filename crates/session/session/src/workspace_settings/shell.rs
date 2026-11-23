@@ -21,9 +21,9 @@ use tilo_sheets::file_picker::FilePickerState;
 use tilo_sheets::workspace_settings as sheet;
 
 use crate::engine::Engine;
-use crate::engine::Holder;
 use crate::lists::AppLists;
 use crate::search::SessionSearch;
+use crate::workspace_view::{Holder, WorkspaceView};
 use crate::workspaces::{DeviceChoice, Personal};
 
 use super::{Directory, agents, emoji};
@@ -72,9 +72,12 @@ pub(crate) struct Feeding<'a> {
     /// The session's file chooser, where a picture to add is chosen.
     pub(crate) picker: Option<&'a FilePickerState>,
     pub(crate) personal: Option<&'a RefCell<Personal>>,
-    /// This device's engine, where the workspace's own governance is written: what the person
-    /// changes of the workspace's people goes there, so every member admits it.
+    /// This device's engine, where what this device may read of the workspace's records is
+    /// decided.
     pub(crate) engine: Option<&'a std::sync::Arc<Engine>>,
+    /// How the person's workspaces stand, as the device's daemon publishes them: what the sheet
+    /// shows of the workspace's people and hosts, and where the person's changes to them go.
+    pub(crate) view: Option<&'a std::sync::Arc<WorkspaceView>>,
     /// Where what the workspace answered a change is taken in, once its signature landed.
     pub(crate) landings: &'a crate::landing::Landings,
 }
@@ -162,7 +165,7 @@ pub(crate) fn refresh(state: Option<&sheet::WorkspaceSettingsState>, fed: &Feedi
 fn fed_revision(fed: &Feeding<'_>) -> (u64, u64) {
     (
         fed.handle.revision(),
-        fed.engine.map_or(0, |engine| engine.owner().revision()),
+        fed.view.map_or(0, |view| view.revision()),
     )
 }
 
@@ -188,7 +191,10 @@ fn show(
         review,
         fed.personal,
         fed.tabs,
-        fed.engine.map(|engine| &**engine),
+        (
+            fed.view.map(|view| &**view),
+            fed.engine.map(|engine| &**engine),
+        ),
     );
     shown.notice = state.notice();
     state.show(shown);
@@ -471,7 +477,7 @@ fn govern(
     let at = crate::governance::Governing {
         handle: fed.handle,
         person: fed.person,
-        engine: fed.engine,
+        view: fed.view,
         landings: fed.landings,
     };
     let landed_state = state.clone();
@@ -709,7 +715,7 @@ fn settings(
     review: Option<&str>,
     personal: Option<&RefCell<Personal>>,
     records: &WorkspaceTabs,
-    engine: Option<&Engine>,
+    (view, engine): (Option<&WorkspaceView>, Option<&Engine>),
 ) -> sheet::Settings {
     let (agents, emoji) = (&records.agents, &records.emoji);
     let workspace = tree.active_workspace();
@@ -724,14 +730,14 @@ fn settings(
         close: t("workspace-settings-close"),
         tabs: tabs(),
         tab,
-        general: general(tree, person, personal, engine),
+        general: general(tree, person, personal, view),
         people: workspace.map_or_else(sheet::People::default, |ws| {
             let workspace = ws.id().to_string();
             people(
                 ws,
                 &names,
                 person,
-                &engine.map_or_else(Vec::new, |engine| engine.holders(&workspace)),
+                &view.map_or_else(Vec::new, |view| view.holders(&workspace)),
             )
         }),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
@@ -773,7 +779,7 @@ fn general(
     tree: &Layout,
     person: &UserId,
     personal: Option<&RefCell<Personal>>,
-    engine: Option<&Engine>,
+    view: Option<&WorkspaceView>,
 ) -> sheet::General {
     let workspace = tree.active_workspace();
     let manage = workspace.is_some_and(|workspace| workspace.may_administer(person));
@@ -781,7 +787,7 @@ fn general(
     // it lets invite makes a link like anyone else it allows. The invite sheet asks again when the
     // link is made.
     let invitable = workspace.is_some_and(|workspace| {
-        crate::platform::invite::may_invite(engine, &workspace.id().to_string(), person)
+        crate::platform::invite::may_invite(view, &workspace.id().to_string(), person)
     });
     // What the workspace holds, in the three measures a person acts on: who is in it, what it gives
     // particular people or apps, and which apps it opens things with.
@@ -813,7 +819,7 @@ fn general(
             .position(|one| one.id() == workspace.id())
     });
     let last = tree.workspaces.len().saturating_sub(1);
-    let going = going(tree, engine);
+    let going = going(tree, view);
     sheet::General {
         identity: sheet::Group {
             title: t("workspace-settings-identity-title"),
@@ -880,13 +886,13 @@ struct Going {
     decision: sheet::Decision,
 }
 
-fn going(tree: &Layout, engine: Option<&Engine>) -> Going {
+fn going(tree: &Layout, view: Option<&WorkspaceView>) -> Going {
     let workspace = tree.active_workspace();
     let sole_member = workspace.is_some_and(|workspace| workspace.roster().len() <= 1);
     let delete_note = workspace.filter(|_| sole_member).and_then(|workspace| {
-        engine.map_or_else(
+        view.map_or_else(
             || Some(t("workspace-settings-delete-not-held")),
-            |engine| engine.not_deletable(workspace.id()).map(not_deletable),
+            |view| view.not_deletable(workspace.id()).map(not_deletable),
         )
     });
     let leavable = tree.workspaces.len() > 1 && !sole_member;
@@ -918,8 +924,8 @@ fn going(tree: &Layout, engine: Option<&Engine>) -> Going {
 }
 
 /// Why a workspace is not the person's to delete here, in their words.
-fn not_deletable(reason: crate::engine::NotDeletable) -> String {
-    use crate::engine::NotDeletable;
+fn not_deletable(reason: crate::workspace_view::NotDeletable) -> String {
+    use crate::workspace_view::NotDeletable;
     match reason {
         NotDeletable::NotHeld => t("workspace-settings-delete-not-held"),
         NotDeletable::OthersInIt => t("workspace-settings-delete-others"),

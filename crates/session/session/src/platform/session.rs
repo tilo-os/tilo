@@ -678,7 +678,15 @@ impl Session {
         );
         // A write the daemon takes to a layout or a view has it read again off the loop.
         desktops.follow_writes(daemon_writes.clone());
-        let engine = activity.open_engine(&options, &handle, document_reads.clone(), &writes);
+        let engine = crate::options::open_engine(&options, &handle);
+        let view = crate::options::open_view(&daemon_link, &options);
+        if let Some(view) = &view {
+            activity.attach_workspaces(
+                std::sync::Arc::clone(view),
+                document_reads.clone(),
+                &writes,
+            );
+        }
         // This device's channels of its workspaces' sealed records: its keys,
         // and the devices each one admits, which its window streams carry
         // between. The broker the apps reach is the one the channel service
@@ -750,9 +758,10 @@ impl Session {
         // The records the session itself writes are the workspaces' own, and its writes reach this
         // device's apps as a member's do. Search finds the records the workspaces hold, and
         // brings one here, through them.
-        if let Some(engine) = &engine {
+        if let Some(view) = &view {
             records.attach(
-                std::sync::Arc::clone(engine),
+                std::sync::Arc::clone(view),
+                engine.as_ref().and_then(|engine| engine.service_root()),
                 document_reads.clone(),
                 writes.clone(),
                 &changes,
@@ -930,7 +939,7 @@ impl Session {
                     identify: numbers.ask(),
                     invitable: Rc::clone(&invitable),
                 },
-                engine: engine.clone(),
+                view: view.clone(),
                 hints: hints.clone(),
                 peek: super_peek.clone(),
                 wallpaper,
@@ -953,8 +962,8 @@ impl Session {
         ));
         // What tells an ask of a workspace this session is founding from one it holds: the ask
         // waits for the founding and is delivered then.
-        if let Some(engine) = &engine {
-            session_services.keep_engine(std::sync::Arc::clone(engine));
+        if let Some(view) = &view {
+            session_services.keep_view(std::sync::Arc::clone(view));
         }
         // A task's host is started as every tilolang process here is.
         if let Some(processes) = options
@@ -1008,7 +1017,7 @@ impl Session {
             activities: Rc::clone(&activities),
             surfaces,
             tray: tray.clone(),
-            engine: engine.clone(),
+            view: view.clone(),
             // The invite sheet is the session's own surface: the shell asks for it here.
             asks: Rc::clone(&asks),
             folders: folders.clone(),
@@ -1286,6 +1295,7 @@ impl Session {
                 daemon_writes,
                 service: workspace_service.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
+                view: view.clone(),
                 sealed: crate::app_wire::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),
                     keys: engine.as_ref().map(|engine| engine.keys()),
@@ -1722,7 +1732,7 @@ impl Session {
                 handle: handle.clone(),
                 person: options.person.clone(),
                 sync: sync.is_some(),
-                engine: engine.clone(),
+                view: view.clone(),
                 services: Rc::clone(&services),
                 listed: Rc::default(),
             }),
@@ -1830,6 +1840,8 @@ impl Session {
             folder_import: RefCell::new(None),
             sync,
             engine,
+            view,
+            joins: Rc::default(),
             document_reads,
             document_writes: writes,
             held_stores: crate::engine_records::held_stores(workspace_service),

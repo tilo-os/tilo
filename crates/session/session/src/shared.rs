@@ -33,26 +33,16 @@ impl Shared {
         // A workspace made on this session is founded off the loop, and the shell's own writes need
         // it held: what ends the session waits for it first.
         self.landings.settle(std::time::Duration::from_secs(5));
-        if let Some(engine) = &self.engine {
-            crate::layout::Layouts::settle_keys(
-                engine,
-                &self.handle.read(Clone::clone),
-                std::time::Duration::from_secs(5),
-            );
-        }
         // The apps a login's end takes with it leave the workspaces' layouts as they were. An
         // in-place restart keeps them, so the last thing the person moved is written for the desktop
         // that follows instead of being lost with the one that saw it.
         if crate::termination::asked() && !crate::restart::restarting() {
             // The apps a login's end takes with it leave the workspaces' layouts as they were; the
             // person's view of them is theirs to keep, and the next session shows it.
-            if let Some(engine) = &self.engine {
-                self.desktops.finish_view(
-                    engine,
-                    &self.handle.read(Clone::clone),
-                    std::time::Duration::from_secs(5),
-                );
-            }
+            self.desktops.finish_view(
+                &self.handle.read(Clone::clone),
+                std::time::Duration::from_secs(5),
+            );
             crate::kept::flush(self.state.as_deref());
             return;
         }
@@ -63,13 +53,10 @@ impl Shared {
         let named = self.desktop.with_policy(|policy| policy.window_items());
         self.desktops.note_items(named);
         // What this device changed of its workspaces' layouts reaches them before the session ends.
-        if let Some(engine) = &self.engine {
-            self.desktops.finish_writes(
-                engine,
-                &self.handle.read(Clone::clone),
-                std::time::Duration::from_secs(5),
-            );
-        }
+        self.desktops.finish_writes(
+            &self.handle.read(Clone::clone),
+            std::time::Duration::from_secs(5),
+        );
         // What the layout keeps of the kept apps' windows, their keepers keep too: the windows
         // take the tabs the write just saved in the session that follows.
         #[cfg(target_os = "linux")]
@@ -86,12 +73,10 @@ impl Shared {
         // The first look begins this session's restore: a desktop that has drawn is usable once
         // the windows this device left open are being asked for, or there are none to ask for.
         self.restore.borrow_mut().begin();
-        let Some(engine) = &self.engine else {
+        if !self.desktops.attached() {
             self.restore.borrow_mut().without_layouts();
             return;
-        };
-        self.desktops
-            .attach(engine, &self.document_reads, &self.document_writes);
+        }
         // The apps a login's end takes with it leave the workspaces' sessions as they were.
         if crate::termination::asked() {
             return;
@@ -111,7 +96,7 @@ impl Shared {
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.
-        let version = self.desktops.version(engine);
+        let version = self.desktops.standing();
         if self
             .handle
             .read(|tree| self.desktops.settled(version, tree))
@@ -127,7 +112,7 @@ impl Shared {
             self.desktops.step(room, &self.person, redo, &self.handle);
         }
         let mut tree = self.handle.read(Clone::clone);
-        self.desktops.capture(engine, &tree);
+        self.desktops.capture(&tree);
         // What the workspace did not take of this session is on the shell the person used: they hear it
         // once, naming the workspace and why.
         if let Some(refusal) = self.desktops.take_refusal() {
@@ -139,7 +124,7 @@ impl Shared {
             .map_or_else(String::new, |sync| sync.publisher().to_string());
         #[cfg(target_os = "linux")]
         let before = tree.clone();
-        if self.desktops.follow(engine, &device, &mut tree) {
+        if self.desktops.follow(&device, &mut tree) {
             // The tree this device drew is the tree it shows: what the layout holds is already
             // placed, and swapping it in whole keeps the windows this device shows where its own
             // view left them.
@@ -411,10 +396,10 @@ impl Shared {
     /// The windows this device left open: ask for the next one once the one before it came, each
     /// into the tab it was in.
     pub(crate) fn follow_restore(&self) {
-        let engine = self.engine.clone();
+        let view = self.view.clone();
         let awaited = move |workspace: &str| {
-            let engine = engine.as_ref()?;
-            engine.awaited_host(tilo_desktop_model::WorkspaceId::parse(workspace)?)
+            let view = view.as_ref()?;
+            view.awaited_host(tilo_desktop_model::WorkspaceId::parse(workspace)?)
         };
         self.restore
             .borrow_mut()
@@ -466,8 +451,8 @@ impl Shared {
         // through.
         let catalog = self.layout.borrow().targets();
         self.session_services.keep_tabs(&self.handle);
-        if let Some(engine) = &self.engine {
-            self.session_services.keep_awaiting(&self.handle, engine);
+        if let Some(view) = &self.view {
+            self.session_services.keep_awaiting(&self.handle, view);
         }
         // What a place can show, as a find's answer holds it: the borrow ends here, since an
         // answer is heard on a later pass, off the pass that asked.
@@ -540,10 +525,10 @@ impl Shared {
         let Some(launch) = &self.launch else {
             return;
         };
-        if let Some(engine) = &self.engine {
-            let (engine, handle) = (std::sync::Arc::clone(engine), self.handle.clone());
+        if let Some(view) = &self.view {
+            let (view, handle) = (std::sync::Arc::clone(view), self.handle.clone());
             launch.lend_admission(std::rc::Rc::new(move |workspace: &str| {
-                crate::mcp_server::awaited_reason(&engine, &handle, workspace)
+                crate::mcp_server::awaited_reason(&view, &handle, workspace)
             }));
         }
         if let Some(questions) = self.asker.questions() {

@@ -28,7 +28,9 @@ use tilo_desktop_model::{
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
-use crate::engine::{Engine, SealKeys};
+use tilo_user_identity::DeviceCert;
+
+use crate::workspace_view::WorkspaceView;
 use neighbour_wire::RefusalReason;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_peer_state::owner::WriteRefusal;
@@ -47,10 +49,10 @@ fn history(doc: &mut automerge::AutoCommit) -> UndoLog {
 /// The actor `person`'s changes of a layout are written as on this device: their handle and this
 /// device's key, so two of their devices writing at once never number a change the same
 /// (`ui::history_source::authors::device_actor`).
-fn actor(engine: &Engine, person: &str) -> automerge::ActorId {
+fn actor(certificate: &DeviceCert, person: &str) -> automerge::ActorId {
     automerge::ActorId::from(ui::history_source::authors::device_actor(
         person.as_bytes(),
-        &automerge::ActorId::from(engine.identity().device_cert.device_public_key.to_vec()),
+        &automerge::ActorId::from(certificate.device_public_key.to_vec()),
     ))
 }
 
@@ -101,7 +103,7 @@ struct Held {
     /// record that did not move is answered from the admitted heads rather than captured again.
     revision: Option<[u8; 32]>,
     /// The record as this device last wrote it and the workspace took it: what the next write is
-    /// made on. The engine's copy reaches a member after the workspace admits the write, so it can
+    /// made on. The daemon's copy reaches a member after the workspace admits the write, so it can
     /// lag the write this device already made; writing on that lagging copy would number a second
     /// change the same as the first, and the workspace would refuse it.
     kept: Option<automerge::AutoCommit>,
@@ -143,10 +145,11 @@ struct Held {
     /// Why the layout could not be read at [`Self::read_at`]: it fails again until the workspace
     /// moves, so the looks in between have nothing to read and nothing to say about it again.
     failed: Option<String>,
-    /// Where the engine stood when this record was last read, or found not to have moved: a look
-    /// that skips the record (its write under way) or a write of it that finished leaves it behind
-    /// the engine, so the record is read again however the rest of the workspace moved meanwhile.
-    read_at: Option<EngineVersion>,
+    /// How the person's workspaces stood ([`Layouts::standing`]) when this record was last read,
+    /// or found not to have moved: a look that skips the record (its write under way) or a write
+    /// of it that finished leaves it behind, so the record is read again however the rest of the
+    /// workspace moved meanwhile.
+    read_at: Option<u64>,
     /// The revision the record was read at when the workspace answered that a write of it waits
     /// for changes it does not hold yet: the write is made again once the record moves past it,
     /// not on every look.
@@ -160,41 +163,13 @@ struct Waits {
     at: Option<[u8; 32]>,
 }
 
-/// Where the workspaces' documents stood at a look: the engine's revision, the generation of the
-/// channel keys that open their sealed records, and how many writes another device made have
-/// landed. A record read at one reads the same until one of them moves: keys that arrive open
-/// writes the copy already held, and a write that reached this device's workspace service without
-/// touching the engine is a landing ([`crate::layout::EngineVersion::landed`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct EngineVersion {
-    pub(crate) revision: u64,
-    pub(crate) keys: u64,
-    /// Writes another device made that landed in this device's workspace service, which the
-    /// engine's own revision does not count: the layouts and views this session shows are read
-    /// from the service, so a landing is a record to read again. Only until the reads follow the
-    /// service's writes ([`Layouts::version`]): each write then asks for the one record it reached,
-    /// and a message or a presence written elsewhere reads no layout again.
-    pub(crate) landed: u64,
-}
-
-impl EngineVersion {
-    pub(crate) fn of(engine: &Engine) -> Self {
-        Self {
-            revision: engine.owner().revision(),
-            keys: engine.keys().generation(),
-            landed: engine.arrivals().now(),
-        }
-    }
-}
-
-/// A record a step may be taken in: the record as this device writes it, its history, the
-/// revision it was read at and how a write of it is sealed.
+/// A record a step may be taken in: the record as this device writes it, its history and the
+/// revision it was read at.
 struct Candidate {
     key: Key,
     doc: automerge::AutoCommit,
     log: UndoLog,
     revision: Option<[u8; 32]>,
-    sealed: Sealing,
 }
 
 /// What an arranging action did to a layout: the change it makes names who asked and what they did,
@@ -274,10 +249,6 @@ enum Going {
     /// writing the two together is what a save of it costs.
     Layout(Box<Laying>),
 }
-
-/// What a write is sealed with, where this device can write it: the keys of the workspace it is
-/// written in, which its members hold.
-type Sealing = key_group::ContentKeys;
 
 /// A write of a record under way, with what [`Layouts::published`] takes from it.
 struct Publishing {
@@ -384,7 +355,6 @@ struct Save {
     notes: Vec<(u64, String)>,
     /// The item each of this device's windows was opened on, by tab.
     items: Vec<(u64, String)>,
-    sealed: Sealing,
     /// Whether a window of an app runs only on the device that opened it, as the app says
     /// ([`Layouts::hosting`]).
     runs_here: Option<fn(&str) -> bool>,
@@ -398,7 +368,7 @@ impl Save {
     /// and this device's own change on top, and the write of that to the workspace.
     async fn write(
         self,
-        engine: &Engine,
+        certificate: &DeviceCert,
         writes: &dyn tilo_peer_state::workspace_documents::DeviceWrites,
         person: &str,
         closed: &BTreeSet<u64>,
@@ -413,7 +383,6 @@ impl Save {
             own: _,
             notes,
             items,
-            sealed,
             runs_here,
             pending,
         } = self;
@@ -440,10 +409,10 @@ impl Save {
         // A change of a layout is the person's, written as this device: the record is every
         // member's, and another of their devices writing at the same instant must not number the
         // same change.
-        candidate.set_actor(actor(engine, person));
+        candidate.set_actor(actor(certificate, person));
         let mut noted = WindowNotes::of(notes, items);
         let writing = Writing {
-            engine,
+            certificate,
             local,
             only_here: runs_here,
             closed,
@@ -501,7 +470,7 @@ impl Save {
                     readers: None,
                     founding,
                     snapshot: founding,
-                    sealed: Some(&sealed),
+                    sealed: None,
                 },
             )
             .await;
@@ -533,7 +502,7 @@ fn laid_on(
 /// What every change of a workspace's layout is written with.
 #[derive(Clone, Copy)]
 struct Writing<'a> {
-    engine: &'a Engine,
+    certificate: &'a DeviceCert,
     local: u16,
     only_here: Option<fn(&str) -> bool>,
     closed: &'a BTreeSet<u64>,
@@ -618,7 +587,7 @@ fn write_change(
     steps: &mut Vec<(Vec<ChangeHash>, Vec<ChangeHash>)>,
 ) -> Result<bool, automerge::AutomergeError> {
     let Writing {
-        engine,
+        certificate,
         local,
         only_here,
         closed,
@@ -626,7 +595,7 @@ fn write_change(
     } = *writing;
     let (laid, elsewhere) = written_here(
         laid_into(candidate, workspace.clone(), closed),
-        engine,
+        certificate,
         local,
         only_here,
     );
@@ -701,8 +670,12 @@ pub(crate) struct Layouts {
     wake: tilo_service::LoopWake,
     /// This device's publisher, as the fold of a layout resolves the windows that run here.
     device: RefCell<String>,
-    /// The engine this session keeps its workspaces in, once it opened them.
-    engine: RefCell<Option<Arc<Engine>>>,
+    /// This device's certificate: whose key a change of a layout is numbered with, and the
+    /// device a window running here names.
+    certificate: RefCell<Option<Arc<DeviceCert>>>,
+    /// How the person's workspaces stand on the device's daemon: a look reads the records again
+    /// once that moved.
+    view: RefCell<Option<Arc<WorkspaceView>>>,
     /// Where the workspaces' documents are read, once the session opened this device's service: a
     /// layout and its views are read from the workspace's own copy, as they are written to it.
     reads: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>>>,
@@ -713,7 +686,7 @@ pub(crate) struct Layouts {
     /// What this device's workspace service writes into the workspaces' documents, once the
     /// session opened it: where a layout's write reaches the workspace.
     writes: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>>>,
-    /// The workspace's own document as this device holds it, and the engine revision it was read
+    /// The workspace's own document as the device's daemon holds it, and the standing it was read
     /// at: its governance is read from there, never from a device's copy of it.
     governing: RefCell<HashMap<WorkspaceId, (u64, Option<automerge::AutoCommit>)>>,
     /// Moves whenever a layout is read or written here: what a history open on this device is
@@ -931,10 +904,10 @@ impl Layouts {
             .unwrap_or_default()
     }
 
-    /// Whether every record of every workspace `tree` holds was read here with the engine at
-    /// `version`, and this session has not moved since: nothing of them can have changed, so no
+    /// Whether every record of every workspace `tree` holds was read here with the workspaces
+    /// standing at `version` ([`Self::standing`]), and this session has not moved since: nothing of them can have changed, so no
     /// record is read or written again. Notes what was looked at.
-    pub(crate) fn settled(&self, version: EngineVersion, tree: &Layout) -> bool {
+    pub(crate) fn settled(&self, version: u64, tree: &Layout) -> bool {
         // A write under way is taken first, and while it is no record is read or written.
         if !self.settle_publishing() {
             return true;
@@ -993,7 +966,10 @@ impl Layouts {
     /// where, and what this device decides alone kept. `device` is this device's publisher, which
     /// resolves a window that runs here to the window it shows here. Returns whether anything
     /// changed.
-    pub(crate) fn follow(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
+    pub(crate) fn follow(&self, device: &str, tree: &mut Layout) -> bool {
+        if !self.attached() {
+            return false;
+        }
         // The person's view of each workspace as the shell shows it before the layouts are laid
         // in: what they closed here is gone from it, and what a layout's fold takes off the shell
         // is not.
@@ -1002,8 +978,7 @@ impl Layouts {
             .iter()
             .map(|workspace| (workspace.id(), PersonView::of(tree, workspace.id())))
             .collect();
-        let changed =
-            self.follow_layout(engine, device, tree) | self.follow_view(engine, tree, &shown);
+        let changed = self.follow_layout(device, tree) | self.follow_view(tree, &shown);
         // What the workspaces' layouts laid in is theirs: only what changes here after it is
         // this device's to write.
         *self.shown.borrow_mut() = tree
@@ -1025,64 +1000,31 @@ impl Layouts {
     /// Write what this device changed of `tree` and wait for it, for a session that is ending: a
     /// write under way would otherwise be cut with its task, and a change made since the last look
     /// — or held for the write before it — would not reach the workspace at all.
-    pub(crate) fn finish_writes(
-        &self,
-        engine: &Arc<Engine>,
-        tree: &Layout,
-        patience: std::time::Duration,
-    ) {
+    pub(crate) fn finish_writes(&self, tree: &Layout, patience: std::time::Duration) {
         self.wait_writes(patience);
         self.read_through(patience);
-        if let Some(person) = self.person.borrow().clone() {
-            self.capture_layouts(engine, &person, tree);
-            self.capture_view(engine, &person, tree, true);
+        if let (Some(person), Some(certificate)) =
+            (self.person.borrow().clone(), self.certificate())
+        {
+            let certificate = &certificate;
+            self.capture_layouts(certificate, &person, tree);
+            self.capture_view(certificate, &person, tree, true);
         }
         self.wait_writes(patience);
     }
 
     /// [`Self::finish_writes`] of the person's view alone: the layouts a login's end leaves as they
     /// were, and what the person sees of them is theirs to keep.
-    pub(crate) fn finish_view(
-        &self,
-        engine: &Arc<Engine>,
-        tree: &Layout,
-        patience: std::time::Duration,
-    ) {
+    pub(crate) fn finish_view(&self, tree: &Layout, patience: std::time::Duration) {
         self.wait_writes(patience);
         self.read_through(patience);
-        if let Some(person) = self.person.borrow().clone() {
-            self.capture_view(engine, &person, tree, true);
+        if let (Some(person), Some(certificate)) =
+            (self.person.borrow().clone(), self.certificate())
+        {
+            let certificate = &certificate;
+            self.capture_view(certificate, &person, tree, true);
         }
         self.wait_writes(patience);
-    }
-
-    /// Wait until this device has the keys of every workspace `tree` shows, or `patience` runs
-    /// out: a workspace made on this session is founded off the loop, and its channel's keys reach
-    /// this device after that. A session ending before they arrive cannot write the layout it made
-    /// there.
-    pub(crate) fn settle_keys(engine: &Engine, tree: &Layout, patience: std::time::Duration) {
-        #[cfg(target_family = "wasm")]
-        {
-            let _ = (engine, tree, patience);
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let deadline = std::time::Instant::now().checked_add(patience);
-            loop {
-                let waiting = tree
-                    .workspaces
-                    .iter()
-                    .filter(|workspace| !workspace.id().is_nil())
-                    .any(|workspace| {
-                        matches!(engine.seal_keys(workspace.id()), Ok(SealKeys::Waiting))
-                    });
-                let overdue = deadline.is_none_or(|deadline| std::time::Instant::now() >= deadline);
-                if !waiting || overdue {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-        }
     }
 
     /// Wait for the writes under way, `patience` each.
@@ -1126,22 +1068,6 @@ impl Layouts {
         }
     }
 
-    /// Where the workspaces' documents stand for the layouts and views read here: the engine's
-    /// [`EngineVersion`], without the writes that landed once the reads follow the service's
-    /// writes, which ask for the records they reached themselves.
-    pub(crate) fn version(&self, engine: &Engine) -> EngineVersion {
-        let mut version = EngineVersion::of(engine);
-        if self
-            .reading
-            .borrow()
-            .as_ref()
-            .is_some_and(reads::Reads::follows_writes)
-        {
-            version.landed = 0;
-        }
-        version
-    }
-
     /// A number that moves whenever a layout is read or written here.
     pub(crate) fn moved(&self) -> u64 {
         self.moved.get()
@@ -1152,11 +1078,13 @@ impl Layouts {
     /// reaches.
     pub(crate) fn attach(
         &self,
-        engine: &Arc<Engine>,
+        certificate: &DeviceCert,
+        view: &Arc<WorkspaceView>,
         reads: &Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         writes: &Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     ) {
-        *self.engine.borrow_mut() = Some(Arc::clone(engine));
+        *self.certificate.borrow_mut() = Some(Arc::new(certificate.clone()));
+        *self.view.borrow_mut() = Some(Arc::clone(view));
         *self.reads.borrow_mut() = Some(Arc::clone(reads));
         *self.writes.borrow_mut() = Some(Arc::clone(writes));
         if self.reading.borrow().is_none() {
@@ -1195,9 +1123,23 @@ impl Layouts {
         self.writes.borrow().clone()
     }
 
-    /// The engine this session keeps its workspaces in, once it opened them.
-    fn engine(&self) -> Option<Arc<Engine>> {
-        self.engine.borrow().clone()
+    /// This device's certificate, once the session attached its documents.
+    fn certificate(&self) -> Option<Arc<DeviceCert>> {
+        self.certificate.borrow().clone()
+    }
+
+    /// Whether the session attached the documents its layouts are read and written through.
+    pub(crate) fn attached(&self) -> bool {
+        self.certificate.borrow().is_some()
+    }
+
+    /// How the person's workspaces stand on the device's daemon now: it moves whenever a
+    /// workspace's people, policy or keys change there, and a record read before is read again.
+    pub(crate) fn standing(&self) -> u64 {
+        self.view
+            .borrow()
+            .as_ref()
+            .map_or(0, |view| view.revision())
     }
 
     /// The layout of `workspace_id`, as this device last read it.
@@ -1208,12 +1150,14 @@ impl Layouts {
     /// The workspace's own document as this device holds it: its governance, and the layout it
     /// keeps at its root. `None` until the workspace is held here.
     pub(crate) fn governance(&self, workspace_id: WorkspaceId) -> Option<automerge::AutoCommit> {
-        let engine = self.engine()?;
-        let revision = engine.owner().revision();
+        let view = self.view.borrow().clone()?;
+        let revision = view.revision();
         let mut governing = self.governing.borrow_mut();
-        let (read_at, document) = governing.entry(workspace_id).or_insert((revision, None));
+        let (read_at, document) = governing
+            .entry(workspace_id)
+            .or_insert((revision.wrapping_sub(1), None));
         if *read_at != revision {
-            *document = engine
+            *document = view
                 .workspace_document(&workspace_id.to_string())
                 .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok());
             *read_at = revision;
@@ -1224,13 +1168,13 @@ impl Layouts {
     /// A number of this device's workspaces as they stand, governance included: what a history
     /// open here is served again for.
     pub(crate) fn owner_revision(&self) -> u64 {
-        self.engine().map_or(0, |engine| engine.owner().revision())
+        self.standing()
     }
 
-    /// Fold the layout of every workspace in the engine's copy into `tree`.
-    fn follow_layout(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
+    /// Fold the layout of every workspace the device's daemon holds into `tree`.
+    fn follow_layout(&self, device: &str, tree: &mut Layout) -> bool {
         let salt = tree.salt;
-        let at = self.version(engine);
+        let at = self.standing();
         let mut changed = false;
         for workspace in &mut tree.workspaces {
             let workspace_id = workspace.id();
@@ -1271,7 +1215,7 @@ impl Layouts {
             let Some((doc, revision)) = document else {
                 // Read against a revision, nothing comes back while the record did not move: what
                 // was read stands. A workspace with no layout yet is read as one: a layout that
-                // arrives moves the engine's revision, and the next pass reads it.
+                // arrives is told by the daemon, and the next pass reads it.
                 self.held(&key, |held| held.read = true);
                 changed |= self.owed(workspace_id, workspace);
                 continue;
@@ -1426,17 +1370,12 @@ impl Layouts {
 
     /// Show every workspace in `tree` as the person here last left it. `shown` is the person's view
     /// of each as the shell showed it before this look laid the layouts in.
-    fn follow_view(
-        &self,
-        engine: &Engine,
-        tree: &mut Layout,
-        shown: &HashMap<WorkspaceId, PersonView>,
-    ) -> bool {
+    fn follow_view(&self, tree: &mut Layout, shown: &HashMap<WorkspaceId, PersonView>) -> bool {
         let Some(person) = self.person.borrow().clone() else {
             return false;
         };
         let route = Route::view(&person);
-        let at = self.version(engine);
+        let at = self.standing();
         let held: Vec<WorkspaceId> = tree.workspaces.iter().map(Workspace::id).collect();
         let mut changed = false;
         for workspace_id in held {
@@ -1574,18 +1513,19 @@ impl Layouts {
     /// layout, and the person's view of every workspace into theirs, and publish them: the strips
     /// and windows it makes and arranges, and where the person here is looking. Returns whether
     /// this look published the view.
-    pub(crate) fn capture(&self, engine: &Arc<Engine>, tree: &Layout) -> bool {
-        let Some(person) = self.person.borrow().clone() else {
+    pub(crate) fn capture(&self, tree: &Layout) -> bool {
+        let (Some(person), Some(certificate)) = (self.person.borrow().clone(), self.certificate())
+        else {
             return false;
         };
-        self.capture_layouts(engine, &person, tree);
-        self.capture_view(engine, &person, tree, false)
+        self.capture_layouts(&certificate, &person, tree);
+        self.capture_view(&certificate, &person, tree, false)
     }
 
     /// Write the layout of the workspace in front, and of every other workspace this device
     /// changed since the last look or still owes a write: a window sent to a workspace behind
     /// changes two layouts, and a restart reads both.
-    fn capture_layouts(&self, engine: &Arc<Engine>, person: &str, tree: &Layout) {
+    fn capture_layouts(&self, certificate: &Arc<DeviceCert>, person: &str, tree: &Layout) {
         let owed = {
             let shown = self.shown.borrow();
             let mut owed = self.owed.borrow_mut();
@@ -1606,7 +1546,7 @@ impl Layouts {
             owed.clone()
         };
         for workspace in owed {
-            if self.capture_layout(engine, person, tree, workspace, None) {
+            if self.capture_layout(certificate, person, tree, workspace, None) {
                 self.owed.borrow_mut().remove(&workspace);
             }
         }
@@ -1620,7 +1560,7 @@ impl Layouts {
     /// Whether this look is done with the workspace: what it could not hand yet is tried again.
     fn capture_layout(
         &self,
-        engine: &Arc<Engine>,
+        certificate: &Arc<DeviceCert>,
         person: &str,
         tree: &Layout,
         workspace: WorkspaceId,
@@ -1664,14 +1604,6 @@ impl Layouts {
             }
             return false;
         }
-        let Some(sealed) = self.sealed(engine, &key) else {
-            self.unwritten(workspace_id, Some("it cannot be sealed here yet"));
-            // A change waits for the layout's keys, and is written once they are here.
-            if kept_back {
-                self.remember(&key, workspace, acted, person);
-            }
-            return false;
-        };
         let read = self.reached(&key);
         let (reached, revision, holds) = (read.doc, read.revision, read.holds);
         // A layout the workspace holds is laid out here before this device writes it: what the
@@ -1736,7 +1668,7 @@ impl Layouts {
         self.keep_pending();
         self.unwritten(workspace_id, None);
         self.lay(
-            engine,
+            certificate,
             person,
             revision,
             Save {
@@ -1751,7 +1683,6 @@ impl Layouts {
                 own,
                 notes,
                 items,
-                sealed,
                 runs_here: self.runs_here,
                 pending,
             },
@@ -1793,7 +1724,13 @@ impl Layouts {
 
     /// Hand `save` to the task that writes it, and take what it came to at once if it is there
     /// already.
-    fn lay(&self, engine: &Arc<Engine>, person: &str, revision: Option<[u8; 32]>, save: Save) {
+    fn lay(
+        &self,
+        certificate: &Arc<DeviceCert>,
+        person: &str,
+        revision: Option<[u8; 32]>,
+        save: Save,
+    ) {
         let Some(writes) = self.writes() else {
             tracing::debug!(
                 workspace = %save.workspace_id,
@@ -1805,7 +1742,7 @@ impl Layouts {
             );
             return;
         };
-        let engine = Arc::clone(engine);
+        let certificate = Arc::clone(certificate);
         let person = person.to_owned();
         let key = (save.workspace_id, Route::layout());
         let (own, notes) = (save.own, save.notes.clone());
@@ -1816,7 +1753,9 @@ impl Layouts {
             self.wake.handle(),
             {
                 let person = person.clone();
-                async move { Box::pin(save.write(&engine, writes.as_ref(), &person, &closed)).await }
+                async move {
+                    Box::pin(save.write(&certificate, writes.as_ref(), &person, &closed)).await
+                }
             },
             || {
                 Laid::Failed(
@@ -1987,10 +1926,10 @@ impl Layouts {
         redo: bool,
         handle: &DesktopHandle,
     ) -> bool {
-        let Some(engine) = self.engine() else {
+        let Some(certificate) = self.certificate() else {
             return false;
         };
-        let engine = &engine;
+        let certificate = &certificate;
         let keys = [
             (workspace_id, Route::layout()),
             (workspace_id, Route::view(person)),
@@ -2014,13 +1953,10 @@ impl Layouts {
         // action changed both (its gesture is the same in each).
         let mut candidates = Vec::new();
         for key in keys {
-            let Some(sealed) = self.sealed(engine, &key) else {
-                continue;
-            };
             let Some((mut doc, revision)) = self.copy(&key) else {
                 continue;
             };
-            doc.set_actor(actor(engine, person));
+            doc.set_actor(actor(certificate, person));
             let log = self
                 .held(&key, |held| held.undo.take())
                 .unwrap_or_else(|| history(&mut doc));
@@ -2032,7 +1968,6 @@ impl Layouts {
                     doc,
                     log,
                     revision,
-                    sealed,
                 },
             ));
         }
@@ -2073,7 +2008,6 @@ impl Layouts {
             mut doc,
             mut log,
             revision,
-            sealed,
         } = candidate;
         let before = doc.get_heads();
         let stepped = if redo {
@@ -2112,7 +2046,7 @@ impl Layouts {
         };
         self.held(&key, |held| held.undo = Some(log));
         self.keep(&key, doc.clone(), revision);
-        self.publish(&key, doc, Some(written), &before, revision, sealed);
+        self.publish(&key, doc, Some(written), &before, revision);
         true
     }
 
@@ -2128,7 +2062,7 @@ impl Layouts {
         shows: &[(tilo_desktop_model::TabId, String)],
     ) {
         self.placed.borrow_mut().extend(shows.iter().cloned());
-        let Some(engine) = self.engine() else {
+        let Some(certificate) = self.certificate() else {
             return;
         };
         let Some(person) = self.person.borrow().clone() else {
@@ -2183,7 +2117,7 @@ impl Layouts {
             }
         }
         self.capture_layout(
-            &engine,
+            &certificate,
             &person,
             tree,
             tree.active,
@@ -2222,21 +2156,18 @@ impl Layouts {
         own: u64,
         edit: impl FnOnce(&mut automerge::AutoCommit) -> bool,
     ) -> bool {
-        let Some(engine) = self.engine() else {
+        let Some(certificate) = self.certificate() else {
             return false;
         };
-        let engine = &engine;
+        let certificate = &certificate;
         let key = (workspace_id, Route::layout());
         if !self.settle_one(&key) {
             return false;
         }
-        let Some(sealed) = self.sealed(engine, &key) else {
-            return false;
-        };
         let Some((mut doc, revision)) = self.copy(&key) else {
             return false;
         };
-        doc.set_actor(actor(engine, person));
+        doc.set_actor(actor(certificate, person));
         let before = doc.get_heads();
         if !edit(&mut doc) {
             doc.rollback();
@@ -2256,7 +2187,6 @@ impl Layouts {
             Some(Written::Layout(own, notes)),
             &before,
             revision,
-            sealed,
         );
         true
     }
@@ -2324,7 +2254,13 @@ impl Layouts {
     /// Write the person here's view of every workspace whose view they changed into that
     /// workspace's record of it.
     /// `now`: the view is written as it stands, without waiting for it to rest.
-    fn capture_view(&self, engine: &Arc<Engine>, person: &str, tree: &Layout, now: bool) -> bool {
+    fn capture_view(
+        &self,
+        certificate: &Arc<DeviceCert>,
+        person: &str,
+        tree: &Layout,
+        now: bool,
+    ) -> bool {
         let route = Route::view(person);
         let mut wrote = false;
         for workspace in &tree.workspaces {
@@ -2357,20 +2293,6 @@ impl Layouts {
                 held.seen = Some(here);
                 held.pending = None;
             });
-            let Some(sealed) = self.sealed(engine, &key) else {
-                // The record's keys are not here yet: it is written on the look after they arrive,
-                // the steps taken here with it.
-                let awaited = keys_awaited(engine, &key);
-                self.held(&key, |held| {
-                    held.read = false;
-                    held.written = None;
-                    held.pending = None;
-                    if awaited {
-                        held.pending_view.restore(steps);
-                    }
-                });
-                continue;
-            };
             if self.waits(&key) {
                 // The record has not moved since the workspace said the last write waits for it.
                 self.held(&key, |held| {
@@ -2395,7 +2317,7 @@ impl Layouts {
             let mut log = self.held(&key, |kept| kept.undo.take());
             let mut refused = None;
             for step in &steps {
-                if let Err(error) = view_step(&mut held, step, engine, person, &mut log) {
+                if let Err(error) = view_step(&mut held, step, certificate, person, &mut log) {
                     refused = Some(error);
                     break;
                 }
@@ -2417,59 +2339,18 @@ impl Layouts {
                 self.keep(&key, held, revision);
                 continue;
             }
-            wrote |= self.publish(
-                &key,
-                held,
-                Some(Written::View(written)),
-                &from,
-                revision,
-                sealed,
-            );
+            wrote |= self.publish(&key, held, Some(Written::View(written)), &from, revision);
         }
         self.keep_pending();
         wrote
-    }
-
-    /// What this device seals `key`'s writes with, and whether it writes at all now: every
-    /// workspace's records are its members' sealed channels, so a write takes the channel's keys,
-    /// and one whose keys this device holds none of — because they are not here yet, or because
-    /// this device has no secret store at all — takes none. Neither is a workspace's verdict, so
-    /// no notice names a workspace as having refused a write it never saw.
-    fn sealed(&self, engine: &Engine, key: &Key) -> Option<Sealing> {
-        let (workspace_id, _) = key;
-        match engine.seal_keys(*workspace_id) {
-            Ok(SealKeys::Here(keys)) => Some(keys),
-            // The record's channel keys are not here yet: it is written on the look after they
-            // arrive, and this look leaves the workspace unread so that there is one.
-            Ok(SealKeys::Waiting) => {
-                self.held(key, |held| held.read = false);
-                None
-            }
-            // This device holds no secret store, so it holds no channel keys of any workspace: its
-            // sessions stay the ones it keeps, and the person hears nothing.
-            Ok(SealKeys::NoSecretStore) => None,
-            Err(error) => {
-                self.say(
-                    (RefusalReason::Other, &error),
-                    "the workspace's layout was not written",
-                    *workspace_id,
-                );
-                None
-            }
-        }
     }
 
     /// Publish `candidate`, a change of a record this device built on the loop — its view of a
     /// layout, a step taken from a layout's history, or what a model said a change was — as the
     /// workspace's own copy of it: what the workspace takes is what the next look writes on, and
     /// what it refuses is dropped, so the next look writes it again on what the workspace holds.
-    /// A record of the workspace is written the way the workspace keeps them: sealed under the
-    /// record channel's keys where they are its members' sealed channels, and in the clear where
-    /// the workspace's device commits its documents. A sealed record starts sealed: the write that
-    /// first holds anything of it is a checkpoint of the whole of it, and every write after it a
-    /// sealed change. Members read a sealed record from its sealed history alone, so a record
-    /// founded in the clear would leave them a genesis they cannot account for and a record they
-    /// could never read.
+    /// The device's daemon writes it the way the workspace keeps its records, sealing it where
+    /// they are its members' sealed channels: a write on no history founds the record whole.
     fn publish(
         &self,
         key: &Key,
@@ -2477,7 +2358,6 @@ impl Layouts {
         replaced: Option<Written>,
         heads: &[ChangeHash],
         revision: Option<[u8; 32]>,
-        sealed: Sealing,
     ) -> bool {
         let (workspace_id, route) = key.clone();
         if replaced.is_none() {
@@ -2516,7 +2396,7 @@ impl Layouts {
                         readers: None,
                         founding,
                         snapshot: founding,
-                        sealed: Some(&sealed),
+                        sealed: None,
                     },
                 )
                 .await
@@ -2572,7 +2452,7 @@ impl Layouts {
             },
         };
         // A look skips a record while its write is under way, and another device's write to it may
-        // have moved the engine's revision before that look: a finished write leaves its record
+        // have been told before that look: a finished write leaves its record
         // unread at any revision ([`Self::laid`], [`Self::published`]), and the next look reads it.
         let Some(going) = going else {
             return true;
@@ -2960,11 +2840,10 @@ fn hosted_here(
 /// pictures a shared window in, beside its own view of that window, is this session's alone.
 fn written_here(
     laid_out: Workspace,
-    engine: &Engine,
+    certificate: &DeviceCert,
     local: u16,
     runs_here: Option<fn(&str) -> bool>,
 ) -> (Workspace, BTreeSet<u64>) {
-    let certificate = &engine.identity().device_cert;
     let device = hex::encode(certificate.device_public_key);
     let laid_out = hosted_here(
         laid_out,
@@ -3012,12 +2891,6 @@ fn bound_apps(
         .collect()
 }
 
-/// Whether `key`'s record waits for its channel keys to reach this device.
-fn keys_awaited(engine: &Engine, key: &Key) -> bool {
-    let (workspace_id, _) = key;
-    matches!(engine.seal_keys(*workspace_id), Ok(SealKeys::Waiting))
-}
-
 /// Whether this device's service holds `workspace_id` and it holds nothing of `route` yet: what a
 /// view is written onto, rather than over one this look cannot read. A workspace the service does
 /// not hold is one the session has no documents of at all, never one it may write a view over.
@@ -3048,7 +2921,7 @@ impl Layouts {
 fn view_step(
     doc: &mut automerge::AutoCommit,
     step: &PendingStep<PersonView>,
-    engine: &Engine,
+    certificate: &DeviceCert,
     person: &str,
     log: &mut Option<UndoLog>,
 ) -> Result<bool, automerge::AutomergeError> {
@@ -3066,7 +2939,7 @@ fn view_step(
     }
     // An arranging action's step is the person's, on whichever of their devices made it.
     if step.acted.is_some() {
-        doc.set_actor(actor(engine, person));
+        doc.set_actor(actor(certificate, person));
     }
     let before = doc.get_heads();
     if !step.changed.write(doc)? {
@@ -3202,11 +3075,12 @@ impl crate::activity::History for LayoutHistory {
 
     fn attach(
         &self,
-        engine: &Arc<Engine>,
+        certificate: &DeviceCert,
+        view: &Arc<WorkspaceView>,
         reads: &Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         writes: &Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     ) {
-        self.layouts.attach(engine, reads, writes);
+        self.layouts.attach(certificate, view, reads, writes);
     }
 }
 

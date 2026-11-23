@@ -59,9 +59,9 @@ use tilo_window_share::config::FlatpakShareConfig;
 use tilo_window_share::flatpak_share::{EncodedFrame, SharedFlatpakSession};
 use tilo_window_share::streaming::InputEvent as SharedInput;
 
-use crate::engine::Engine;
 use crate::landing::{Landings, off_loop};
 use crate::sync::{Client, ReceivedSurface};
+use crate::workspace_view::WorkspaceView;
 use tilo_session_client::membership::{Membership, project};
 
 /// The resource the session publishes its window shares on: what it shares,
@@ -426,7 +426,7 @@ impl WindowShares {
         session: &DesktopHandle,
         displays: &crate::displays::Displays,
         sync: Option<&Client>,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
         pages: &Rc<RefCell<crate::page_track::PageTracks>>,
         now: Instant,
     ) {
@@ -440,19 +440,16 @@ impl WindowShares {
                 || !self.received.is_empty()
             {
                 self.commands.clear();
-                self.end_all(compositor, session, None, engine);
+                self.end_all(compositor, session, None, view);
                 self.changed();
             }
-            self.follow_hosted(session, None, engine, now);
+            self.follow_hosted(session, None, view, now);
             return;
         };
         // What arrived is read first, so a share that starts this pass already knows who views it
         // and in which codec to encode.
         self.take_received(compositor, session, sync);
         self.follow_live(sync);
-        // The workspaces' governance is this device's engine's: the one the session holds, which a
-        // live session it started itself holds too.
-        let engine = engine.or_else(|| sync.engine());
         // What was written into a governance since the last pass shows now, and a share that
         // ended while its write was under way is taken out of the governance it landed in.
         if self.landed.replace(false) {
@@ -460,16 +457,16 @@ impl WindowShares {
         }
         let ended_early = std::mem::take(&mut *self.ended_early.borrow_mut());
         for tab in ended_early {
-            self.retract(session, engine, tab);
+            self.retract(session, view, tab);
         }
         let tree = session.read(Clone::clone);
         self.share_environment_windows(compositor, &tree);
-        self.carry_out(compositor, session, &tree, sync, engine, pages, now);
-        self.follow_governance(session, sync, engine, now);
+        self.carry_out(compositor, session, &tree, sync, view, pages, now);
+        self.follow_governance(session, sync, view, now);
         // A stream that reached this device before the session held the tab of its window is decoded
         // there from this pass on.
         self.show_streams(session);
-        self.follow_hosted(session, Some(sync), engine, now);
+        self.follow_hosted(session, Some(sync), view, now);
         land_displays(session, displays);
         self.renegotiate();
         self.end_silent_viewers(now);
@@ -482,7 +479,7 @@ impl WindowShares {
         self.follow_windows(session, sync);
         self.follow_pictured(session);
         self.follow_overdue(now);
-        self.end_gone(compositor, session, sync, engine);
+        self.end_gone(compositor, session, sync, view);
         // Last, so what the tiles asked for while this pass decoded them reaches the devices
         // hosting the windows.
         self.send_outgoing(session, sync);
@@ -525,7 +522,7 @@ impl WindowShares {
         session: &DesktopHandle,
         tree: &Layout,
         sync: &Client,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
         pages: &Rc<RefCell<crate::page_track::PageTracks>>,
         now: Instant,
     ) {
@@ -558,7 +555,7 @@ impl WindowShares {
                     // is how the other members learn of the share. Only this device's own window is
                     // hosted here.
                     if peer_salt_of(tab) == self.salt {
-                        self.announce(session, engine, tab, &app_id, &workspace);
+                        self.announce(session, view, tab, &app_id, &workspace);
                     } else {
                         tracing::debug!(
                             tab,
@@ -584,7 +581,7 @@ impl WindowShares {
                     if let Some(page) = self.pages.remove(&tab) {
                         Self::end_page(&page, sync);
                     }
-                    self.retract(session, engine, tab);
+                    self.retract(session, view, tab);
                     self.asked.retain(|(asking, _), _| *asking != tab);
                     self.renegotiate.remove(&tab);
                     self.close_seats(compositor, tab, None);
@@ -619,7 +616,7 @@ impl WindowShares {
             }
         }
         self.settle_pages(compositor, tree, sync, &pages.borrow());
-        self.start_waiting(compositor, session, sync, engine, now);
+        self.start_waiting(compositor, session, sync, view, now);
     }
 
     /// Ask the device hosting the window this session shows in its tab `tab` for it, in `workspace`.
@@ -659,7 +656,7 @@ impl WindowShares {
     fn once_landed(
         &self,
         session: &DesktopHandle,
-        engine: &Arc<Engine>,
+        view: &Arc<WorkspaceView>,
         workspace: &str,
         written: tilo_actions::remote::Pending<Result<(), String>>,
         then: impl FnOnce(Result<(), String>) + 'static,
@@ -668,13 +665,12 @@ impl WindowShares {
             tracing::warn!(workspace, "a share's write has no loop to answer through");
             return;
         };
-        let (session, engine, workspace) =
-            (session.clone(), Arc::clone(engine), workspace.to_owned());
+        let (session, view, workspace) = (session.clone(), Arc::clone(view), workspace.to_owned());
         let landed = Rc::clone(&self.landed);
         landings.then(written, move |answer| {
             let answer = answer.unwrap_or_else(|| Err("no task ran the write".to_owned()));
             if answer.is_ok() {
-                project_shares(&session, &engine, &workspace);
+                project_shares(&session, &view, &workspace);
             }
             then(answer);
             landed.set(true);
@@ -686,7 +682,7 @@ impl WindowShares {
     /// workspace reads to show it. The workspace's own governance checks them as it admits them, as
     /// it does any grant.
     ///
-    /// A workspace this device's engine holds takes the share as its member's own change
+    /// A workspace the device's daemon holds takes the share as its member's own change
     /// ([`Membership::share`]), signed with this device's key, so it leaves with the rest of what
     /// this device writes there and every other device of the workspace admits it; the session then
     /// reads it from that governance, as it reads the workspace's people. A workspace that lives
@@ -695,7 +691,7 @@ impl WindowShares {
     fn announce(
         &self,
         session: &DesktopHandle,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
         tab: TabId,
         app_id: &str,
         workspace: &str,
@@ -706,20 +702,20 @@ impl WindowShares {
         }
         let share = window_share_id(tab);
         let node = window_node(workspace, app_id, tab);
-        if let Some((engine, id)) = governing(engine, workspace) {
+        if let Some((view, id)) = governing(view, workspace) {
             // This device's signer signs the change and may answer only later: the write runs off
             // the loop, and the session reads the share on the pass after it landed.
             self.writing.borrow_mut().insert(tab, false);
             let written = {
-                let engine = Arc::clone(engine);
+                let view = Arc::clone(view);
                 off_loop(async move {
-                    Membership::of(&engine, id)
+                    Membership::of(&view, id)
                         .share(&share, node, ShareAccess::View)
                         .await
                 })
             };
             let (writing, ended_early) = (Rc::clone(&self.writing), Rc::clone(&self.ended_early));
-            self.once_landed(session, engine, workspace, written, move |answer| {
+            self.once_landed(session, view, workspace, written, move |answer| {
                 if let Err(error) = answer {
                     tracing::warn!(%error, tab, "the workspace did not take the window's share");
                 }
@@ -760,10 +756,10 @@ impl WindowShares {
 
     /// Take the share of the window `tab` out of the governance of the workspaces addressing the
     /// workspace it was shared with: it is not shared any more, so no device shows it. A workspace
-    /// this device's engine holds ends it in its own governance ([`Membership::unshare`]), whether
+    /// the device's daemon holds ends it in its own governance ([`Membership::unshare`]), whether
     /// or not the session still names it — a window that closed took its grants off the shell as it
     /// went — and one that lives only on this session ends it there.
-    fn retract(&mut self, session: &DesktopHandle, engine: Option<&Arc<Engine>>, tab: TabId) {
+    fn retract(&mut self, session: &DesktopHandle, view: Option<&Arc<WorkspaceView>>, tab: TabId) {
         let share = window_share_id(tab);
         // A share still on its way into a governance is not there to end yet: it ends once it
         // landed.
@@ -798,17 +794,17 @@ impl WindowShares {
                 .collect()
         });
         for workspace in &workspaces {
-            let Some((engine, id)) = governing(engine, workspace) else {
+            let Some((view, id)) = governing(view, workspace) else {
                 continue;
             };
-            if !engine.policy(workspace).is_ok_and(|policy| shares(&policy)) {
+            if !view.policy(workspace).is_ok_and(|policy| shares(&policy)) {
                 continue;
             }
             let written = {
-                let (engine, share) = (Arc::clone(engine), share.clone());
-                off_loop(async move { Membership::of(&engine, id).unshare(&share).await })
+                let (view, share) = (Arc::clone(view), share.clone());
+                off_loop(async move { Membership::of(&view, id).unshare(&share).await })
             };
-            self.once_landed(session, engine, workspace, written, move |answer| {
+            self.once_landed(session, view, workspace, written, move |answer| {
                 if let Err(error) = answer {
                     tracing::warn!(%error, tab, "the workspace did not end the window's share");
                 }
@@ -816,7 +812,7 @@ impl WindowShares {
             ended = true;
         }
         let on_shell = |workspace: &tilo_desktop_model::Workspace| {
-            shares(&workspace.policy) && governing(engine, &workspace.policy.workspace).is_none()
+            shares(&workspace.policy) && governing(view, &workspace.policy.workspace).is_none()
         };
         if session.read(|tree| tree.workspaces.iter().any(on_shell)) {
             let mut tree = session.read(Clone::clone);
@@ -843,11 +839,11 @@ impl WindowShares {
         &mut self,
         session: &DesktopHandle,
         sync: &Client,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
         now: Instant,
     ) {
         let mut tree = session.read(Clone::clone);
-        let shared = self.shared_in(&tree, sync, engine, now);
+        let shared = self.shared_in(&tree, sync, view, now);
         let live: BTreeSet<TabId> = shared.iter().map(|shared| shared.tab).collect();
         let mut changed = self.take_ended(session, &mut tree, &live);
         for shared in &shared {
@@ -863,7 +859,7 @@ impl WindowShares {
         &mut self,
         tree: &Layout,
         sync: &Client,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
         now: Instant,
     ) -> Vec<Shared> {
         let now_ms = tilo_clock::unix_now_ms();
@@ -876,7 +872,7 @@ impl WindowShares {
             // here: the workspace's governance admits it, and that is who a share's host is read
             // from when the devices heard do not name one.
             if shares_of_unheard(&held.policy, &owners) {
-                for device in self.admitted_to(engine, &workspace, now) {
+                for device in self.admitted_to(view, &workspace, now) {
                     owners
                         .entry(tilo_desktop_model::ids::device_salt_of_key(&device))
                         .or_insert_with(|| hex::encode(device));
@@ -908,7 +904,7 @@ impl WindowShares {
     /// view's ask: none for a session that holds no workspaces, or a workspace it cannot read.
     fn admitted_to(
         &mut self,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
         workspace: &str,
         now: Instant,
     ) -> Vec<[u8; 32]> {
@@ -917,7 +913,7 @@ impl WindowShares {
         {
             return devices.clone();
         }
-        let devices = match engine.map(|engine| engine.roster_devices(workspace)) {
+        let devices = match view.map(|view| view.roster_devices(workspace)) {
             Some(Ok(devices)) => devices,
             Some(Err(error)) => {
                 // Said once while it stays so: the reads that follow would say the same.
@@ -1069,7 +1065,7 @@ impl WindowShares {
         compositor: &mut Compositor,
         session: &DesktopHandle,
         sync: &Client,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
         now: Instant,
     ) {
         if self.starting.is_empty() {
@@ -1088,7 +1084,7 @@ impl WindowShares {
                     window = %start.window,
                     "a window to share is gone before its share started"
                 );
-                self.retract(session, engine, start.tab);
+                self.retract(session, view, start.tab);
                 continue;
             }
             if sync.workspace_of(&start.workspace).is_none() {
@@ -1213,7 +1209,7 @@ impl WindowShares {
         compositor: &mut Compositor,
         session: &DesktopHandle,
         sync: &Client,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
     ) {
         if self.hosted.is_empty() && self.pages.is_empty() {
             return;
@@ -1249,7 +1245,7 @@ impl WindowShares {
                 Self::end_page(&page, sync);
             }
             // The window is gone, or the workspace it was shared with is: it stops naming it.
-            self.retract(session, engine, tab);
+            self.retract(session, view, tab);
             self.asked.retain(|(asking, _), _| *asking != tab);
             self.close_seats(compositor, tab, None);
             self.changed();
@@ -1262,21 +1258,21 @@ impl WindowShares {
         _compositor: &mut Compositor,
         session: &DesktopHandle,
         sync: Option<&Client>,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
     ) {
         let hosted = std::mem::take(&mut self.hosted);
         for (tab, share) in hosted {
             if let Some(sync) = sync {
                 self.end(&share, tab, sync);
             }
-            self.retract(session, engine, tab);
+            self.retract(session, view, tab);
         }
         let pages = std::mem::take(&mut self.pages);
         for (tab, page) in pages {
             if let Some(sync) = sync {
                 Self::end_page(&page, sync);
             }
-            self.retract(session, engine, tab);
+            self.retract(session, view, tab);
         }
         self.shown_tracks.clear();
         self.starting.clear();
@@ -2564,24 +2560,22 @@ fn owners_of(
     owners
 }
 
-/// This device's engine and the id it holds `workspace` under, when it holds the workspace's
+/// The workspaces as the device's daemon holds them, and the id it holds `workspace` under, when it holds the workspace's
 /// governance: the one place a share of it is written, and read from. `None` for a workspace that
 /// lives only on this session, and for a session that holds none.
 fn governing<'a>(
-    engine: Option<&'a Arc<Engine>>,
+    view: Option<&'a Arc<WorkspaceView>>,
     workspace: &str,
-) -> Option<(&'a Arc<Engine>, tilo_desktop_model::WorkspaceId)> {
+) -> Option<(&'a Arc<WorkspaceView>, tilo_desktop_model::WorkspaceId)> {
     let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
-    engine
-        .filter(|engine| engine.holds(id))
-        .map(|engine| (engine, id))
+    view.filter(|view| view.holds(id)).map(|view| (view, id))
 }
 
-/// Put what `engine` 's governance of `workspace` says is shared on the shell's copy of it, with
+/// Put what `view` 's governance of `workspace` says is shared on the shell's copy of it, with
 /// the rest of what the session takes from that governance ([`project`]): what this device just
 /// wrote there is what its own session reads, in the pass that wrote it.
-fn project_shares(session: &DesktopHandle, engine: &Engine, workspace: &str) {
-    let policy = match engine.policy(workspace) {
+fn project_shares(session: &DesktopHandle, view: &WorkspaceView, workspace: &str) {
+    let policy = match view.policy(workspace) {
         Ok(policy) => policy,
         Err(error) => {
             tracing::warn!(%error, workspace, "the workspace's shares cannot be read");

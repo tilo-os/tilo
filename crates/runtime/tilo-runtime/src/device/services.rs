@@ -73,6 +73,9 @@ pub struct Daemon {
     // replacement of the runtime that supplied its policy time.
     policy_origin: tilo_workspace_service::apps::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
+    /// The links of the shells this daemon starts ([`Self::start_shell`]).
+    #[cfg(unix)]
+    shell_links: Arc<tilo_workspace_service::apps::shell::ShellLinks>,
     workspaces: Arc<ServiceWorkspaces>,
     _identity: IdentityBrokerHandle,
     workspace: String,
@@ -178,6 +181,49 @@ pub(crate) fn found_a_person(keys: &tilo_device_identity::IdentityPaths) -> io::
 }
 
 impl Daemon {
+    /// A new shell link: a connection to this daemon's dispatch that it opens itself and admits as
+    /// the shell of the person this device acts for, by a one-use secret no other process ever
+    /// sees. Whoever holds it is the shell; hand it only to the shell this daemon starts.
+    ///
+    /// # Errors
+    /// The dispatch's socket does not take the connection.
+    #[cfg(unix)]
+    pub fn shell_link(&self) -> io::Result<std::os::unix::net::UnixStream> {
+        use runtime_collab::wire::shell::SHELL_MAGIC;
+        use std::io::Write as _;
+        let secret = self
+            .shell_links
+            .make(tilo_workspace_service::apps::shell::ShellCaller {
+                person: self.workspaces.device_cert().user_public_key,
+            });
+        let mut link = std::os::unix::net::UnixStream::connect(self.broker.app_socket())?;
+        link.write_all(SHELL_MAGIC)?;
+        link.write_all(&secret)?;
+        Ok(link)
+    }
+
+    /// Start `command` as the person's shell, handed the link this daemon made for it
+    /// ([`runtime_collab::wire::shell::SHELL_FD_ENV`]): the daemon starts the shell itself, so the
+    /// link passes from it to that one process and to no other of the account.
+    ///
+    /// # Errors
+    /// No link could be made, or the shell did not start.
+    #[cfg(target_os = "linux")]
+    pub fn start_shell(&self, mut command: Command) -> io::Result<Child> {
+        use std::os::fd::AsRawFd as _;
+        /// Where the shell finds its link.
+        const SHELL_FD: i32 = 3;
+        let link = self.shell_link()?;
+        launcher::inherit::hand_down(&mut command, vec![(link.as_raw_fd(), SHELL_FD)], false);
+        command.env(
+            runtime_collab::wire::shell::SHELL_FD_ENV,
+            SHELL_FD.to_string(),
+        );
+        let child = command.spawn()?;
+        drop(link);
+        Ok(child)
+    }
+
     /// The workspaces this device holds, through its opened workspace service.
     #[must_use]
     pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
@@ -478,6 +524,8 @@ impl Daemon {
         // bytes, which the broker's record content reads and keeps through them.
         let files_daemons = Arc::new(tilo_workspace_service::files::socket::Daemons::default());
         stage("starting the collaboration broker");
+        #[cfg(unix)]
+        let shell_links = Arc::default();
         let (policy_origin, broker) = start_broker(
             BrokerParts {
                 root,
@@ -488,6 +536,8 @@ impl Daemon {
                 creation: Arc::clone(&creation),
                 person: actor.clone(),
                 files: Arc::clone(&files_daemons),
+                #[cfg(unix)]
+                shell_links: &shell_links,
             },
             brokers,
             fanout,
@@ -548,6 +598,8 @@ impl Daemon {
             _files_tree: files_tree,
             policy_origin,
             broker,
+            #[cfg(unix)]
+            shell_links,
             other_devices: other_devices(&workspaces),
             apps,
             workspaces,
@@ -694,6 +746,9 @@ struct BrokerParts<'a> {
     person: String,
     /// The files daemons mounting this device's workspaces, whose stores keep their files' bytes.
     files: Arc<tilo_workspace_service::files::socket::Daemons>,
+    /// The links of the shells this daemon starts.
+    #[cfg(unix)]
+    shell_links: &'a Arc<tilo_workspace_service::apps::shell::ShellLinks>,
 }
 
 /// Start the collaboration broker over this profile's services.

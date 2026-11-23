@@ -339,6 +339,14 @@ pub(crate) struct Shared {
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// This device's workspaces: what the session shows of them, and what a join takes in.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    /// How the person's workspaces stand, as the device's daemon publishes them, and the actions
+    /// that change them.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
+    /// What became of the invitations the device's daemon was asked to join, since the loop last
+    /// took them.
+    #[cfg(target_os = "linux")]
+    pub(crate) joins: Rc<RefCell<Vec<tilo_session_client::Enrolled>>>,
     /// The documents of the workspaces this device's service holds, as the session's own roles
     /// read them.
     #[cfg(target_os = "linux")]

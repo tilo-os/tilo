@@ -120,62 +120,6 @@ pub(crate) async fn open_with_groups(
     Ok(service)
 }
 
-/// Found the person's own workspace when this device made their root and has not founded it yet
-/// (the mark [`tilo_identity::provisioning::founds_person_workspace`] reads). The mark stays until
-/// this device holds the workspace, so a founding that fails is tried again on the next start.
-#[cfg(target_os = "linux")]
-pub(super) async fn found_person_workspace(engine: &Engine) {
-    let Ok(dir) = tilo_identity::store::identity_dir_from_env() else {
-        return;
-    };
-    if !tilo_identity::provisioning::founds_person_workspace(&dir) {
-        return;
-    }
-    let id = tilo_server_protocol::servers::person_workspace_id(
-        &engine.identity().device_cert.user_public_key,
-    );
-    let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&id) else {
-        tracing::error!(%id, "a person's workspace id does not read as a workspace id");
-        return;
-    };
-    let name = tilo_workspace_service::workspaces::person_workspace::NAME;
-    if let Err(error) = engine.found(workspace, name).await {
-        tracing::warn!(%error, "this device did not found its person's own workspace; it tries again on its next start");
-        return;
-    }
-    if !engine.holds(workspace) {
-        return;
-    }
-    if let Err(error) = tilo_identity::provisioning::clear_founding_mark(&dir) {
-        tracing::warn!(%error, "the mark that this device founds its person's workspace was not taken away");
-    }
-}
-
-/// Note the links out of the workspaces this device holds, as its own service lists them: they
-/// were made before this session, and whoever redeems one dials this device
-/// ([`Engine::invitations_open`]).
-pub(super) async fn note_open_links(engine: &Arc<Engine>) {
-    for workspace in engine.workspaces() {
-        let named = workspace.to_string();
-        if !engine.is_holder(&named) {
-            continue;
-        }
-        let Some(asked) = engine.ask_holder(
-            workspace,
-            tilo_workspace_service::workspaces::INVITATIONS,
-            serde_json::Map::new(),
-        ) else {
-            return;
-        };
-        match asked.await {
-            Ok(listed) => engine.note_invitations(workspace, &listed),
-            Err(error) => {
-                tracing::warn!(%error, %named, "the links out of a workspace were not listed");
-            }
-        }
-    }
-}
-
 /// Where the service hands what its members send for a workspace's key groups: this device's
 /// key service, through the link the session's key groups hear on.
 struct DeviceKeySink {
@@ -207,27 +151,11 @@ pub(crate) fn found_alone(
     service: tilo_workspace_service::service::ServiceSlot,
     records: crate::platform::records::Changes,
 ) {
-    serve_alone(engine, (service, records), None, |founder| founder);
-}
-
-/// [`found_alone`] with the workspaces' keys kept by `groups`, where the session opens no key
-/// service of its own: a test's keys, so its made workspaces seal as a device's do. `wrap` is
-/// handed the founder before it serves, for a caller that founds elsewhere.
-pub(crate) fn serve_alone(
-    engine: &Arc<Engine>,
-    (service, records): (
-        tilo_workspace_service::service::ServiceSlot,
-        crate::platform::records::Changes,
-    ),
-    groups: Option<DeviceKeyGroups>,
-    wrap: impl FnOnce(Arc<dyn crate::engine::Founder>) -> Arc<dyn crate::engine::Founder>,
-) {
     if engine.founds() {
         return;
     }
     let identity = engine.identity().clone();
     let (own, _unrouted) = OwnService::deferred_in(service);
-    let mut groups = groups;
     let opening = async {
         let secret = identity
             .signer
@@ -239,29 +167,14 @@ pub(crate) fn serve_alone(
             .await
             .map_err(|error| format!("this device's own endpoint: {error}"))?;
         // Only this process reaches this endpoint, so nothing is held back for a link it makes.
-        match groups.take() {
-            Some(groups) => {
-                open_with_groups(
-                    &own,
-                    &identity,
-                    engine,
-                    (&endpoint, &Reachability::default()),
-                    groups,
-                    records,
-                )
-                .await?;
-            }
-            None => {
-                open(
-                    &own,
-                    &identity,
-                    engine,
-                    (&endpoint, &Reachability::default()),
-                    records,
-                )
-                .await?;
-            }
-        }
+        open(
+            &own,
+            &identity,
+            engine,
+            (&endpoint, &Reachability::default()),
+            records,
+        )
+        .await?;
         Ok::<_, String>(endpoint)
     };
     let opened = tilo_rt::try_app()
@@ -269,35 +182,26 @@ pub(crate) fn serve_alone(
         .and_then(|runtime| runtime.block_on(opening).map_err(|error| error.to_string()))
         .and_then(|opened| opened);
     match opened {
-        Ok(endpoint) => engine.founders().serve(wrap(Arc::new(Founding {
+        Ok(endpoint) => engine.founders().serve(Arc::new(Founding {
             service: own,
             endpoint,
-            link: engine.link(),
             identity,
             engine: Arc::downgrade(engine),
-            network: None,
             actions: None,
-        }))),
+        })),
         Err(error) => {
             tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
         }
     }
 }
 
-/// Founds a workspace this device made on its own workspace service: the service creates it and
-/// invites this device, and this device redeems the invitation in process, as it redeems any.
+/// This device's own workspace service as the engine's founder: it founds nothing, since the
+/// device's daemon founds every workspace, and asks a workspace held elsewhere of its host.
 pub(super) struct Founding {
     pub(super) service: OwnService,
     pub(super) endpoint: iroh::Endpoint,
     pub(super) identity: DeviceIdentity,
     pub(super) engine: std::sync::Weak<Engine>,
-    /// The peer network the workspace is carried on: `None` while this device takes part in none,
-    /// when it is held here and carried once a session's network joins it.
-    pub(super) network: Option<(
-        tokio::sync::mpsc::Sender<tilo_network_actor::NetCmd>,
-        tokio::sync::mpsc::Sender<tilo_network_actor::NetEvent>,
-    )>,
-    pub(super) link: Option<Arc<crate::workspace_keys::KeyLink>>,
     /// The session's device action service, which asks a workspace held elsewhere of its holder:
     /// `None` while this device takes part in no peer network.
     pub(super) actions: Option<ActionService>,
@@ -309,40 +213,12 @@ impl tilo_session_client::engine::Founder for Founding {
         workspace: tilo_desktop_model::WorkspaceId,
         name: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
-        Box::pin(async move {
-            let service = self
-                .service
-                .get()
-                .ok_or("this device's workspace service is not open")?;
-            let engine = self.engine.upgrade().ok_or("the session has stopped")?;
-            let invitation = service
-                .place_own_workspace(&workspace.to_string(), &name, &self.identity.device_cert)
-                .await?;
-            drop(service);
-            super::adopt::redeem(
-                self.endpoint.clone(),
-                self.identity.clone(),
-                Arc::clone(&engine),
-                self.network
-                    .as_ref()
-                    .map(|(network, events)| super::adopt::Carrier { network, events }),
-                crate::sync::Enrolling {
-                    workspace_id: workspace,
-                    way: tilo_workspace_directory::Way::Invitation(invitation),
-                    name,
-                },
-                self.link.as_deref(),
-                Some(&self.service),
-            )
-            .await
-            .map_err(|failure| failure.to_string())?;
-            // This device created the workspace, so its key service creates the group the
-            // workspace's records are sealed with: the founding hands it the group before
-            // anything is kept there. Nothing else asks for a group nothing asked of yet, and
-            // a first write refused for its keys would wait on a change no pass makes.
-            hand_the_group(&engine, workspace).await;
-            Ok(())
-        })
+        // A workspace is founded by the device's daemon, which keeps it
+        // (`account/workspaces#create`): the session's own service founds none.
+        let _ = (workspace, name);
+        Box::pin(std::future::ready(Err(
+            "a workspace is founded by this device's daemon".to_owned(),
+        )))
     }
 
     fn ask(
@@ -410,38 +286,6 @@ impl tilo_session_client::engine::Founder for Founding {
         Some(Box::pin(async move {
             service.ask_own(&caller, &action, arguments).await
         }))
-    }
-}
-
-/// Hand this device's key service the group of `workspace`, a workspace this device founded: it
-/// creates the group and holds its keys, and what is kept in the workspace next finds them.
-///
-/// A group starts when an endpoint asks for its keys, which is what
-/// [`KeyProvider::group_keys`](tilo_workspace_keys::KeyProvider::group_keys) does with `create`:
-/// the founder creates it on the key service's next pass, once the workspace's governance names
-/// this device, which is after its enrollment. Nothing else asks before the first record is
-/// kept, so a founding that left the group to a later ask could leave a first write waiting for
-/// keys that no pass brings. A workspace another device founded is not created here: the group
-/// arrives as that device admits this one.
-async fn hand_the_group(engine: &Engine, workspace: tilo_desktop_model::WorkspaceId) {
-    let founded = engine
-        .owner()
-        .with_current(workspace, |view| Ok(view.founded_here()))
-        .unwrap_or(false);
-    if !founded {
-        return;
-    }
-    if let Some(Err(error)) = engine
-        .keys()
-        .group_keys(
-            &workspace.to_string(),
-            collab_types::EVERY_MEMBER,
-            true,
-            tilo_workspace_service::own_device::OPEN_WAIT,
-        )
-        .await
-    {
-        tracing::debug!(%workspace, %error, "a founded workspace's group keys are not here yet");
     }
 }
 

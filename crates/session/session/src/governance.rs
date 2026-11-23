@@ -22,12 +22,13 @@ impl Workspaces for Session<'_> {
     }
 }
 
-/// What a change to a workspace is written through: the shell, the person making it, this
-/// device's engine and where the loop takes in what the workspace answered.
+/// What a change to a workspace is written through: the shell, the person making it, the
+/// workspaces as the device's daemon keeps them, and where the loop takes in what the workspace
+/// answered.
 pub(crate) struct Governing<'a> {
     pub(crate) handle: &'a tilo_desktop_surface::DesktopHandle,
     pub(crate) person: &'a tilo_desktop_model::UserId,
-    pub(crate) engine: Option<&'a std::sync::Arc<crate::engine::Engine>>,
+    pub(crate) view: Option<&'a std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     pub(crate) landings: &'a crate::landing::Landings,
 }
 
@@ -59,9 +60,9 @@ pub(crate) fn govern(
     if changed.is_empty() {
         return Ok(false);
     }
-    let Some(engine) = at
-        .engine
-        .filter(|engine| engine.policy(&workspace_id.to_string()).is_ok())
+    let Some(view) = at
+        .view
+        .filter(|view| view.policy(&workspace_id.to_string()).is_ok())
         .cloned()
     else {
         at.handle.replace_tree(tree);
@@ -69,9 +70,9 @@ pub(crate) fn govern(
         return Ok(true);
     };
     let writes =
-        crate::membership::Membership::of(&engine, workspace_id).changes(workspace, &changed);
+        crate::membership::Membership::of(&view, workspace_id).changes(workspace, &changed);
     let written = crate::landing::off_loop(async move {
-        crate::membership::Membership::of(&engine, workspace_id)
+        crate::membership::Membership::of(&view, workspace_id)
             .write(&writes)
             .await
     });
@@ -104,18 +105,18 @@ impl crate::Shared {
     /// its workspaces carry the governance's people and shortcuts as a projection, which is what
     /// the People and Shortcuts surfaces, the broker, the trigger host and every other reader of
     /// them read.
-    /// Nothing of a workspace's state reaches this device without the engine admitting it, so a
-    /// revision that has not moved has nothing to show. A workspace the shell shows that it did not
-    /// show before is projected all the same: what it holds was here before the shell showed it,
-    /// as a workspace a person kept or one they just joined is.
+    /// Nothing of a workspace's state reaches the shell but in the daemon's readings, so a
+    /// revision of them that has not moved has nothing to show. A workspace the shell shows that
+    /// it did not show before is projected all the same: what it holds was here before the shell
+    /// showed it, as a workspace a person kept or one they just joined is.
     pub(crate) fn project_governance(&self) {
-        let Some(engine) = &self.engine else {
+        let Some(view) = &self.view else {
             return;
         };
         let shown: Vec<WorkspaceId> = self
             .handle
             .read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
-        let fed = (engine.owner().revision(), shown);
+        let fed = (view.revision(), shown);
         if self.membership_fed.borrow().as_ref() == Some(&fed) {
             return;
         }
@@ -125,7 +126,7 @@ impl crate::Shared {
                 .iter()
                 .filter_map(|workspace| {
                     let workspace = workspace.to_string();
-                    let people = engine.people(&workspace).ok()?;
+                    let people = view.people(&workspace).ok()?;
                     Some((workspace, people))
                 })
                 .collect(),
@@ -139,23 +140,18 @@ impl crate::Shared {
                 if let Some(name) = self.governing_name(workspace.id()) {
                     changed |= workspace.named_as(&name);
                 }
-                let Ok(policy) = engine.policy(&workspace.id().to_string()) else {
+                let Ok(policy) = view.policy(&workspace.id().to_string()) else {
                     // A workspace whose governance this device does not hold keeps the people
                     // and shortcuts the shell has of it.
                     continue;
                 };
                 changed |= membership::project(workspace, &policy);
-                if let Ok(people) = engine.people(&workspace.id().to_string()) {
+                if let Ok(people) = view.people(&workspace.id().to_string()) {
                     changed |= membership::project_names(workspace, &people);
                 }
-                let Ok((shortcuts, sandbox)) =
-                    engine.owner().with_current(workspace.id(), |view| {
-                        Ok((
-                            view.peer().workspace().workspace_shortcuts(),
-                            view.peer().governance().governed_sandbox().ok(),
-                        ))
-                    })
-                else {
+                let Some((shortcuts, sandbox)) = view.reading(workspace.id(), |reading| {
+                    (reading.shortcuts.clone(), reading.sandbox.clone())
+                }) else {
                     continue;
                 };
                 if let Some(sandbox) = sandbox {

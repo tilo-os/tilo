@@ -310,8 +310,8 @@ impl crate::Shared {
     /// the sheet shows a ticket instead.
     fn pairing_place(&self) -> Result<Place, NoLink> {
         // Only a device of the person's answers the new device, on their own devices' fabric.
-        let engine = self
-            .engine
+        let view = self
+            .view
             .as_ref()
             .filter(|_| self.fabric.is_some())
             .ok_or(NoLink::Because("pair-device-not-yours"))?;
@@ -340,7 +340,7 @@ impl crate::Shared {
             origin,
             workspace,
             host,
-            person: engine.identity().device_cert.user_public_key,
+            person: view.person(),
         })
     }
 }

@@ -356,6 +356,15 @@ fn collaborating(
     }
 }
 
+/// How the person's workspaces stand, as the device's daemon publishes them, and the actions that
+/// change them: `None` when the session reaches no daemon, or this computer has no identity.
+pub(crate) fn open_view(
+    link: &tilo_workspace_service::apps::services::DeviceDaemon,
+    options: &Options,
+) -> Option<std::sync::Arc<tilo_session_client::workspace_view::WorkspaceView>> {
+    crate::device_shell::open(link.clone().ok()?, options.wake.handle())
+}
+
 /// This device's workspaces, holding what the shell shows of them and what a join takes in, kept
 /// beside the session. `None` when this computer has no identity to hold them with, or keeps no state
 /// to keep them in.

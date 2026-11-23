@@ -26,89 +26,11 @@ fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> DeviceId
 /// the person in it as its owner. `joiner` joins the workspace too, as their own device, and
 /// comes back as the person the workspace knows them by.
 fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir) {
-    workspace_signed_through(joiner, None)
-}
-
-/// When a signer that holds its signatures back answers: once the asking loop turned.
-#[derive(Default)]
-struct SignHold {
-    held: std::sync::atomic::AtomicBool,
-    waiting: std::sync::Mutex<Vec<std::task::Waker>>,
-}
-
-impl SignHold {
-    fn held(&self) -> bool {
-        self.held.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// Hold every signature back from now on.
-    fn hold(&self) {
-        self.held.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// The loop turned: answer what was held back.
-    fn open(&self) {
-        self.held.store(false, std::sync::atomic::Ordering::SeqCst);
-        let waiting = std::mem::take(&mut *self.waiting.lock().expect("the hold"));
-        for waker in waiting {
-            waker.wake();
-        }
-    }
-}
-
-/// This device's key behind a hold: what a page's key, which signs through a promise, or a signer
-/// that answers through the session's own loop looks like to the code that asks it.
-struct LateSigner {
-    key: SigningKey,
-    hold: std::sync::Arc<SignHold>,
-}
-
-impl collab_types::signer::DeviceSigner for LateSigner {
-    fn device_public_key(&self) -> [u8; 32] {
-        self.key.verifying_key().to_bytes()
-    }
-
-    fn endpoint_secret(&self) -> Option<[u8; 32]> {
-        Some(self.key.to_bytes())
-    }
-
-    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
-        let signature = ed25519_dalek::Signer::sign(&self.key, &message).to_bytes();
-        let hold = std::sync::Arc::clone(&self.hold);
-        Box::pin(std::future::poll_fn(move |context| {
-            if hold.held() {
-                hold.waiting
-                    .lock()
-                    .expect("the hold")
-                    .push(context.waker().clone());
-                if hold.held() {
-                    return std::task::Poll::Pending;
-                }
-            }
-            std::task::Poll::Ready(Ok(signature))
-        }))
-    }
-}
-
-/// [`workspace_here`] with this device signing through `hold` when one is given.
-fn workspace_signed_through(
-    joiner: &str,
-    hold: Option<std::sync::Arc<SignHold>>,
-) -> (Engine, Workspace, String, tempfile::TempDir) {
     let person_root = SigningKey::from_bytes(&[9; 32]);
     let person_key = SigningKey::from_bytes(&[10; 32]);
     let cert = testing::certificate(&person_root, &person_key, "This device");
     let directory = tempfile::TempDir::new().expect("a state directory");
-    let identity = match hold {
-        Some(hold) => DeviceIdentity::kept(
-            cert.clone(),
-            LateSigner {
-                key: person_key.clone(),
-                hold,
-            },
-        ),
-        None => identity(&cert, &person_key),
-    };
+    let identity = identity(&cert, &person_key);
     let engine = Engine::open(identity, Some(directory.path()), std::iter::empty())
         .expect("this device's engine opens");
     let governor = TestWorkspace::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
@@ -1007,7 +929,7 @@ fn this_computer(
 
 /// The session this computer keeps under `state` .
 fn session_keeping(state: &std::path::Path) -> crate::Session {
-    let session = crate::Session::headless(
+    crate::Session::headless(
         crate::Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
@@ -1016,11 +938,7 @@ fn session_keeping(state: &std::path::Path) -> crate::Session {
         },
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
-    .expect("a session");
-    if let Some(engine) = &session.shared.engine {
-        crate::founding_fixture::serve(engine);
-    }
-    session
+    .expect("a session")
 }
 
 /// A person another device of the workspace took in is on this session's copy of it, in the part
@@ -1533,142 +1451,6 @@ fn an_agent_cannot_change_a_workspaces_people() {
             .iter()
             .all(|held| held.id.person_id() != Some(hex::encode(stranger).as_str())),
         "the agent's change is not the workspace's"
-    );
-}
-
-/// An app's ask about one node of the workspace — Chat sharing what a window shows with the
-/// members, or asking what they may do at one — is the workspace's own governance: the share's
-/// grants are written there, its end takes them back, and what the asker may do is read from
-/// the same policy every device of the workspace admits.
-#[test]
-fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
-    use crate::workspace_nodes::WorkspaceNodes;
-    use std::sync::Arc;
-    use tilo_action_policy::share::is_of_share;
-    use tilo_action_policy::{ActionKind, Answer, Authority, Context, Grantee, Role, TreePath};
-    use tilo_actions::remote::Pending;
-    use tilo_broker_core::services::WorkspaceNodeAsk;
-
-    fn answered<T>(pending: Pending<T>) -> T {
-        landed(pending)
-    }
-
-    let (engine, _, joiner, _state) = workspace_here("ada");
-    let engine = Arc::new(engine);
-    let asks = WorkspaceNodes::service(Some(&engine)).expect("this session holds a workspace");
-    let node = TreePath::workspace(WORKSPACE)
-        .app("so.tilo.notes")
-        .kind("notes.notebook")
-        .resource("plan");
-    let text = node.to_string();
-    let ask = |ask: WorkspaceNodeAsk| {
-        asks.ask(WORKSPACE, &text, ask)
-            .expect("a node of this workspace")
-    };
-    let share = answered(ask(WorkspaceNodeAsk::Share {
-        share: "m1".into(),
-        access: "view".into(),
-    }))
-    .expect("the workspace's owner shares what they hold");
-    assert_eq!(
-        share["grants"], 1,
-        "a share is one grant, to the role every other role reaches"
-    );
-    let grants = engine
-        .policy(WORKSPACE)
-        .expect("the workspace's policy")
-        .grants;
-    let of_share: Vec<_> = grants
-        .iter()
-        .filter(|grant| is_of_share(grant, "m1"))
-        .collect();
-    assert_eq!(of_share.len(), 1, "the share is the workspace's own grants");
-    assert_eq!(
-        of_share[0].grantee,
-        Grantee::role(Role::Viewer),
-        "the grant is the viewer role's, and every role above it reads through it"
-    );
-    let permits = answered(ask(WorkspaceNodeAsk::Permits)).expect("what they may do there");
-    assert_eq!(permits["read"], true);
-    assert_eq!(permits["undoable"], true, "the owner holds the workspace");
-    let member = Authority::person(
-        engine
-            .policy(WORKSPACE)
-            .expect("the workspace's policy")
-            .party(&joiner),
-    )
-    .decide(&node, ActionKind::Read, &Context::at_secs(0))
-    .answer;
-    assert_eq!(member, Answer::Allow, "a member reads what is shared");
-    let unshared =
-        answered(ask(WorkspaceNodeAsk::Unshare { share: "m1".into() })).expect("the share ends");
-    assert_eq!(
-        unshared["revoked"], 1,
-        "the share's one grant is taken back"
-    );
-    assert!(
-        engine
-            .policy(WORKSPACE)
-            .expect("the workspace's policy")
-            .grants
-            .iter()
-            .all(|grant| !is_of_share(grant, "m1")),
-        "nothing of the share is left in the workspace"
-    );
-}
-
-/// What `pending` answers once it landed, within the time a test may hang.
-fn landed<T>(pending: tilo_actions::remote::Pending<T>) -> T {
-    let within =
-        tilo_test_env::hang_deadline().saturating_duration_since(std::time::Instant::now());
-    pending
-        .wait_timeout(within)
-        .unwrap_or_else(|_| panic!("the work did not answer"))
-        .expect("the work was given up before it answered")
-}
-
-/// A share written through a signer that answers only once the loop that asked turned (a page's
-/// key, or a signer answering through the session's own loop): the ask hands back its answer at
-/// once and holds nothing, and the share lands once the signer answered. A loop that waited for
-/// the signature here would never turn, and the signer would never answer.
-#[test]
-fn a_share_signed_late_never_holds_the_loop_that_asked() {
-    use crate::workspace_nodes::WorkspaceNodes;
-    use std::sync::Arc;
-    use tilo_action_policy::TreePath;
-    use tilo_actions::remote::PendingPoll;
-    use tilo_broker_core::services::WorkspaceNodeAsk;
-
-    let hold = Arc::new(SignHold::default());
-    let (engine, _, _, _state) = workspace_signed_through("ada", Some(Arc::clone(&hold)));
-    let engine = Arc::new(engine);
-    let asks = WorkspaceNodes::service(Some(&engine)).expect("this session holds a workspace");
-    let node = TreePath::workspace(WORKSPACE)
-        .app("so.tilo.notes")
-        .kind("notes.notebook")
-        .resource("plan")
-        .to_string();
-    hold.hold();
-    let mut share = asks
-        .ask(
-            WORKSPACE,
-            &node,
-            WorkspaceNodeAsk::Share {
-                share: "m1".into(),
-                access: "view".into(),
-            },
-        )
-        .expect("a node of this workspace");
-    assert!(
-        matches!(share.poll_ready(), PendingPoll::Waiting),
-        "nothing is shared before the signer answered"
-    );
-    // The loop that asked goes on, and its turn is what lets the signer answer.
-    hold.open();
-    let shared = landed(share).expect("the workspace's owner shares what they hold");
-    assert_eq!(
-        shared["grants"], 1,
-        "a share is one grant, to the role every other role reaches"
     );
 }
 

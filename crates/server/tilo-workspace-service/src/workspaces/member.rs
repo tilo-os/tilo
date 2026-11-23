@@ -1482,6 +1482,31 @@ impl Workspaces {
         Ok(HostCommit { body })
     }
 
+    /// Write `command`, a change this device makes as its own person's (a grant, a setting, a
+    /// member's place), into `workspace`: its member copy's, sent to the device serving it, or the
+    /// workspace governed here, with `receipt`, what its history says of it, in the same change.
+    /// The workspace's admission decides it against this device's grants, as any member's.
+    ///
+    /// # Errors
+    /// The workspace is not held here, this device may not make the change, or it could not be
+    /// committed.
+    pub async fn commit_own_change(
+        &self,
+        workspace: &str,
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        receipt: Option<&tilo_desktop_model::WorkspaceEffectReceipt>,
+    ) -> Result<(), String> {
+        if self.is_member(workspace).await? {
+            let commit = self.member_membership_write(workspace, command).await?;
+            self.commit_member_document(workspace, commit).await?;
+        } else {
+            self.commit_own_membership(workspace, command, receipt)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Ticks true when `workspace`'s member copy is linked to the device
     /// serving it, and false when that link ends.
     #[cfg(any(feature = "apps", feature = "agents", test))]

@@ -82,7 +82,7 @@ impl crate::Shared {
             let at = crate::governance::Governing {
                 handle: &self.handle,
                 person: &self.person,
-                engine: self.engine.as_ref(),
+                view: self.view.as_ref(),
                 landings: &self.landings,
             };
             let landed = {

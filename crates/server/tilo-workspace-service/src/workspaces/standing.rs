@@ -116,6 +116,8 @@ pub fn reading(
         write_refusals: peer.workspace().write_refusals(),
         open_links,
         document: peer.workspace().document(),
+        shortcuts: peer.workspace().workspace_shortcuts(),
+        sandbox: membership.governed_sandbox().ok(),
     }
 }
 

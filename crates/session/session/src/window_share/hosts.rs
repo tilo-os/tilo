@@ -17,8 +17,8 @@ use tilo_desktop_model::{TabId, TileContent};
 use tilo_desktop_surface::{DesktopHandle, Elsewhere};
 
 use super::{WindowShares, device_key};
-use crate::engine::Engine;
 use crate::sync::Client;
+use crate::workspace_view::WorkspaceView;
 
 /// One window that runs on another device, as this session lists it, and how it stands here.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,7 +77,7 @@ impl WindowShares {
         &mut self,
         shell: &DesktopHandle,
         sync: Option<&Client>,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
         now: Instant,
     ) {
         let listed: Vec<(TabId, String, String)> = shell.read(|tree| {
@@ -97,7 +97,7 @@ impl WindowShares {
             .into_iter()
             .map(|(tab, workspace, host)| {
                 let state = sync.map_or(Elsewhere::Unread, |sync| {
-                    self.state_of(sync, engine, now, (tab, &workspace, &host))
+                    self.state_of(sync, view, now, (tab, &workspace, &host))
                 });
                 HostedTab {
                     tab,
@@ -123,7 +123,7 @@ impl WindowShares {
     fn state_of(
         &mut self,
         sync: &Client,
-        engine: Option<&Arc<Engine>>,
+        view: Option<&Arc<WorkspaceView>>,
         now: Instant,
         (tab, workspace, host): (TabId, &str, &str),
     ) -> Elsewhere {
@@ -154,7 +154,7 @@ impl WindowShares {
         let admitted = if Host::of(device, &heard, &[]) == Host::Heard {
             Vec::new()
         } else {
-            self.admitted_to(engine, workspace, now)
+            self.admitted_to(view, workspace, now)
         };
         match Host::of(device, &heard, &admitted) {
             Host::Heard => Elsewhere::NotShared,

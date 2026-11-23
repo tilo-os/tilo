@@ -1,0 +1,289 @@
+//! The device's daemon as a test's session reaches it: a real workspace service holding the
+//! device's workspaces, answering the person's shell on the link it hands the session, through
+//! the same dispatch, reads and writes the daemon answers a desktop with. The session reads and
+//! writes its workspaces' documents there, and the daemon signs and seals each write as the device.
+
+// A fixture only tests compile.
+#![cfg(all(test, target_os = "linux"))]
+#![allow(
+    clippy::expect_used,
+    reason = "a daemon that cannot start is its test's failure"
+)]
+
+use std::os::unix::fs::PermissionsExt as _;
+use std::sync::Arc;
+
+use tilo_desktop_model::WorkspaceId;
+use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
+use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::apps::services::{
+    Caller, ProcessServices, PublishedResources, Reading, ResourceWatch,
+};
+use tilo_workspace_service::apps::shell::{
+    ShellActions, ShellCaller, ShellInvoked, ShellLinks, ShellServices,
+};
+use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
+use tilo_workspace_service::workspaces::Workspaces;
+use tilo_workspace_service::workspaces::fixtures::{TestHost, governor, test_host};
+
+use crate::layout::Layouts;
+use crate::workspace_view::{ShellAsks, WorkspaceView};
+
+/// The device's daemon, holding its workspaces on a real workspace service, and the shell link it
+/// answers the session on.
+pub(crate) struct TestDaemon {
+    host: TestHost,
+    _dispatch: tilo_workspace_service::apps::collab_broker::BrokerHandle,
+    key: ed25519_dalek::SigningKey,
+    cert: DeviceCert,
+    reads: Arc<dyn DeviceDocuments>,
+    writes: Arc<dyn DeviceWrites>,
+    feed: tilo_session_client::daemon_documents::DaemonWritesFeed,
+    view: Arc<WorkspaceView>,
+    _dir: tempfile::TempDir,
+}
+
+impl TestDaemon {
+    /// Start the daemon, and open the session's link to it.
+    pub(crate) fn start() -> Self {
+        let runtime = tilo_rt::app();
+        let dir = tempfile::tempdir().expect("a state directory");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("the daemon's directory is its own");
+        let socket = dir.path().join("collab.sock");
+        let (key, cert) = governor();
+        let host = runtime
+            .block_on(test_host(&dir.path().join("host"), &key, &cert))
+            .expect("the runtime runs");
+        let workspaces = host.workspaces().clone();
+        let links = Arc::new(ShellLinks::default());
+        let services = ProcessServices {
+            shell: Some(Arc::new(ShellServices {
+                links: Arc::clone(&links),
+                socket: socket.clone(),
+                documents: Arc::new(ServiceDocuments::of(workspaces.clone())),
+                writes: Arc::new(ServiceWrites::of(workspaces.clone())),
+                document_writes: Arc::new({
+                    let workspaces = workspaces.clone();
+                    move || workspaces.document_writes()
+                }),
+                actions: Arc::new(NoActions),
+                standing: Arc::new(NoStanding),
+                workspaces,
+            })),
+            ..ProcessServices::default()
+        };
+        let dispatch = runtime
+            .block_on(async {
+                tilo_workspace_service::apps::collab_broker::spawn_with_services(
+                    socket.clone(),
+                    None,
+                    tilo_workspace_service::apps::collab_outbound::PeerPublisher::disabled(),
+                    None,
+                    services,
+                    Arc::default(),
+                    Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new()),
+                )
+            })
+            .expect("the runtime runs")
+            .expect("the daemon's dispatch starts");
+        let (reads, writes, shell) = tilo_session_client::daemon_documents::on_daemon(
+            Ok(link(&socket, &links, &cert)),
+            runtime.handle().clone(),
+        );
+        let view = Arc::new(WorkspaceView::new(
+            cert.user_public_key,
+            cert.device_public_key,
+            Arc::new(Unasked),
+        ));
+        Self {
+            host,
+            _dispatch: dispatch,
+            key,
+            cert,
+            reads,
+            writes,
+            feed: tilo_session_client::daemon_documents::DaemonWritesFeed::start(&shell),
+            view,
+            _dir: dir,
+        }
+    }
+
+    /// Found `workspace` as `name` here, as the person's shell asks the daemon to, and have the
+    /// session's view read how it stands, as the daemon publishes it.
+    pub(crate) fn found(&self, workspace: WorkspaceId, name: &str) {
+        let id = workspace.to_string();
+        let workspaces = self.host.workspaces().clone();
+        let (_, peer) = tilo_rt::app()
+            .block_on(async move {
+                workspaces
+                    .create_workspace(name, Some(&id))
+                    .await
+                    .expect("the workspace is founded");
+                workspaces.governed_copy(workspace).await
+            })
+            .expect("the runtime runs")
+            .expect("the daemon holds the workspace it founded");
+        let reader = tilo_workspace_service::workspaces::standing::Reader {
+            person: self.cert.user_public_key,
+            device: self.cert.device_public_key,
+            signer: &self.key,
+        };
+        let reading = tilo_workspace_service::workspaces::standing::reading(
+            workspace,
+            &peer,
+            &reader,
+            Some(self.cert.device_public_key),
+            Vec::new(),
+        );
+        let id = workspace.to_string();
+        self.view
+            .apply(
+                &tilo_peer_state::workspace_view::resource(&id),
+                Some(&serde_json::to_string(&reading).expect("a reading encodes")),
+            )
+            .expect("the view reads the workspace");
+    }
+
+    /// The workspaces the daemon holds, as its own roles reach them.
+    pub(crate) fn workspaces(&self) -> &Workspaces {
+        self.host.workspaces()
+    }
+
+    /// The device's certificate: whose key the daemon signs its writes with.
+    pub(crate) fn certificate(&self) -> DeviceCert {
+        self.cert.clone()
+    }
+
+    /// The session's reads of the documents of the workspaces the daemon holds, on its link.
+    pub(crate) fn reads(&self) -> Arc<dyn DeviceDocuments> {
+        Arc::clone(&self.reads)
+    }
+
+    /// The session's writes of those documents, on its link: the daemon signs and seals them.
+    pub(crate) fn writes(&self) -> Arc<dyn DeviceWrites> {
+        Arc::clone(&self.writes)
+    }
+
+    /// How the person's workspaces stand, as the session's view reads them: each workspace
+    /// founded here, held by the daemon.
+    pub(crate) fn view(&self) -> Arc<WorkspaceView> {
+        Arc::clone(&self.view)
+    }
+
+    /// Have `layouts` read and write the workspaces through the daemon, through `reads` and
+    /// `writes`, and read a record again whenever the daemon tells of a write to it.
+    pub(crate) fn attach_as(
+        &self,
+        layouts: &Layouts,
+        reads: &Arc<dyn DeviceDocuments>,
+        writes: &Arc<dyn DeviceWrites>,
+    ) {
+        layouts.follow_writes(self.feed.clone());
+        layouts.attach(&self.cert, &self.view(), reads, writes);
+    }
+
+    /// Have `layouts` read and write the workspaces through the daemon.
+    pub(crate) fn attach(&self, layouts: &Layouts) {
+        self.attach_as(layouts, &self.reads(), &self.writes());
+    }
+}
+
+/// A shell link the daemon on `socket` made for its person and handed the session, opened.
+fn link(
+    socket: &std::path::Path,
+    links: &ShellLinks,
+    cert: &DeviceCert,
+) -> runtime_collab::ShellClient {
+    use tokio::io::AsyncWriteExt as _;
+    let secret = links.make(ShellCaller {
+        person: cert.user_public_key,
+    });
+    tilo_rt::app()
+        .block_on(async {
+            let mut link = tokio::net::UnixStream::connect(socket)
+                .await
+                .expect("the daemon answers on its socket");
+            let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
+            opening.extend_from_slice(&secret);
+            link.write_all(&opening).await.expect("the link opens");
+            runtime_collab::ShellClient::open(link).0
+        })
+        .expect("the runtime runs")
+}
+
+/// The daemon's actions, which no test of the documents asks.
+struct NoActions;
+
+impl ShellActions for NoActions {
+    fn invoke(
+        &self,
+        _caller: &ShellCaller,
+        _request: tilo_actions::remote::InvokeRequest,
+    ) -> ShellInvoked {
+        Box::pin(std::future::ready(Err(
+            "the test's daemon answers no actions".to_owned(),
+        )))
+    }
+}
+
+/// The session asks the test's daemon nothing of its workspaces' people or settings.
+struct Unasked;
+
+impl ShellAsks for Unasked {
+    fn account(
+        &self,
+        _resource: &str,
+        _action: &str,
+        _arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> tilo_session_client::engine::ServiceAnswer {
+        Box::pin(std::future::ready(Err(
+            "the test's daemon answers no account actions".to_owned(),
+        )))
+    }
+
+    fn invoke(
+        &self,
+        _request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_session_client::engine::ServiceAnswer {
+        Box::pin(std::future::ready(Err(
+            "the test's daemon answers no actions".to_owned(),
+        )))
+    }
+}
+
+/// The workspaces' standing, which no test of the documents follows.
+struct NoStanding;
+
+impl PublishedResources for NoStanding {
+    fn snapshot(
+        &self,
+        _caller: &Caller,
+        _resource: &str,
+    ) -> tokio::sync::oneshot::Receiver<Result<Reading, String>> {
+        let (reply, answered) = tokio::sync::oneshot::channel();
+        let _ = reply.send(Err("the test's daemon publishes no standing".to_owned()));
+        answered
+    }
+
+    fn watch(
+        &self,
+        _caller: &Caller,
+        _resource: &str,
+        _sink: tokio::sync::mpsc::UnboundedSender<runtime_collab::wire::Event>,
+    ) -> Result<ResourceWatch, String> {
+        Err("the test's daemon publishes no standing".to_owned())
+    }
+
+    fn unwatch(&self, _watch: ResourceWatch) {}
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        _resource: &str,
+        _action: &str,
+        _arguments: Vec<u8>,
+    ) -> tokio::sync::oneshot::Receiver<runtime_collab::wire::Receipt> {
+        tokio::sync::oneshot::channel().1
+    }
+}

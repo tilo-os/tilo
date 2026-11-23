@@ -22,10 +22,10 @@ use ui::permissions::MemberId;
 use ui::resource::workspace::WorkspaceResources;
 use ui::resource::{DocumentSync, ResourceOwners, ResourceStore};
 
-use crate::engine::{Engine, SealKeys};
 use crate::engine_write::{Writing, Written};
+use crate::workspace_view::WorkspaceView;
 
-/// The session's copies of the workspaces' records, replicated with the engine. Cloning shares
+/// The session's copies of the workspaces' records, replicated with the device's daemon. Cloning shares
 /// them.
 #[derive(Clone)]
 pub(crate) struct EngineRecords(Rc<Inner>);
@@ -33,8 +33,11 @@ pub(crate) struct EngineRecords(Rc<Inner>);
 struct Inner {
     store: Rc<MemoryStore>,
     owners: ResourceOwners,
-    /// The workspaces' copy, once the session holds one.
-    engine: RefCell<Option<Arc<Engine>>>,
+    /// How the person's workspaces stand on the device's daemon, which holds them, once the
+    /// session follows them.
+    view: RefCell<Option<Arc<WorkspaceView>>>,
+    /// Where this computer's own workspace service keeps what it keeps of its workspaces.
+    service_root: RefCell<Option<std::path::PathBuf>>,
     /// The documents of the workspaces this device's service holds, once the session opened it:
     /// what the workspace holds of a record reads from there.
     reads: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>>>,
@@ -45,26 +48,26 @@ struct Inner {
     apps: RefCell<Option<crate::sync::PeerDocuments>>,
     /// The store of each app's records in each workspace, by workspace and app, as handed out.
     stores: RefCell<BTreeMap<(String, String), ResourceStore>>,
-    /// Each record's replication with the engine, by workspace, app and wire record.
+    /// Each record's replication with the device's daemon, by workspace, app and wire record.
     replicas: RefCell<HashMap<DocumentKey, Replica>>,
-    /// The workspaces whose records moved in the engine, told as each one does.
+    /// The workspaces whose records moved in the device's daemon, told as each one does.
     moved: RefCell<Option<mpsc::Receiver<crate::platform::records::Changed>>>,
     /// The stream of record changes, told what the session wrote once the workspace took it.
     changes: RefCell<Option<crate::platform::records::Changes>>,
     /// The stores, by workspace and app, the session wrote to since their changes were last
-    /// written into the engine.
+    /// written into the workspaces.
     written: RefCell<BTreeSet<(String, String)>>,
-    /// The stores, by workspace and app, holding a record the engine has that this device cannot
+    /// The stores, by workspace and app, holding a record the device's daemon has that this device cannot
     /// read yet (its channel's keys are on their way): read again on the next pass.
     unread: RefCell<BTreeSet<(String, String)>>,
-    /// Set while the engine's copy of a record is kept in the store: no write of the session's.
+    /// Set while the daemon's copy of a record is kept in the store: no write of the session's.
     keeping: Cell<bool>,
     /// The writes under way, by workspace, app and wire record, with the heads each one writes up
     /// to: a record is written again once its write is done.
     writing: RefCell<HashMap<DocumentKey, (Writing, Vec<automerge::ChangeHash>)>>,
     /// The records the session's services keep as an app's window keeps them — a tilolang app's
     /// record, a document of the app's own — by workspace, app and wire record: each the one
-    /// document the service runs over, replicated with the engine here.
+    /// document the service runs over, replicated with the device's daemon here.
     documents: RefCell<HashMap<DocumentKey, Document>>,
     /// Wakes the session's loop when the session wrote to a record, so the write reaches the
     /// engine on the next pass.
@@ -95,14 +98,14 @@ impl KeptDoc {
     }
 }
 
-/// An app's record a service of the session runs over, as the engine and the service hold it.
+/// An app's record a service of the session runs over, as the device's daemon and the service hold it.
 struct Document {
     /// The document itself, the service's: what it runs over and changes.
     doc: KeptDoc,
-    /// The heads of `doc` the engine holds, as far as this copy knows: `None` until it was read
-    /// from the engine or founded there.
+    /// The heads of `doc` the device's daemon holds, as far as this copy knows: `None` until it was read
+    /// from the device's daemon or founded there.
     synced: Option<Vec<automerge::ChangeHash>>,
-    /// The revision of the engine's copy last taken in here.
+    /// The revision of the daemon's copy last taken in here.
     revision: Option<[u8; 32]>,
     /// The heads `doc` stood at when it was handed over: while it still stands there, it holds
     /// only what the service started it with (a development session's scenario data), which a
@@ -110,10 +113,10 @@ struct Document {
     handed: Vec<automerge::ChangeHash>,
 }
 
-/// One record as the engine and this copy hold it.
+/// One record as the device's daemon and this copy hold it.
 struct Replica {
     sync: DocumentSync,
-    /// The revision of the engine's copy last merged here.
+    /// The revision of the daemon's copy last merged here.
     revision: Option<[u8; 32]>,
 }
 
@@ -122,7 +125,7 @@ impl EngineRecords {
     pub(crate) fn new(wake: tilo_service::Wake) -> Self {
         Self(Rc::new_cyclic(|inner: &Weak<Inner>| {
             // Every write the records' store takes is noted as it lands, and is the store's at once:
-            // what the session wrote reaches the engine on the pass it wakes.
+            // what the session wrote reaches the device's daemon on the pass it wakes.
             let store = Rc::new(MemoryStore::queued());
             let wrote = Weak::clone(inner);
             store.set_write_hook(Some(Rc::new(move || {
@@ -135,7 +138,8 @@ impl EngineRecords {
                     Rc::clone(&store) as Rc<dyn durable_store::DurableStore>
                 ),
                 store,
-                engine: RefCell::default(),
+                view: RefCell::default(),
+                service_root: RefCell::default(),
                 reads: RefCell::default(),
                 writes: RefCell::default(),
                 apps: RefCell::default(),
@@ -153,17 +157,22 @@ impl EngineRecords {
         }))
     }
 
-    /// Keep the records in `engine` , reading them again whenever `changes` says a workspace's
-    /// records moved, and handing what the session writes to this device's apps through `apps` .
+    /// Keep the records of the workspaces `view` says the daemon holds, read through `reads` and
+    /// written through `writes` (the daemon seals them), reading them again whenever `changes`
+    /// says a workspace's records moved, and handing what the session writes to this device's
+    /// apps through `apps` . `service_root` is where this computer's own workspace service keeps
+    /// what it keeps of them.
     pub(crate) fn attach(
         &self,
-        engine: Arc<Engine>,
+        view: Arc<WorkspaceView>,
+        service_root: Option<std::path::PathBuf>,
         reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
         changes: &crate::platform::records::Changes,
         apps: Option<crate::sync::PeerDocuments>,
     ) {
-        *self.0.engine.borrow_mut() = Some(engine);
+        *self.0.view.borrow_mut() = Some(view);
+        *self.0.service_root.borrow_mut() = service_root;
         *self.0.reads.borrow_mut() = Some(reads);
         *self.0.writes.borrow_mut() = Some(writes);
         *self.0.apps.borrow_mut() = apps;
@@ -320,10 +329,17 @@ impl EngineRecords {
     }
 
     /// The records of `workspace` , opened as `author` .
-    /// Where this device's own workspace service keeps its workspaces, once the session holds
-    /// its engine.
+    /// Where this device's own workspace service keeps its workspaces, once the session keeps
+    /// its records.
     pub(crate) fn service_root(&self) -> Option<std::path::PathBuf> {
-        self.0.engine.borrow().as_ref()?.service_root()
+        self.0.service_root.borrow().clone()
+    }
+
+    /// How `workspace` stands on the device's daemon, once it holds it: a number that moves
+    /// whenever a workspace's people, policy or keys change there.
+    pub(crate) fn standing(&self, workspace: WorkspaceId) -> Option<u64> {
+        let view = self.0.view.borrow().clone()?;
+        view.holds(workspace).then(|| view.revision())
     }
 
     pub(crate) fn in_workspace(&self, workspace: &str, author: MemberId) -> WorkspaceResources {
@@ -332,7 +348,7 @@ impl EngineRecords {
         WorkspaceResources::new(author, move |app| inner.store_of(&workspace, app))
     }
 
-    /// Take in what moved in the engine in the workspaces the session's copies hold, and what it
+    /// Take in what moved in the device's daemon in the workspaces the session's copies hold, and what it
     /// could not read yet, then write into it what the session wrote since: nothing to do while
     /// nothing moved.
     pub(crate) fn replicate(&self) {
@@ -364,7 +380,7 @@ impl EngineRecords {
         self.write();
     }
 
-    /// Write into the engine what the session wrote since the last write.
+    /// Write into the workspaces what the session wrote since the last write.
     pub(crate) fn write(&self) {
         self.0.write(false);
     }
@@ -414,7 +430,7 @@ impl Inner {
             .is_some_and(|reads| reads.holds(&key.0, &key.1, &key.2))
     }
 
-    /// The store `app` keeps its records of `workspace` in, holding what the engine does from the
+    /// The store `app` keeps its records of `workspace` in, holding what the device's daemon does from the
     /// first time it is asked for.
     fn store_of(
         &self,
@@ -431,7 +447,7 @@ impl Inner {
         Ok(store)
     }
 
-    /// Take in what the engine holds of `app`'s records in `workspace` : merged into a record a
+    /// Take in what the device's daemon holds of `app`'s records in `workspace` : merged into a record a
     /// copy has open, and kept for whoever opens one that is not.
     fn read(&self, workspace: &str, app: &str) {
         let Some(reads) = self.reads.borrow().clone() else {
@@ -514,7 +530,7 @@ impl Inner {
         }
     }
 
-    /// Take what the engine holds of the documents kept in `workspace` (every workspace's, `None`)
+    /// Take what the device's daemon holds of the documents kept in `workspace` (every workspace's, `None`)
     /// into them.
     fn read_documents(&self, workspace: Option<&str>) {
         let keys: Vec<DocumentKey> = self
@@ -529,7 +545,7 @@ impl Inner {
         }
     }
 
-    /// [`Self::read_documents`] of the documents the engine was never read for yet.
+    /// [`Self::read_documents`] of the documents the device's daemon was never read for yet.
     fn read_documents_unsynced(&self) {
         let keys: Vec<DocumentKey> = self
             .documents
@@ -543,7 +559,7 @@ impl Inner {
         }
     }
 
-    /// Take what the engine holds of the document `key` into it: the first time, the record the
+    /// Take what the device's daemon holds of the document `key` into it: the first time, the record the
     /// workspace holds takes the place of what the document was handed over with, while nothing
     /// was written in it since; anything else is merged.
     fn read_document(&self, key: &DocumentKey) {
@@ -607,21 +623,21 @@ impl Inner {
         tracing::debug!(%workspace, %app, %record, first, "a kept record took in the workspace's copy");
     }
 
-    /// Write what the services changed in the documents kept in the workspaces into the engine,
+    /// Write what the services changed in the documents kept in the workspaces into the workspaces,
     /// and hand each write to this device's apps. Answers the workspaces and apps whose writes
     /// wait for a later pass.
-    fn write_documents(&self, engine: &Arc<Engine>) -> BTreeSet<(String, String)> {
+    fn write_documents(&self, view: &WorkspaceView) -> BTreeSet<(String, String)> {
         let mut unwritten = BTreeSet::new();
         let Some(writes) = self.writes() else {
             return unwritten;
         };
         let keys: Vec<DocumentKey> = self.documents.borrow().keys().cloned().collect();
         for key in keys {
-            let (workspace, app, record) = &key;
+            let (workspace, app, _) = &key;
             let Some(room) = WorkspaceId::parse(workspace) else {
                 continue;
             };
-            if !engine.holds(room) || self.writing.borrow().contains_key(&key) {
+            if !view.holds(room) || self.writing.borrow().contains_key(&key) {
                 continue;
             }
             let (changes, founding, heads) = {
@@ -643,18 +659,6 @@ impl Inner {
                     None => (doc.save(), true, heads),
                 }
             };
-            let sealed = match engine.resource_write_keys(room, (app, record)) {
-                Ok(SealKeys::Here(keys)) => Some(keys),
-                Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
-                    unwritten.insert((workspace.clone(), app.clone()));
-                    continue;
-                }
-                Err(error) => {
-                    tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
-                    unwritten.insert((workspace.clone(), app.clone()));
-                    continue;
-                }
-            };
             let (writes, writing_key) = (Arc::clone(&writes), key.clone());
             let mut writing = Writing::write(Arc::clone(&self.wake), async move {
                 writes
@@ -667,7 +671,7 @@ impl Inner {
                             readers: None,
                             founding,
                             snapshot: founding,
-                            sealed: sealed.as_ref(),
+                            sealed: None,
                         },
                     )
                     .await
@@ -686,7 +690,7 @@ impl Inner {
         unwritten
     }
 
-    /// Keep the engine's copy of a record no copy has open, for whoever opens it next.
+    /// Keep the daemon's copy of a record no copy has open, for whoever opens it next.
     fn keep(&self, workspace: &str, app: &str, record: &str, bytes: Vec<u8>) -> Result<(), String> {
         let key = crate::platform::records::storage_key(app, workspace, record)
             .ok_or("not a record id")?;
@@ -695,7 +699,7 @@ impl Inner {
             .read(&key)
             .map_err(|error| error.to_string())?
             .and_then(|stored| stored.writer);
-        // What the engine gave is no write of the session's to give back.
+        // What the device's daemon gave is no write of the session's to give back.
         self.keeping.set(true);
         let kept = self
             .store
@@ -705,9 +709,9 @@ impl Inner {
     }
 
     /// Write what the session changed in the open records of the stores it wrote to — of every
-    /// store, `all` — into the engine, and hand each write to this device's apps.
+    /// store, `all` — into the workspaces, and hand each write to this device's apps.
     fn write(&self, all: bool) {
-        let Some(engine) = self.engine.borrow().clone() else {
+        let Some(view) = self.view.borrow().clone() else {
             return;
         };
         let Some(writes) = self.writes() else {
@@ -728,6 +732,12 @@ impl Inner {
             let Some(room) = WorkspaceId::parse(&workspace) else {
                 continue;
             };
+            // A workspace the daemon does not hold yet (one still being founded) takes its records
+            // on a later pass.
+            if !view.holds(room) {
+                unwritten.insert((workspace.clone(), app.clone()));
+                continue;
+            }
             for checkout in store.open_resources() {
                 let record = checkout.id.route().to_owned();
                 let key = (workspace.clone(), app.clone(), record.clone());
@@ -737,7 +747,7 @@ impl Inner {
                     continue;
                 }
                 let mut replicas = self.replicas.borrow_mut();
-                // A record the engine holds is written once its copy was read here: one this copy
+                // A record the device's daemon holds is written once its copy was read here: one this copy
                 // never read is founded by this write, never over what the workspace holds.
                 if !replicas.contains_key(&key) && self.holds_resource(&key) {
                     unwritten.insert((workspace.clone(), app.clone()));
@@ -765,19 +775,6 @@ impl Inner {
                     }
                     DocumentMutation::Incremental(bytes) => (bytes, false, false),
                 };
-                // Seal under the keys selected for this record.
-                let sealed = match engine.resource_write_keys(room, (&app, &record)) {
-                    Ok(SealKeys::Here(keys)) => Some(keys),
-                    Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
-                        unwritten.insert((workspace.clone(), app.clone()));
-                        continue;
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
-                        unwritten.insert((workspace.clone(), app.clone()));
-                        continue;
-                    }
-                };
                 let (writes, writing_key) = (Arc::clone(&writes), key.clone());
                 let mut writing = Writing::write(Arc::clone(&self.wake), async move {
                     writes
@@ -790,7 +787,7 @@ impl Inner {
                                 readers: None,
                                 founding,
                                 snapshot,
-                                sealed: sealed.as_ref(),
+                                sealed: None,
                             },
                         )
                         .await
@@ -809,7 +806,7 @@ impl Inner {
         }
         // The documents the services keep are written too: each one's heads say whether anything
         // is left to write, so every pass looks.
-        unwritten.extend(self.write_documents(&engine));
+        unwritten.extend(self.write_documents(&view));
         // What the workspace did not take yet is written again on the next pass.
         self.written.borrow_mut().extend(unwritten);
     }
@@ -885,18 +882,13 @@ impl crate::Shared {
         }) else {
             return waits("the session shows no workspace");
         };
-        let Some(engine) = &self.engine else {
-            return waits("the session runs no engine");
+        // A workspace the daemon does not hold yet (one still being founded) would refuse every
+        // record moved there.
+        let Some(standing) = self.records.standing(workspace) else {
+            return waits("the device's daemon does not hold the workspace the session shows yet");
         };
-        // Who holds the workspace's keys is read from the enrollment this device committed: one
-        // still enrolling, as in a workspace its own service has just founded, names nobody yet,
-        // and the workspace would refuse every record moved there.
-        if !engine.workspaces().contains(&workspace) {
-            return waits("this device is not yet enrolled in the workspace the session shows");
-        }
-        // A move the workspace refused waits for this device's keys or its record of the
-        // workspace to move on, rather than being asked again on every pass.
-        let standing = (engine.keys().generation(), engine.owner().revision());
+        // A move the workspace refused waits for how the workspace stands to move on, rather
+        // than being asked again on every pass.
         if matches!(&*self.app_stores.borrow(), AppStores::Refused(held, _) if *held == standing) {
             return;
         }
@@ -923,9 +915,8 @@ impl crate::Shared {
 pub(crate) enum AppStores {
     /// Not moved yet, and what the move waits on.
     Waiting(&'static str),
-    /// The workspace refused them, saying why, while this device's keys and its record of its
-    /// workspaces stood here.
-    Refused((u64, u64), String),
+    /// The workspace refused them, saying why, while it stood here on the device's daemon.
+    Refused(u64, String),
     /// Every app's resources are kept there.
     Kept,
 }

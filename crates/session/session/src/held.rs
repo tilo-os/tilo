@@ -1,6 +1,6 @@
 //! What this computer holds of its workspaces: the ones it joined, who they have in them, and what
 //! their apps wrote before it arrived.
-//! A joined workspace is held by the engine beside the session ([`crate::engine`]). These are what a
+//! A joined workspace is held by the device's daemon ([`crate::workspace_view`]). These are what a
 //! person and the apps meet of it: which workspaces reached this computer, who is in them, and what
 //! they hold.
 
@@ -29,11 +29,10 @@ impl Session {
     #[must_use]
     pub fn held_workspaces(&self) -> Vec<String> {
         self.shared
-            .engine
+            .view
             .as_ref()
-            .map(|engine| {
-                engine
-                    .workspaces()
+            .map(|view| {
+                view.workspaces()
                     .iter()
                     .map(std::string::ToString::to_string)
                     .collect()
@@ -50,7 +49,7 @@ impl Session {
     /// The workspace is not held here, or its governance cannot be read.
     pub fn people(&self, workspace: &str) -> Result<Vec<Member>, String> {
         self.shared
-            .engine
+            .view
             .as_ref()
             .ok_or_else(|| "this session holds no workspaces".to_owned())?
             .people(workspace)
@@ -66,7 +65,7 @@ impl Session {
     /// The workspace is not held here, or its governance cannot be read.
     pub fn roster(&self, workspace: &str) -> Result<Vec<String>, String> {
         self.shared
-            .engine
+            .view
             .as_ref()
             .ok_or_else(|| "this session holds no workspaces".to_owned())?
             .roster(workspace)

@@ -43,9 +43,9 @@ impl Session {
             if let Some((workspace, _)) = sync.front_members() {
                 let governed = self
                     .shared
-                    .engine
+                    .view
                     .as_ref()
-                    .and_then(|engine| engine.members(&workspace).ok())
+                    .and_then(|view| view.members(&workspace).ok())
                     .unwrap_or_default();
                 let mut people: Vec<collab_types::Member> = governed.members;
                 for (id, name, (r, g, b)) in sync.here().borrow().persons() {

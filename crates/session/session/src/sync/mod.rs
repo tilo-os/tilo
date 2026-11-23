@@ -36,21 +36,6 @@ pub const JOIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
         .saturating_add(SETTLE_WITHIN.as_secs()),
 );
 
-/// A workspace this session is joining: the way this device comes into it (the workspace's API,
-/// or an invitation that admits it), and the workspace on the shell made for it, which is where what
-/// the workspace holds arrives.
-#[cfg(target_os = "linux")]
-#[derive(Debug)]
-pub struct Enrolling {
-    /// The workspace joined.
-    pub workspace_id: tilo_desktop_model::WorkspaceId,
-    /// How this device comes in: through the workspace's API, entered on a session with the
-    /// API's host, or with an invitation verified for this person before it got here.
-    pub way: tilo_workspace_directory::Way,
-    /// How the workspace's people see the person: the name an API entry gives it.
-    pub name: String,
-}
-
 /// One of the person's workspaces this device holds nothing of yet: it takes the workspace in as a
 /// further device of their person, at the device hosting it. A device certified by a member's root
 /// is that member's device, so nothing has to be invited here
@@ -79,7 +64,5 @@ pub(crate) use client::HostOutbox;
 pub(crate) use client::ReceivedSurface;
 #[cfg(target_os = "linux")]
 pub(crate) use client::found_alone;
-#[cfg(test)]
-pub(crate) use client::serve_alone;
 #[cfg(target_os = "linux")]
 pub use client::{Entry, PeerDocuments, configured_hosts, device_identity};

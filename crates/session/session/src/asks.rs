@@ -732,6 +732,7 @@ impl Shared {
             picker: self.file_picker.as_ref(),
             personal: self.personal.as_ref(),
             engine: self.engine.as_ref(),
+            view: self.view.as_ref(),
             landings: &self.landings,
         }
     }
@@ -998,11 +999,11 @@ impl Shared {
     /// every device and list of it reads it there. A workspace this session
     /// holds no governance of keeps the name the shell gave it.
     fn renamed_workspace(&self, workspace: WorkspaceId, name: String) {
-        let Some(engine) = self.engine.clone().filter(|engine| engine.holds(workspace)) else {
+        let Some(view) = self.view.clone().filter(|view| view.holds(workspace)) else {
             return;
         };
         let rename = async move {
-            crate::membership::Membership::of(&engine, workspace)
+            crate::membership::Membership::of(&view, workspace)
                 .rename(&name)
                 .await
         };

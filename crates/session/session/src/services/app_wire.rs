@@ -138,6 +138,9 @@ pub(crate) struct Collaboration<'a> {
     /// them with: what a change to a workspace's people is written through, whatever the session's
     /// peer network.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    /// How the person's workspaces stand, as the device's daemon publishes them, and the actions
+    /// that change them.
+    pub view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     pub sealed: Sealed,
     /// What the broker hands the apps that have a record open: the one this session hands a
     /// sibling's writes to, so those reach the apps on the route this device's own writes do.
@@ -238,6 +241,7 @@ pub(crate) fn start_app_wire(
         daemon,
         daemon_writes,
         engine,
+        view,
         service,
         sealed,
         fanout,
@@ -314,6 +318,7 @@ pub(crate) fn start_app_wire(
             // What the broker writes a workspace's people through, and where it keeps what it
             // admits: this session's own workspaces, else the ones its peer network holds.
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
+            view,
             daemon,
             daemon_writes,
             service: service.clone(),

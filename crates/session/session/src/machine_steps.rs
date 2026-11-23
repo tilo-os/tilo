@@ -5,7 +5,7 @@
 //! Nothing about a machine is kept by this session itself. The plan is its
 //! entry in the person's Servers workspace ([`tilo_workspace_service::workspaces::servers`]),
 //! which this device holds through its own workspace service: each step is
-//! asked of that service's host operations ([`Engine::ask_own_host`]), which
+//! asked of that service's host operations ([`WorkspaceView::ask_own_host`]), which
 //! makes the workspace when the first machine is planned and every device of
 //! the person reads the one document from then on.
 //!
@@ -23,7 +23,7 @@ use tilo_actions::{
 };
 use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 
-use crate::engine::Engine;
+use crate::workspace_view::WorkspaceView;
 
 /// The app whose controls reach these steps: the installer's window.
 const APP_ID: &str = "so.tilo.imager";
@@ -31,14 +31,14 @@ const APP_ID: &str = "so.tilo.imager";
 /// The machines of this session's person, answered from this device's own
 /// workspace service.
 pub(crate) struct MachineSteps {
-    engine: Option<Arc<Engine>>,
+    view: Option<Arc<WorkspaceView>>,
 }
 
 impl MachineSteps {
-    /// The steps of a session holding `engine`, or of one that keeps no
-    /// workspace service and so answers no plan.
-    pub(crate) fn session(engine: Option<Arc<Engine>>) -> Arc<Self> {
-        Arc::new(Self { engine })
+    /// The steps of a session asking the device's daemon through `view`, or of one that reaches
+    /// none and so answers no plan.
+    pub(crate) fn session(view: Option<Arc<WorkspaceView>>) -> Arc<Self> {
+        Arc::new(Self { view })
     }
 
     /// The arguments the step carries, as its descriptor's parameters take
@@ -61,18 +61,13 @@ impl MachineSteps {
         action: &str,
         arguments: Map<String, Value>,
     ) -> Result<Pending<Result<Value, String>>, String> {
-        let engine = self
-            .engine
+        let asked = self
+            .view
             .as_ref()
-            .ok_or("this session keeps no state, so it holds no Servers workspace")?
-            .clone();
-        let action = action.to_owned();
-        Ok(crate::landing::off_loop(async move {
-            let asked = engine
-                .ask_own_host(&action, arguments)
-                .ok_or("this session's own workspace service is not open")?;
-            asked.await
-        }))
+            .ok_or("this session reaches no device daemon, so it holds no Servers workspace")?
+            .ask_own_host(action, arguments)
+            .ok_or("this device's workspace service is not open")?;
+        Ok(crate::landing::off_loop(asked))
     }
 }
 

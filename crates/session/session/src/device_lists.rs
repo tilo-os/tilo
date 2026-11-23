@@ -657,9 +657,9 @@ pub(crate) struct DeviceLists {
     /// The agents the person admitted at its MCP server: each works here as itself, and the bar
     /// shows it as its own presence.
     pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
-    /// This device's workspaces' record, when the session holds one: the workspace whose holder
-    /// decides an invitation is asked there, and the links out of it keep this device dialable.
-    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    /// How the person's workspaces stand, as the device's daemon publishes them: an invitation is
+    /// asked of the workspace through it, and the links out of it keep this device dialable.
+    pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     /// What the shell asks the session for while it runs: opening the invite sheet, which is the
     /// session's own surface and not a layer the shell draws.
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
@@ -682,7 +682,7 @@ pub(crate) struct Shared {
     pub(crate) activities: Rc<crate::chrome::Activities>,
     pub(crate) surfaces: Surfaces,
     pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
-    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
     pub(crate) folders: tilo_workspace_service::files::Folders,
 }
@@ -699,7 +699,7 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         activities: Rc::clone(&shared.activities),
         surfaces: shared.surfaces.clone(),
         tray: shared.tray.clone(),
-        engine: shared.engine.clone(),
+        view: shared.view.clone(),
         asks: Rc::clone(&shared.asks),
         styles: Rc::clone(&styles),
         folders: shared.folders.clone(),
@@ -861,22 +861,18 @@ impl DeviceLists {
     /// The invitations into a workspace this device's person made that are still redeemable, as the
     /// workspace's host lists them: its id in hex, the part it grants, whom it is addressed to, how
     /// it names them and when it lapses. The same list says whether a link is out, which keeps
-    /// this device dialable ([`crate::engine::Engine::invitations_open`]).
+    /// this device dialable ([`crate::workspace_view::WorkspaceView::invitations_open`]).
     fn invitations(&self, workspace: Option<&str>) -> Result<Started, ApiError> {
-        let engine = self.engine()?;
+        let view = self.view()?;
         let workspace_id = self.workspace_id(workspace)?;
-        let asked = engine
+        let asked = view
             .ask_holder(
                 workspace_id,
                 tilo_workspace_service::workspaces::INVITATIONS,
                 serde_json::Map::new(),
             )
             .ok_or_else(no_holder)?;
-        let noting = std::sync::Arc::clone(engine);
-        Ok(answered_by_service(asked, move |value| {
-            noting.note_invitations(workspace_id, &value);
-            Ok(value)
-        }))
+        Ok(answered_by_service(asked, Ok))
     }
 
     /// Cancel one of them, from the device that issued it: the link admits nobody from now on.
@@ -885,11 +881,11 @@ impl DeviceLists {
         invite: &str,
         workspace: Option<&str>,
     ) -> Result<Started, ApiError> {
-        let engine = self.engine()?;
+        let view = self.view()?;
         let workspace_id = self.workspace_id(workspace)?;
         let mut arguments = serde_json::Map::new();
         arguments.insert("invite".to_owned(), invite.into());
-        let asked = engine
+        let asked = view
             .ask_holder(
                 workspace_id,
                 tilo_workspace_service::workspaces::CANCEL_INVITATION,
@@ -909,14 +905,14 @@ impl DeviceLists {
         expires_in_seconds: Option<u64>,
         workspace: Option<&str>,
     ) -> Result<Started, ApiError> {
-        let engine = self.engine()?;
+        let view = self.view()?;
         let workspace_id = self.workspace_id(workspace)?;
         // A workspace whose governance this device reads, and which does not let this person
         // invite, is refused for that reason, before it reaches anywhere: what an app shares is
         // what its person may hand out, and a member who may not invite learns which part of the
         // ask they lack. A workspace still being taken in has no part to read here yet; the ask
         // waits for its holder, which judges the invitation once the part is held.
-        if engine.invite_refused(&workspace_id.to_string()) {
+        if view.invite_refused(&workspace_id.to_string()) {
             return Err(ApiError::Failed(
                 "the person's part in this workspace may not invite".to_owned(),
             ));
@@ -948,7 +944,7 @@ impl DeviceLists {
             })
             .transpose()?;
         let invitee_name = match (invitee_name, recipient) {
-            (None, Some(recipient)) => engine.name_of(&workspace_id.to_string(), recipient),
+            (None, Some(recipient)) => view.name_of(&workspace_id.to_string(), recipient),
             (name, _) => name,
         };
         let expires_in = expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS);
@@ -966,14 +962,13 @@ impl DeviceLists {
         if let Some(recipient) = recipient {
             arguments.insert("recipient".to_owned(), hex::encode(recipient).into());
         }
-        let asked = engine
+        let asked = view
             .ask_holder(
                 workspace_id,
                 tilo_action_policy::roles::governance::INVITE,
                 arguments,
             )
             .ok_or_else(no_holder)?;
-        let noting = std::sync::Arc::clone(engine);
         let role = role.key();
         Ok(answered_by_service(asked, move |issued| {
             let signed = issued
@@ -991,10 +986,6 @@ impl DeviceLists {
                     || tilo_peer_state::join::native_invitation_link(&signed),
                     str::to_owned,
                 );
-            // Whoever redeems it dials this device.
-            if let Some(lapses) = issued.get("expires_at_ns").and_then(Value::as_u64) {
-                noting.note_link(workspace_id, lapses);
-            }
             Ok(serde_json::json!({
                 "invite": issued.get("invite"),
                 "link": link,
@@ -1031,12 +1022,12 @@ impl DeviceLists {
         }
     }
 
-    /// This device's engine: the workspace's holder is asked through it, and a session without one
-    /// reaches no holder.
-    fn engine(&self) -> Result<&std::sync::Arc<crate::engine::Engine>, ApiError> {
-        self.engine
-            .as_ref()
-            .ok_or_else(|| ApiError::Failed("this session holds no workspace's record".to_owned()))
+    /// The person's workspaces as the device's daemon keeps them: a workspace is asked through
+    /// it, and a session that reaches no daemon asks none.
+    fn view(&self) -> Result<&std::sync::Arc<crate::workspace_view::WorkspaceView>, ApiError> {
+        self.view.as_ref().ok_or_else(|| {
+            ApiError::Failed("this session reaches no daemon keeping its workspaces".to_owned())
+        })
     }
 }
 

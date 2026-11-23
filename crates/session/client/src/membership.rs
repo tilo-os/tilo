@@ -28,16 +28,112 @@ pub trait Workspaces {
     ) -> Result<(), String>;
 }
 
+/// A membership change written once the workspace answered it.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Committed<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+/// A membership change written once the workspace answered it.
+#[cfg(target_arch = "wasm32")]
+pub type Committed<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>>;
+
+/// Where a workspace's governance is read and written: who is in it, and each change to its
+/// people, signed as this device.
+pub trait Governs: collab_types::signer::MaybeSendSync {
+    /// The workspace's people, as its governance names them.
+    ///
+    /// # Errors
+    /// The workspace is not one held here.
+    fn people(&self, workspace: &str) -> Result<Vec<collab_types::Member>, String>;
+
+    /// Write `command` into `workspace`'s governance as this device, saying why when the workspace
+    /// refuses it or it cannot be published.
+    fn command(&self, workspace: WorkspaceId, command: WorkspaceMembershipCommand)
+    -> Committed<'_>;
+}
+
+impl Governs for Engine {
+    fn people(&self, workspace: &str) -> Result<Vec<collab_types::Member>, String> {
+        Self::people(self, workspace)
+    }
+
+    fn command(
+        &self,
+        workspace: WorkspaceId,
+        command: WorkspaceMembershipCommand,
+    ) -> Committed<'_> {
+        Box::pin(async move {
+            let identity = self.identity();
+            self.owner()
+                .commit_membership(
+                    workspace,
+                    &identity.device_cert,
+                    &command,
+                    identity.signer.as_ref(),
+                    tilo_clock::wall(),
+                )
+                .await
+                .map(drop)
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+
+/// The device's daemon writes the change into the workspace it keeps, signed with the device's
+/// key, and forwards it to the device keeping the workspace otherwise
+/// ([`crate::workspace_view::MEMBERSHIP`]).
+#[cfg(not(target_arch = "wasm32"))]
+impl Governs for crate::workspace_view::WorkspaceView {
+    fn people(&self, workspace: &str) -> Result<Vec<collab_types::Member>, String> {
+        Self::people(self, workspace)
+    }
+
+    fn command(
+        &self,
+        workspace: WorkspaceId,
+        command: WorkspaceMembershipCommand,
+    ) -> Committed<'_> {
+        let command = serde_json::to_value(&command).map_err(|error| error.to_string());
+        let asked = command.map(|command| {
+            self.ask_holder(
+                workspace,
+                crate::workspace_view::MEMBERSHIP,
+                serde_json::Map::from_iter([("command".to_owned(), command)]),
+            )
+        });
+        Box::pin(async move {
+            asked?
+                .ok_or("this device reaches no device keeping the workspace")?
+                .await
+                .map(drop)
+        })
+    }
+}
+
+impl<T: Governs + ?Sized> Governs for std::sync::Arc<T> {
+    fn people(&self, workspace: &str) -> Result<Vec<collab_types::Member>, String> {
+        (**self).people(workspace)
+    }
+
+    fn command(
+        &self,
+        workspace: WorkspaceId,
+        command: WorkspaceMembershipCommand,
+    ) -> Committed<'_> {
+        (**self).command(workspace, command)
+    }
+}
+
 pub struct Membership<'a> {
-    engine: &'a Engine,
+    governs: &'a dyn Governs,
     workspace_id: WorkspaceId,
 }
 
 impl<'a> Membership<'a> {
-    /// The people of the workspace `workspace_id` names.
-    pub fn of(engine: &'a Engine, workspace_id: WorkspaceId) -> Self {
+    /// The people of the workspace `workspace_id` names, read and written through `governs`.
+    pub fn of(governs: &'a impl Governs, workspace_id: WorkspaceId) -> Self {
         Self {
-            engine,
+            governs,
             workspace_id,
         }
     }
@@ -109,7 +205,7 @@ impl<'a> Membership<'a> {
     /// Whether the workspace has `person` in it, as its own governance here says. A workspace this
     /// device does not hold has nobody here.
     fn has(&self, person: &str) -> bool {
-        self.engine
+        self.governs
             .people(&self.workspace_id.to_string())
             .is_ok_and(|people| {
                 people
@@ -178,7 +274,7 @@ impl<'a> Membership<'a> {
     }
 
     /// Wait until the workspace's host holds every change this device wrote to it over `link`,
-    /// the session this membership's engine writes through, or says why it refused one: a
+    /// the session this membership's changes are written through, or says why it refused one: a
     /// caller that answers with the workspace as its host reads it answers with the change in
     /// it.
     ///
@@ -243,19 +339,7 @@ impl<'a> Membership<'a> {
     /// Write `command` into the workspace's governance as this device, signed by its ownership,
     /// saying why when the workspace refuses it or cannot publish it.
     async fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {
-        let identity = self.engine.identity();
-        self.engine
-            .owner()
-            .commit_membership(
-                self.workspace_id,
-                &identity.device_cert,
-                &command,
-                identity.signer.as_ref(),
-                tilo_clock::wall(),
-            )
-            .await
-            .map(drop)
-            .map_err(|error| error.to_string())
+        self.governs.command(self.workspace_id, command).await
     }
 }
 

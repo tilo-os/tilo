@@ -43,7 +43,7 @@ use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transpor
 use tilo_session_client::{Cmd, Enrolled, Event, Outbox, SayPresence, Topic};
 
 #[cfg(target_os = "linux")]
-use super::{Enrolling, Entering};
+use super::Entering;
 #[cfg(target_os = "linux")]
 use crate::content;
 #[cfg(target_os = "linux")]
@@ -79,8 +79,6 @@ pub(crate) use network::Reached;
 use network::{Serving, Wire, run};
 #[cfg(target_os = "linux")]
 pub(crate) use own_service::found_alone;
-#[cfg(test)]
-pub(crate) use own_service::serve_alone;
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
 /// desktop with no one else on it, rather than a session that never opens.
@@ -149,8 +147,6 @@ pub(crate) enum HostCmd {
     TakePart(native_ingress::Connect),
     /// Send one piece of a record's content to the device of the workspace that asked for it.
     Content(tilo_network_actor::RecordContentDelivery),
-    /// Redeem an invitation into the workspace the session made for it.
-    Enroll(Enrolling),
     /// Take one of the person's workspaces in as their further device, at the host the list names.
     Enter(Box<Entering>),
     /// Send this device's fabric to the person's other devices, or to the one at `target`.
@@ -1968,23 +1964,6 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub fn engine(&self) -> Option<&Arc<Engine>> {
         self.hosting.local.engine()
-    }
-
-    /// Redeem `request`'s invitation off the loop: this device joins the workspace and takes in
-    /// what it held before. [`Self::take_enrolled`] says what became of it.
-    ///
-    /// # Errors
-    /// The peer network takes no enrollment: this session holds no workspaces, or it has stopped.
-    #[cfg(target_os = "linux")]
-    pub fn enroll(&self, request: Enrolling) -> Result<(), String> {
-        if self.hosting.local.engine.is_none() {
-            return Err("this session keeps no workspaces to enroll into".into());
-        }
-        self.hosting
-            .local
-            .commands
-            .send(HostCmd::Enroll(request))
-            .map_err(|_| "the peer network is gone".to_owned())
     }
 
     /// Take `request`'s workspace in as this person's further device, off the loop: what the

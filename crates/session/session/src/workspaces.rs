@@ -668,14 +668,14 @@ impl Personal {
     /// Read where each workspace this device holds is hosted, as the workspaces themselves say: the
     /// list names the device that hosts a workspace, so a device of the person's that opens one
     /// from the list enters it there rather than at the device that happened to join it.
-    fn refresh_hosts(&mut self, engine: Option<&crate::engine::Engine>) {
-        let Some(engine) = engine else {
+    fn refresh_hosts(&mut self, view: Option<&crate::workspace_view::WorkspaceView>) {
+        let Some(view) = view else {
             return;
         };
-        self.hosts = engine
+        self.hosts = view
             .workspaces()
             .into_iter()
-            .filter_map(|workspace| Some((workspace, engine.holder_of(workspace)?)))
+            .filter_map(|workspace| Some((workspace, view.holder_of(workspace)?)))
             .collect();
     }
 
@@ -1160,19 +1160,19 @@ impl crate::Shared {
         // workspace this device is making ([`crate::mcp_server::SessionServices::hold_founding`]).
         let mut founding = BTreeSet::new();
         for workspace in &mut tree.workspaces {
-            if let Some(engine) = &self.engine
+            if let Some(view) = &self.view
                 && self
                     .personal
                     .as_ref()
                     .is_some_and(|personal| personal.borrow().made_here(workspace.id()))
                 && !workspace.id().is_nil()
                 && !borrowed.contains(&workspace.id())
-                && !engine.holds(workspace.id())
+                && !view.holds(workspace.id())
             {
                 // A founding that failed is tried again when the next founding ends, not on every
                 // pass: until then nothing waits on it, and an ask of it hears what the service
                 // says.
-                if !engine.founding_failed(workspace.id()) {
+                if !view.founding_failed(workspace.id()) {
                     founding.insert(workspace.id().to_string());
                 }
                 // The workspace the shell started with is founded only once it is known to be the
@@ -1186,16 +1186,16 @@ impl crate::Shared {
                     // A workspace made on this session is a workspace from here on,
                     // not only this session's: its governance is founded in the
                     // workspace it already has an identity for.
-                    // It is signed by this device's signer, off the loop: the pass after it landed
-                    // sees it held.
-                    let (engine, id) = (std::sync::Arc::clone(engine), workspace.id());
+                    // The device's daemon founds it, off the loop: the pass after its reading
+                    // arrived sees it held.
+                    let (view, id) = (std::sync::Arc::clone(view), workspace.id());
                     // The name it is founded under is the one a person reads: a workspace nobody
                     // named keeps no name of its own, and a workspace is founded under a name, so
                     // the word the session reads for it stands in until one is given.
                     let name = tilo_session_core::desktop::names::workspace(&workspace.name);
                     let told = name.clone();
                     let founded =
-                        crate::landing::off_loop(async move { engine.found(id, &name).await });
+                        crate::landing::off_loop(async move { view.found(id, &name).await });
                     // A founding that failed is tried again when the next one ends, and the person
                     // hears why the workspace is not on the service yet: never a silent sole copy on
                     // this layout.
@@ -1251,8 +1251,8 @@ impl crate::Shared {
     /// API, or one the person's list names that this device is entering, which may be someone
     /// else's they were let in to: whose it is waits for its governance.
     fn owner_of(&self, workspace: WorkspaceId, borrowed: &BTreeSet<WorkspaceId>) -> Option<String> {
-        if let Some(engine) = &self.engine
-            && let Ok(owner) = engine.owner_of(&workspace.to_string())
+        if let Some(view) = &self.view
+            && let Ok(owner) = view.owner_of(&workspace.to_string())
         {
             return Some(if self.earlier.contains(&owner) {
                 self.person.clone()
@@ -1302,7 +1302,7 @@ impl crate::Shared {
             ));
         };
         if matches!(joined.granted.way, tilo_workspace_directory::Way::Native(_)) {
-            if self.sync.is_none() || self.engine.is_none() {
+            if self.view.is_none() {
                 return Err("This session cannot reach the invitation's workspace holder.".into());
             }
             if self.holds(workspace) {
@@ -1336,67 +1336,68 @@ impl crate::Shared {
             );
             return;
         };
-        let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
+        let Some(view) = &self.view else {
             tracing::info!(
                 target: JOIN_FLOW_TARGET,
                 workspace = %joined.granted.workspace,
                 held_locally = true,
-                "join: this session holds no workspaces or takes no part in the peer network, so the workspace stays as this computer keeps it"
+                "join: this session reaches no device daemon, so the workspace stays as this computer keeps it"
             );
             self.open_joined_workspace(&joined.granted.workspace, &joined.name, Arrival::Joined);
             return;
         };
-        let on_shell = self.holds(workspace);
-        engine.bind(workspace);
+        let invite = match &joined.granted.way {
+            tilo_workspace_directory::Way::Invitation(invitation) => Some(invitation.clone()),
+            tilo_workspace_directory::Way::Native(locator) => locator.to_link(),
+        };
+        let Some(invite) = invite else {
+            tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                workspace = %joined.granted.workspace,
+                outcome = "not joined",
+                "join: the native invitation link is malformed"
+            );
+            self.directory_store
+                .set_note(Some("the native invitation link is malformed".to_owned()));
+            return;
+        };
         tracing::info!(
             target: JOIN_FLOW_TARGET,
             workspace = %joined.granted.workspace,
-            on_shell,
-            "join: the workspace is made on the session"
+            "join: the invitation is presented to the device's daemon"
         );
-        let asked = sync.enroll(crate::sync::Enrolling {
-            workspace_id: workspace,
-            way: joined.granted.way.clone(),
-            // A API's workspace learns the person by the name the session knows them by.
-            name: crate::platform::directory::person()
-                .map(|person| person.name)
-                .unwrap_or_default(),
-        });
-        match asked {
-            Ok(()) => {
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    workspace = %joined.granted.workspace,
-                    "join: the way in is presented to the workspace's host"
-                );
-                self.directory_store
-                    .expect_enrollment(&joined.granted.workspace);
-            }
-            Err(error) => {
-                tracing::warn!(%error, workspace = %joined.granted.workspace, "the workspace was not asked to take this device in");
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    workspace = %joined.granted.workspace,
-                    %error,
-                    outcome = "removed",
-                    "join: the way in could not be presented, so the workspace is taken off the session"
-                );
-                engine.unbind(workspace);
-                if on_shell {
-                    self.release_workspace(workspace);
-                }
-                self.directory_store.set_note(Some(error));
-            }
-        }
+        let asked = view.ask_account(
+            tilo_peer_state::workspace_view::LIST,
+            tilo_peer_state::workspace_view::JOIN,
+            serde_json::Map::from_iter([("invite".to_owned(), invite.into())]),
+        );
+        self.directory_store
+            .expect_enrollment(&joined.granted.workspace);
+        let joins = Rc::clone(&self.joins);
+        self.landings
+            .then(crate::landing::off_loop(asked), move |outcome| {
+                let result = match outcome {
+                    Some(Ok(_)) => Ok(()),
+                    Some(Err(error)) => Err(tilo_session_client::EnrollFailure::Refused(error)),
+                    None => return,
+                };
+                joins.borrow_mut().push(tilo_session_client::Enrolled {
+                    workspace_id: workspace,
+                    member: false,
+                    name: None,
+                    result,
+                    held: false,
+                });
+            });
     }
 
     /// Tell the person, once, that `workspace` (`name` on their list) waits for its host to take
     /// this device in: until then the workspace's apps take part in nothing here.
     fn tell_awaited(&self, workspace: WorkspaceId, name: &str) {
         let host = self
-            .engine
+            .view
             .as_ref()
-            .and_then(|engine| engine.awaited_host(workspace));
+            .and_then(|view| view.awaited_host(workspace));
         if let (Some(host), Some(personal)) = (host, &self.personal)
             && personal.borrow_mut().told_awaiting.insert(workspace)
         {
@@ -1414,13 +1415,7 @@ impl crate::Shared {
     /// name every device and list of it reads, which the shell shows as its own. `None` while this
     /// device holds none of it, or it names none.
     pub(crate) fn governing_name(&self, workspace: WorkspaceId) -> Option<String> {
-        let engine = self.engine.as_ref()?;
-        let name = engine
-            .owner()
-            .with_current(workspace, |view| {
-                Ok(view.peer().governance().workspace_name())
-            })
-            .ok()??;
+        let name = self.view.as_ref()?.workspace_name(workspace)?;
         let name = name.trim();
         if name.is_empty() {
             None
@@ -1436,11 +1431,11 @@ impl crate::Shared {
         reason = "one pass over every enrollment that settled since the last"
     )]
     pub(crate) fn follow_enrollments(&self) {
-        let Some(sync) = &self.sync else {
-            return;
-        };
+        let sync = self.sync.as_ref();
         let mut settled = false;
-        for enrolled in sync.take_enrolled() {
+        let mut landed = self.joins.take();
+        landed.extend(sync.map(|sync| sync.take_enrolled()).unwrap_or_default());
+        for enrolled in landed {
             let key = enrolled.workspace_id.to_string();
             let named_on_shell = self.handle.read(|tree| {
                 tree.workspaces
@@ -1483,7 +1478,9 @@ impl crate::Shared {
                     }
                     // The workspace's live session opens now, not when a key of some workspace
                     // next moves here.
-                    sync.workspace_arrived();
+                    if let Some(sync) = sync {
+                        sync.workspace_arrived();
+                    }
                     // The workspace is put on the shell now, once the host admitted this
                     // device: the person lands in the workspace they joined,
                     // and the session a refused join left is the session it found.
@@ -1541,9 +1538,6 @@ impl crate::Shared {
                         outcome = "removed",
                         "join: the host refused the enrollment, so no workspace was joined and the person stays where they were"
                     );
-                    if let Some(engine) = &self.engine {
-                        engine.unbind(enrolled.workspace_id);
-                    }
                     // Only a session that already held the workspace has it to take away: a join the
                     // host refused never put one there.
                     if self.holds(enrolled.workspace_id) {
@@ -1633,7 +1627,7 @@ impl crate::Shared {
             // Where this device holds each of its workspaces, as the workspaces themselves say: the
             // list names the device hosting a workspace, never the one that happens to hold it
             // here.
-            personal.refresh_hosts(self.engine.as_deref());
+            personal.refresh_hosts(self.view.as_deref());
             let store = self.sync.as_ref().and_then(|sync| sync.person_resources());
             // What the person's other devices wrote to the list is taken in before this session's
             // pass is written over it, so the pass reconciles against their list.
@@ -1743,11 +1737,10 @@ impl crate::Shared {
     /// certificate the helper signed into the fleet, on a thread of its own — is in no record
     /// until the list is said. A fleet whose files stand still costs this pass two stamps.
     fn fleet_moved(&self, personal: &mut Personal) -> bool {
-        let Some(engine) = &self.engine else {
+        let Some(view) = &self.view else {
             return false;
         };
-        let stamps =
-            crate::identity_admin::fleet_stamps(&engine.identity().device_cert.user_public_key);
+        let stamps = crate::identity_admin::fleet_stamps(&view.person());
         let moved = stamps != personal.fleet;
         personal.fleet = stamps;
         moved
@@ -1767,9 +1760,9 @@ impl crate::Shared {
             return;
         }
         let held = self
-            .engine
+            .view
             .as_ref()
-            .map(|engine| engine.workspaces())
+            .map(|view| view.workspaces())
             .unwrap_or_default();
         let joining = self.directory_store.joining().is_some() || self.directory_store.settling();
         let listed = if joining {
@@ -1784,17 +1777,15 @@ impl crate::Shared {
         // this device: a computer restored from their words that joins their own workspace — their
         // site's — has a workspace already, and the shell's own is taken off rather than founded
         // beside it.
-        let owned: BTreeSet<WorkspaceId> =
-            self.engine.as_ref().map_or_else(BTreeSet::new, |engine| {
-                held.iter()
-                    .copied()
-                    .filter(|workspace| {
-                        engine.owner_of(&workspace.to_string()).is_ok_and(|owner| {
-                            owner == self.person || self.earlier.contains(&owner)
-                        })
-                    })
-                    .collect()
-            });
+        let owned: BTreeSet<WorkspaceId> = self.view.as_ref().map_or_else(BTreeSet::new, |view| {
+            held.iter()
+                .copied()
+                .filter(|workspace| {
+                    view.owner_of(&workspace.to_string())
+                        .is_ok_and(|owner| owner == self.person || self.earlier.contains(&owner))
+                })
+                .collect()
+        });
         personal.settle_seed(&self.handle, &held, listed.as_ref(), &owned);
     }
 
@@ -1828,24 +1819,22 @@ impl crate::Shared {
         personal.kept_roles = roles;
         // The keys the person's root certified on this device go with the
         // list, so the record every device of theirs reads holds them.
-        if let Some(engine) = &self.engine {
-            list.devices = crate::identity_admin::root_certificates(
-                &engine.identity().device_cert.user_public_key,
-            )
-            .into_iter()
-            .map(|cert| tilo_server_session::workspaces::PersonalDevice {
-                cert,
-                // The person names their devices where the record is kept.
-                name: None,
-                revoked: false,
-                browser: None,
-                // What the keys' sessions on a host said of them is that
-                // host's to keep, not this list's.
-                agent: None,
-                last_active_ms: None,
-                online: false,
-            })
-            .collect();
+        if let Some(view) = &self.view {
+            list.devices = crate::identity_admin::root_certificates(&view.person())
+                .into_iter()
+                .map(|cert| tilo_server_session::workspaces::PersonalDevice {
+                    cert,
+                    // The person names their devices where the record is kept.
+                    name: None,
+                    revoked: false,
+                    browser: None,
+                    // What the keys' sessions on a host said of them is that
+                    // host's to keep, not this list's.
+                    agent: None,
+                    last_active_ms: None,
+                    online: false,
+                })
+                .collect();
         }
         if personal.kept.as_ref() == Some(&list) && (personal.kept_on_hosts || hosted.is_none()) {
             return;

@@ -25,6 +25,8 @@ use tilo_server_session::workspaces::{HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RES
 
 use crate::engine::ServiceAnswer;
 
+pub use tilo_peer_state::workspace_view::MEMBERSHIP;
+
 /// The daemon's actions, as the desktop asks them: what changes a workspace, founds, joins or
 /// leaves one, and what its key access, membership and the host answer.
 pub trait ShellAsks: Send + Sync {
@@ -52,6 +54,9 @@ pub struct WorkspaceView {
     /// next one ends.
     founding: std::sync::Mutex<BTreeSet<WorkspaceId>>,
     failed: std::sync::Mutex<BTreeSet<WorkspaceId>>,
+    /// How many readings changed what the view says: what a reader compares to tell whether
+    /// anything of the workspaces' standing changed since it last read.
+    revision: tokio::sync::watch::Sender<u64>,
     asks: Arc<dyn ShellAsks>,
 }
 
@@ -74,6 +79,7 @@ impl WorkspaceView {
             readings: std::sync::Mutex::default(),
             founding: std::sync::Mutex::default(),
             failed: std::sync::Mutex::default(),
+            revision: tokio::sync::watch::Sender::new(0),
             asks,
         }
     }
@@ -84,6 +90,38 @@ impl WorkspaceView {
     /// # Errors
     /// The reading does not read as the resource's.
     pub fn apply(&self, resource: &str, reading: Option<&str>) -> Result<bool, String> {
+        let changed = self.take(resource, reading)?;
+        if changed {
+            self.revision
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+        Ok(changed)
+    }
+
+    /// How many readings changed the view so far.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        *self.revision.borrow()
+    }
+
+    /// Wait until the daemon's reading of `workspace` arrived: a workspace founded or joined is
+    /// the device's from then on.
+    pub async fn arrived(&self, workspace: WorkspaceId) {
+        self.until(|view| view.holds(workspace)).await;
+    }
+
+    /// Wait until `read` of the view says `true`, read again each time a reading changed what the
+    /// view says: what a change the daemon answered comes to once its standing says it.
+    pub async fn until(&self, mut read: impl FnMut(&Self) -> bool) {
+        let mut changed = self.revision.subscribe();
+        while !read(self) {
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    fn take(&self, resource: &str, reading: Option<&str>) -> Result<bool, String> {
         if resource == LIST {
             let listed: Vec<Listed> = match reading {
                 Some(reading) => serde_json::from_str(reading)
@@ -96,13 +134,16 @@ impl WorkspaceView {
         let workspace = workspace_of(resource)
             .and_then(WorkspaceId::parse)
             .ok_or_else(|| format!("{resource} names no workspace"))?;
-        let mut readings = self.readings.lock_recover();
         let Some(reading) = reading else {
-            return Ok(readings.remove(&workspace).is_some());
+            return Ok(self.readings.lock_recover().remove(&workspace).is_some());
         };
         let reading: WorkspaceReading = serde_json::from_str(reading)
             .map_err(|error| format!("{resource} does not read: {error}"))?;
-        Ok(readings.insert(workspace, reading.clone()).as_ref() != Some(&reading))
+        let previous = self
+            .readings
+            .lock_recover()
+            .insert(workspace, reading.clone());
+        Ok(previous.as_ref() != Some(&reading))
     }
 
     fn with<T>(
@@ -210,6 +251,17 @@ impl WorkspaceView {
     pub fn policy(&self, workspace: &str) -> Result<WorkspacePolicy, String> {
         self.with_named(workspace, |reading| reading.policy.clone())?
             .ok_or_else(|| "the workspace's policy has not arrived".to_owned())
+    }
+
+    /// What `read` reads of how `workspace` stands: its saved shortcuts and what its
+    /// governance lets its apps reach among the rest. `None` for a workspace this device does
+    /// not hold.
+    pub fn reading<T>(
+        &self,
+        workspace: WorkspaceId,
+        read: impl FnOnce(&WorkspaceReading) -> T,
+    ) -> Option<T> {
+        self.with(workspace, read)
     }
 
     #[must_use]
@@ -353,7 +405,7 @@ impl WorkspaceView {
             .asks
             .account(
                 LIST,
-                "create",
+                tilo_peer_state::workspace_view::CREATE,
                 serde_json::Map::from_iter([
                     ("name".to_owned(), name.into()),
                     ("id".to_owned(), workspace.to_string().into()),
@@ -423,7 +475,8 @@ impl WorkspaceView {
 }
 
 /// `target` invoked with `arguments`, as the person's press.
-fn request(
+#[must_use]
+pub fn request(
     target: tilo_actions::remote::RemoteActionTarget,
     arguments: serde_json::Map<String, serde_json::Value>,
 ) -> tilo_actions::remote::InvokeRequest {

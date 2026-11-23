@@ -6,9 +6,12 @@
 //!   (`Daemon::start_shell`); no other process, whatever account it runs as.
 //! - Its documents: the daemon's own reads and writes of the workspaces it holds, each write
 //!   sealed with the keys of the document's group this device reads and signed as the device.
-//! - Its asks: a workspace's key access and membership action is answered where this device keeps the
-//!   workspace, and asked of the device keeping it over tilo-actions/1 otherwise; the host's own
-//!   operations are this device's workspace service's ([`Actions`]).
+//! - Its asks: founding a workspace here and joining one by an invitation are the person's
+//!   workspace list's actions; a change the person makes to a workspace's people and settings is
+//!   written as this device's own, into the workspace this device keeps or its member copy; any
+//!   other key access and membership action is answered where this device keeps the workspace, and
+//!   asked of the device keeping it over tilo-actions/1 otherwise; the host's own operations are
+//!   this device's workspace service's ([`Actions`]).
 //! - How its workspaces stand: [`Standing`], read again whenever a workspace changes.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,7 +24,7 @@ use tilo_actions::remote::{
     ActionProvider as _, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::workspace_view::{LIST, Listed, resource};
+use tilo_peer_state::workspace_view::{CREATE, JOIN, LIST, Listed, MEMBERSHIP, resource};
 use tilo_workspace_service::apps::services::{PublishedResources, Reading, ResourceWatch};
 use tilo_workspace_service::apps::shell::{
     ShellActions, ShellCaller, ShellInvoked, ShellLinks, ShellServices,
@@ -91,26 +94,39 @@ async fn ask(
     if caller.person != cert.user_public_key {
         return Err("this device acts for its own person only".to_owned());
     }
-    // The host's own operations are this device's workspace service's.
+    let address = &request.target.address;
     if request.target.provider == tilo_server_session::workspaces::HOST_ACTIONS_PROVIDER {
-        let arguments = match request.argument {
-            InvokeArgument::Json(arguments) => arguments,
-            InvokeArgument::None => Map::new(),
-            InvokeArgument::Text(_) => {
-                return Err("the host's operations take named arguments".to_owned());
-            }
-        };
+        let arguments = named(request.argument)?;
+        // The person's workspace list: founding one here, and joining one.
+        if address.resource == LIST {
+            return listed(workspaces, &address.action, &arguments).await;
+        }
+        // The host's own operations are this device's workspace service's.
         return workspaces
             .service()
-            .ask_own(&cert, &request.target.address.action, arguments)
+            .ask_own(&cert, &address.action, arguments)
             .await;
     }
-    let workspace = tilo_actions::remote::workspace_governance_operation(&request.target.address)
+    let workspace = tilo_actions::remote::workspace_governance_operation(address)
         .map(|(workspace, _)| workspace.to_owned())
         .ok_or(
             "the shell asks a workspace's key access and membership or the host, and nothing else",
         )?;
     let id = WorkspaceId::parse(&workspace).ok_or("that is not a workspace")?;
+    // A change to the workspace's people and settings is this device's own, signed with its key:
+    // the workspace's admission decides it as any member's.
+    if address.action == MEMBERSHIP {
+        let command = named(request.argument)?
+            .remove("command")
+            .ok_or("a change to a workspace's people names its `command`")?;
+        let command = serde_json::from_value(command)
+            .map_err(|error| format!("the change does not read: {error}"))?;
+        workspaces
+            .copies()
+            .commit_own_change(&workspace, command, None)
+            .await?;
+        return Ok(Value::Null);
+    }
     // A workspace this device keeps answers here, as it answers every member's device.
     if workspaces.copies().administers_workspace(&workspace).await {
         let as_device = Caller::authenticated(cert.user_public_key, cert.device_public_key)
@@ -146,6 +162,44 @@ async fn ask(
         Some(Err(error)) => Err(error.to_string()),
         None => Err("the workspace's keeping device dropped the request".to_owned()),
     }
+}
+
+/// The named arguments `argument` carries.
+fn named(argument: InvokeArgument) -> Result<Map<String, Value>, String> {
+    match argument {
+        InvokeArgument::Json(arguments) => Ok(arguments),
+        InvokeArgument::None => Ok(Map::new()),
+        InvokeArgument::Text(_) => Err("the device's actions take named arguments".to_owned()),
+    }
+}
+
+/// The person's workspace list's `action` with `arguments`: [`CREATE`] founds a workspace this
+/// device keeps, [`JOIN`] joins the workspace an invitation is to. Answers the workspace's id.
+async fn listed(
+    workspaces: &ServiceWorkspaces,
+    action: &str,
+    arguments: &Map<String, Value>,
+) -> Result<Value, String> {
+    let text = |name: &str| {
+        arguments
+            .get(name)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("`{action}` names its `{name}`"))
+    };
+    let workspace = match action {
+        CREATE => {
+            let workspace = WorkspaceId::parse(text("id")?).ok_or("that is not a workspace")?;
+            workspaces.found(workspace, text("name")?).await?;
+            workspace.to_string()
+        }
+        JOIN => workspaces
+            .copies()
+            .join_member(text("invite")?)
+            .await?
+            .to_string(),
+        _ => return Err(format!("the person's workspaces have no action `{action}`")),
+    };
+    Ok(Value::String(workspace))
 }
 
 /// Follow `invocation` on `provider` until it finishes, as long as a request is followed.
@@ -416,3 +470,7 @@ impl PublishedResources for Standing {
         answered
     }
 }
+
+#[cfg(test)]
+#[path = "shell_tests.rs"]
+mod tests;

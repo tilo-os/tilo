@@ -365,7 +365,7 @@ impl Session {
             &self.shared.handle,
             displays,
             sync.as_deref(),
-            self.shared.engine.as_ref(),
+            self.shared.view.as_ref(),
             &self.shared.pages,
             Instant::now(),
         );
@@ -732,9 +732,10 @@ impl Session {
         // The person's settings follow them between their devices in the workspace whose only
         // member is them: what they set here is written there first, and what they set there
         // reaches the document this session reads.
-        if let Some(engine) = &self.shared.engine {
-            let person = engine.identity().device_cert.user_public_key;
-            self.shared.settings.sync(&self.shared.records, &person);
+        if let Some(view) = &self.shared.view {
+            self.shared
+                .settings
+                .sync(&self.shared.records, &view.person());
         }
         // What was handed to an agent, and what was sent since the last look, by a box, an agent
         // or a script.
@@ -938,7 +939,7 @@ fn session<'a>(
         handle: &shared.handle,
         overlays: &shared.overlays,
         overview: shared.overview.open_cell(),
-        engine: shared.engine.as_deref(),
+        view: shared.view.as_deref(),
         agent_sessions: &shared.agent_sessions,
         sync: shared.sync.as_deref(),
         shares: &shared.window_shares,

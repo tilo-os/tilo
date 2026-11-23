@@ -18,6 +18,18 @@ use tilo_action_policy::WorkspacePolicy;
 /// The person's workspaces on this device: a list of [`Listed`].
 pub const LIST: &str = "account/workspaces";
 
+/// [`LIST`]'s action that founds a workspace on this device, which keeps it: `{name, id}`.
+pub const CREATE: &str = "create";
+
+/// [`LIST`]'s action that joins the workspace an invitation is to: `{invite}`, the invitation's
+/// text or link.
+pub const JOIN: &str = "join";
+
+/// A workspace's action that writes one change to its people and settings, signed as the device
+/// that asks: `{command}`, a [`crate::workspace_membership::WorkspaceMembershipCommand`]. The
+/// workspace's admission decides it, as it decides every member's change.
+pub const MEMBERSHIP: &str = "membership";
+
 /// The resource of `workspace`'s standing, a [`WorkspaceReading`].
 #[must_use]
 pub fn resource(workspace: &str) -> String {
@@ -88,7 +100,7 @@ pub struct Holder {
 
 /// How one workspace stands for the device's person: what the shell reads of it, decided by the
 /// daemon from the workspace it keeps.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each is a separate fact the daemon reads off the workspace, read by name"
@@ -126,6 +138,7 @@ pub struct WorkspaceReading {
     /// The device keeping it, as this device asks it; this device's own key when it keeps it.
     pub holder: Option<[u8; 32]>,
     /// Device labels by device key.
+    #[serde(with = "labels_by_key")]
     pub device_labels: BTreeMap<[u8; 32], String>,
     /// What its record refuses to take of this device, kept until the person sees why.
     pub write_refusals: Vec<neighbour_wire::WriteRefusal>,
@@ -134,6 +147,12 @@ pub struct WorkspaceReading {
     pub open_links: Vec<u64>,
     /// The workspace's own record, as the settings it keeps are read from it.
     pub document: Option<Vec<u8>>,
+    /// The shortcuts its people saved, as each saver's device wrote them.
+    #[serde(default)]
+    pub shortcuts: Vec<tilo_automation::SavedShortcut>,
+    /// What its governance lets its apps reach; `None` while that does not read.
+    #[serde(default)]
+    pub sandbox: Option<Vec<collab_types::caps::CapOverride>>,
 }
 
 impl WorkspaceReading {
@@ -146,5 +165,45 @@ impl WorkspaceReading {
             .find(|member| member.id.person_id() == Some(person.as_str()))
             .map(|member| member.name.clone())
             .filter(|name| !name.is_empty())
+    }
+}
+
+/// A device key is no JSON object key, and the daemon publishes a reading as JSON: the labels
+/// travel as pairs of key and label.
+mod labels_by_key {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        labels: &BTreeMap<[u8; 32], String>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(labels)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<[u8; 32], String>, D::Error> {
+        Ok(Vec::<([u8; 32], String)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A reading that names its devices is published as JSON, and reads back as it was.
+    #[test]
+    fn a_reading_with_device_labels_crosses_as_json() {
+        let reading = WorkspaceReading {
+            device_labels: BTreeMap::from([([7; 32], "Laptop".to_owned())]),
+            ..WorkspaceReading::default()
+        };
+        let json = serde_json::to_string(&reading).expect("the reading encodes as JSON");
+        let read: WorkspaceReading = serde_json::from_str(&json).expect("and reads back");
+        assert_eq!(read.device_labels, reading.device_labels);
     }
 }

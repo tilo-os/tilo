@@ -45,7 +45,7 @@ pub(crate) use assembly::Shared;
 
 mod activity_provider;
 mod continuations;
-mod founding_fixture;
+mod daemon_fixture;
 pub mod host_actions;
 pub mod records;
 pub mod search;
@@ -61,7 +61,7 @@ mod settings_steps;
 // table every host asks.
 pub use tilo_session_client::message_policy;
 // This device's workspaces, and the sealed channels their records travel in.
-pub use tilo_session_client::{engine, membership, workspace_keys};
+pub use tilo_session_client::{engine, membership, workspace_keys, workspace_view};
 
 // The Linux host's effects: the compositor, the services it starts, the
 // devices and the processes. A web host provides these through `platform`.
@@ -74,6 +74,8 @@ mod account_passwords;
 #[cfg(target_os = "linux")]
 mod account_sign_ins;
 pub mod activity;
+// The desktop as the shell of the device's daemon: how its workspaces stand, and the actions
+// that change them.
 mod activity_models;
 #[cfg(target_os = "linux")]
 mod agent_sessions;
@@ -170,6 +172,8 @@ mod device_actions;
 mod device_inbox;
 #[cfg(target_os = "linux")]
 mod device_lists;
+#[cfg(target_os = "linux")]
+mod device_shell;
 #[cfg(target_os = "linux")]
 mod device_state;
 #[cfg(target_os = "linux")]
@@ -350,8 +354,6 @@ mod ready;
 pub mod recovery;
 #[cfg(target_os = "linux")]
 mod render;
-#[cfg(target_os = "linux")]
-mod renewal;
 #[cfg(target_os = "linux")]
 mod resource_index;
 #[cfg(target_os = "linux")]

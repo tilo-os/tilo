@@ -36,8 +36,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
 use tilo_session_core::surfaces::Surfaces;
 
-use crate::engine::Engine;
 use crate::mcp_server::{self, PeerRefusal};
+use crate::workspace_view::WorkspaceView;
 
 mod gesture_input;
 mod state;
@@ -197,7 +197,7 @@ pub(crate) struct Session<'a> {
     /// as it draws and the shell writes as its views show it, so the state says the one overview
     /// either way.
     pub(crate) overview: &'a std::cell::Cell<bool>,
-    pub(crate) engine: Option<&'a Engine>,
+    pub(crate) view: Option<&'a WorkspaceView>,
     /// The agents the person admitted at its socket, as the session's bar shows them.
     pub(crate) agent_sessions: &'a std::sync::Arc<crate::agent_sessions::AgentSessions>,
     /// Who is here, as the peer network says it: this session's membership of each

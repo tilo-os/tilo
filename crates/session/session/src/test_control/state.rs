@@ -131,10 +131,9 @@ fn shares_shown(session: &Session<'_>) -> Json {
 /// changes.
 pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
     let held: BTreeSet<String> = session
-        .engine
-        .map(|engine| {
-            engine
-                .workspaces()
+        .view
+        .map(|view| {
+            view.workspaces()
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect()
@@ -239,7 +238,7 @@ pub(super) fn keeping_devices(tree: &Layout, session: &Session<'_>, ctx: &Contex
                     .is_none_or(|scope| workspace.id().to_string() == scope.workspace)
             })
             .filter_map(|workspace| {
-                let hosting = session.engine?.hosting(workspace.id())?;
+                let hosting = session.view?.hosting(workspace.id())?;
                 Some(json!({
                     "workspace": workspace.id().to_string(),
                     "name": workspace.name.clone(),
