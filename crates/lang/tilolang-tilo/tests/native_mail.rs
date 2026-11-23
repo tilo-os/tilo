@@ -119,12 +119,13 @@ fn text(ada: &Replica, at: &ResourceRef, field: &str) -> String {
     }
 }
 
-/// Each draft of the mailbox: from, to, cc, subject, body, what it answers, what was set aside.
-fn drafts(ada: &Replica, mail: &ResourceRef) -> Vec<[String; 7]> {
+/// Each draft of the mailbox: from, to, cc, bcc, subject, body, what it answers, what was set
+/// aside.
+fn drafts(ada: &Replica, mail: &ResourceRef) -> Vec<[String; 8]> {
     let Value::List(items) = ada.host.runtime().read(mail, "drafts").unwrap() else {
         panic!("the drafts read as a list");
     };
-    let mut out: Vec<[String; 7]> = items
+    let mut out: Vec<[String; 8]> = items
         .iter()
         .map(target)
         .map(|d| {
@@ -132,6 +133,7 @@ fn drafts(ada: &Replica, mail: &ResourceRef) -> Vec<[String; 7]> {
                 "from",
                 "to",
                 "cc",
+                "bcc",
                 "subject",
                 "body",
                 "in_reply_to",
@@ -140,11 +142,11 @@ fn drafts(ada: &Replica, mail: &ResourceRef) -> Vec<[String; 7]> {
             .map(|field| text(ada, &d, field))
         })
         .collect();
-    out.sort_by(|a, b| a[3].cmp(&b[3]));
+    out.sort_by(|a, b| a[4].cmp(&b[4]));
     out
 }
 
-fn row(fields: [&str; 7]) -> [String; 7] {
+fn row(fields: [&str; 8]) -> [String; 8] {
     fields.map(str::to_owned)
 }
 
@@ -156,6 +158,7 @@ fn assert_carried(ada: &Replica, mail: &ResourceRef) {
                 "work",
                 "team@example.com",
                 "",
+                "",
                 "Offsite",
                 "See you at nine.",
                 "<offsite@example.com>",
@@ -165,16 +168,17 @@ fn assert_carried(ada: &Replica, mail: &ResourceRef) {
                 "work",
                 "board@example.com",
                 "",
+                "auditor@example.com",
                 "Quarterly numbers",
                 "The numbers are attached.",
                 "",
-                "Bcc: auditor@example.com\nAttachments not carried over: numbers.pdf\n\
-                 Notes: Check the totals first",
+                "Attachments not carried over: numbers.pdf\nNotes: Check the totals first",
             ]),
             row([
                 "home",
                 "grace@example.com",
                 "linus@example.com",
+                "",
                 "Re: Lunch",
                 "Thursday works.",
                 "<lunch@example.com>",
