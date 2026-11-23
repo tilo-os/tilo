@@ -113,9 +113,7 @@ impl NativeControl {
         id: &str,
         op: &crate::widget::ResourceOperation<'_>,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         if request.kind == tilo_actions::OperationKind::Document || request.type_id != NATIVE_INVOKE
         {
             return Ok(None);
@@ -135,9 +133,7 @@ impl NativeControl {
 pub(crate) fn invoked_control(
     op: &crate::widget::ResourceOperation<'_>,
 ) -> Result<Option<String>, String> {
-    let Some(request) = op.unscoped() else {
-        return Ok(None);
-    };
+    let request = op.request();
     if request.kind == tilo_actions::OperationKind::Document || request.type_id != NATIVE_INVOKE {
         return Ok(None);
     }

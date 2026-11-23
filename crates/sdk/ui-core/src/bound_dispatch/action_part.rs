@@ -1,24 +1,18 @@
 //! The toolkit's part of what the store keeps with each open resource: the action open on it, the
 //! undo status each window was answered, and the invocation evidence its writes carry.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use automerge::AutoCommit;
 
 use super::PendingResourceAction;
 use crate::permissions::MemberId;
-#[cfg(test)]
-use crate::resource::DocumentCheckout;
-use crate::resource::{ResourceOpenError, ResourceStore};
 
 /// The toolkit's part of a resource's action state ([`crate::resource::ResourceActions::toolkit`]): the
 /// action open on the resource, the undo status each window was answered, and the invocation
 /// evidence its writes carry.
 #[derive(Default)]
 pub(crate) struct ResourceActionState {
-    pub(crate) invocation_provenance: Rc<RefCell<crate::invocation_scope::InvocationProvenance>>,
     pub(super) pending: Option<PendingResourceAction>,
     pub(super) statuses:
         HashMap<(MemberId, crate::application::InstanceId), crate::undo::UndoStatus>,
@@ -110,50 +104,5 @@ impl crate::resource::ToolkitActions for ResourceActionState {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
-    }
-}
-
-/// What the toolkit reads of its own part of a resource's action state between frames.
-pub(crate) trait StoreActions {
-    /// The invocation evidence the open resource `id`'s writes carry.
-    fn invocation_provenance(
-        &self,
-        id: &crate::resource::DocumentId,
-    ) -> Result<Rc<RefCell<crate::invocation_scope::InvocationProvenance>>, ResourceOpenError>;
-    /// Require invocation evidence on `checkout`'s writes from now on, as a route that carries
-    /// invocations does.
-    #[cfg(test)]
-    fn require_invocation_provenance(&self, checkout: &DocumentCheckout) -> Result<(), String>;
-}
-
-impl StoreActions for ResourceStore {
-    fn invocation_provenance(
-        &self,
-        id: &crate::resource::DocumentId,
-    ) -> Result<Rc<RefCell<crate::invocation_scope::InvocationProvenance>>, ResourceOpenError> {
-        self.with_resource_actions(id, |actions| actions.part().invocation_provenance.clone())
-    }
-
-    #[cfg(test)]
-    fn require_invocation_provenance(&self, checkout: &DocumentCheckout) -> Result<(), String> {
-        self.open_existing_resource_checked(checkout)
-            .map_err(|error| error.to_string())?;
-        let (_, package, workspace) = self
-            .history_namespace(&checkout.id)
-            .map_err(|error| error.to_string())?;
-        let cluster = uuid::Uuid::parse_str(&workspace).map_err(|error| error.to_string())?;
-        let route = if checkout.id.is_package_primary() {
-            crate::collaboration::RouteSpec::app(package, cluster)
-        } else {
-            crate::collaboration::RouteSpec::document(package, cluster, checkout.id.as_str())
-        };
-        self.with_action_state(&checkout.id, |document, _, state| {
-            state
-                .part()
-                .invocation_provenance
-                .borrow_mut()
-                .require(route, document)
-        })
-        .map_err(|error| error.to_string())?
     }
 }

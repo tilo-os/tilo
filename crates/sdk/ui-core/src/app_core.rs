@@ -301,7 +301,6 @@ pub(crate) struct ResourceInvocation<'a> {
     pub(crate) confirmation_evidence: Option<&'a serde_json::Value>,
     pub(crate) invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient_context: Option<&'a tilo_actions::ActionContext>,
-    pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
 }
 
 impl<'a> ResourceInvocation<'a> {
@@ -318,7 +317,6 @@ impl<'a> ResourceInvocation<'a> {
             confirmation_evidence: None,
             invocation: None,
             ambient_context: None,
-            scope: None,
         }
     }
 
@@ -352,14 +350,6 @@ impl<'a> ResourceInvocation<'a> {
         context: Option<&'a tilo_actions::ActionContext>,
     ) -> Self {
         self.ambient_context = context;
-        self
-    }
-
-    pub(crate) fn scope(
-        mut self,
-        scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
-    ) -> Self {
-        self.scope = scope;
         self
     }
 }

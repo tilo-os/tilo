@@ -7363,7 +7363,6 @@ impl FrameHarness {
                     .and_then(|ambient| ambient.source_invocation)
                     .filter(|admitted| *admitted == invocation),
                 ambient,
-                scope: None,
                 route: None,
             },
         );
@@ -9009,7 +9008,6 @@ impl crate::app_core::ControlCore for FrameHarness {
                 invocation,
                 source_invocation: None,
                 ambient: request.ambient_context,
-                scope: request.scope,
                 route: None,
             },
         );
@@ -9072,7 +9070,6 @@ impl crate::app_core::ControlCore for FrameHarness {
                 invocation,
                 source_invocation: None,
                 ambient: request.ambient_context,
-                scope: request.scope,
                 api: session_api(&mut self.session_api),
             },
         )?;

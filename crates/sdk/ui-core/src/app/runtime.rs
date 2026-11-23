@@ -347,7 +347,6 @@ impl InputRuntime {
 /// centralizes their lifecycle rather than separating them from UI
 /// capabilities.
 pub(super) struct ActionRuntime {
-    pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
     pub(super) action_palette: Option<Box<crate::action_palette::ActionPalette>>,
     /// The window the palette was opened from, when the app hosts several
     /// (the shell's tiles): the palette centres on it, not on the screen.
@@ -495,7 +494,6 @@ pub(super) struct HeldOwnInvocation {
 impl ActionRuntime {
     pub(super) fn new() -> Self {
         Self {
-            published_invocations: Default::default(),
             action_palette: None,
             palette_window: None,
             ordinary_palette_return_focus: None,

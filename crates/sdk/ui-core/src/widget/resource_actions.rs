@@ -457,13 +457,10 @@ impl crate::widget::ResourceOperations for ResourceActionHost {
         if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        let Some(request) = op
-            .unscoped()
-            .filter(|request| request.kind != OperationKind::Document)
-            .filter(|request| request.type_id == OPERATION_TYPE)
-        else {
+        let request = op.request();
+        if !(request.kind != OperationKind::Document && request.type_id == OPERATION_TYPE) {
             return Ok(None);
-        };
+        }
         (self.run)(request.payload)
             .map(ResourceOperationStart::Completed)
             .map(Some)

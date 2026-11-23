@@ -52,7 +52,7 @@ use std::rc::Rc;
 use taffy::NodeId;
 
 mod action_part;
-pub(crate) use action_part::{StoreActions, ToolkitPart};
+pub(crate) use action_part::ToolkitPart;
 
 mod input_provenance;
 #[cfg(test)]
@@ -2568,7 +2568,6 @@ pub(crate) struct ResourceOperation<'a> {
     /// Exact invocation retained by an admitted external dispatch.
     pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
-    pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
     /// The session's action API of the host running it: where opening another app goes
     /// ([`crate::session_api`]).
     pub(crate) api: Option<&'a mut dyn crate::session_api::SessionApi>,
@@ -2606,7 +2605,6 @@ fn perform_resource_operation(
         invocation,
         source_invocation,
         ambient,
-        scope,
         api,
     } = operation;
     debug_assert!(
@@ -2782,20 +2780,12 @@ fn perform_resource_operation(
                     dyn crate::widget::document_effects::DocumentEffects,
                 >(widget)
             {
-                let operation = match scope {
-                    Some(scope) => crate::widget::ResourceOperation::scoped(
-                        scope,
-                        tilo_actions::OperationKind::Document,
-                        &envelope.action.type_id,
-                        &envelope.action.payload,
-                    ),
-                    None => crate::widget::ResourceOperation::local(
-                        source_invocation.unwrap_or(invocation),
-                        tilo_actions::OperationKind::Document,
-                        &envelope.action.type_id,
-                        &envelope.action.payload,
-                    ),
-                };
+                let operation = crate::widget::ResourceOperation::local(
+                    source_invocation.unwrap_or(invocation),
+                    tilo_actions::OperationKind::Document,
+                    &envelope.action.type_id,
+                    &envelope.action.payload,
+                );
                 let before = envelope.base_change_hashes();
                 let applied = crate::widget::document_effects::AppliedDocument {
                     invocation,
@@ -2823,9 +2813,7 @@ fn perform_resource_operation(
             let selected = crate::semantic_document_read::select(readers, resource, spec, &encoded)
                 .map_err(refused)?
                 .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
-            crate::widget::ResourceOperationStart::Completed(
-                selected.read(scope, doc).map_err(refused)?,
-            )
+            crate::widget::ResourceOperationStart::Completed(selected.read(doc).map_err(refused)?)
         } else if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
             crate::session_api::start_application_launch(
                 api,
@@ -2838,20 +2826,12 @@ fn perform_resource_operation(
             let target = target_route.map(|route| {
                 crate::widget::resource_operation::OperationTarget::new(route, address.clone())
             });
-            let op = match scope {
-                Some(scope) => crate::widget::ResourceOperation::scoped(
-                    scope,
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                None => crate::widget::ResourceOperation::local(
-                    invocation,
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-            };
+            let op = crate::widget::ResourceOperation::local(
+                invocation,
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
+            );
             let op = op
                 .with_target(target.as_ref())
                 .with_resource(resource.id.as_str());
@@ -2925,7 +2905,6 @@ pub(crate) struct ResourceActionRequest<'a> {
     pub(crate) invocation: tilo_actions::InvocationId,
     pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
-    pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
     /// Asked with the action as the API resolved it, before any check after resolution and before
     /// anything runs: `true` hands the invocation back unexecuted as [`BoundActionError::Rerouted`],
     /// for the host to route through the workspace broker. Asked with the resource it is invoked
@@ -2962,7 +2941,6 @@ fn perform_resource_action(
         invocation,
         source_invocation,
         ambient,
-        scope,
         route: reroute,
     } = request;
     let _entry = target.binding.enter()?;
@@ -3036,9 +3014,6 @@ fn perform_resource_action(
                     if reroute.is_some_and(|reroute| reroute(resource, spec)) {
                         return Err(BoundActionError::Rerouted);
                     }
-                    if let Some(scope) = scope {
-                        scope.check_dispatch_spec(spec)?;
-                    }
                     let (answer, spent) = binding.permissions.borrow().invocation_verdict(
                         &binding.app_id,
                         resource,
@@ -3072,9 +3047,6 @@ fn perform_resource_action(
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
                     crate::invocation_scope::check_shown_here(actor, &binding.author, resource, spec)?;
-                    if let Some(scope) = scope {
-                        scope.capture_locus_basis(target, invocation, actor, doc);
-                    }
                     let _capture = if !broker_admitted && source_invocation.is_none() {
                         let supplied = arguments.clone().or_else(|| match argument {
                             None => Some(serde_json::Map::new()),
@@ -3130,7 +3102,6 @@ fn perform_resource_action(
                                 invocation,
                                 source_invocation,
                                 ambient: Some(&ambient),
-                                scope,
                                 api: match api.as_mut() {
                                     Some(api) => Some(&mut **api as &mut dyn crate::session_api::SessionApi),
                                     None => None,
@@ -3160,11 +3131,7 @@ fn perform_resource_action(
                     }
                     started.map_err(BoundActionError::Api)
                     };
-                    match scope {
-                        Some(scope) => scope.with_document_mutation(doc, |doc| Ok(run(doc)))
-                            .map_err(|error| BoundActionError::Api(tilo_actions::ApiError::Failed(error)))?,
-                        None => run(doc),
-                    }
+                    run(doc)
                 })
                 .map_err(BoundActionError::Dispatch)
                 .and_then(std::convert::identity),
@@ -5100,16 +5067,6 @@ pub(crate) fn merge_remote_owned_document(
                     .into_iter()
                     .map(|change| change.hash())
                     .collect::<Vec<_>>();
-                // Observe only the actual newly merged range. Existing
-                // unscoped local edits cannot acquire another caller or
-                // become trusted merely because remote data arrived.
-                if state.part().invocation_provenance.borrow().is_required() {
-                    state
-                        .part()
-                        .invocation_provenance
-                        .borrow_mut()
-                        .observe_admitted(&observed);
-                }
                 *doc = candidate;
                 state.part().pending = None;
                 history.rebase(doc);

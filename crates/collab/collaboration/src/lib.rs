@@ -447,19 +447,6 @@ pub enum NativeConnection {
     Window(Option<runtime_portal::process_link::Descriptor>),
 }
 
-/// Host-local original contributor ownership a document change carries to the
-/// transport, never serialized on the wire. The toolkit's invocation scope
-/// mints it (`ui::invocation_scope::DocumentAuthorization`); the transport
-/// checks it against the change it is about to sign.
-pub trait DocumentAuthority: Send + Sync + std::fmt::Debug {
-    /// Whether the change's body and its current contributors are bound to
-    /// `route`.
-    fn check(&self, route: &RouteSpec, mutation: &DocumentMutation) -> Result<(), String>;
-    /// The bytes the ownership holds while its change waits in the transport's
-    /// queue, counted against the queue's budget; `None` when they overflow.
-    fn retained_bytes(&self) -> Option<usize>;
-}
-
 #[derive(Debug, Clone)]
 pub enum CollabRequest {
     #[cfg(feature = "broker-transport")]
@@ -495,8 +482,6 @@ pub enum CollabRequest {
     /// enums drifting apart.
     Document {
         mutation: DocumentMutation,
-        /// Host-local original contributor ownership; never serialized on the wire.
-        authorization: Option<std::sync::Arc<dyn DocumentAuthority>>,
         /// The action this mutation is one part of, when the caller made it
         /// as part of an action that writes more than one unit: every part
         /// carries the same commit, and a peer applies them all together or
@@ -663,7 +648,6 @@ impl CollabRequest {
     pub fn document_snapshot(data: Vec<u8>) -> Self {
         Self::Document {
             mutation: DocumentMutation::Snapshot(data),
-            authorization: None,
             commit: None,
         }
     }
@@ -671,7 +655,6 @@ impl CollabRequest {
     pub fn document_incremental(data: Vec<u8>) -> Self {
         Self::Document {
             mutation: DocumentMutation::Incremental(data),
-            authorization: None,
             commit: None,
         }
     }
@@ -686,7 +669,6 @@ impl CollabRequest {
     ) -> Self {
         Self::Document {
             mutation,
-            authorization: None,
             commit: Some(commit),
         }
     }
@@ -833,7 +815,6 @@ impl AcceptedRoute {
 }
 #[derive(Default)]
 struct PrimaryRouteState {
-    required_document_ownership: bool,
     requested: Option<RouteSpec>,
     accepted: Option<AcceptedRoute>,
 }
@@ -1027,21 +1008,6 @@ impl CollaborationManager {
             Some(checkout.id.as_str().to_string()),
             Some(checkout.kind.as_str().to_string()),
         )
-    }
-
-    pub fn require_document_authorization(&mut self) {
-        self.primary_route.required_document_ownership = true;
-    }
-
-    fn missing_required_document_ownership(&self, request: &CollabRequest) -> bool {
-        self.primary_route.required_document_ownership
-            && matches!(
-                request,
-                CollabRequest::Document {
-                    authorization: None,
-                    ..
-                }
-            )
     }
 
     /// Inject a host-owned ordinary authenticated peer transport. Joins remain
@@ -1270,9 +1236,6 @@ impl CollaborationManager {
     /// [`CollabSendError::Unavailable`] for anything but a `Hello` while the
     /// manager is still connecting.
     pub fn try_send(&mut self, req: CollabRequest) -> Result<(), CollabSendError> {
-        if self.missing_required_document_ownership(&req) {
-            return Err(CollabSendError::Unavailable);
-        }
         if self.awaiting_primary && !matches!(req, CollabRequest::Hello { .. }) {
             // No acknowledged primary route carries anything but the Hello
             // yet; owners republish once the manager is ready.
@@ -1626,13 +1589,6 @@ impl CollaborationManager {
         route: RouteSpec,
         req: CollabRequest,
     ) -> Result<(), CollabSendError> {
-        if self.missing_required_document_ownership(&req) {
-            tracing::debug!(
-                cause = "missing_committed_document_ownership",
-                "document route handoff refused"
-            );
-            return Err(CollabSendError::Unavailable);
-        }
         if matches!(req, CollabRequest::Hello { .. }) {
             tracing::warn!("collab: send_to_route ignores Hello; use join_route");
             return Err(CollabSendError::Unavailable);
@@ -2198,8 +2154,6 @@ mod portable_transport_tests {
             assert!(manager.is_connected());
             manager.send(CollabRequest::Document {
                 mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
-
-                authorization: None,
                 commit: None,
             });
             assert!(!manager.is_connected());
@@ -2213,7 +2167,6 @@ mod portable_transport_tests {
             assert!(!manager.sync_lost());
             manager.send(CollabRequest::Document {
                 mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
-                authorization: None,
                 commit: None,
             });
             assert!(manager.sync_lost());

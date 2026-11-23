@@ -650,9 +650,7 @@ mod tests {
             _: &mut crate::widget::Edits<'_>,
             _: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            let Some(request) = op.unscoped() else {
-                return Ok(None);
-            };
+            let request = op.request();
             if request.type_id != crate::widget::resource_actions::OPERATION_TYPE {
                 return Ok(None);
             }

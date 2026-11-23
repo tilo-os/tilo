@@ -151,8 +151,7 @@ impl crate::widget::ResourceOperations for PtyRoot {
         doc: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        op.check()?;
-        let (request, _) = op.with_ownership();
+        let request = op.request();
         if request.type_id != TYPE {
             return Ok(None);
         }

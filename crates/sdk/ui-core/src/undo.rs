@@ -220,9 +220,7 @@ pub(crate) fn start_local_history(
     widget: &mut (impl crate::widget::Widget + ?Sized),
     operation: &crate::widget::ResourceOperation<'_>,
 ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-    let Some(request) = operation.unscoped() else {
-        return Ok(None);
-    };
+    let request = operation.request();
     if request.type_id != EDIT_OPERATION {
         return Ok(None);
     }

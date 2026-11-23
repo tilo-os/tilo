@@ -71,9 +71,9 @@ impl crate::widget::ResourceOperations for Owner {
         if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        Ok(op.unscoped().map(|_| {
-            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-        }))
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 }
 
@@ -83,7 +83,6 @@ impl crate::widget::document_effects::DocumentEffects for Owner {
         operation: &crate::widget::ResourceOperation<'_>,
         applied: &crate::widget::document_effects::AppliedDocument<'_>,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        operation.check()?;
         assert_eq!(operation.kind(), tilo_actions::OperationKind::Document);
         self.effect_replies.push(applied.invocation());
         self.effect_receipts.push((
@@ -179,7 +178,6 @@ fn execute_mode(
             invocation,
             source_invocation,
             ambient: None,
-            scope: None,
             api: None,
         },
     )
@@ -397,7 +395,6 @@ tilo_test_env::scenario! {
                         invocation: tilo_actions::InvocationId::new(),
                         source_invocation: None,
                         ambient: None,
-                        scope: None,
                         api: None,
                     },
                 )

@@ -374,14 +374,11 @@ impl Widget for Recorder {
 impl crate::widget::ResourceOperations for Recorder {
     fn start_operation(
         &mut self,
-        op: &ResourceOperation<'_>,
+        _op: &ResourceOperation<'_>,
         doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         use automerge::transaction::Transactable;
-        if op.unscoped().is_none() {
-            return Ok(None);
-        }
         self.note("start_operation");
         doc.document_mut()
             .put(path, "admitted", true)

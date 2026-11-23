@@ -1645,9 +1645,8 @@ impl RootModel for ResourceRoot {
         if let Some(started) = self.start_read(op, doc)? {
             return Ok(Some(started));
         }
-        if let Some(request) = op.unscoped()
-            && request.type_id == OPEN_TYPE
-        {
+        let request = op.request();
+        if request.type_id == OPEN_TYPE {
             let args: serde_json::Value = tilo_actions::decode_json(request.payload)
                 .map_err(|error| tilo_resource::Refusal::new(error.to_string()))?;
             let anchor = args
@@ -1709,12 +1708,11 @@ impl ResourceRoot {
         doc: &ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
-        if let Some(request) = op.unscoped()
-            && matches!(
-                request.type_id,
-                crate::runner::RENDER_TYPE | crate::runner::OUTLINE_TYPE
-            )
-            && !request.payload.is_empty()
+        let request = op.request();
+        if matches!(
+            request.type_id,
+            crate::runner::RENDER_TYPE | crate::runner::OUTLINE_TYPE
+        ) && !request.payload.is_empty()
             && let Some(anchor) = crate::runner::rendered_anchor(request.payload)
             && self.shown_first.take().as_deref() != Some(anchor.as_str())
         {
@@ -1751,8 +1749,8 @@ impl ResourceRoot {
         doc: &ui_core::widget::Edits<'_>,
     ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
         let completed = ResourceOperationStart::Completed;
+        let request = op.request();
         if (self.resource.readable || self.resource.resource_table.is_some())
-            && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
         {
             match read(
@@ -1780,19 +1778,14 @@ impl ResourceRoot {
         // A chain of parts kept beside the record reads from its parts: what
         // it holds is not in the record's document, and a caller reading the
         // chain by its address never meant the record.
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::chain::CHAIN_READ_TYPE
-        {
+        if request.type_id == super::chain::CHAIN_READ_TYPE {
             let output = self
                 .storage
                 .chain_read(request.payload)
                 .map_err(tilo_resource::Refusal::new)?;
             return Ok(Some(completed(output)));
         }
-        if self.resource.facts
-            && let Some(request) = op.unscoped()
-            && request.type_id == facts::FACTS_TYPE
-        {
+        if self.resource.facts && request.type_id == facts::FACTS_TYPE {
             let output = facts::answer(
                 self.typed.as_ref(),
                 &*self.typed.state(),
@@ -1802,9 +1795,7 @@ impl ResourceRoot {
             .map_err(tilo_resource::Refusal::new)?;
             return Ok(Some(completed(output)));
         }
-        if let Some(request) = op.unscoped()
-            && tilo_resource::share::handles(request.type_id)
-        {
+        if tilo_resource::share::handles(request.type_id) {
             return self
                 .start_share(request.invocation, request.payload)
                 .map_err(tilo_resource::Refusal::new);
@@ -1821,9 +1812,7 @@ impl ResourceRoot {
         op: &ui_core::host_operation::ResourceOperation<'_>,
         doc: &mut ui_core::widget::Edits<'_>,
     ) -> Result<Option<tilo_actions::ActionOutput>, tilo_resource::Refusal> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         let output = if request.type_id == super::history::VIEW_TYPE {
             super::history::answer(doc, request.payload).map_err(tilo_resource::Refusal::new)?
         } else if request.type_id == super::resources::RESOURCE_ACTION_TYPE {
@@ -1958,7 +1947,7 @@ impl ResourceRoot {
         // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
         // editor/compact) are already mounted; accept them so agents and
         // Ctrl+K can switch without a missing-handler fault.
-        let request = op.unscoped()?;
+        let request = op.request();
         if request.kind != tilo_actions::OperationKind::View {
             return None;
         }

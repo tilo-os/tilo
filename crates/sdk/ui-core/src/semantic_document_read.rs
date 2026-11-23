@@ -232,24 +232,15 @@ impl SelectedSemanticRead<'_> {
     }
 
     /// Run the reader over the caller's canonical record at its committed heads.
-    /// `document` must be the record store's current loan of the record (the scope's, for
-    /// a hosted invocation) or the app's mounted primary document.
+    /// `document` must be the record store's current loan of the record or the app's mounted
+    /// primary document.
     pub(crate) fn read(
         &self,
-        scope: Option<&crate::invocation_scope::ResourceInvocationScope>,
         document: &AutoCommit,
     ) -> Result<tilo_actions::ActionOutput, SemanticReadError> {
         self.check_contract()?;
-        let record = match scope {
-            Some(scope) => {
-                scope
-                    .check_read_loan(document)
-                    .map_err(|_| SemanticReadError::InvalidOwner)?;
-                crate::invocation_scope::ResourceStamp::from(scope.route())
-            }
-            None => crate::invocation_scope::identified_resource(document)
-                .ok_or(SemanticReadError::MissingQualifiedOwner)?,
-        };
+        let record = crate::invocation_scope::identified_resource(document)
+            .ok_or(SemanticReadError::MissingQualifiedOwner)?;
         if document.pending_ops() != 0 {
             return Err(SemanticReadError::Pending);
         }
@@ -268,9 +259,6 @@ impl SelectedSemanticRead<'_> {
             "content": page.content,
             "nextCursor": page.next_cursor,
         });
-        if let Some(scope) = scope {
-            scope.check().map_err(|_| SemanticReadError::InvalidOwner)?;
-        }
         Ok(tilo_actions::ActionOutput {
             value: Some(result),
             resources: Vec::new(),

@@ -4823,22 +4823,11 @@ async fn publish_document(
         },
         // The helper records every failure, including a policy denial that
         // leaves the identity connection usable, before returning its result.
-        CollabRequest::Document {
-            mutation,
-            authorization,
-            commit,
-        } => {
+        CollabRequest::Document { mutation, commit } => {
             let mut signer = signer.lock().await;
-            return send_document_mutation(
-                route,
-                &mut signer,
-                mutation,
-                authorization,
-                commit,
-                inbound_tx,
-            )
-            .await
-            .is_ok();
+            return send_document_mutation(route, &mut signer, mutation, commit, inbound_tx)
+                .await
+                .is_ok();
         }
         _ => {}
     }
@@ -6035,26 +6024,9 @@ async fn send_document_mutation(
     route: &DocumentRoute,
     signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
-    authorization: Option<std::sync::Arc<dyn crate::DocumentAuthority>>,
     commit: Option<collab_types::WorkspaceCommit>,
     inbound: &InboundBridge,
 ) -> Result<(), DocumentPublicationError> {
-    if let Some(authorization) = &authorization {
-        authorization
-            .check(&route.spec, &mutation)
-            .map_err(|error| {
-                inbound
-                    .state
-                    .publication_failed("original document contributors", error, true)
-            })?;
-    }
-    if authorization.is_some() {
-        return Err(inbound.state.publication_failed(
-            "scoped document evaluator unavailable",
-            "original ownership requires the actual final owner",
-            true,
-        ));
-    }
     let frames = match mutation.encode_frames() {
         Ok(frames) => frames,
         Err(error) => {

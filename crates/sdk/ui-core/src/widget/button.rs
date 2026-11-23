@@ -2765,9 +2765,7 @@ impl crate::widget::ResourceOperations for Button {
         _doc: &mut crate::widget::Edits<'_>,
         _path: &ObjId,
     ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         Ok(self
             .invoke_native_control(request.kind, request.type_id, request.payload)?
             .then(|| {

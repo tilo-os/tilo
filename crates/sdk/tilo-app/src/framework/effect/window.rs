@@ -48,7 +48,7 @@ impl<R: Resource, E: Effect, W: Widget + 'static> ViewHandler for WindowHandler<
         doc: &tilo_resource::Doc,
         view: &mut dyn Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if op.with_ownership().0.type_id != E::OPERATION {
+        if op.request().type_id != E::OPERATION {
             return Ok(None);
         }
         let window = ui_core::widget::find_mut::<W>(view).ok_or("the window is not open")?;
@@ -86,7 +86,7 @@ impl<R: Resource, E: Effect, W: Widget + 'static> ViewHandler for HostedWindowHa
         doc: &tilo_resource::Doc,
         view: &mut dyn Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if op.with_ownership().0.type_id != E::OPERATION {
+        if op.request().type_id != E::OPERATION {
             return Ok(None);
         }
         let window = ui_core::widget::find_mut::<W>(view).ok_or("the window is not open")?;

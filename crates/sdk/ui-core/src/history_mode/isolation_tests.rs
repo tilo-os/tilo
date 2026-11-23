@@ -252,14 +252,11 @@ impl crate::widget::ResourceOperations for LiveOwner {
         _: &mut crate::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::host_operation::OperationRequest {
+        let crate::host_operation::OperationRequest {
             invocation,
             type_id,
             ..
-        }) = op.unscoped()
-        else {
-            return Ok(None);
-        };
+        } = op.request();
         if type_id != self.type_id {
             return Ok(None);
         }

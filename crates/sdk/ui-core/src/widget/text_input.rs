@@ -4839,15 +4839,14 @@ impl crate::widget::ResourceOperations for TextInput {
                 tilo_actions::ActionOutput::default(),
             )));
         }
-        let is_submit = op.unscoped().is_some_and(|request| {
-            request.kind == tilo_actions::OperationKind::View && request.type_id == SUBMIT_TEXT
-        });
+        let request = op.request();
+        let is_submit =
+            request.kind == tilo_actions::OperationKind::View && request.type_id == SUBMIT_TEXT;
         if !is_submit {
             return crate::widget::resource_operation::start_by_default(self, op, doc, path);
         }
         let payload: SubmitPayload =
-            serde_json::from_slice(op.unscoped().map_or(&[][..], |request| request.payload))
-                .map_err(|error| error.to_string())?;
+            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
         if payload.control != self.test_id().unwrap_or("text_input") {
             return Ok(None);
         }

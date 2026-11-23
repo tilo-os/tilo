@@ -261,12 +261,10 @@ impl ResourceOperations for AppWindow {
         if let Some(started) = ui::host_operation::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        let Some(request) = op
-            .unscoped()
-            .filter(|request| request.type_id == HOSTED_ACTION)
-        else {
+        let request = op.request();
+        if request.type_id != HOSTED_ACTION {
             return Ok(None);
-        };
+        }
         let chosen: Chosen = serde_json::from_slice(request.payload)
             .map_err(|error| format!("a chosen action did not read back: {error}"))?;
         let argument = chosen.argument();

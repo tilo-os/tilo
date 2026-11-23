@@ -73,8 +73,8 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
                 env.membership.services(),
             )
             .unwrap();
-            let (socket, authorize) = broker
-                .connect_local_worker_with_authorizer(env.route.clone(), &env.cert)
+            let (socket, originals) = broker
+                .connect_local_worker_with_originals(env.route.clone(), &env.cert)
                 .unwrap();
             let manager = CollaborationManager::for_route_fd_with_identity(
                 socket.into_raw_fd(),
@@ -213,30 +213,30 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
             tokio::runtime::Handle::current().block_on(local_host_answer(host.invoke(&caller, request.clone())))
                 .unwrap();
             let wire_id = facade.state().remote_job(&caller, &request.invocation).unwrap();
-            let delivered = collaboration::invocation_scope::PublishedInvocationRequest {
+            let delivered = crate::apps::collab_app_broker::InvocationRequest {
                 wire_id, invocation: request.invocation, address: request.target.address.clone(), argument: None,
                 actor: tilo_actions::MemberId::person(actor.clone()).into(), presence: Some(tilo_actions::PresenceId::for_execution(caller.execution_id().unwrap())),
             };
-            let lease = authorize(&delivered).unwrap();
+            let original_call = originals(&delivered).unwrap();
             assert_eq!(delivered.actor, tilo_actions::MemberId::person(actor).into());
             assert_eq!(delivered.invocation, request.invocation);
             let mut missing = delivered.clone();
             missing.invocation = tilo_actions::InvocationId::new();
             assert!(
-                authorize(&missing).is_err(),
+                originals(&missing).is_err(),
                 "an unretained original cannot borrow worker identity"
             );
             let mut foreign = delivered.clone();
             foreign.actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("unrelated-same-role-member"));
             assert!(
-                authorize(&foreign).is_err(),
+                originals(&foreign).is_err(),
                 "caller labels cannot replace broker ownership"
             );
-            lease.check().unwrap();
-            let (replacement, replacement_authorize) = broker
-                .connect_local_worker_with_authorizer(env.route.clone(), &env.cert).unwrap();
-            assert!(replacement_authorize(&delivered).is_err(), "same app/certificate/route on another private registration cannot borrow original ownership");
-            lease.check().unwrap();
+            original_call.check_lifecycle().unwrap();
+            let (replacement, replacement_originals) = broker
+                .connect_local_worker_with_originals(env.route.clone(), &env.cert).unwrap();
+            assert!(replacement_originals(&delivered).is_err(), "same app/certificate/route on another private registration cannot borrow original ownership");
+            original_call.check_lifecycle().unwrap();
             let output = loop {
                 scene.reset();
                 app.surface_frame(&Surface, &mut scene);
@@ -269,10 +269,10 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
                     .unwrap(),
                 before
             );
-            assert!(authorize(&delivered).is_err(), "completed Read cannot be re-entered with its retired pending original");
+            assert!(originals(&delivered).is_err(), "completed Read cannot be re-entered with its retired pending original");
             *env.authority.certificate.lock().unwrap() = None;
-            assert!(lease.check().is_err(), "revocation retires the actual original authority");
-            assert!(authorize(&delivered).is_err(), "revoked original cannot re-enter the read handler");
+            assert!(original_call.check_lifecycle().is_err(), "revocation retires the actual original authority");
+            assert!(originals(&delivered).is_err(), "revoked original cannot re-enter the read handler");
             assert!(tokio::runtime::Handle::current().block_on(local_host_answer(host.invoke(&caller, request))).is_err(), "revoked owner cannot invoke the Read again");
             drop(replacement);
             drop(app);

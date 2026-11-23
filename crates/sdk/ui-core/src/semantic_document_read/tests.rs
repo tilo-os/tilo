@@ -1,9 +1,6 @@
 use super::*;
 use automerge::{ChangeHash, ROOT, transaction::Transactable};
-use std::sync::{
-    Arc, OnceLock,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::OnceLock;
 use tilo_actions::{ActionContract, ExecutionMode, OperationKind, ResultSpec};
 
 fn schema() -> &'static serde_json::Value {
@@ -172,31 +169,6 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
         983,
         "77777777-7777-4777-8777-777777777777",
     );
-    let current = Arc::new(AtomicBool::new(true));
-    let checked = current.clone();
-    let request = crate::invocation_scope::PublishedInvocationRequest {
-        wire_id: 983,
-        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(983)),
-        address: tilo_actions::ActionAddress::new("fixture.document", "read"),
-        argument: None,
-        actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-reader")),
-        presence: None,
-    };
-    let lease = crate::invocation_scope::PublishedInvocationLease::new(
-        request,
-        fixture.owner.broker_route().unwrap(),
-        Arc::new(move || {
-            checked
-                .load(Ordering::Acquire)
-                .then_some(())
-                .ok_or_else(|| "original caller expired".into())
-        }),
-    )
-    .with_owner_token(Arc::new(983_u64))
-    .unwrap();
-    let scope =
-        crate::invocation_scope::ResourceInvocationScope::for_owner(fixture.owner.clone(), lease)
-            .unwrap();
     let resource = resource();
     let encoded = encoded();
     let selected = select(&READERS, &resource, &resource.actions[0], &encoded)
@@ -207,12 +179,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
         .read(&fixture.checkout.id, Clone::clone)
         .unwrap();
     assert_eq!(
-        selected.read(Some(&scope), &copied).unwrap_err(),
-        SemanticReadError::InvalidOwner,
-        "a copy of the record is not the record"
-    );
-    assert_eq!(
-        selected.read(None, &copied).unwrap_err(),
+        selected.read(&copied).unwrap_err(),
         SemanticReadError::MissingQualifiedOwner,
         "an unscoped read needs the mounted primary document"
     );
@@ -227,7 +194,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
                 "fixture.app",
                 None,
                 document,
-                |doc| selected.read(None, doc).unwrap().value.unwrap(),
+                |doc| selected.read(doc).unwrap().value.unwrap(),
             );
             assert_eq!(local["content"]["text"], "local record");
             assert!(local["record"]["workspaceId"].is_null());
@@ -242,7 +209,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
                 &mut copy,
                 |doc| {
                     assert_eq!(
-                        selected.read(None, doc).unwrap_err(),
+                        selected.read(doc).unwrap_err(),
                         SemanticReadError::MissingQualifiedOwner,
                         "a copy is not the store's loan"
                     );
@@ -251,33 +218,40 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
             document.put(ROOT, "text", "committed content").unwrap();
             document.commit();
             let heads = document.base_heads();
-            let output = selected.read(Some(&scope), document).unwrap();
-            resource.actions[0]
-                .contract
-                .result
-                .validate(&output)
-                .unwrap();
-            let value = output.value.unwrap();
-            assert_eq!(value["content"]["text"], "committed content");
-            assert_eq!(value["basis"]["heads"][0], heads[0].to_string());
-            let route = scope.route();
-            assert_eq!(value["record"]["workspaceId"], route.cluster_id.to_string());
-            assert_eq!(value["record"]["appId"], route.app_id.as_str());
-
-            document.put(ROOT, "text", "pending content").unwrap();
-            let pending = document.pending_ops();
-            assert_eq!(
-                selected.read(Some(&scope), document).unwrap_err(),
-                SemanticReadError::Pending
+            let route = crate::collaboration::RouteSpec::document(
+                "fixture.app",
+                uuid::Uuid::new_v4(),
+                fixture.checkout.id.as_str(),
             );
-            assert_eq!(document.pending_ops(), pending, "the read commits nothing");
-            assert_eq!(document.base_heads(), heads);
-            document.commit();
-            current.store(false, Ordering::Release);
-            assert_eq!(
-                selected.read(Some(&scope), document).unwrap_err(),
-                SemanticReadError::InvalidOwner,
-                "an expired caller is refused before disclosure"
+            crate::invocation_scope::with_loaned_resource(
+                &fixture.store,
+                &fixture.checkout,
+                "fixture.app",
+                Some(route.clone()),
+                document,
+                |document| {
+                    let output = selected.read(document).unwrap();
+                    resource.actions[0]
+                        .contract
+                        .result
+                        .validate(&output)
+                        .unwrap();
+                    let value = output.value.unwrap();
+                    assert_eq!(value["content"]["text"], "committed content");
+                    assert_eq!(value["basis"]["heads"][0], heads[0].to_string());
+                    assert_eq!(value["record"]["workspaceId"], route.cluster_id.to_string());
+                    assert_eq!(value["record"]["appId"], route.app_id.as_str());
+
+                    document.put(ROOT, "text", "pending content").unwrap();
+                    let pending = document.pending_ops();
+                    assert_eq!(
+                        selected.read(document).unwrap_err(),
+                        SemanticReadError::Pending
+                    );
+                    assert_eq!(document.pending_ops(), pending, "the read commits nothing");
+                    assert_eq!(document.base_heads(), heads);
+                    document.commit();
+                },
             );
         })
         .unwrap();
@@ -297,25 +271,25 @@ fn the_mounted_primary_document_reads_on_its_route_only() {
     mounted.commit();
     let other = mounted.clone();
     crate::invocation_scope::with_mounted_document(Some(route.clone()), &mut mounted, |doc| {
-        let value = selected.read(None, doc).unwrap().value.unwrap();
+        let value = selected.read(doc).unwrap().value.unwrap();
         assert_eq!(value["content"]["text"], "primary");
         assert_eq!(value["record"]["appId"], "fixture.app");
         assert_eq!(value["record"]["workspaceId"], route.cluster_id.to_string());
         assert_eq!(
-            selected.read(None, &other).unwrap_err(),
+            selected.read(&other).unwrap_err(),
             SemanticReadError::MissingQualifiedOwner,
             "only the exact mounted document is identified"
         );
     });
     crate::invocation_scope::with_mounted_document(None, &mut mounted, |doc| {
         assert_eq!(
-            selected.read(None, doc).unwrap_err(),
+            selected.read(doc).unwrap_err(),
             SemanticReadError::MissingQualifiedOwner,
             "without a primary route the document is not a record"
         );
     });
     assert_eq!(
-        selected.read(None, &mounted).unwrap_err(),
+        selected.read(&mounted).unwrap_err(),
         SemanticReadError::MissingQualifiedOwner
     );
 }

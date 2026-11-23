@@ -2600,9 +2600,7 @@ impl crate::widget::ResourceOperations for ToggleGroup {
         _doc: &mut crate::widget::Edits<'_>,
         _path: &ObjId,
     ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         Ok(self
             .select_segment_operation(request.kind, request.type_id, request.payload)?
             .then(|| {

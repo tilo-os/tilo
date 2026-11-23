@@ -599,14 +599,11 @@ impl crate::widget::ResourceOperations for RetainedLifecycleProbe {
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         use automerge::ReadDoc;
-        let Some(crate::host_operation::OperationRequest {
+        let crate::host_operation::OperationRequest {
             invocation,
             type_id,
             ..
-        }) = op.unscoped()
-        else {
-            return Ok(None);
-        };
+        } = op.request();
         if type_id != RETAINED_LIFECYCLE_OPERATION {
             return Ok(None);
         }

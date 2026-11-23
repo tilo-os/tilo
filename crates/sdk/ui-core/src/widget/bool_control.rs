@@ -213,9 +213,7 @@ impl BoolControl {
         &mut self,
         op: &super::ResourceOperation<'_>,
     ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         if self.view_resource.is_none()
             || request.kind != tilo_actions::OperationKind::View
             || request.type_id != VIEW_SET

@@ -2,13 +2,12 @@
 //! the invoker's signal alongside the UI thread's own, and which jobs stop
 //! before they are polled ([`Running::prepare`](super::Running::prepare)).
 
-use super::{Job, JobEvent, JobOwnership, Next, Progress, failure, track_in, track_job};
+use super::{Job, JobEvent, Next, Progress, failure, track_in, track_job};
 use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use ui_core::WakeHandle;
-use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
 
 /// The signals that stop a job: the UI thread's own, which it sets when the
 /// caller stops waiting, and the invoker's, which fires past the caller's
@@ -57,24 +56,18 @@ pub(super) struct JobCore {
     pub(super) task: Option<ui_core::rt::JoinHandle<()>>,
     pub(super) source: Option<super::Source>,
     sequence: u64,
-    pub(super) ownership: Option<ResourceInvocationScope>,
 }
 
 impl JobCore {
     /// The core of the job `event`s arrives on, reporting through
-    /// `signals`, under `ownership`.
-    pub(super) fn of(
-        events: Receiver<JobEvent>,
-        signals: Signals,
-        ownership: Option<ResourceInvocationScope>,
-    ) -> Self {
+    /// `signals`.
+    pub(super) fn of(events: Receiver<JobEvent>, signals: Signals) -> Self {
         Self {
             events,
             signals,
             task: None,
             source: None,
             sequence: 0,
-            ownership,
         }
     }
 
@@ -92,13 +85,6 @@ impl JobCore {
 
     /// The next thing the job reports, if it reported anything.
     pub(super) fn next(&mut self) -> Option<Next> {
-        if let Some(error) = self
-            .ownership
-            .as_ref()
-            .and_then(|ownership| ownership.check().err())
-        {
-            return Some(Next::Failed(failure(error)));
-        }
         let answered = self.source.as_mut().and_then(|source| source());
         let event = match answered.map_or_else(
             || self.events.try_recv(),
@@ -112,13 +98,6 @@ impl JobCore {
                 )));
             }
         };
-        if let Some(error) = self
-            .ownership
-            .as_ref()
-            .and_then(|ownership| ownership.check().err())
-        {
-            return Some(Next::Failed(failure(error)));
-        }
         Some(match event {
             JobEvent::Failed(error) => Next::Failed(error),
             JobEvent::Progress {
@@ -144,8 +123,6 @@ impl JobCore {
 pub(super) struct Tracking<'a> {
     pub(super) started: &'a mut Option<Job>,
     pub(super) wake: &'a WakeHandle,
-    pub(super) worker: Option<&'a ResourceEffectScope>,
-    pub(super) ownership: Option<&'a ResourceInvocationScope>,
     pub(super) scope: Option<&'a std::rc::Weak<super::super::surface::SurfaceScope>>,
     /// The signal the invocation's cancellation sets, for a job whose answer
     /// outlives the caller's own wait
@@ -163,7 +140,6 @@ pub(super) fn track_for(tracking: &mut Tracking<'_>, then: Option<Box<dyn Any>>)
     let progress = track_job(
         &mut *tracking.started,
         tracking.wake,
-        JobOwnership::of(tracking.worker, tracking.ownership),
         then,
         tracking.owner,
         tracking.cancel_by.cloned(),

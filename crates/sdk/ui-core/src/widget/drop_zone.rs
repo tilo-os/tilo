@@ -737,9 +737,7 @@ impl crate::widget::ResourceOperations for DropZone {
         _doc: &mut crate::widget::Edits<'_>,
         _path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         Ok(self
             .drop_operation(request.kind, request.type_id, request.payload)?
             .then(|| {

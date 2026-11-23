@@ -2124,8 +2124,6 @@ fn session_owner_commit_sdk_failure_stops_queued_terminal() {
     captures.lock().unwrap().fail_document = true;
     manager.send(CollabRequest::Document {
         mutation: collab_types::DocumentMutation::Snapshot(b"committed worker mutation".to_vec()),
-
-        authorization: None,
         commit: None,
     });
     manager.send(CollabRequest::UpdateInvocation {
@@ -4631,7 +4629,6 @@ tilo_test_env::scenario! {
         data.push(0);
         let command = SdkCommand::Primary(CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(data),
-            authorization: None,
             commit: None,
         });
 

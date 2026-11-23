@@ -1213,9 +1213,10 @@ impl ui::host_operation::ResourceOperations for OsdSlab {
         _doc: &mut ui::widget::Edits<'_>,
         _path: &ui::automerge::ObjId,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped().filter(|request| request.type_id == OPERATION) else {
+        let request = op.request();
+        if request.type_id != OPERATION {
             return Ok(None);
-        };
+        }
         let show = OsdShow::from_payload(request.payload).map_err(|error| error.to_string())?;
         self.show(show.osd());
         Ok(Some(ui::host_operation::ResourceOperationStart::Completed(

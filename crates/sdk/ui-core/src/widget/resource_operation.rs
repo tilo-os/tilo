@@ -6,7 +6,6 @@ use std::collections::HashSet;
 
 use super::Widget;
 use super::capability::{capability, capability_mut};
-use crate::invocation_scope::ResourceInvocationScope;
 use automerge::{AutoCommit, ObjId};
 use tilo_resource::Refusal;
 
@@ -207,7 +206,6 @@ impl OperationTarget {
                     invocation: invocation.0.to_string(),
                     check_id: check_id.into(),
                 },
-                None,
             )
         }
         #[cfg(not(feature = "broker-transport"))]
@@ -222,7 +220,6 @@ impl OperationTarget {
 #[derive(Clone, Copy)]
 pub struct ResourceOperation<'a> {
     request: OperationRequest<'a>,
-    scope: Option<&'a ResourceInvocationScope>,
     target: Option<&'a OperationTarget>,
     /// The resource the operation was resolved against: the app's own, a
     /// child, or a live row.
@@ -233,14 +230,13 @@ impl std::fmt::Debug for ResourceOperation<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResourceOperation")
             .field("request", &self.request)
-            .field("scoped", &self.scope.is_some())
             .finish()
     }
 }
 
 impl<'a> ResourceOperation<'a> {
-    /// An operation the host admitted without hosted ownership: local input,
-    /// the palette, or a directed invocation already admitted by the broker.
+    /// An operation the host admitted: local input, the palette, or a
+    /// directed invocation already admitted by the broker.
     pub fn local(
         invocation: tilo_actions::InvocationId,
         kind: tilo_actions::OperationKind,
@@ -254,27 +250,6 @@ impl<'a> ResourceOperation<'a> {
                 type_id,
                 payload,
             },
-            scope: None,
-            target: None,
-            resource: None,
-        }
-    }
-
-    /// A required operation bound to its original caller's ownership.
-    pub fn scoped(
-        scope: &'a ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &'a str,
-        payload: &'a [u8],
-    ) -> Self {
-        Self {
-            request: OperationRequest {
-                invocation: scope.invocation(),
-                kind,
-                type_id,
-                payload,
-            },
-            scope: Some(scope),
             target: None,
             resource: None,
         }
@@ -308,25 +283,9 @@ impl<'a> ResourceOperation<'a> {
         self.request.kind
     }
 
-    pub fn is_scoped(&self) -> bool {
-        self.scope.is_some()
-    }
-
-    /// The operation for a handler that carries no original-caller ownership.
-    /// `None` for a required operation: such a handler must decline it.
-    pub fn unscoped(&self) -> Option<OperationRequest<'a>> {
-        self.scope.is_none().then_some(self.request)
-    }
-
-    /// The operation for an ownership-aware handler.
-    pub fn with_ownership(&self) -> (OperationRequest<'a>, Option<&'a ResourceInvocationScope>) {
-        (self.request, self.scope)
-    }
-
-    /// Recheck the original caller and owner lifetime of a required
-    /// operation. A local operation carries no scope to check.
-    pub fn check(&self) -> Result<(), String> {
-        self.scope.map_or(Ok(()), ResourceInvocationScope::check)
+    /// What the operation asks for.
+    pub fn request(&self) -> OperationRequest<'a> {
+        self.request
     }
 
     /// Offer this operation to `widget`.
@@ -364,7 +323,6 @@ pub fn start_in_children<W: Widget + ?Sized>(
     doc: &mut crate::widget::Edits<'_>,
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
-    op.check()?;
     start_in(widget.children_mut(), op, doc, path)
 }
 
@@ -377,9 +335,6 @@ pub(crate) fn start_in(
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
     for child in children {
-        if op.is_scoped() && child.has_separate_document_owner() {
-            continue;
-        }
         if let Some(started) = start_operation(child, op, doc, path)? {
             return Ok(Some(started));
         }
@@ -578,10 +533,7 @@ mod tests {
             doc: &mut crate::widget::Edits<'_>,
             _: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
-            if op
-                .unscoped()
-                .is_none_or(|request| request.type_id != "probe.write")
-            {
+            if op.request().type_id != "probe.write" {
                 return Ok(None);
             }
             doc.document_mut()

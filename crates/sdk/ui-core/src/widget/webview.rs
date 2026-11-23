@@ -1180,9 +1180,7 @@ impl crate::widget::ResourceOperations for WebView {
         _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(request) = operation.unscoped() else {
-            return Ok(None);
-        };
+        let request = operation.request();
         if request.type_id != crate::undo::EDIT_OPERATION {
             return Ok(None);
         }

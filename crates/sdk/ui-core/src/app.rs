@@ -53,7 +53,6 @@ mod window_box;
 
 mod model_lifecycle;
 mod presences;
-mod published_invocations;
 mod retirement_assembly;
 #[cfg(test)]
 mod retirement_lifecycle_tests;
@@ -348,7 +347,6 @@ pub(crate) const POINTER_BROADCAST_MIN_GAP_MS: u64 = 33;
 struct DirectedInvocation {
     wire_id: u64,
     cancellation_requested: bool,
-    authorization: Option<crate::invocation_scope::ResourceInvocationScope>,
 }
 
 /// Public-in-crate so the throttle decision is unit-testable without a real event loop.
@@ -2914,17 +2912,15 @@ pub(crate) mod ordinary_confirmation_tests {
             doc: &mut crate::widget::Edits<'_>,
             path: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            let Some(request) = op
-                .unscoped()
-                .filter(|request| request.type_id == "fixture.control")
-            else {
+            let request = op.request();
+            if request.type_id != "fixture.control" {
                 return crate::widget::start_operation(
                     &mut *self.child,
                     op,
                     &mut crate::widget::Edits::lend(doc.document_mut()),
                     path,
                 );
-            };
+            }
             self.log
                 .borrow_mut()
                 .push(serde_json::from_slice(request.payload).unwrap());

@@ -124,9 +124,7 @@ impl crate::widget::ResourceOperations for Probe {
         _: &mut crate::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         if let Ok(text) = serde_json::from_slice::<String>(request.payload) {
             self.observed.payloads.borrow_mut().push(text);
         }

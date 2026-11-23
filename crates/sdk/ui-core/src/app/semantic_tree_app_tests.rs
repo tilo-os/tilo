@@ -1,5 +1,3 @@
-include!("published_invocation_tests.rs");
-
 include!("hosted_model_tests.rs");
 
 include!("hosted_pump_dirty_tests.rs");
@@ -174,8 +172,6 @@ struct CounterCard {
     post_bump_reset: bool,
     async_bump: bool,
     pending_bump: Option<tilo_actions::InvocationId>,
-    scoped_jobs: Vec<crate::invocation_scope::ResourceInvocationScope>,
-    scoped_results: Vec<tilo_actions::InvocationUpdate>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
     /// Bump the counter as part of every `ping`, as an effect's handler
     /// submits an edit.
@@ -270,8 +266,6 @@ impl CounterCard {
             post_bump_reset: false,
             async_bump: false,
             pending_bump: None,
-            scoped_jobs: vec![],
-            scoped_results: vec![],
             resource_result: None,
             bump_after_ping: false,
             follow_ups: vec![],
@@ -302,8 +296,6 @@ impl CounterCard {
             post_bump_reset: false,
             async_bump: false,
             pending_bump: None,
-            scoped_jobs: vec![],
-            scoped_results: vec![],
             resource_result: None,
             bump_after_ping: false,
             follow_ups: vec![],
@@ -389,29 +381,6 @@ impl Widget for CounterCard {
         }
         self.button.settle(edits, p);
         let mut actions = crate::local_dispatch::LocalDispatch::new();
-        for scope in std::mem::take(&mut self.scoped_jobs) {
-            let invocation = scope.invocation();
-            let result = scope.with_document_mutation(edits.document_mut(), |doc| {
-                actions
-                    .try_dispatch(doc, COUNTER_TYPE, &CounterAction::Bump)
-                    .map_err(|error| error.to_string())
-            });
-            self.scoped_results.push(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "expired".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
-        }
         if let Some(invocation) = self.pending_bump.take() {
             actions
                 .try_dispatch(edits.document_mut(), COUNTER_TYPE, &CounterAction::Bump)
@@ -456,23 +425,17 @@ impl crate::widget::ResourceOperations for CounterCard {
         doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let (request, scope) = op.with_ownership();
-        if scope.is_none()
-            && let Some(started) = crate::widget::start_in_children(
-                self,
-                op,
-                &mut crate::widget::Edits::lend(doc.document_mut()),
-                path,
-            )?
-        {
+        let request = op.request();
+        if let Some(started) = crate::widget::start_in_children(
+            self,
+            op,
+            &mut crate::widget::Edits::lend(doc.document_mut()),
+            path,
+        )? {
             return Ok(Some(started));
         }
-        op.check()?;
         if self.async_bump && request.type_id == ASYNC_COUNTER_TYPE {
-            match scope {
-                Some(scope) => self.scoped_jobs.push(scope.clone()),
-                None => self.pending_bump = Some(request.invocation),
-            }
+            self.pending_bump = Some(request.invocation);
             return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
         }
         if self.bump_after_ping && request.kind == tilo_actions::OperationKind::Effect {
@@ -502,13 +465,6 @@ impl crate::widget::ResourceOperations for CounterCard {
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
-        if let Some(index) = self
-            .scoped_results
-            .iter()
-            .position(|update| update.invocation() == invocation)
-        {
-            return Some(self.scoped_results.remove(index));
-        }
         if self
             .resource_result
             .as_ref()

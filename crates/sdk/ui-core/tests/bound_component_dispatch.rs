@@ -663,13 +663,10 @@ impl tilo_ui::host_operation::ResourceOperations for Leaf {
     )]
     fn start_operation(
         &mut self,
-        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        _op: &tilo_ui::host_operation::ResourceOperation<'_>,
         doc: &mut tilo_ui::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
-        if op.unscoped().is_none() {
-            return Ok(None);
-        }
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
@@ -856,9 +853,6 @@ impl tilo_ui::host_operation::ResourceOperations for Root {
         doc: &mut tilo_ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
-        if op.unscoped().is_none() {
-            return tilo_ui::host_operation::start_in_children(self, op, doc, path);
-        }
         if !LEGACY_MUTABLE.get() {
             if let Some(started) = tilo_ui::host_operation::start_in_children(self, op, doc, path)?
             {

@@ -46,7 +46,7 @@ impl Context {
                 &self.original.request().address.action,
             )
             .ok_or("external moderation publication retired")?;
-        if published.operation_kind != self.original.dispatch_spec().kind
+        if published.operation_kind != self.original.operation_kind()
             || published.contract != *self.original.contract()
         {
             return Err("external moderation current action contract mismatch".into());
