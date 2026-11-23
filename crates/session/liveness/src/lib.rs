@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -59,6 +59,10 @@ pub const DEFAULT_BUDGET: Duration = Duration::from_millis(500);
 
 /// The most budget a request may ask for.
 const MAX_BUDGET: Duration = Duration::from_secs(60);
+
+/// The most bytes one request line on the liveness socket may carry:
+/// [`Request`] is a closed set whose longest honest line is under 100 bytes.
+const MAX_REQUEST_LINE_BYTES: usize = 4096;
 
 /// How long a thread dump waits for the threads' answers.
 const DUMP_WAIT: Duration = Duration::from_secs(2);
@@ -380,11 +384,38 @@ pub fn serve<D: 'static>(
     Some(Server { _unlink: unlink })
 }
 
+fn write_answer(writer: &mut UnixStream, answer: &Answer) -> bool {
+    let Ok(mut encoded) = serde_json::to_vec(answer) else {
+        return false;
+    };
+    encoded.push(b'\n');
+    writer.write_all(&encoded).is_ok()
+}
+
 fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
-    for line in BufReader::new(stream).lines().map_while(Result::ok) {
+    let mut reader = BufReader::new(stream);
+    loop {
+        let line = match wire_frame::read_line_or_eof(&mut reader, MAX_REQUEST_LINE_BYTES) {
+            Ok(Some(bytes)) => {
+                let Ok(line) = String::from_utf8(bytes) else {
+                    return;
+                };
+                line
+            }
+            Err(wire_frame::FrameError::TooLarge(_)) => {
+                let _ = write_answer(
+                    &mut writer,
+                    &Answer::Err(format!(
+                        "liveness request exceeds {MAX_REQUEST_LINE_BYTES} bytes"
+                    )),
+                );
+                return;
+            }
+            Ok(None) | Err(_) => return,
+        };
         let answer = match serde_json::from_str::<Request>(&line) {
             Ok(Request::Heartbeat { budget_ms }) => {
                 let budget = budget_ms
@@ -412,11 +443,7 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
             },
             Err(error) => Answer::Err(format!("bad liveness request: {error}")),
         };
-        let Ok(mut encoded) = serde_json::to_vec(&answer) else {
-            return;
-        };
-        encoded.push(b'\n');
-        if writer.write_all(&encoded).is_err() {
+        if !write_answer(&mut writer, &answer) {
             return;
         }
     }
@@ -1014,6 +1041,8 @@ fn wait_for_captures(
 
 #[cfg(test)]
 mod tests {
+    use std::io::BufRead as _;
+
     use super::*;
 
     fn stalled(cpu: u64, starved: u64) -> Answer {
@@ -1520,6 +1549,280 @@ mod tests {
             probe.backtrace.contains("recv"),
             "the parked thread's stack should show where it waits:\n{}",
             probe.backtrace
+        );
+    }
+
+    /// A real `Beat` and a background `calloop::EventLoop` acknowledging its
+    /// pings, so tests can drive the real `answer` over `UnixStream::pair()`.
+    struct AnsweringLoop {
+        beat: Arc<Beat>,
+        ping: calloop::ping::Ping,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl AnsweringLoop {
+        fn start() -> Self {
+            install_capture_handler();
+            let beat = Arc::new(Beat {
+                requested: AtomicU64::new(0),
+                sent: AtomicU64::new(0),
+                acked: Mutex::new(0),
+                wake: Condvar::new(),
+                arm_requested: std::sync::atomic::AtomicBool::new(false),
+            });
+            let (ping, source) = calloop::ping::make_ping().unwrap();
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let on_loop = LoopBeat(Arc::clone(&beat));
+            let stopping = Arc::clone(&stop);
+            let handle = std::thread::spawn(move || {
+                let mut event_loop = calloop::EventLoop::<()>::try_new().unwrap();
+                event_loop
+                    .handle()
+                    .insert_source(source, move |(), (), ()| on_loop.acknowledge())
+                    .unwrap();
+                while !stopping.load(Ordering::Acquire) {
+                    event_loop
+                        .dispatch(Some(Duration::from_millis(20)), &mut ())
+                        .unwrap();
+                }
+            });
+            Self {
+                beat,
+                ping,
+                stop,
+                handle: Some(handle),
+            }
+        }
+
+        fn serve(&self) -> (UnixStream, std::thread::JoinHandle<()>) {
+            let (client, server) = UnixStream::pair().unwrap();
+            let beat = Arc::clone(&self.beat);
+            let ping = self.ping.clone();
+            let worker = std::thread::spawn(move || answer(server, &beat, &ping));
+            (client, worker)
+        }
+    }
+
+    impl Drop for AnsweringLoop {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            self.ping.ping();
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn read_reply(reader: &mut BufReader<UnixStream>) -> Option<String> {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => return None,
+            // When the server closes without draining unread oversized input,
+            // Linux reports ECONNRESET after the error reply has been read.
+            Err(error)
+                if line.is_empty() && error.kind() == std::io::ErrorKind::ConnectionReset =>
+            {
+                return None;
+            }
+            Ok(_) => {}
+            Err(error) => panic!("unexpected liveness read error: {error}"),
+        }
+        assert!(line.ends_with('\n'), "every reply ends with a newline");
+        line.pop();
+        Some(line)
+    }
+
+    #[test]
+    fn answer_handles_requests_exact_bound_malformed_eof_and_invalid_utf8() {
+        const BOUND: usize = MAX_REQUEST_LINE_BYTES;
+        let server = AnsweringLoop::start();
+
+        // All four requests, a malformed line that keeps the connection alive,
+        // and a final line without a trailing newline at EOF.
+        let (mut client, worker) = server.serve();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+
+        client
+            .write_all(b"{\"op\":\"heartbeat\",\"budget_ms\":500}\n")
+            .unwrap();
+        let raw = read_reply(&mut reader).expect("heartbeat answer");
+        assert!(
+            raw.starts_with(r#"{"alive":{"ticks":1,"latency_ms":"#)
+                && raw.ends_with(r#","halfway":null}}"#),
+            "heartbeat wire format changed: {raw}"
+        );
+        assert!(matches!(
+            serde_json::from_str::<Answer>(&raw).unwrap(),
+            Answer::Alive {
+                ticks: 1,
+                halfway: None,
+                ..
+            }
+        ));
+
+        client.write_all(b"{\"op\":\"threads\"}\n").unwrap();
+        let raw = read_reply(&mut reader).expect("threads answer");
+        match serde_json::from_str::<Answer>(&raw).unwrap() {
+            Answer::Threads(threads) => assert!(!threads.is_empty()),
+            other => panic!("expected threads answer, got {other:?}"),
+        }
+
+        client
+            .write_all(b"{\"op\":\"main_thread_files\"}\n")
+            .unwrap();
+        let raw = read_reply(&mut reader).expect("main_thread_files answer");
+        assert_eq!(
+            raw,
+            r#"{"err":"the main-thread file audit was never armed"}"#
+        );
+
+        client
+            .write_all(b"{\"op\":\"forbid_main_thread_files\"}\n")
+            .unwrap();
+        let raw = read_reply(&mut reader).expect("forbid_main_thread_files answer");
+        assert_eq!(
+            raw,
+            r#"{"err":"the main-thread file audit is armed on the main thread"}"#
+        );
+
+        client.write_all(b"not json\n").unwrap();
+        let raw = read_reply(&mut reader).expect("malformed line answer");
+        assert_eq!(
+            raw,
+            r#"{"err":"bad liveness request: expected ident at line 1 column 2"}"#
+        );
+
+        // Exact 4096-byte line of spaces around a valid request.
+        let req = r#"{"op":"heartbeat","budget_ms":500}"#;
+        let pad = BOUND.checked_sub(req.len()).unwrap();
+        let left = pad / 2;
+        let right = pad.saturating_sub(left);
+        let padded = format!("{}{req}{}\n", " ".repeat(left), " ".repeat(right));
+        assert_eq!(padded.len(), BOUND.saturating_add(1));
+        client.write_all(padded.as_bytes()).unwrap();
+        let raw = read_reply(&mut reader).expect("exact-bound request answer");
+        assert!(
+            matches!(
+                serde_json::from_str::<Answer>(&raw).unwrap(),
+                Answer::Alive { .. }
+            ),
+            "exact-bound line must succeed: {raw}"
+        );
+
+        // Final line without a trailing newline, followed by EOF.
+        client
+            .write_all(b"{\"op\":\"heartbeat\",\"budget_ms\":500}")
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let raw = read_reply(&mut reader).expect("unterminated final line answer");
+        assert!(
+            matches!(
+                serde_json::from_str::<Answer>(&raw).unwrap(),
+                Answer::Alive { .. }
+            ),
+            "unterminated final line must succeed: {raw}"
+        );
+        assert_eq!(read_reply(&mut reader), None);
+        worker.join().unwrap();
+
+        // Invalid UTF-8 ends the connection without an answer.
+        let (mut client, worker) = server.serve();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        client
+            .write_all(b"\xff\xfe\n{\"op\":\"heartbeat\"}\n")
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(read_reply(&mut reader), None);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn answer_refuses_an_overlong_line_and_does_not_buffer_unterminated_megabyte() {
+        use std::os::fd::AsRawFd as _;
+        const BOUND: usize = MAX_REQUEST_LINE_BYTES;
+        let server = AnsweringLoop::start();
+
+        // One byte over the bound: one error naming the bound, then EOF
+        // without answering the following valid request.
+        let (mut client, worker) = server.serve();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        let req = r#"{"op":"heartbeat","budget_ms":500}"#;
+        let pad = BOUND.saturating_add(1).checked_sub(req.len()).unwrap();
+        let over = format!(
+            "{}{req}\n{{\"op\":\"heartbeat\",\"budget_ms\":500}}\n",
+            " ".repeat(pad)
+        );
+        client.write_all(over.as_bytes()).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let raw = read_reply(&mut reader).expect("oversized line must get one error reply");
+        match serde_json::from_str::<Answer>(&raw).unwrap() {
+            Answer::Err(message) => {
+                assert!(
+                    message.contains("4096"),
+                    "oversized error must name the bound: {message}"
+                );
+            }
+            other => panic!("oversized line must answer Answer::Err, got {other:?}"),
+        }
+        assert_eq!(
+            read_reply(&mut reader),
+            None,
+            "connection must close after the oversized error"
+        );
+        worker.join().unwrap();
+
+        // 1 MiB without a newline: answered with the error and closed before
+        // the stream's bytes are drained into memory.
+        let (client, server_end) = UnixStream::pair().unwrap();
+        let small: libc::c_int = 16 * 1024;
+        for fd in [client.as_raw_fd(), server_end.as_raw_fd()] {
+            for opt in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+                // SAFETY: valid open socket descriptor and integer buffer size.
+                unsafe {
+                    libc::setsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        opt,
+                        (&raw const small).cast(),
+                        u32::try_from(size_of::<libc::c_int>()).unwrap(),
+                    );
+                }
+            }
+        }
+        let beat = Arc::clone(&server.beat);
+        let ping = server.ping.clone();
+        let worker = std::thread::spawn(move || answer(server_end, &beat, &ping));
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        let writer = std::thread::spawn(move || {
+            let mut client = client;
+            let chunk = [b'a'; 4096];
+            let mut written = 0_usize;
+            while written < 1024 * 1024 {
+                match client.write(&chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => written = written.saturating_add(n),
+                }
+            }
+            let _ = client.shutdown(std::net::Shutdown::Write);
+            written
+        });
+        let raw = read_reply(&mut reader).expect("1 MiB line must get one error reply");
+        match serde_json::from_str::<Answer>(&raw).unwrap() {
+            Answer::Err(message) => {
+                assert!(
+                    message.contains("4096"),
+                    "1 MiB error must name the bound: {message}"
+                );
+            }
+            other => panic!("1 MiB line must answer Answer::Err, got {other:?}"),
+        }
+        assert_eq!(read_reply(&mut reader), None);
+        worker.join().unwrap();
+        let written = writer.join().unwrap();
+        assert!(
+            written < 1024 * 1024,
+            "reader buffered/drained all {written} bytes instead of stopping at the bound"
         );
     }
 }

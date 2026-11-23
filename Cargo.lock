@@ -19985,6 +19985,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-test-env",
+ "wire-frame",
  "workspace-hack",
 ]
 
