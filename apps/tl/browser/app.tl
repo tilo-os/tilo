@@ -1,4 +1,4 @@
-app so.tilo.browser "Browser" (
+app so.tilo.browser.preview "Browser" (
     icon: .globe,
     category: .network,
     tagline: "Web browser with ad blocking and Chrome extensions",
