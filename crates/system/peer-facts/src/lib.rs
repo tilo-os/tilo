@@ -8,6 +8,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+pub mod server;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerFacts {
     pub uid: u32,
