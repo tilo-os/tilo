@@ -450,25 +450,6 @@ impl Widget for Art {
         false
     }
 
-    /// The album art: a page's own picture where its address loads, its paint otherwise.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let state = self.shared.state.borrow();
-        let alt = state.art_name.clone();
-        if let TransportArt::Picture(picture) = &state.art
-            && let Some(src) = crate::composition::web_picture(&picture.src)
-        {
-            cx.element("img");
-            cx.attr("src", src.to_owned());
-            cx.attr("alt", alt);
-            return;
-        }
-        cx.element("span");
-        if !alt.is_empty() {
-            cx.attr("aria-label", alt);
-        }
-        cx.picture();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -643,45 +624,6 @@ impl Widget for SongLines {
     /// The band it stands in places it: it asks for no layout of its own.
     fn is_layout_dirty(&self) -> bool {
         false
-    }
-
-    /// What is playing: its title over its artist.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::TextLook;
-        let theme = cx.theme();
-        let state = self.shared.state.borrow();
-        cx.element("div");
-        let title = theme.text(TextRole::Body).strong();
-        let caption = theme.text(TextRole::Caption);
-        let title_h = f64::from(title.line_height_px());
-        let caption_h = f64::from(caption.line_height_px());
-        let mut y = self.rect.y0;
-        if !state.title.is_empty() {
-            let look = TextLook::new(state.title.clone(), &title, Some(theme.text_primary))
-                .with_max_lines(Some(1));
-            cx.words(
-                "title",
-                "h3",
-                Rect::new(self.rect.x0, y, self.rect.x1, y + title_h),
-                look,
-            );
-            y += title_h;
-        }
-        if !state.subtitle.is_empty() {
-            let ink = if state.error {
-                theme.tokens.colors.semantic.danger
-            } else {
-                theme.text_dim
-            };
-            let look =
-                TextLook::new(state.subtitle.clone(), &caption, Some(ink)).with_max_lines(Some(1));
-            cx.words(
-                "subtitle",
-                "p",
-                Rect::new(self.rect.x0, y, self.rect.x1, y + caption_h),
-                look,
-            );
-        }
     }
 
     fn build_layout(
@@ -1033,21 +975,6 @@ impl Widget for TimeLabel {
     /// The band it stands in places it: it asks for no layout of its own.
     fn is_layout_dirty(&self) -> bool {
         false
-    }
-
-    /// Where playback is, either side of the scrubber.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let label = self.shared.caption(self.side);
-        if label.is_empty() {
-            return;
-        }
-        let theme = cx.theme();
-        let style = theme.text(crate::TextRole::Caption).numeric();
-        cx.element("span");
-        cx.text(
-            crate::composition::TextLook::new(label, &style, Some(theme.text_dim))
-                .with_max_lines(Some(1)),
-        );
     }
 
     fn build_layout(

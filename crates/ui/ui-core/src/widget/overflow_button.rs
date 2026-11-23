@@ -207,10 +207,6 @@ impl OverflowButton {
 }
 
 impl Widget for OverflowButton {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

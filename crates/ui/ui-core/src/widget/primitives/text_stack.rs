@@ -434,62 +434,6 @@ impl TextStack {
 }
 
 impl Widget for TextStack {
-    /// Its title, secondary and tertiary lines, one under the other.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::TextLook;
-        let theme = cx.theme();
-        let face = self.face();
-        let styles = StackStyles::of(&face, theme);
-        cx.element("div");
-        let gap = line_gap(theme);
-        let mut y = self.rect.y0;
-        let words = |cx: &mut crate::composition::HtmlCx<'_>,
-                     key: &str,
-                     text: &str,
-                     style: &TextStyle,
-                     color: vello::peniko::Color,
-                     y: f64|
-         -> f64 {
-            if text.is_empty() {
-                return 0.0;
-            }
-            let height = f64::from(style.line_height_px());
-            let look = TextLook::new(text.to_owned(), style, Some(color)).with_max_lines(Some(1));
-            cx.words(
-                key,
-                "span",
-                Rect::new(self.rect.x0, y, self.rect.x1, y + height),
-                look,
-            );
-            height
-        };
-        let height = f64::from(styles.title.line_height_px());
-        words(
-            cx,
-            "title",
-            &self.title,
-            &styles.title,
-            theme.text_primary,
-            y,
-        );
-        y += height + gap;
-        if !self.secondary.is_empty() {
-            let color = self.secondary_tone.colour(theme);
-            let height = words(cx, "secondary", &self.secondary, &styles.caption, color, y);
-            y += height + gap;
-        }
-        if !self.tertiary.is_empty() {
-            words(
-                cx,
-                "tertiary",
-                &self.tertiary,
-                &styles.caption,
-                theme.text_tertiary,
-                y,
-            );
-        }
-    }
-
     crate::described!();
 
     fn build_layout(

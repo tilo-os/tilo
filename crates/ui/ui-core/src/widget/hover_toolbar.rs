@@ -240,12 +240,6 @@ impl Decorator for HoverToolbar {
         "HoverToolbar"
     }
 
-    /// What it holds; a page shows its controls while the pointer is over it or focus is in it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        self.layers.html(cx);
-        cx.attr("data-hover-controls", "");
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {

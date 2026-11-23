@@ -1988,12 +1988,6 @@ impl Drop for OnboardingView {
 }
 
 impl Widget for OnboardingView {
-    /// The page it shows, filling the window.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
         for child in self.children_mut() {
             child.settle(edits, path);

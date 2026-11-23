@@ -1832,12 +1832,6 @@ impl crate::widget::Widget for NoticeLayer {
 
     crate::rect_geometry!();
 
-    /// A status (`<output>`) showing the pill as it is painted over the windows.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("output");
-        cx.picture();
-    }
-
     /// The layer covers the surface whatever it says: once laid out it has nothing to measure.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO

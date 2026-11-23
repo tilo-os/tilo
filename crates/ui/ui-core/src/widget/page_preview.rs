@@ -81,40 +81,6 @@ impl PagePreview {
 }
 
 impl Widget for PagePreview {
-    /// The sheet as its picture, the page it is under it as words.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("figure");
-        let theme = cx.theme();
-        let g = Geometry::of(theme);
-        let sheet = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x0 + g.sheet_w.min(self.rect.width()),
-            self.rect.y0 + g.sheet_h,
-        );
-        let sheet_part = cx.part("sheet", "PagePreview", sheet);
-        sheet_part.painted(u64::from(self.page) * 31 + u64::from(self.page_count));
-        let sheet_rect = Rect::new(
-            sheet_part.rect[0],
-            sheet_part.rect[1],
-            sheet_part.rect[0] + sheet_part.rect[2],
-            sheet_part.rect[1] + sheet_part.rect[3],
-        );
-        let style = theme.text(TextRole::Caption).numeric();
-        let look = crate::composition::TextLook::new(self.position(), &style, Some(theme.text_dim));
-        cx.words(
-            "position",
-            "figcaption",
-            Rect::new(
-                sheet_rect.x0,
-                sheet_rect.y1 + g.gap,
-                self.rect.x1,
-                self.rect.y1,
-            ),
-            look,
-        );
-    }
-
     crate::described!();
 
     fn build_layout(

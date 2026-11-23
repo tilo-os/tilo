@@ -239,32 +239,6 @@ fn key_id(key: PasscodeKey) -> String {
 }
 
 impl Widget for TouchKeyboard {
-    /// Each key as its own button where it stands, named as the screen reader names it, so a page
-    /// types through the keyboard as a finger does.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        let Some(access) = self.accessibility() else {
-            return;
-        };
-        let theme = cx.theme();
-        let style = theme.text(ui::TextRole::Body);
-        let ink = theme.tokens.colors.text_primary;
-        for (index, key) in access.children.iter().enumerate() {
-            let (Some(bounds), Some(name)) = (key.bounds, key.name.clone()) else {
-                continue;
-            };
-            let rect = bounds.to_rect();
-            let part = cx.part(&format!("key:{index}"), "PasscodeKey", rect);
-            part.tag = Some("button");
-            part.focusable = true;
-            part.semantics = Some(key.clone());
-            let mut look =
-                ui::composition::TextLook::new(name, &style, Some(ink)).with_max_lines(Some(1));
-            look.align = "center";
-            part.own = Some(ui::composition::Own::Text(look));
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -418,37 +392,6 @@ mod tests {
 
     fn laid_out(theme: &Theme) -> TouchKeyboard {
         laid_out_for(theme, PasscodeKeyboard::default())
-    }
-
-    /// Every key is its own button on a page, named as the screen reader names it, so a page
-    /// types through the keyboard the way a finger does.
-    #[test]
-    fn the_touch_keyboard_composes_as_its_keys() {
-        let theme = Theme::default();
-        let keyboard = laid_out(&theme);
-        let composed = ui::composition::compose_alone(&keyboard, &theme, "keyboard");
-        let buttons: Vec<_> = composed
-            .children
-            .iter()
-            .filter(|child| child.tag == Some("button"))
-            .collect();
-        assert_eq!(buttons.len(), composed.children.len(), "one button per key");
-        assert!(!buttons.is_empty(), "the keys: {composed:#?}");
-        for button in buttons {
-            assert!(button.focusable);
-            assert!(
-                matches!(&button.own, Some(ui::composition::Own::Text(_))),
-                "each key says its own name: {button:#?}"
-            );
-            assert!(
-                button
-                    .semantics
-                    .as_ref()
-                    .and_then(|node| node.name.as_deref())
-                    .is_some(),
-                "and is named for a reader"
-            );
-        }
     }
 
     fn laid_out_for(theme: &Theme, start: PasscodeKeyboard) -> TouchKeyboard {

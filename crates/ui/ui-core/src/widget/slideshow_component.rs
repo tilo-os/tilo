@@ -63,10 +63,6 @@ impl Slideshow {
 }
 
 impl Widget for Slideshow {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        self.image.html(cx);
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

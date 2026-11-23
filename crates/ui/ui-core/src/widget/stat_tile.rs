@@ -574,93 +574,6 @@ impl StatTile {
 }
 
 impl Widget for StatTile {
-    /// A figure with what it counts, its unit and how it moved, on its own tile.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Ground, TextLook, rgba8};
-        let theme = cx.theme();
-        let m = self
-            .metrics
-            .clone()
-            .unwrap_or_else(|| TileMetrics::new(theme));
-        let raised = theme.tokens.colors.surfaces.raised;
-        cx.element("div");
-        cx.ground(Ground {
-            fill: Some(rgba8(raised)),
-            edge: Some(rgba8(crate::surface::edge_on(raised))),
-            radius: m.radius,
-            inset: [0.0; 2],
-        });
-        cx.selected(self.selected);
-        let left = self.rect.x0 + m.pad;
-        let right = self.rect.x1 - m.pad;
-        let label_h = f64::from(m.label.line_height_px());
-        let value_style = if self.hero { &m.hero } else { &m.value };
-        let value_h = f64::from(value_style.line_height_px());
-        let mut y = self.rect.y0 + m.pad;
-        let look = TextLook::new(self.label.clone(), &m.label, Some(theme.text_dim))
-            .with_max_lines(Some(1));
-        cx.words(
-            "label",
-            "p",
-            crate::kurbo::Rect::new(left, y, right, y + label_h),
-            look,
-        );
-        y += label_h + m.tight;
-        let look = TextLook::new(self.value.clone(), value_style, Some(theme.text_primary))
-            .with_max_lines(Some(1));
-        cx.words(
-            "value",
-            "p",
-            crate::kurbo::Rect::new(left, y, right, y + value_h),
-            look,
-        );
-        y += value_h;
-        if let Some(unit) = &self.unit {
-            let look =
-                TextLook::new(unit.clone(), &m.unit, Some(theme.text_dim)).with_max_lines(Some(1));
-            cx.words(
-                "unit",
-                "span",
-                crate::kurbo::Rect::new(left + m.unit_gap, y, right, y + m.tight),
-                look,
-            );
-        }
-        if let Some(note) = &self.note {
-            let look = TextLook::new(note.clone(), &m.change, Some(theme.text_dim))
-                .with_max_lines(Some(1));
-            cx.words(
-                "note",
-                "p",
-                crate::kurbo::Rect::new(
-                    left,
-                    self.rect.y1 - m.pad - label_h,
-                    right,
-                    self.rect.y1 - m.pad,
-                ),
-                look,
-            );
-        }
-        if let Some((change, trend)) = &self.change {
-            let ink = match trend {
-                Trend::Up => theme.tokens.colors.semantic.success,
-                Trend::Down => theme.tokens.colors.semantic.danger,
-                Trend::Flat => theme.text_dim,
-            };
-            let look = TextLook::new(change.clone(), &m.change, Some(ink)).with_max_lines(Some(1));
-            cx.words(
-                "change",
-                "p",
-                crate::kurbo::Rect::new(
-                    left,
-                    self.rect.y1 - m.pad - label_h,
-                    right,
-                    self.rect.y1 - m.pad,
-                ),
-                look,
-            );
-        }
-    }
-
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
     );
@@ -851,12 +764,6 @@ fn columns_for(count: usize, width: f64, min_tile: f64, gap: f64) -> usize {
 }
 
 impl Widget for StatGroup {
-    /// Its tiles side by side.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     crate::described!();
 
     fn build_layout(

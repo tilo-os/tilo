@@ -514,52 +514,6 @@ pub(crate) fn shows(content: &BadgeContent) -> bool {
 }
 
 impl Widget for Badge {
-    /// A count, a word or a mark on its chip.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Ground, TextLook, rgba8};
-        let theme = cx.theme();
-        let metrics = BadgeMetrics::of(theme);
-        let rect = Widget::get_rect(self);
-        let radius = rect.height().min(rect.width()) / 2.0;
-        cx.element("span");
-        let Some(label) = label_of(&self.content) else {
-            // A dot is its colour; a modified mark says what it means.
-            if matches!(self.content, BadgeContent::Modified) {
-                cx.attr("aria-label", "Modified");
-            } else {
-                cx.attr("aria-hidden", "true");
-            }
-            if shows(&self.content) {
-                cx.ground(Ground {
-                    fill: Some(rgba8(dot_colour(
-                        self.style,
-                        matches!(self.content, BadgeContent::Modified),
-                        theme,
-                    ))),
-                    edge: None,
-                    radius,
-                    inset: [0.0; 2],
-                });
-            }
-            return;
-        };
-        let colors = self
-            .style
-            .colors(theme, theme.tokens.colors.surfaces.content, false, false);
-        cx.ground(Ground {
-            fill: Some(rgba8(colors.fill)),
-            edge: colors.edge.map(rgba8),
-            radius,
-            inset: [0.0; 2],
-        });
-        // The pill is as wide as its words and their padding: they stand in its middle.
-        cx.text(
-            TextLook::new(label, &metrics.caption, Some(colors.ink))
-                .with_max_lines(Some(1))
-                .aligned("center"),
-        );
-    }
-
     crate::described!();
 
     fn build_layout(

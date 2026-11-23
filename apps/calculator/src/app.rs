@@ -1213,22 +1213,6 @@ impl ui::history_mode::capability::PresentsHistoryEntries for CalculatorApp {
 }
 
 impl Widget for CalculatorApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        let theme = cx.theme().clone();
-        let style = theme.text(ui::tokens::TextRole::Display);
-        let shown = if self.model.expr.trim().is_empty() {
-            self.model.ans.to_string()
-        } else {
-            format!("{}\n{}", self.model.expr, self.model.ans)
-        };
-        cx.element("output");
-        cx.text(ui::composition::TextLook::new(
-            shown,
-            &style,
-            Some(theme.tokens.colors.text_primary),
-        ));
-    }
-
     ui::provides!(
         dyn ui::history_mode::capability::PresentsHistoryEntries,
         dyn ui::application_view::ApplicationViewState

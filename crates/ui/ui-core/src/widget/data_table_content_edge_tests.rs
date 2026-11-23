@@ -534,9 +534,7 @@ fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
     ])
     .with_row_key(|row: &Item| u64::from(*row.name.as_bytes().last().unwrap()))
     .selectable(true)
-    .on_check(move |row, on| {
-        seen.borrow_mut().push((row, on))
-    })
+    .on_check(move |row, on| seen.borrow_mut().push((row, on)))
     .on_activate(move |_| activated.set(activated.get() + 1));
     table.set_rows(items(2));
     let mut harness = crate::headless::FrameHarness::new(
@@ -590,9 +588,7 @@ fn badges_and_checkboxes_are_measured_painted_and_read() {
         name_col(),
     ])
     .selectable(true)
-    .on_check(move |row, on| {
-        seen.borrow_mut().push((row, on))
-    });
+    .on_check(move |row, on| seen.borrow_mut().push((row, on)));
     table.set_rows(items(2));
     let (tree, node) = settle(&mut table, 400.0, 300.0);
     let theme = Theme::dark();

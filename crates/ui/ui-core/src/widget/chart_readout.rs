@@ -5,13 +5,10 @@
 //! over the marks in a window and composes it as the page's own elements on the web, from the
 //! one geometry [`Readout::place`] works out, so both look alike.
 
-use std::cell::Cell;
-
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::composition::{Composed, Ground, TextLook, rgba8};
 use crate::paint::with_alpha;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
@@ -328,85 +325,6 @@ impl Readout {
             }
         }
     }
-
-    /// The highlighted marks and the card as parts of the chart's element `node`: the guide, the
-    /// dots and the column as shapes over its picture, and the card as the page's own words, which
-    /// assistive technology reads as the chart's tooltip.
-    pub(crate) fn compose(&self, node: &mut Composed, theme: &Theme) {
-        for (index, mark) in self.marks.iter().enumerate() {
-            compose_mark(node, theme, index, *mark);
-        }
-        let placed = crate::text_render::with_layout_renderer(theme, |tr| self.place(tr, theme));
-        let m = Metrics::of(theme);
-        let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
-        let styles = Styles::of(theme);
-        let ink = Inks::of(&on_panel);
-        let card = node.part("readout", "ChartReadout", placed.card);
-        card.tag = Some("div");
-        card.ground = Some(Ground {
-            fill: Some(rgba8(crate::chrome::panel_ground(theme))),
-            edge: Some(rgba8(crate::chrome::chrome_hairline(theme))),
-            radius: m.radius,
-            inset: [0.0; 2],
-        });
-        card.floats = true;
-        card.semantics = Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Tooltip)
-                .with_name(self.words())
-                .with_live(crate::a11y::Politeness::Polite),
-        );
-        let words =
-            |card: &mut Composed, key: &str, text: &str, rect: Rect, color, style: &TextStyle| {
-                if text.is_empty() || rect.width() <= 0.0 {
-                    return;
-                }
-                let part = card.part(key, "Text", rect);
-                part.tag = Some("span");
-                part.own = Some(crate::composition::Own::Text(
-                    TextLook::new(text.to_owned(), style, Some(color)).with_max_lines(Some(1)),
-                ));
-            };
-        if let Some(rect) = placed.title {
-            words(card, "title", &self.title, rect, ink.title, &styles.title);
-        }
-        for (index, (row, at)) in self.rows.iter().zip(&placed.rows).enumerate() {
-            if let (Some(color), Some(rect)) = (row.swatch, at.swatch) {
-                let swatch = card.part(&format!("swatch{index}"), "ChartSwatch", rect);
-                swatch.ground = Some(Ground {
-                    fill: Some(rgba8(color)),
-                    edge: None,
-                    radius: rect.width() / 2.0,
-                    inset: [0.0; 2],
-                });
-            }
-            if row.value.is_empty() {
-                words(
-                    card,
-                    &format!("label{index}"),
-                    &row.label,
-                    at.label,
-                    ink.note,
-                    &styles.note,
-                );
-                continue;
-            }
-            let label_ink = if row.strong { ink.title } else { ink.note };
-            words(
-                card,
-                &format!("label{index}"),
-                &row.label,
-                at.label,
-                label_ink,
-                &styles.label,
-            );
-            let value = TextLook::new(row.value.clone(), &styles.value, Some(ink.title))
-                .with_max_lines(Some(1))
-                .aligned("end");
-            let part = card.part(&format!("value{index}"), "Text", at.value);
-            part.tag = Some("span");
-            part.own = Some(crate::composition::Own::Text(value));
-        }
-    }
 }
 
 /// Where [`Readout::place`] put the card and its words, in the window.
@@ -549,64 +467,6 @@ fn paint_mark(scene: &mut Scene, transform: Affine, theme: &Theme, mark: Highlig
     }
 }
 
-fn compose_mark(node: &mut Composed, theme: &Theme, index: usize, mark: Highlight) {
-    let shape = |node: &mut Composed, key: String, rect: Rect, ground: Ground| {
-        let part = node.part(&key, "ChartHighlight", rect);
-        part.ground = Some(ground);
-    };
-    let fill = |color: Color, radius: f64| Ground {
-        fill: Some(rgba8(color)),
-        edge: None,
-        radius,
-        inset: [0.0; 2],
-    };
-    match mark {
-        Highlight::Guide { x, y0, y1 } => shape(
-            node,
-            format!("guide{index}"),
-            Rect::new(x - 0.5, y0, x + 0.5, y1),
-            fill(guide_ink(theme), 0.0),
-        ),
-        Highlight::Dot { at, color } => {
-            let outer = dot_radius(theme) + dot_ring(theme);
-            shape(
-                node,
-                format!("ring{index}"),
-                Rect::from_center_size(at, (outer * 2.0, outer * 2.0)),
-                fill(theme.tokens.colors.surfaces.base, outer),
-            );
-            shape(
-                node,
-                format!("dot{index}"),
-                Rect::from_center_size(at, (dot_radius(theme) * 2.0, dot_radius(theme) * 2.0)),
-                fill(color, dot_radius(theme)),
-            );
-        }
-        Highlight::Band(rect) => shape(
-            node,
-            format!("band{index}"),
-            rect,
-            fill(band_ink(theme), f64::from(theme.tokens.radii.control)),
-        ),
-        Highlight::Ring { rect, radius } => {
-            // Two hairlines, one inside the other: the painted ring is two pixels wide.
-            for (key, inset) in [("ring", 2.0), ("ring-inner", 1.0)] {
-                shape(
-                    node,
-                    format!("{key}{index}"),
-                    rect.inflate(inset, inset),
-                    Ground {
-                        fill: None,
-                        edge: Some(rgba8(theme.tokens.colors.border_focus)),
-                        radius: radius + inset,
-                        inset: [0.0; 2],
-                    },
-                );
-            }
-        }
-    }
-}
-
 /// A value as a readout writes it, in the reader's own digits: whole numbers whole, a fraction
 /// to the two places it needs, a large one shortened (`12.5K`); then `unit`, when there is one:
 /// a word after a space, a sign such as `/s` right after the number.
@@ -629,23 +489,6 @@ pub(crate) fn number(value: f64, unit: &str) -> String {
         Some(first) if first.is_alphanumeric() => format!("{number} {unit}"),
         Some(_) => format!("{number}{unit}"),
     }
-}
-
-thread_local! {
-    static READOUTS_LEFT_OUT: Cell<bool> = const { Cell::new(false) };
-}
-
-/// `paint` with every chart's readout left out: the picture a page lays under the readout it
-/// composes itself ([`Readout::compose`]), so it is not shown twice.
-pub(crate) fn without_readouts<R>(paint: impl FnOnce() -> R) -> R {
-    let before = READOUTS_LEFT_OUT.with(|left| left.replace(true));
-    let out = paint();
-    READOUTS_LEFT_OUT.with(|left| left.set(before));
-    out
-}
-
-pub(crate) fn readouts_left_out() -> bool {
-    READOUTS_LEFT_OUT.with(Cell::get)
 }
 
 #[cfg(test)]

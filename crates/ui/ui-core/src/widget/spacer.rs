@@ -94,10 +94,6 @@ impl Spacer {
 }
 
 impl Widget for Spacer {
-    /// Nothing of its own: a gap takes the room its container's style gives it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-    }
     crate::provides!(
         dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
@@ -223,18 +219,6 @@ mod tests {
 
     fn child_rects(root: &dyn Widget) -> Vec<Rect> {
         root.children().iter().map(|c| c.get_rect()).collect()
-    }
-
-    #[test]
-    fn a_page_gets_a_gap_where_the_spacer_stands() {
-        let composed =
-            crate::composition::compose_alone(&Spacer::fixed(8.0), &Theme::dark(), "spacer");
-        assert_eq!(composed.tag, Some("div"));
-        assert!(
-            composed.own.is_none(),
-            "a gap shows nothing of its own: {composed:#?}"
-        );
-        assert!(composed.children.is_empty());
     }
 
     #[test]

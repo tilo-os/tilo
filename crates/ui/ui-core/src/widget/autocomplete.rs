@@ -982,58 +982,6 @@ impl Autocomplete {
 }
 
 impl Widget for Autocomplete {
-    /// An autocomplete as a page's own: the field the person types in and, open,
-    /// the suggestions as real options.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, ControlOption, InputKind};
-        let text = self.input.value().to_owned();
-        cx.control(Control::Entry {
-            input: InputKind::Search,
-            text,
-            placeholder: self.input.placeholder().to_owned(),
-            min: None,
-            max: None,
-            step: None,
-            steppers: false,
-            increase: None,
-            decrease: None,
-            secret: false,
-        });
-        if !self.open {
-            return;
-        }
-        let options = self
-            .list
-            .rows()
-            .iter()
-            .enumerate()
-            .filter(|(_, suggestion)| suggestion.is_pickable())
-            .map(|(index, suggestion)| {
-                let key =
-                    crate::a11y::hash_key(&("autocomplete-suggestion", suggestion.value.as_str()));
-                // The rows are published under the widget's own route namespace.
-                let namespace = self.test_id().unwrap_or("autocomplete");
-                let option = ControlOption::new(suggestion.label.clone())
-                    .selected(self.list.highlight() == Some(index))
-                    .with_target(crate::composition::keyed_target(namespace, &[key]));
-                let detail = suggestion
-                    .detail
-                    .clone()
-                    .or_else(|| suggestion.shortcut.clone());
-                match detail {
-                    Some(detail) => option.with_detail(detail),
-                    None => option,
-                }
-            })
-            .collect();
-        cx.control(Control::Choices {
-            list: "listbox",
-            item: "option",
-            label: None,
-            options,
-        });
-    }
-
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn set_interaction_environment(

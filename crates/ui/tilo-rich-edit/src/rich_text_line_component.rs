@@ -117,11 +117,6 @@ fn build(
 }
 
 impl ui::widget::Widget for DeclaredLine {
-    /// The line itself.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        ui::widget::Widget::html(&self.line, cx);
-    }
-
     fn needs_redraw(&self) -> bool {
         self.line.needs_redraw() || self.line.needs_animation_frame()
     }

@@ -115,12 +115,6 @@ fn wrap(tree: &mut TaffyTree<()>, child: NodeId, style: Style) -> NodeId {
 }
 
 impl Widget for Columns {
-    /// Its pages side by side, each where the columns put it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

@@ -333,49 +333,6 @@ impl ContactList {
 }
 
 impl Widget for ContactList {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        let theme = cx.theme().clone();
-        let style = theme.text(ui::tokens::TextRole::Body);
-        let row_h = if self.row_h > 0.0 {
-            self.row_h
-        } else {
-            f64::from(theme.tokens.metrics.row_avatar)
-        };
-        let scroll = self.scroller.offset().y;
-        let shared = self.shared.clone();
-        let bridge = shared.borrow();
-        cx.element("ul");
-        for (index, row) in bridge.rows.iter().enumerate() {
-            let y = self.rect.y0 + index as f64 * row_h - scroll;
-            let rect = Rect::new(self.rect.x0, y, self.rect.x1, y + row_h);
-            if rect.y1 < self.rect.y0 || rect.y0 > self.rect.y1 {
-                continue;
-            }
-            let mut words = row.name.clone();
-            if !row.secondary.trim().is_empty() {
-                words.push_str(" — ");
-                words.push_str(&row.secondary);
-            }
-            let part = cx.part(&format!("contact{index}"), "ContactRow", rect);
-            part.tag = Some("li");
-            part.own = Some(ui::composition::Own::Text(ui::composition::TextLook::new(
-                words,
-                &style,
-                Some(theme.tokens.colors.text_primary),
-            )));
-            if bridge.selected == Some(row.id) {
-                part.semantics = Some(
-                    ui::a11y::AccessNode::new(ui::a11y::Role::ListItem).with_state(
-                        ui::a11y::AccessState {
-                            selected: true,
-                            ..Default::default()
-                        },
-                    ),
-                );
-            }
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

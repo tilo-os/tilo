@@ -258,17 +258,21 @@ pub(crate) enum Request {
 }
 
 /// What a person does on a page, as the view's semantic action it stands for.
-pub(crate) fn semantic(action: &PageAction) -> ui::a11y::Action {
-    match action {
+/// `None` for what is no node's action (the page's window resized).
+pub(crate) fn semantic(action: &PageAction) -> Option<ui::a11y::Action> {
+    Some(match action {
         PageAction::Activate => ui::a11y::Action::Activate,
         PageAction::Toggle => ui::a11y::Action::ToggleCheck,
         PageAction::Focus => ui::a11y::Action::Focus,
+        PageAction::Increment => ui::a11y::Action::Increment,
+        PageAction::Decrement => ui::a11y::Action::Decrement,
         PageAction::Value(value) => ui::a11y::Action::SetValue(value.clone()),
         PageAction::Select { anchor, focus } => ui::a11y::Action::SetSelection {
             anchor: usize::try_from(*anchor).unwrap_or(usize::MAX),
             focus: usize::try_from(*focus).unwrap_or(usize::MAX),
         },
-    }
+        PageAction::Resize { .. } => return None,
+    })
 }
 
 impl Request {

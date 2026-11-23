@@ -368,12 +368,6 @@ impl CardFocus {
 }
 
 impl Widget for CardFocus {
-    /// The ring it draws around the card's face: a picture of the paint.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.picture();
-    }
-
     fn needs_redraw(&self) -> bool {
         ui::widget::redraw_or_children(self.dirty, self)
     }
@@ -532,12 +526,6 @@ impl PictureButton {
 }
 
 impl Widget for PictureButton {
-    /// A button whose face is the person's picture.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("button");
-        cx.picture();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1943,12 +1931,6 @@ impl ProfileCard {
 }
 
 impl Widget for ProfileCard {
-    /// The card's popover, where it stands: its fields, faces and buttons are the toolkit's.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

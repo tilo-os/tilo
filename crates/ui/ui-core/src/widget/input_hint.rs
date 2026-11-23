@@ -492,21 +492,6 @@ fn token_text_style(theme: &Theme) -> TextStyle {
 }
 
 impl Widget for InputHint {
-    /// What to press, as a keyboard hint a page can read.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let theme = cx.theme();
-        let style = theme.text(crate::TextRole::Label);
-        cx.element("kbd");
-        cx.text(
-            crate::composition::TextLook::new(
-                self.accessible_label(),
-                &style,
-                Some(theme.text_dim),
-            )
-            .with_max_lines(Some(1)),
-        );
-    }
-
     crate::described!();
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {

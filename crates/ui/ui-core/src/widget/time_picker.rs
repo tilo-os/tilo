@@ -424,33 +424,6 @@ impl TimePicker {
 }
 
 impl Widget for TimePicker {
-    /// A time as a page's own `<input type=time>`: the clock it holds.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, InputKind};
-        let text = match self.seconds {
-            Some(seconds) => crate::format::machine!(
-                "the value a page's time field holds",
-                format!("{:02}:{:02}:{:02}", self.hours, self.minutes, seconds)
-            ),
-            None => crate::format::machine!(
-                "the value a page's time field holds",
-                format!("{:02}:{:02}", self.hours, self.minutes)
-            ),
-        };
-        cx.control(Control::Entry {
-            input: InputKind::Time,
-            text,
-            placeholder: String::new(),
-            min: None,
-            max: None,
-            step: None,
-            steppers: false,
-            increase: None,
-            decrease: None,
-            secret: false,
-        });
-    }
-
     crate::described!();
 
     crate::provides!(dyn crate::widget::controls::ActionControls);

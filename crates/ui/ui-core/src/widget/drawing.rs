@@ -572,12 +572,6 @@ impl Drawing {
 }
 
 impl Widget for Drawing {
-    /// What it draws: a picture, named by its label.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        cx.picture();
-    }
-
     crate::described!();
 
     fn build_layout(

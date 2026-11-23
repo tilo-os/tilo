@@ -531,6 +531,24 @@ function start() {
     field.focus({preventScroll: true});
   };
 
+  // The view lays itself out at the page's size, as a window does at its own, so where its
+  // widgets stand is where the page shows them: told when the page is shown and when the
+  // browser's window changes size.
+  let sized = null;
+  let sizing = null;
+  const resized = () => {
+    const width = Math.round(page.clientWidth || innerWidth);
+    const height = Math.round(page.clientHeight || innerHeight);
+    const said = `${width}x${height}`;
+    if (said === sized || !width || !height) return;
+    sized = said;
+    ask({act: {id: 0, target: null, action: {resize: {width, height}}}});
+  };
+  addEventListener('resize', () => {
+    clearTimeout(sizing);
+    sizing = setTimeout(resized, 150);
+  });
+
   const show = ({title, css, body}) => {
     const held = typingHeld();
     appTitle = title;
@@ -552,6 +570,8 @@ function start() {
     editable(page);
     focusAsked();
     typingBack(held);
+    sized = null;
+    resized();
     // Shown again under a field being typed in: its text is sent from here,
     // so what the person wrote lands on the document they are looking at.
     const kept = held && page.querySelector(held.key);
@@ -645,6 +665,9 @@ function start() {
       if (editing(active) && !element.contains(active)) active.blur();
       handOver(element);
       act(element, 'activate');
+    } else if (action === 'toggle' && !element.matches('input')) {
+      event.preventDefault();
+      act(element, 'toggle');
     } else if (action === 'value' && element.dataset.v !== undefined) {
       act(element, {value: element.dataset.v});
     } else if (action === 'back') {
@@ -659,6 +682,23 @@ function start() {
     }
   });
   // A form's Enter runs what its own button runs; the browser never sends it.
+  // A slider steps with its arrow keys, and an element that acts without being a button
+  // presses with Enter or Space, as a native control does.
+  page.addEventListener('keydown', event => {
+    const element = event.target;
+    if (!element?.dataset || !page.contains(element) || editing(element)) return;
+    const action = element.dataset.a;
+    if (action === 'slider') {
+      const step = {ArrowRight: 'increment', ArrowUp: 'increment', ArrowLeft: 'decrement', ArrowDown: 'decrement'}[event.key];
+      if (!step) return;
+      event.preventDefault();
+      act(element, step);
+    } else if ((action === 'activate' || action === 'toggle') && !element.matches('button,a')
+      && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      act(element, action);
+    }
+  });
   page.addEventListener('submit', event => {
     event.preventDefault();
     const run = event.target.querySelector('button[type=submit][data-a=activate]');

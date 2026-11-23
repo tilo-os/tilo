@@ -271,8 +271,11 @@ fn semantic(action_json: &str) -> Result<ui::a11y::Action, String> {
             "activate" => Ok(ui::a11y::Action::Activate),
             "toggle" => Ok(ui::a11y::Action::ToggleCheck),
             "focus" => Ok(ui::a11y::Action::Focus),
+            "increment" => Ok(ui::a11y::Action::Increment),
+            "decrement" => Ok(ui::a11y::Action::Decrement),
             other => Err(format!(
-                "`{other}` is no page action: activate, toggle, focus, {{value}} or {{select}}"
+                "`{other}` is no page action: activate, toggle, focus, increment, decrement, \
+                 {{value}} or {{select}}"
             )),
         },
         other => match serde_json::from_value::<Said>(other) {

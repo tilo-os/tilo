@@ -224,21 +224,6 @@ impl crate::widget::controls::ActionControls for Link {
 }
 
 impl Widget for Link {
-    /// A link as a page's own anchor: what it opens and the words it shows.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, TextLook};
-        cx.element("a");
-        let look = TextLook::new(
-            self.label.clone(),
-            &self.style,
-            Some(cx.theme().tokens.colors.intent.accent),
-        );
-        cx.control(Control::Link {
-            href: (!self.url.is_empty()).then(|| self.url.clone()),
-            label: look,
-        });
-    }
-
     crate::described!();
 
     crate::provides!(dyn crate::widget::controls::ActionControls);

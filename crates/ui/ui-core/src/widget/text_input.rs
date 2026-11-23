@@ -4777,33 +4777,6 @@ impl Widget for TextInput {
             .filter(|shown| !shown.is_empty())
     }
 
-    /// The field as a page's: an input holding what it shows, a secret's as its mask, set in the
-    /// field's own style.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let value = self.display_text();
-        let style = self.line_style(cx.theme().text_scale);
-        let look = crate::composition::TextLook::new(value.clone(), &style, None);
-        let placeholder = (!self.placeholder.is_empty()).then(|| widget_text(&self.placeholder));
-        cx.field(value, self.multiline, placeholder, look);
-        let theme = cx.theme();
-        if self.multiline {
-            cx.field_inset(self.ml_left(), self.multiline_padding_y());
-        } else {
-            cx.field_inset(self.text_inset_x(theme), 0.0);
-        }
-        if !self.plain {
-            // Its well, as the canvas paints it at rest: the raised fill, no edge.
-            cx.ground(crate::composition::Ground {
-                fill: Some(crate::composition::rgba8(
-                    theme.tokens.colors.surfaces.raised,
-                )),
-                edge: None,
-                radius: f64::from(theme.tokens.radii.control),
-                inset: [0.0; 2],
-            });
-        }
-    }
-
     fn take_focus_request(&mut self) -> Option<String> {
         std::mem::take(&mut self.focus_wanted)
             .then(|| self.test_id().unwrap_or_default().to_owned())
@@ -5673,7 +5646,8 @@ impl Widget for TextInput {
                 focused: self.is_focused(),
                 disabled: self.effectively_disabled(),
                 protected: secret,
-                multiline: self.multiline && !self.title,
+                // A title wraps as a note does, though it takes no line breaks of its own.
+                multiline: self.multiline,
                 invalid: self.invalid,
                 autofill: self.autofill(),
                 ..Default::default()

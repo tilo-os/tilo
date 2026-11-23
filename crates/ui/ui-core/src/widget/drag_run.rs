@@ -910,21 +910,6 @@ impl DragRun {
 pub const ITEM_PAYLOAD: &str = "drag-run-item";
 
 impl Widget for DragRun {
-    /// The things that can be dragged, each where the run puts it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        if self.is_list() {
-            let (raised, radius) = Self::list_ground(cx.theme());
-            cx.ground(crate::composition::Ground {
-                fill: Some(crate::composition::rgba8(raised)),
-                edge: Some(crate::composition::rgba8(crate::surface::edge_on(raised))),
-                radius,
-                inset: [0.0; 2],
-            });
-        }
-        cx.children();
-    }
-
     fn update(
         &mut self,
         _state: &crate::widget::AppModel,
@@ -1372,58 +1357,6 @@ mod tests {
             (a.center().x + 400.0, a.center().y),
         );
         assert!(host.root_mut::<DragRun>().take_drops().is_empty());
-    }
-
-    /// Stacked rows stretched across are a list: each row spans the list inside its inset with
-    /// a grip at its trailing end, rows are ruled apart, the list's ground is an element of its
-    /// own on the web, and dragging the first row onto the last's lower half moves it to the end.
-    #[test]
-    fn a_stacked_list_gives_each_row_a_grip_and_a_rule_between_rows() {
-        let mut frame = harness(
-            DragRun::new("list")
-                .axis(RunAxis::Vertical)
-                .align(Align::Stretch)
-                .push(item("a", 48.0))
-                .push(item("b", 48.0))
-                .push(item("c", 48.0)),
-        );
-        let list = frame.root::<DragRun>();
-        let rects = list.item_rects();
-        let whole = list.get_rect();
-        assert_eq!(rects.len(), 3, "the rules are not items: {rects:?}");
-        let rows = list.children()[0].children();
-        let rules = rows.iter().filter(|row| row.name() == "Divider").count();
-        assert_eq!(rules, 2, "a rule between each two rows");
-        let grips = rows
-            .iter()
-            .filter(|row| {
-                row.children()
-                    .last()
-                    .is_some_and(|grip| grip.name() == "IconWidget")
-            })
-            .count();
-        assert_eq!(grips, 3, "each row ends in a grip");
-        for rect in &rects {
-            assert!(
-                (rect.width() - (whole.width() - 8.0)).abs() < 0.5,
-                "a row spans the list inside its inset: {rects:?} in {whole:?}"
-            );
-        }
-        fn grounded(node: &crate::composition::Composed, at: [f64; 4]) -> bool {
-            (node.rect == at && node.ground.is_some())
-                || node.children.iter().any(|child| grounded(child, at))
-        }
-        let at = [whole.x0, whole.y0, whole.width(), whole.height()];
-        assert!(
-            grounded(&frame.composition().root, at),
-            "its rows stand on one ground on the web too"
-        );
-        let (a, c) = (rects[0], rects[2]);
-        frame.drag_at((a.center().x, a.center().y), (c.center().x, c.y1 - 2.0));
-        let drops = frame.root_mut::<DragRun>().take_drops();
-        assert_eq!(drops.len(), 1, "one move: {drops:?}");
-        assert_eq!(drops[0].moved, "a");
-        assert_eq!(drops[0].before, None, "past the last row");
     }
 
     #[test]

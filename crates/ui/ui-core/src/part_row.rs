@@ -782,44 +782,6 @@ impl PartRow {
         nodes
     }
 
-    /// Whether the row shows as HTML of its own: at rest, with no menu open, its location
-    /// not edited and the search closed.
-    pub(crate) fn composes(&self) -> bool {
-        self.shown.is_some()
-            && !self.row.popup_open()
-            && !self.row.is_editing()
-            && !self.search.is_open()
-    }
-
-    /// What each part of the row shows, keyed as [`Self::accessibility`] names them: the
-    /// app's parts, the location, the notice and the search's button, each in the face it
-    /// is painted with.
-    pub(crate) fn composed_parts(
-        &self,
-        theme: &crate::theme::Theme,
-    ) -> Vec<(String, Rect, crate::composition::Own)> {
-        let mut parts = self.row.composed_parts(theme);
-        if let Some(node) = self.search.accessibility()
-            && let Some(rect) = node.bounds.map(|bounds| bounds.to_rect())
-            && let Some(face) = crate::widget::window_controls::icon_button_face(
-                rect,
-                crate::icons::Icon::Search,
-                crate::widget::window_controls::ButtonFace {
-                    enabled: true,
-                    ..Default::default()
-                },
-            )
-            .composed(theme)
-        {
-            parts.push((
-                node.action_target.unwrap_or_default(),
-                rect,
-                crate::composition::Own::Face(face),
-            ));
-        }
-        parts
-    }
-
     /// The card a notice stands on over the app while one is up: the strip, padded at its
     /// sides.
     pub(crate) fn strip_card(&self, theme: &crate::theme::Theme) -> Option<Rect> {

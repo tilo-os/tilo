@@ -166,10 +166,6 @@ impl PathBar {
 }
 
 impl Widget for PathBar {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&self.crumbs);
         true

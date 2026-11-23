@@ -103,16 +103,6 @@ impl ZoomableImage {
 }
 
 impl Widget for ZoomableImage {
-    /// The viewer once the picture is here; its reserved box before that.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        if let Some(viewer) = &self.viewer {
-            Widget::html(viewer, cx);
-        } else {
-            cx.element("div");
-            cx.attr("aria-hidden", "true");
-        }
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

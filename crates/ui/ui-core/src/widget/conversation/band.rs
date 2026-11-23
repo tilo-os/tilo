@@ -317,17 +317,6 @@ impl crate::component::Described for SectionDivider {
 }
 
 impl crate::widget::Widget for SectionDivider {
-    /// The day or chapter the lines after it belong to.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::TextLook;
-        let theme = cx.theme();
-        cx.element("div");
-        let style = theme.text(crate::TextRole::Caption);
-        let look =
-            TextLook::new(self.label.clone(), &style, Some(theme.text_dim)).with_max_lines(Some(1));
-        cx.text(look);
-    }
-
     crate::described!();
 
     fn build_layout(

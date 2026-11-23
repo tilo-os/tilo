@@ -2869,13 +2869,6 @@ impl Widget for DesktopChrome {
         "DesktopChrome"
     }
 
-    /// Its bar, the overview, the sheets and menus it lays out, and every display's bar, each
-    /// where the column stands it.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }

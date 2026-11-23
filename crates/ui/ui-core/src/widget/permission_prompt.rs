@@ -376,40 +376,6 @@ pub fn button_label(choice: PromptChoice) -> String {
 }
 
 impl Widget for PermissionPrompt {
-    /// A permission request as a page's own dialog: its question and each
-    /// decision a real button, naming the choice it makes.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, ControlOption, TextLook};
-        cx.element("dialog");
-        let theme = cx.theme();
-        let colors = &theme.tokens.colors;
-        let label = TextLook::new(
-            cx.semantics()
-                .and_then(|semantics| semantics.name.clone())
-                .unwrap_or_else(|| self.capability_label.clone()),
-            &theme.text(crate::tokens::TextRole::Body),
-            Some(colors.text_primary),
-        );
-        let options = self
-            .visible_choices()
-            .iter()
-            .map(|&choice| {
-                ControlOption::new(self.button_label(choice))
-                    .with_target(crate::composition::keyed_target(
-                        "permission-prompt",
-                        &[Self::key_for_choice(choice)],
-                    ))
-                    .disabled(!self.choice_enabled(choice))
-            })
-            .collect();
-        cx.control(Control::Choices {
-            list: "group",
-            item: "button",
-            label: Some(label),
-            options,
-        });
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

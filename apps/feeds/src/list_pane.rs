@@ -625,10 +625,6 @@ impl ListPane {
 }
 
 impl Widget for ListPane {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.follow();
         if let Some((_, empty)) = self.empty.as_mut() {

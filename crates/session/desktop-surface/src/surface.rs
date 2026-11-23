@@ -2166,14 +2166,6 @@ impl Widget for DesktopSurface {
         "DesktopSurface"
     }
 
-    /// The strips' rows where they stand in the shell's displays, with the arrival hints and the
-    /// cards of apps that stopped answering over them: every window is a widget of its own, so a
-    /// page shows them all as what they are.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("main");
-        cx.children();
-    }
-
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }

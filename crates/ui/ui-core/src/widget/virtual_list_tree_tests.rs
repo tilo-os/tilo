@@ -1424,25 +1424,6 @@ fn composed_at<'a>(
     found
 }
 
-/// The widget saying `text`: its own words, or the words part it composes them as.
-fn composed_named<'a>(
-    node: &'a crate::composition::Composed,
-    text: &str,
-) -> Option<&'a crate::composition::Composed> {
-    let says = |node: &crate::composition::Composed| matches!(&node.own, Some(crate::composition::Own::Text(look)) if look.text == text);
-    if says(node)
-        || node
-            .children
-            .iter()
-            .any(|part| part.widget == "Text" && says(part))
-    {
-        return Some(node);
-    }
-    node.children
-        .iter()
-        .find_map(|child| composed_named(child, text))
-}
-
 fn holds(node: &crate::composition::Composed, path: &str) -> bool {
     node.children
         .iter()
@@ -1454,91 +1435,13 @@ fn row_named<'a>(
     root: &'a crate::composition::Composed,
     text: &str,
 ) -> Option<&'a crate::composition::Composed> {
-    let saying = composed_named(root, text)?;
-    let path = saying.path.split('#').next().unwrap_or(&saying.path);
-    composed_at(root, "ListRow")
-        .into_iter()
-        .find(|node| node.path == path)
-}
-
-/// The rows of a tree compose as elements: a row stands inside the element of the row it is
-/// under, and a row holding others carries the disclosure its chevron stands for. Pressing the
-/// disclosure folds the rows away, through the list's own action.
-#[test]
-fn a_tree_composes_as_nested_elements_with_a_disclosure() {
-    use crate::a11y::Action;
-    use crate::headless::FrameHarness;
-
-    let mut harness = FrameHarness::for_root(
-        crate::State::new(),
-        listed_tree(),
-        (400, 500),
-        Theme::dark(),
-    );
-    harness.relayout();
-    let composition = harness.composition();
-    let note = |name: &str| {
-        row_named(&composition.root, name)
-            .unwrap_or_else(|| panic!("the row saying {name:?} is a list item"))
-    };
-    let first = note("Note 0");
-    let second = note("Note 1");
-    let third = note("Note 2");
-    assert_eq!(first.tag, Some("li"), "a row is a list item");
-    assert!(
-        holds(first, &second.path),
-        "the row under it stands inside its own element: {first:?} then {second:?}"
-    );
-    assert!(holds(second, &third.path), "and the next level in");
-    assert!(
-        !holds(second, &first.path),
-        "a parent does not stand inside its child"
-    );
-
-    // The branch says what pressing its chevron does, where the chevron is painted.
-    let disclosure = composed_at(first, "RowDisclosure")
-        .into_iter()
-        .next()
-        .expect("a row holding others shows its disclosure");
-    assert_eq!(disclosure.tag, Some("button"));
-    let node = disclosure
-        .semantics
-        .as_ref()
-        .expect("a reader hears the disclosure");
-    assert_eq!(node.role, crate::a11y::Role::Button);
-    assert_eq!(node.name.as_deref(), Some("Collapse"));
-    assert!(
-        disclosure.rect[2] > 0.0 && disclosure.rect[1] >= first.rect[1],
-        "it stands on the row: {disclosure:?} in {first:?}"
-    );
-
-    let mut edits = AutoCommit::new();
-    assert!(Widget::perform_semantic_action(
-        &mut *harness.root_mut::<VirtualList<Nested>>(),
-        "fold:row:0",
-        &Action::Activate,
-        &mut crate::widget::Edits::lend(&mut edits),
-        &automerge::ObjId::Root,
-    ));
-    harness.relayout();
-    let composition = harness.composition();
-    assert!(
-        composed_named(&composition.root, "Note 1").is_none(),
-        "the folded row's notes leave the page"
-    );
-    let first = row_named(&composition.root, "Note 0").expect("the branch stays");
-    let disclosure = composed_at(first, "RowDisclosure")
-        .into_iter()
-        .next()
-        .expect("a folded branch keeps its disclosure");
-    assert_eq!(
-        disclosure
-            .semantics
-            .as_ref()
-            .and_then(|node| node.name.as_deref()),
-        Some("Expand"),
-        "and says what pressing it does now"
-    );
+    composed_at(root, "ListRow").into_iter().find(|row| {
+        row.semantics.as_ref().is_some_and(|access| {
+            access.nodes().into_iter().any(|said| {
+                said.name.as_deref() == Some(text) || said.value.as_deref() == Some(text)
+            })
+        })
+    })
 }
 
 /// [`Nested`] whose first row is still on its way until `ready` says it arrived.
@@ -1618,11 +1521,13 @@ fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
         .next()
         .expect("the list composes");
     let folds_first = |node: &crate::composition::Composed| {
-        composed_at(node, "RowDisclosure").into_iter().any(|part| {
-            part.semantics
-                .as_ref()
-                .and_then(|node| node.action_target.as_deref())
-                == Some("fold:row:0")
+        composed_at(node, "ListRow").into_iter().any(|row| {
+            row.semantics.as_ref().is_some_and(|access| {
+                access
+                    .nodes()
+                    .into_iter()
+                    .any(|part| part.action_target.as_deref() == Some("fold:row:0"))
+            })
         })
     };
     assert!(
@@ -1672,81 +1577,4 @@ fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
         "and holds the rows under it: {branch:?}"
     );
     assert_eq!(disclosures(&mut harness), 1, "and a reader hears it");
-}
-
-/// A row on its way and the row that arrives in its place are one element of a page, called by
-/// the row's key, and the rows after it keep their names: a page holding them makes none of them
-/// again when the late row arrives.
-#[test]
-fn a_late_row_renames_neither_itself_nor_the_rows_after_it() {
-    use crate::arriving::{GRACE, MIN_SHOWN};
-    use crate::headless::FrameHarness;
-    use crate::time::testing::with_monotonic_time;
-    use crate::widget::ListRow;
-
-    let t0 = crate::time::now();
-    let ready = Rc::new(Cell::new(false));
-    let model = ArrivingNested {
-        rows: Nested {
-            keys: vec![0, 1, 2],
-            parents: HashMap::from([(1, 0), (2, 1)]),
-            groups: HashMap::new(),
-        },
-        ready: Rc::clone(&ready),
-    };
-    let list = VirtualList::new(model, 20.0, |_, _, key| {
-        Box::new(ListRow::new(format!("note-{key}"), format!("Note {key}"))) as Element
-    })
-    .with_viewport_height(200.0)
-    .with_tree(Rc::new(TreeMarks::default()))
-    .with_semantic_key(|key| format!("notes/row:{key}"));
-    let mut harness = with_monotonic_time(t0, || {
-        let mut harness =
-            FrameHarness::for_root(crate::State::new(), list, (400, 500), Theme::dark());
-        harness.relayout();
-        harness
-    });
-    let waiting = with_monotonic_time(t0 + GRACE, || {
-        harness.relayout();
-        harness.composition()
-    });
-    let placeholder = composed_at(&waiting.root, "RowReserve")
-        .into_iter()
-        .next()
-        .expect("the row on its way holds its place")
-        .clone();
-    let after = |composition: &crate::composition::Composition, name: &str| {
-        row_named(&composition.root, name)
-            .unwrap_or_else(|| panic!("{name} is shown"))
-            .path
-            .clone()
-    };
-    let (second, third) = (after(&waiting, "Note 1"), after(&waiting, "Note 2"));
-    assert!(
-        placeholder.path.ends_with("/row[notes%2Frow:0]"),
-        "the placeholder is called by the row's key, its path's separators escaped: {}",
-        placeholder.path
-    );
-    assert_eq!(placeholder.tag, Some("li"), "a list item, as the row is");
-
-    ready.set(true);
-    let arrived = with_monotonic_time(t0 + GRACE + MIN_SHOWN, || {
-        harness.relayout();
-        harness.composition()
-    });
-    assert_eq!(
-        after(&arrived, "Note 0"),
-        placeholder.path,
-        "the row that arrives is the element its placeholder was"
-    );
-    assert_eq!(
-        after(&arrived, "Note 1"),
-        second,
-        "the row after it keeps its name"
-    );
-    assert_eq!(after(&arrived, "Note 2"), third, "and so does the next");
-    assert_eq!(
-        row_named(&arrived.root, "Note 0").and_then(|row| row.tag),
-        Some("li")
-    );
 }

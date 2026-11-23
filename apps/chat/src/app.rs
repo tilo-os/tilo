@@ -1699,33 +1699,6 @@ impl Collaborative for ChatApp {
 }
 
 impl Widget for ChatApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-        let theme = cx.theme().clone();
-        let style = theme.text(ui::tokens::TextRole::Body);
-        let mut shown = String::new();
-        for message in &self.messages {
-            let author = self
-                .users
-                .iter()
-                .find(|user| user.id == message.author)
-                .map_or("", |user| user.name.as_str());
-            if !shown.is_empty() {
-                shown.push_str("\n\n");
-            }
-            shown.push_str(author);
-            shown.push_str(": ");
-            shown.push_str(&message.text);
-        }
-        if !shown.is_empty() {
-            cx.text(ui::composition::TextLook::new(
-                shown,
-                &style,
-                Some(theme.tokens.colors.text_primary),
-            ));
-        }
-    }
-
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         // The resource is lent to the settle pass: the workspace's other resources
         // take writes now.

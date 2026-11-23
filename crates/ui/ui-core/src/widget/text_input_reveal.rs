@@ -119,31 +119,6 @@ impl RevealToggle {
 }
 
 impl Widget for RevealToggle {
-    /// The show/hide control as a page's own button: its eye and its words.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::Face;
-        cx.element("button");
-        let theme = cx.theme();
-        let colors = &theme.tokens.colors;
-        let icon = if self.revealed {
-            crate::icons::Icon::EyeOff
-        } else {
-            crate::icons::Icon::Eye
-        };
-        cx.face(Face {
-            icon: crate::composition::glyph(icon, 16.0, colors.text_dim, false),
-            label: None,
-            detail: None,
-            trailing: None,
-            fill: None,
-            edge: None,
-            radius: f64::from(theme.tokens.radii.control),
-            pad: 4.0,
-            gap: 4.0,
-            spread: false,
-        });
-    }
-
     fn composition_follows_allocation(&self) -> bool {
         true
     }

@@ -126,11 +126,6 @@ impl DeclaredRail {
 }
 
 impl crate::widget::Widget for DeclaredRail {
-    /// The rail itself, with the pages this view declares.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        self.rail.compose_html(cx, self.count, self.current);
-    }
-
     fn needs_redraw(&self) -> bool {
         self.rail.needs_redraw() || self.rail.needs_animation_frame()
     }

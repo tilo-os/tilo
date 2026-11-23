@@ -411,16 +411,6 @@ impl Widget for DesktopBackdrop {
         dyn ui::presence::capability::PublishesPresence
     );
 
-    /// The wallpaper it draws, as a picture of it, and what it was given to show over it.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        if self.child.is_some() {
-            cx.children();
-        } else {
-            cx.picture();
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

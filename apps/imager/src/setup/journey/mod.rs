@@ -5406,10 +5406,6 @@ impl InstallerPreview {
 }
 
 impl Widget for InstallerPreview {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

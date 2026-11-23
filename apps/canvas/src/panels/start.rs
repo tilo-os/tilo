@@ -157,10 +157,6 @@ impl Swatch {
 use crate::content_geometry::SWATCH_UNITS;
 
 impl Widget for Swatch {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.picture();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

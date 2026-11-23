@@ -4295,10 +4295,6 @@ impl Continuable for BooksApp {
 }
 
 impl Widget for BooksApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     ui::provides!(dyn ui::widget::Continuable, dyn ui::widget::Queryable);
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {

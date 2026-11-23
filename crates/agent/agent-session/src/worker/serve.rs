@@ -420,6 +420,16 @@ impl Worker {
         let Some(replica) = self.replica.as_mut().filter(|_| self.mode == Mode::Page) else {
             return Reply::Failed("this worker shows no page here".into());
         };
+        let Some(semantic) = super::proto::semantic(action) else {
+            if let PageAction::Resize { width, height } = action {
+                // The view lays itself out at the page's size, as a window at its own: what a
+                // node's bounds say is then where the page shows it.
+                if let Err(reason) = replica.resize_page((*width, *height)) {
+                    tracing::debug!(%reason, "app worker: the page's view did not lay out at its size");
+                }
+            }
+            return self.page_patch();
+        };
         // An element a page numbers for a part of a widget (a document's block,
         // a control) is acted on through the widget it is a part of.
         if let Some(path) = self.page.as_ref().and_then(|page| page.path(id)) {
@@ -427,9 +437,7 @@ impl Worker {
                 .split_once('#')
                 .map_or(path, |(widget, _)| widget)
                 .to_owned();
-            if let Err(reason) =
-                replica.act_on_page(&widget, target, &super::proto::semantic(action))
-            {
+            if let Err(reason) = replica.act_on_page(&widget, target, &semantic) {
                 tracing::debug!(%reason, widget, "app worker: the page's action was refused");
             }
         }

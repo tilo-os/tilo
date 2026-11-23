@@ -568,37 +568,6 @@ impl ReaderPane {
 }
 
 impl Widget for ReaderPane {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        let theme = cx.theme().clone();
-        let style = theme.text(ui::tokens::TextRole::Reading);
-        let core = self.core.borrow();
-        let shown = match core.open_article() {
-            Some(article) => {
-                let mut words = String::new();
-                if !article.title.trim().is_empty() {
-                    words.push_str(&article.title);
-                    words.push('\n');
-                }
-                if !article.author.trim().is_empty() {
-                    words.push_str(&article.author);
-                    words.push('\n');
-                }
-                for block in &article.blocks {
-                    words.push('\n');
-                    words.push_str(&block.text);
-                }
-                words
-            }
-            None => String::new(),
-        };
-        cx.element("article");
-        cx.text(ui::composition::TextLook::new(
-            shown,
-            &style,
-            Some(theme.tokens.colors.text_primary),
-        ));
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

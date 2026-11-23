@@ -421,10 +421,6 @@ impl BrowserWindow {
 }
 
 impl Widget for BrowserWindow {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,

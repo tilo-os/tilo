@@ -15,12 +15,6 @@ use crate::widget::{ModelPath, TaffyTreeExt, Widget};
 use super::{ActivityTimeline, FILTER_STRIP_HEIGHT, FocusedRow, PADDING, VisualRow, row_time};
 
 impl Widget for ActivityTimeline {
-    /// The history as a page's own list: each day or band a heading, each change its author,
-    /// its time and what it did.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        self.compose_html(cx);
-    }
-
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         if !self.rect.contains(point) {
             return None;

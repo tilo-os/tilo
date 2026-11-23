@@ -38,24 +38,6 @@ impl OpenedByStop {
 }
 
 impl Widget for OpenedByStop {
-    /// Who opened the window, as a button a page and the keyboard reach.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let Some((_, node)) = self.shown.as_ref() else {
-            return;
-        };
-        cx.element("button");
-        let Some(name) = node.name.clone() else {
-            return;
-        };
-        let theme = cx.theme().clone();
-        let look = crate::composition::TextLook::new(
-            name,
-            &theme.text(crate::tokens::TextRole::Caption),
-            Some(theme.tokens.colors.text_primary),
-        )
-        .with_max_lines(Some(1));
-        cx.text(look);
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

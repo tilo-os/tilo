@@ -708,29 +708,6 @@ impl Toggle {
 }
 
 impl Widget for Toggle {
-    /// A switch as a page's `<label>` around an `<input role=switch>`, holding
-    /// whether it is on.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{CheckStyle, Control};
-        cx.element("label");
-        // Its caption leads and the switch keeps the row's trailing edge, as painted.
-        let theme = cx.theme();
-        let ink = if self.control.effectively_enabled() {
-            theme.tokens.colors.text_primary
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        let label = self.label.as_ref().map(|label| {
-            crate::composition::TextLook::new(widget_text(label), &self.label_style, Some(ink))
-        });
-        cx.control(Control::Check {
-            style: CheckStyle::Switch,
-            checked: self.control.is_checked,
-            mixed: false,
-            label,
-        });
-    }
-
     crate::described!();
 
     bool_control_widget_methods!("toggle");

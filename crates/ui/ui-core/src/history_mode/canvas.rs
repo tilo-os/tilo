@@ -66,28 +66,6 @@ impl PreviewCanvas {
     }
 }
 impl Widget for PreviewCanvas {
-    /// What the domain renderer drew, or what it says instead when it has nothing to show.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        if self.preview.is_some() && self.error.is_none() && self.status.is_none() {
-            cx.painted(self.paint_generation);
-            return;
-        }
-        let message = self
-            .error
-            .clone()
-            .or_else(|| self.status.clone())
-            .unwrap_or_else(|| {
-                crate::i18n::I18nManager::lookup_plain("history-mode-content-unavailable")
-            });
-        let theme = cx.theme().clone();
-        let look = crate::composition::TextLook::new(
-            message,
-            &theme.text(crate::tokens::TextRole::Body),
-            Some(theme.tokens.colors.text_dim),
-        );
-        cx.text(look);
-    }
     fn name(&self) -> &'static str {
         "Historical content"
     }

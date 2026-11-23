@@ -41,12 +41,6 @@ impl WindowFailure {
 }
 
 impl Widget for WindowFailure {
-    /// A window that could not open says why, in the banner's own words.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

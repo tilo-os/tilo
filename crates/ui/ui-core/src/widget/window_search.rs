@@ -1473,89 +1473,6 @@ impl WindowSearch {
 }
 
 impl Widget for WindowSearch {
-    /// The window's search as a page shows it: a field it types in, and each control a button where
-    /// the bar puts it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        let theme = cx.theme().clone();
-        let control = |target: &str| {
-            self.accessibility().and_then(|root| {
-                root.children
-                    .into_iter()
-                    .find(|child| child.action_target.as_deref() == Some(target))
-            })
-        };
-        if !self.is_open() {
-            let part = cx.part("open", "WindowSearchOpen", self.anchor);
-            part.tag = Some("button");
-            part.focusable = true;
-            part.semantics = control("window-search-open");
-            part.own = Some(crate::composition::Own::Face(icon_face(
-                &theme,
-                Icon::Search,
-            )));
-            return;
-        }
-        if !self.field_rect.is_zero_area() {
-            let look = crate::composition::TextLook::new(
-                String::new(),
-                &theme.text(crate::tokens::TextRole::Body),
-                Some(theme.tokens.colors.text_primary),
-            );
-            let part = cx.part("field", "WindowSearchField", self.field_rect);
-            part.tag = Some("input");
-            part.focusable = true;
-            part.own = Some(crate::composition::Own::Field {
-                value: self.field.value().to_owned(),
-                multiline: false,
-                placeholder: Some(tr("window-search-placeholder")),
-                look,
-                inset: [0.0, 0.0],
-            });
-            part.semantics = self.field.accessibility().map(|node| {
-                node.with_name(tr("window-search-placeholder"))
-                    .with_bounds(self.field_rect)
-                    .with_action_target("window-search-query")
-            });
-        }
-        for (kind, rect) in &self.parts {
-            if rect.is_zero_area() {
-                continue;
-            }
-            let (icon, label) = match kind {
-                Part::Previous => (Some(Icon::ChevronUp), String::new()),
-                Part::Next => (Some(Icon::ChevronDown), String::new()),
-                Part::Options => (Some(Icon::Settings2), String::new()),
-                Part::Close => (Some(Icon::X), String::new()),
-                Part::App => (None, self.app_label()),
-                Part::Everywhere => (None, tr("window-search-everywhere")),
-            };
-            let face = match icon {
-                Some(icon) => icon_face(&theme, icon),
-                None => words_face(&theme, &label),
-            };
-            let part = cx.part(kind.target(), "WindowSearchPart", *rect);
-            part.tag = Some("button");
-            part.focusable = true;
-            part.semantics = control(kind.target());
-            part.own = Some(crate::composition::Own::Face(face));
-        }
-        // Its options open as a floating panel of their own: the page shows it as it paints it.
-        if self.panel.is_drawn()
-            && let Some(panel) = self.panel.rect()
-        {
-            use std::hash::{Hash, Hasher};
-            let mut version = std::collections::hash_map::DefaultHasher::new();
-            self.options.hash(&mut version);
-            self.replacing.hash(&mut version);
-            self.matches().hash(&mut version);
-            panel.x0.to_bits().hash(&mut version);
-            panel.y0.to_bits().hash(&mut version);
-            let part = cx.part("options", "WindowSearchOptions", panel);
-            part.painted(version.finish());
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
@@ -1877,46 +1794,6 @@ impl Widget for WindowSearch {
         };
         self.activate(part);
         true
-    }
-}
-
-/// An icon control's face: its glyph, named for a reader by the control's own semantics.
-fn icon_face(theme: &Theme, icon: Icon) -> crate::composition::Face {
-    let ink = theme.tokens.colors.text_primary;
-    let size = f64::from(theme.tokens.metrics.icon_sm);
-    crate::composition::Face {
-        icon: icon.glyph(size, ink, false),
-        label: None,
-        detail: None,
-        trailing: None,
-        fill: None,
-        edge: None,
-        radius: f64::from(theme.tokens.radii.control),
-        pad: 0.0,
-        gap: 0.0,
-        spread: false,
-    }
-}
-
-/// A labelled control's face, its words set as the bar sets them.
-fn words_face(theme: &Theme, label: &str) -> crate::composition::Face {
-    let look = crate::composition::TextLook::new(
-        label.to_owned(),
-        &theme.text(crate::tokens::TextRole::Label),
-        Some(theme.tokens.colors.text_primary),
-    )
-    .with_max_lines(Some(1));
-    crate::composition::Face {
-        icon: None,
-        label: Some(look),
-        detail: None,
-        trailing: None,
-        fill: None,
-        edge: None,
-        radius: f64::from(theme.tokens.radii.control),
-        pad: 0.0,
-        gap: 0.0,
-        spread: false,
     }
 }
 

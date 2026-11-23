@@ -278,12 +278,6 @@ where
         dyn crate::view::capability::ViewState
     );
 
-    /// What the document holds, as the view for it composes.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document_ref(state, path);
         self.reconcile(state, path);

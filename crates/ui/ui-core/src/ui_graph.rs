@@ -1394,10 +1394,6 @@ fn filling() -> Style {
 }
 
 impl Widget for LiveUi {
-    /// The graph's widgets, live, as its content.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.children();
-    }
     crate::provides!(
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
@@ -2953,10 +2949,6 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    /// Its panes and the live preview.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.children();
-    }
     crate::provides!(dyn crate::undo::LocalUndo);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

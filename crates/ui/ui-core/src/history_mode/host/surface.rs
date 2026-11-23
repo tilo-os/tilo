@@ -375,13 +375,6 @@ impl HistoryHost {
     }
 }
 impl Widget for HistoryHost {
-    /// Its toolbar, what History holds and what it shows of it, each where it puts them.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        if self.panel_node.is_some() && !self.panel_rect.is_zero_area() {
-            cx.surface(self.panel_rect, "inspector");
-        }
-        cx.children();
-    }
     fn inactive_bound_dispatch_boundary(&self) -> Option<NodeId> {
         self.live_node.filter(|_| !self.live_interactive())
     }

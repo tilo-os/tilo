@@ -382,10 +382,6 @@ impl Default for BottomPanel {
 }
 
 impl Widget for BottomPanel {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

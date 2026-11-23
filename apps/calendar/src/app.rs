@@ -3673,10 +3673,6 @@ impl Default for CalendarApp {
 }
 
 impl Widget for CalendarApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.picture();
-    }
-
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

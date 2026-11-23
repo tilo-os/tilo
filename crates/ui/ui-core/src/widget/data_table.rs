@@ -581,8 +581,6 @@ pub trait TableModel {
     }
 }
 
-
-
 /// Absent values sort last; numbers by value; text without regard to case.
 fn compare_text(a: Option<&str>, b: Option<&str>, numeric: bool) -> Ordering {
     match (a, b) {
@@ -1252,9 +1250,7 @@ impl DataTableCore {
 
     /// Whether a press on a row does something, so the row lifts under the pointer as a list row does.
     fn rows_pressable(&self) -> bool {
-        self.selectable
-            || self.row_click.is_some()
-            || self.on_activate.is_some()
+        self.selectable || self.row_click.is_some() || self.on_activate.is_some()
     }
 
     /// The row whose revealed-on-hover cells are mounted: the one under the pointer, or the selected
@@ -3710,148 +3706,6 @@ impl DataTableCore {
 }
 
 impl Widget for DataTableCore {
-    /// A table of its columns and the rows in view: a header cell per column, a cell per value,
-    /// sorted by the column the person chose.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::arriving::Arrival;
-        use crate::composition::{Own, TextLook};
-        let theme = cx.theme();
-        cx.element("table");
-        if let Some(name) = &self.accessible_name {
-            cx.attr("aria-label", name.clone());
-        }
-        let band = self.columns_band();
-        let head_rect = Rect::new(band.x0, self.rect.y0, band.x1, self.rect.y0 + self.header_h);
-        let head = cx.part("head", "DataTable", head_rect);
-        head.tag = Some("thead");
-        let head_row = head.part("row", "DataTable", head_rect);
-        head_row.tag = Some("tr");
-        let header_style = header_style(theme);
-        // Words keep the cell's inset on each side and its column's alignment, as painted.
-        let pad = f64::from(theme.tokens.spacing.s2);
-        let align = |align: CellAlign| match align {
-            CellAlign::Leading => "start",
-            CellAlign::Center => "center",
-            CellAlign::Trailing => "end",
-        };
-        for (index, column) in self.columns.iter().enumerate() {
-            if self.hidden.get(index).copied().unwrap_or(false) {
-                continue;
-            }
-            let Some(column_rect) = self.col_rects.get(index).copied() else {
-                continue;
-            };
-            let cell = head_row.part(
-                &format!("th:{index}"),
-                "DataTable",
-                Rect::new(
-                    column_rect.x0 + pad,
-                    head_rect.y0,
-                    column_rect.x1 - pad,
-                    head_rect.y1,
-                ),
-            );
-            cell.tag = Some("th");
-            cell.attrs.push(("scope", "col".into()));
-            if let Some(sort) = &self.sort
-                && sort.key == column.key
-            {
-                let direction = if sort.ascending {
-                    "ascending"
-                } else {
-                    "descending"
-                };
-                cell.attrs.push(("aria-sort", direction.into()));
-            }
-            cell.own = Some(Own::Text(
-                TextLook::new(
-                    column.header.clone(),
-                    &header_style,
-                    Some(theme.tokens.colors.text_dim),
-                )
-                .with_max_lines(Some(1))
-                .aligned(align(column.alignment())),
-            ));
-        }
-        let body_rect = Rect::new(band.x0, head_rect.y1, band.x1, self.rect.y1);
-        let body = cx.part("body", "DataTable", body_rect);
-        body.tag = Some("tbody");
-        let (start, end) = self.visible_row_range();
-        for index in start..end {
-            let Some(row_rect) = self.row_rect(index) else {
-                continue;
-            };
-            let row = body.part(&format!("row:{index}"), "DataTable", row_rect);
-            row.tag = Some("tr");
-            // Its ground as the canvas paints it: a selected row's lift, else every other row's
-            // stripe, a share of that lift, at the item radius.
-            let selected = self.selectable && self.is_row_selected(index);
-            if selected {
-                row.attrs.push(("aria-selected", "true".into()));
-            }
-            let ground = theme.tokens.colors.surfaces.content;
-            let fill = if selected {
-                Some(
-                    crate::chrome::selection_tier_on(
-                        theme,
-                        crate::chrome::SelectionState::new(true, false, false),
-                        ground,
-                    )
-                    .fill,
-                )
-            } else {
-                (index % 2 == 1).then(|| zebra_on(theme, ground))
-            };
-            if let Some(fill) = fill {
-                row.ground = Some(crate::composition::Ground {
-                    fill: Some(crate::composition::rgba8(fill)),
-                    edge: None,
-                    radius: f64::from(theme.tokens.radii.item).min(row_rect.height() / 2.0),
-                    inset: [0.0; 2],
-                });
-            }
-            let Some(Arrival::Ready(data)) = self.row_state_at(index) else {
-                continue;
-            };
-            for (ci, column) in self.columns.iter().enumerate() {
-                if self.hidden.get(ci).copied().unwrap_or(false) {
-                    continue;
-                }
-                let Some(column_rect) = self.col_rects.get(ci).copied() else {
-                    continue;
-                };
-                let cell = row.part(
-                    &format!("td:{ci}"),
-                    "DataTable",
-                    Rect::new(
-                        column_rect.x0 + pad,
-                        row_rect.y0,
-                        column_rect.x1 - pad,
-                        row_rect.y1,
-                    ),
-                );
-                cell.tag = Some("td");
-                let value = column
-                    .text
-                    .as_ref()
-                    .and_then(|text| text(data))
-                    .unwrap_or_else(|| column.absent.clone());
-                let ink = if value == column.absent {
-                    theme.tokens.colors.text_tertiary
-                } else {
-                    theme.tokens.colors.text_primary
-                };
-                let style = cell_style(theme, column.kind);
-                cell.own = Some(Own::Text(
-                    TextLook::new(value, &style, Some(ink))
-                        .with_max_lines(Some(u32::try_from(column.max_lines).unwrap_or(u32::MAX)))
-                        .aligned(align(column.alignment())),
-                ));
-            }
-        }
-    }
-
-
     /// Rows fading in after a long reveal, on their way after a sort or a change, or whose placeholder
     /// steps on, repaint the table; otherwise what its mounted cells say.
     fn needs_redraw(&self) -> bool {
@@ -4796,9 +4650,7 @@ impl Widget for DataTableCore {
                 true
             }
             Action::Activate
-                if self.selectable
-                    || self.on_activate.is_some()
-                    || self.row_choice.is_some() =>
+                if self.selectable || self.on_activate.is_some() || self.row_choice.is_some() =>
             {
                 if self.selectable {
                     self.select_only_index(index);
@@ -4830,11 +4682,6 @@ impl Widget for DataTableCore {
 
 /// The table's widget is its core's: a `DataTable<Row>` names its rows' type, and nothing else.
 impl<Row: 'static> Widget for DataTable<Row> {
-    /// The table's cells as elements: what its core composes.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        Widget::html(&self.core, cx);
-    }
-
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         self.core.provide(request);
     }

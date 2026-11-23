@@ -467,11 +467,6 @@ impl SplitHandle {
 }
 
 impl Widget for SplitHandle {
-    /// The rule it paints, as the split's separator: its share of the first pane as its value.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.picture();
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1111,19 +1106,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
-    /// Its two panes and its divider, where it lays them out.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.children();
-        // An unnamed divider is the split's own part rather than a widget of it: the page still
-        // gets the separator between the panes, where it paints it.
-        if self.handle.test_id.is_none() {
-            let divider = self.handle.divider;
-            let part = cx.part("divider", "SplitHandle", divider);
-            part.tag = Some("div");
-            part.focusable = true;
-            part.semantics = Some(SplitHandle::accessibility(&self.handle));
-        }
-    }
     crate::provides!(
         dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
@@ -1570,29 +1552,6 @@ mod tests {
         event: &WindowEvent,
     ) {
         Dispatch::new().layout(tree, node).send(s, event);
-    }
-
-    #[test]
-    fn a_page_gets_the_divider_between_the_panes_its_share_of_the_first() {
-        let harness = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            split(SplitOrientation::Horizontal),
-            (400, 300),
-            Theme::dark(),
-        );
-        let composed = harness.composition();
-        fn divider(node: &crate::composition::Composed) -> Option<&crate::composition::Composed> {
-            if node.path.ends_with("#divider") {
-                return Some(node);
-            }
-            node.children.iter().find_map(divider)
-        }
-        let divider = divider(&composed.root).expect("the divider stands between the panes");
-        assert_eq!(divider.tag, Some("div"));
-        assert!(divider.focusable, "the keyboard moves it");
-        let semantics = divider.semantics.as_ref().expect("a separator");
-        assert_eq!(semantics.role, crate::a11y::Role::Separator);
-        assert_eq!(semantics.value.as_deref(), Some("50%"));
     }
 
     fn split(orientation: SplitOrientation) -> ResizableSplit<TestLeaf, TestLeaf> {

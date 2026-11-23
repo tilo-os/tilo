@@ -1,146 +1,79 @@
-# Widgets as HTML
+# Views as HTML
 
 A workspace's apps open as web pages at `/w/<workspace>/<app>`
-(`crates/server/tilo-server/src/web/page.rs`). The page is not a picture of a
-painted frame. Every widget renders itself as HTML, next to its paint: the same
-widgets, the same composition and the same apps as on native, with real elements
-where a window has pixels. So the page has what a page should have: real text
-that the browser lays out, selects and finds, `<input>` fields that autofill and
-take passkeys, native scrollers, buttons and list items that assistive
-technology reads, and CSS layout that follows the browser window as it resizes.
+(`crates/server/tilo-server/src/web/page.rs`). The page is not one picture of a
+painted frame. It is written from the semantics tree every window already
+publishes for assistive technology and automation: each node's role, name,
+value, state, actions and bounds. One renderer turns that tree into semantic
+HTML in the shared components' styles, so the page has what a page should have:
+real text that the browser lays out, selects and finds, `<input>` fields that
+autofill and take passkeys, native scrollers, and buttons and list items that
+assistive technology reads. No widget writes HTML of its own; a widget that
+publishes good semantics shows well on a page, and one that shows badly is
+fixed in its semantics, where a screen reader gains too.
 
-## The contract
+## The composition
 
-`Widget::html(&self, cx: &mut HtmlCx)` (`crates/ui/ui-core/src/composition.rs`)
-is part of the widget contract, beside `draw`:
+`FrameHarness::composition()` (`crates/ui/ui-core/src/headless/composition.rs`)
+walks the laid-out tree from its root. Each widget becomes a `Composed`
+(`crates/ui/ui-core/src/composition.rs`): its path (the name semantic actions
+use), its rectangle and clip, its layout node's style as CSS, its scroll, whether
+its children flow in that style, and its semantics node with the nodes it
+publishes under it. A row a list represents in its own nodes (`Widget::
+accessibility_represents_child`) carries the list's node for it: its place in
+the list, its level and its disclosure. A leaf whose words cannot say what it
+shows (a chart, a map, a canvas, an icon-only button too narrow for its name) is
+marked for a picture; `FrameHarness::paint_pictures` paints each such widget
+alone and sends it as a PNG, repainted only when what it paints changed.
 
-- A **container** composes its children: `cx.children()` puts the widgets
-  its layout node holds into its element. Where they stand where the node's
-  style puts them, the element is a CSS flex or grid container with that
-  style (`flows`), and each child is a flex item at the size the shared
-  layout gave it. A widget that places its children itself (insets, a shell
-  that docks and floats panes) has them placed at their rectangles. Surfaces
-  it lays under them (a sidebar's ground) are `cx.surface(rect, "sidebar")`.
-- A **leaf** names its element and what it shows: `cx.element("li")`,
-  `cx.text(look)` for words set the way the widget sets them (size, weight,
-  leading, colour, line clamp), `cx.field(…)` for an editable field (an
-  `<input>` or `<textarea>`), `cx.blocks(…)` for a document of blocks
-  (paragraphs, headings, list and checklist items, quotes, code, with inline
-  marks and the caret).
-- A widget that is **genuinely drawn** (a chart, a canvas, a keyboard map,
-  video) calls `cx.picture()`: the page holds a `<canvas>` island for its
-  paint, marked with the paint's count (`data-painted`). The server page does
-  not fill these islands yet.
-- A **control** calls `cx.control(control)`: the element the browser and an
-  assistive technology know, holding what the widget holds. The page builds it
-  from `Control`, and what the person does on it comes back as the widget's own
-  semantic action (`semantic`, the path a field already uses), the same input
-  path a native window's accessibility and automation take.
-
-The trait's default, `HtmlCx::from_layout`, renders a widget from its layout
-node and its role (its children, or a picture for a leaf). It stands in for
-nothing: `tools/policy/check_widget_html.py` refuses an `impl Widget` without
-`fn html`, so every widget says what it is on a page.
-
-## Controls
-
-`Control` (`crates/ui/ui-core/src/composition.rs`) is one kind per family of
-control, carrying what the element holds:
-
-| Kind | The page's element | What comes back |
-|---|---|---|
-| `Check` | a `<label>` around `<input type=checkbox>` (a radio's in a set, a switch's as `role=switch`), with its words | `ToggleCheck` |
-| `Range` | `<input type=range>` with `min`, `max`, `step` and the app's words for the value | `SetValue` |
-| `Entry` | `<input>` of a kind (`number` with two steppers, `date`, `time`, `colour`, `search`) | `SetValue` |
-| `Select` | a `<button role=combobox aria-haspopup=listbox>` showing the current value, and its open `role=listbox` of `role=option`s | `Activate` to open; `SetValue` per option |
-| `Choices` | a set (`tablist`, `radiogroup`, `menu`, `toolbar`, `group`) of `role=tab`/`radio`/`menuitem`/`button` choices, each naming its semantic target | `Activate` on that target |
-| `Link` | `<a href>` with its words | `Activate` |
-
-A widget that shows several parts of one control (a colour's swatches beside
-its hex field) calls `cx.control` once per part. A choice with no `target` and
-no `value` is only its looks, and the page does not act on it.
-
-Icons reach a page through `composition::glyph`, as SVG outlines in the icon's colour.
-
-Widgets with their own HTML so far: `Text`, `EditableLabel`, `BlockEditor`,
-`Button` (a `<button>` whose face is its icon, words and state), `ListRow`,
-`Column`, `Row`, `Stack`, `Container`, `Scrollable`, `VirtualList`, `NavShell`
-and its header title, `ModalDialog` and its footer actions (buttons with their
-words), `OverflowButton`; the composition primitives (`Spacer`, `When` and the
-`Arranged` containers, `Router`, `UiGraph`'s live UI, the app root binding, the
-hosts that hold one widget) are their children and the container's own style,
-never a picture; the `ActionPalette` is a `role=dialog` with a real search
-`<input>` and a `role=listbox` of options, each a row with its icon, its words
-and its shortcut; the window's search is its field and its buttons; a floating
-window is its title, its close button and the content it holds; the window
-strip's tiles, groups and their controls are their children and their glyphs;
-the history host and the framework's presentation compose their children, and
-the header a client-drawn window draws is a `<header>`. The content widgets
-show what they are: `DataTable` (a `<table>` of `<th>` and `<td>`),
-`PropertyList` and `Facts` (a `<dl>` of terms and descriptions), `Breadcrumb`
-(a `<nav>` holding an `<ol>`), `ConversationList` and `ActivityTimeline` (a
-list of lines with their authors and times), a quote (a `<blockquote>`),
-`CodeEditor` (a `<pre><code>` to read, its own field to edit), `ProgressBar`
-(a `<progress>` with its value), `Gauge` (its name and readout as words over a
-track and fill the page lays), the `Section` family (a `<section>` with its
-heading, count and action), `EmptyState`, `Banner` (a live region), `DropZone`,
-`SearchResults`, `Card`/`MediaCard`/`StatTile`/`QuickTile` and their grids,
-`TextStack`, `Badge`, `Avatar` (an `<img>` where its address loads, its
-initials as text otherwise), `Image` (an `<img>` where its address loads),
-`Icon`, `Divider` (a `<hr>`), `Spinner` and `Skeleton` (drawn by the page's own
-CSS), `EmojiPicker`, `ReactionStrip`, `MediaTransport`'s art, lines and times,
-`PagePreview`, `PageSidebar`, the `Surfaces` components, and the containers
-that only place what they hold (`GroupRow`, `Columns`, `DragRun`,
-`GraphCanvas`, `Manual`, `DocumentView`, `DocumentViewport`, `DisclosureRow`);
-a widget that is genuinely drawn (`Chart`, `Sparkline`, `Plot`, `Map`,
-`Drawing`, `QR`, `VideoPlayer`, `ImageViewer`, `ImageCrop`, `ProgressRing`)
-shows as its picture inside an element that carries its name. What a widget
-draws itself — a web view, a native surface mounted by the platform, an
-embedded app, a capture's canvas, a display placement, a split's rule — is a
-picture of that paint, with the controls it names (`HtmlCx::targets`) as real
-buttons over it: `HtmlCx::painted` takes the count a widget bumps each time it
-paints, so the island says when its picture changed. The controls' own
-elements are listed above.
-
-A widget shows what it paints itself from parts of its own: `cx.words` puts a
-run of text as an element (`h3`, `dt`, `td`, `li`) access where the widget
-sets it, `cx.attr` gives its element what only its kind carries (an `<img>`'s
-`src` and `alt`, a `<progress>`'s `value`, a `<time>`'s `datetime`), and
-`cx.ground` fills its element with the ground the widget paints under it (a
-card's, a badge's), so a page reads like the native window in light and dark.
-
-## How a page is served
-
-The browser loads a small document from the address: a stylesheet and the
-page's script (`crates/server/tilo-server/src/web/page/page.mjs`), no app code.
-The script proves the browser's device on a WebTransport session and asks for
-the page. The workspace service opens the app's view for that member in an app
-worker (`crates/agent/agent-session/src/workspace_actions/pages.rs`), which
-lays it out headlessly. `FrameHarness::composition()`
-(`crates/ui/ui-core/src/headless/composition.rs`) walks the laid-out tree from
-its root and asks each widget node for its `html`; layout-only nodes become
-plain containers with their style. The result (`ui::composition::Composition`)
-is platform-neutral.
+## The renderer
 
 `ui::composition::page::Page` (`crates/ui/ui-core/src/composition/page.rs`)
-turns it into the page's markup, which carries no geometry of the frame it was
-composed in: a container is a CSS flex or grid box with its node's style, so the
-page lays out at any width and the server never needs the window's size. Every
-element the page acts on carries `data-p`, a number `Page` keeps for the
-widget's path from one render to the next. `Page::render` answers the whole
-body; `Page::patch` answers only the elements that changed, each replacing the
-element with its number.
+decides by role what each node shows:
 
-What the person does comes back as the widget's semantic action: `data-a` names
-it (`activate`, `toggle`, `value`, `step`, `edit`), `data-t` the semantic target
-and `data-v` the value it sets. The script sends one `PageAsk::Act` per click or
-edit (`tilo_server_protocol::page`), the worker acts on the view as a click or
-typing in a window would, and the answer is the patches. An open page also asks
-every few seconds what others changed, so their edits reach it.
+- **Words**: text, headings, paragraphs, and buttons, links, tabs, menu and
+  list items whose name fits them. The role names the element (`h1`…`h6`, `p`,
+  `span`, `button`, `a`); a row's title leads and what it says after it is
+  dimmer.
+- **Field**: an editable text node is an `<input>` or `<textarea>` (a block
+  edited in place inside a document), with its value, selection and autofill.
+- **Structure**: a container holds its children; a widget that draws its own
+  nodes (a list, a timeline, a launchpad's cards) shows each node as the element
+  its role names, numbered under the widget. A named group or dialog says its
+  name and description above what it holds.
+- **Paint**: the widget's picture, with every node in it that acts standing
+  over it, where it is drawn, as a button.
+- **Well**: a window node naming a place is filled by the page's host with what
+  stands for that window.
+
+A container whose children flow in its style is a CSS flex or grid box with
+that style, so the browser lays it out. A container that places its children
+itself has them at their bounds. The page tells the view its size
+(`PageAction::Resize`) when it is shown and when the browser window changes, and
+the view lays itself out at that size, as a window does, so the bounds match the
+page. The shared components' styles (`page.css`, with the theme's tokens from
+`page::theme_css`) give each role its look in light and dark.
+
+## Actions
+
+A press on the page is that node's accessibility action. Every element the page
+acts on carries `data-p`, a number `Page` keeps for the widget's path (and, for a
+node the widget publishes, the node's key under it) from one render to the next;
+`data-a` names the action (`activate`, `toggle`, `slider`, `edit`, `value`) and
+`data-t` the node's action target. The script
+(`crates/server/tilo-server/src/web/page/page.mjs`) sends one `PageAsk::Act` per
+click, key or edit (`tilo_server_protocol::page`); the app worker
+(`crates/agent/agent-session/src/workspace_actions/pages.rs`) performs it on the
+widget the number names through `perform_semantic_named`, the same path a
+screen reader or an agent takes, and answers with patches: `Page::patch` sends
+only the elements that changed, each replacing the element with its number. An
+open page also asks every few seconds what others changed, so their edits reach
+it.
 
 ## Tests
 
-The composition is tested where the widgets and apps are:
-`crates/ui/ui-core/src/composition/page.rs`'s own tests, and the server page's flow in
+`crates/ui/ui-core/src/composition/page.rs`'s own tests, the widgets' and apps'
+tests that render their windows as pages, and the server page's flow in
 `crates/server/tilo-server/src/web/page/tests.rs` and
-`crates/server/tilo-server/src/web/page/page.test.mjs`.
+`crates/server/tilo-server/src/web/page/page.test.mjs`. The page walks
+(`t test page-notes`, `t test page-tour`) drive real pages in a browser.

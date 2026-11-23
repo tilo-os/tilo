@@ -35,6 +35,19 @@ impl AttachedView {
         self.frame_as_is().theme().clone()
     }
 
+    /// Lay the view out at its page's size, `viewport` CSS pixels (kept between 240 and 8192 on
+    /// a side): a narrow page shows the view as a narrow window does.
+    ///
+    /// # Errors
+    /// The view could not be laid out at that size.
+    pub fn resize_page(&mut self, (width, height): (u32, u32)) -> Result<(), String> {
+        let viewport = (width.clamp(240, 8192), height.clamp(240, 8192));
+        self.frame
+            .get_mut()
+            .resize(viewport)
+            .map_err(|error| format!("layout failed: {error:?}"))
+    }
+
     /// Act on the view as a person does on its page: `action` on the widget at
     /// `widget` (the path its element stands for), at the semantic `target` it
     /// carries. The person acts on what they see, so what reached the view is

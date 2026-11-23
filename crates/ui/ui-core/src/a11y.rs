@@ -124,6 +124,7 @@ pub struct AccessState {
     pub modal: bool,
     /// Hidden from view, and should be from the tree.
     pub hidden: bool,
+    /// Its text wraps onto as many lines as it needs, rather than running on one.
     pub multiline: bool,
     /// When set, widgets must NOT place the secret in [`AccessNode::value`].
     pub protected: bool,

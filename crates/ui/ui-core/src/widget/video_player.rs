@@ -2291,12 +2291,6 @@ impl FullscreenProvider for VideoPlayer {
 }
 
 impl Widget for VideoPlayer {
-    /// The frame and its controls, as its paint shows them.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.picture();
-    }
-
     crate::provides!(dyn crate::widget::FullscreenProvider);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {

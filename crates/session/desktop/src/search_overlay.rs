@@ -108,12 +108,6 @@ fn place(value: f64) -> taffy::LengthPercentageAuto {
 }
 
 impl Widget for SearchOverlay {
-    /// The card it hosts, where the search places it; nothing while search is closed.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let revision = self.handle.search_revision();
         let changed = revision != self.seen;

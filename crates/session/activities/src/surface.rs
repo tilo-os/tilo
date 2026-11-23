@@ -171,17 +171,6 @@ impl Widget for ActivitiesSurface {
         "Activities"
     }
 
-    /// The cards over the shell are drawn: a page shows a picture of them, with each card's
-    /// controls as buttons where they stand.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        let access = self.state.borrow().layer.accessibility();
-        cx.picture();
-        if let Some(access) = access {
-            cx.controls("activity", &access);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,

@@ -377,13 +377,6 @@ pub trait Widget {
         None
     }
 
-    /// Render this widget as HTML, next to its paint, for a host that shows the window as a page
-    /// ([`crate::composition`]): the element it is, what it shows of its own, and where its children
-    /// go.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.from_layout();
-    }
-
     /// The words this widget shows as the heading of the page it belongs to, when it is the page's own
     /// title: a large-title text the content edits or sets at the top of a document.
     fn own_page_title(&self) -> Option<String> {

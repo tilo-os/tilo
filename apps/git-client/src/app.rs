@@ -631,10 +631,6 @@ pub(crate) fn window(cx: &ViewCx<crate::resource::GitClient>, mut window: GitCli
 }
 
 impl Widget for GitClientApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.picture();
-    }
-
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {

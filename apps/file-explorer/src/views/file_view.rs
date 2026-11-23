@@ -811,42 +811,6 @@ impl FileView {
 }
 
 impl Widget for FileView {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        let theme = cx.theme().clone();
-        let style = Self::body_style(&theme);
-        let viewport = self.rect;
-        let range = self.visible_range(Some(viewport));
-        cx.element("ul");
-        for i in range {
-            let Some(entry) = self.entries.get(i) else {
-                continue;
-            };
-            let Some(rect) = self.item_rect(i) else {
-                continue;
-            };
-            if rect.intersect(viewport).area() <= 0.0 {
-                continue;
-            }
-            let part = cx.part(&format!("item{i}"), "FileEntry", rect);
-            part.tag = Some("li");
-            part.own = Some(ui::composition::Own::Text(ui::composition::TextLook::new(
-                entry.name.clone(),
-                &style,
-                Some(theme.tokens.colors.text_primary),
-            )));
-            if self.selection.is_selected(i) {
-                part.semantics = Some(
-                    ui::a11y::AccessNode::new(ui::a11y::Role::ListItem).with_state(
-                        ui::a11y::AccessState {
-                            selected: true,
-                            ..Default::default()
-                        },
-                    ),
-                );
-            }
-        }
-    }
-
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn is_layout_dirty(&self) -> bool {
@@ -2775,22 +2739,5 @@ mod tests {
             assert_eq!(node.children[1].set_size, Some(2));
             assert_description_has_every_fact(node.children[1].description.as_deref());
         }
-    }
-
-    #[test]
-    fn the_file_view_composes_its_names_as_text() {
-        let view = grid(4, 800.0);
-        let composed = ui::composition::compose_alone(&view, &Theme::dark(), "files");
-        assert_eq!(composed.tag, Some("ul"), "the grid is a list of items");
-        let names: Vec<&str> = composed
-            .children
-            .iter()
-            .filter_map(|child| match &child.own {
-                Some(ui::composition::Own::Text(look)) => Some(look.text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(names.first().copied(), Some("f0"), "{names:?}");
-        assert!(names.len() > 1, "every item in view has its name");
     }
 }

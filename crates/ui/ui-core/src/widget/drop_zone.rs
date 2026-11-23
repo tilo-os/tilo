@@ -293,58 +293,6 @@ impl DropZone {
 }
 
 impl Widget for DropZone {
-    /// What it takes, in words, with its action beside them.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Face, Own, TextLook};
-        let theme = cx.theme();
-        let m = self
-            .metrics
-            .clone()
-            .unwrap_or_else(|| ZoneMetrics::new(theme));
-        cx.element("div");
-        cx.children();
-        let x0 = self.rect.x0 + m.pad;
-        let x1 = self.rect.x1 - m.pad;
-        let mut y = self.rect.y0 + m.pad;
-        if let Some(icon) = self.icon.glyph(m.icon, theme.text_dim, false) {
-            let part = cx.part(
-                "icon",
-                "DropZone",
-                Rect::new(x0, y, x0 + m.icon, y + m.icon),
-            );
-            part.own = Some(Own::Face(Face {
-                icon: Some(icon),
-                label: None,
-                detail: None,
-                trailing: None,
-                fill: None,
-                edge: None,
-                radius: 0.0,
-                pad: 0.0,
-                gap: 0.0,
-                spread: false,
-            }));
-            y += m.icon + m.gap;
-        }
-        let height = f64::from(m.title.line_height_px());
-        cx.words(
-            "title",
-            "h3",
-            Rect::new(x0, y, x1, y + height),
-            TextLook::new(self.title.clone(), &m.title, Some(theme.text_primary)),
-        );
-        y += height + m.text_gap;
-        if let Some(message) = &self.message {
-            let height = f64::from(m.message.line_height_px());
-            cx.words(
-                "message",
-                "p",
-                Rect::new(x0, y, x1, y + height),
-                TextLook::new(message.clone(), &m.message, Some(theme.text_dim)),
-            );
-        }
-    }
-
     crate::described!();
 
     crate::provides!(dyn crate::widget::controls::ActionControls);

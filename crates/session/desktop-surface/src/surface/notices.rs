@@ -1110,44 +1110,6 @@ impl Widget for NotificationLayer {
         "DesktopNotifications"
     }
 
-    /// Each banner as a card of its own words, with the controls it paints as real buttons where
-    /// they stand; the centre, while it is up, as the panel it paints with its controls as buttons
-    /// a reader and the keyboard reach.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("aside");
-        let theme = cx.theme().clone();
-        let feed = self.stack.feed();
-        for (id, rect) in self.stack.banner_rects() {
-            let Some(banner) = feed.banner(id) else {
-                continue;
-            };
-            let words = &banner.notification;
-            let body = if words.show_preview && !words.body.is_empty() {
-                format!("{}\n{}", words.title, words.body)
-            } else {
-                words.title.clone()
-            };
-            let look = ui::composition::TextLook::new(
-                body,
-                &theme.text(ui::TextRole::Body),
-                Some(theme.tokens.colors.text_primary),
-            )
-            .with_max_lines(Some(3));
-            let card = cx.part(&format!("banner:{id}"), "NotificationBanner", rect);
-            card.tag = Some("article");
-            card.own = Some(ui::composition::Own::Text(look));
-        }
-        if let Some(access) = self.stack.accessibility() {
-            cx.controls("banner-control", &access);
-        }
-        if let (Some(center), Some(layout)) = (self.centre(), self.layout()) {
-            let panel = cx.part("centre", "NotificationCentre", layout.panel());
-            panel.painted(self.notifications.revision());
-            let access = center.accessibility(self.notifications.host(), &layout, ui::time::now());
-            cx.controls("centre-control", &access);
-        }
-    }
-
     fn needs_redraw(&self) -> bool {
         self.dirty || self.drawn_revision.get() != Some(self.notifications.revision())
     }

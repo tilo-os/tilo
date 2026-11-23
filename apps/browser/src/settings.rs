@@ -453,10 +453,6 @@ fn button_with_action(
 }
 
 impl Widget for SettingsPane {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

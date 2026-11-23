@@ -290,28 +290,6 @@ fn by_widget<'a>(node: &'a Composed, widget: &str) -> Option<&'a Composed> {
         .find_map(|child| by_widget(child, widget))
 }
 
-/// Every node of `node` and what is under it, depth first.
-fn parts<'a>(node: &'a Composed, out: &mut Vec<&'a Composed>) {
-    out.push(node);
-    for child in &node.children {
-        parts(child, out);
-    }
-}
-
-fn attr<'a>(node: &'a Composed, name: &str) -> Option<&'a str> {
-    node.attrs
-        .iter()
-        .find(|(each, _)| *each == name)
-        .map(|(_, value)| value.as_str())
-}
-
-fn words(node: &Composed) -> Option<&str> {
-    match node.own.as_ref() {
-        Some(crate::composition::Own::Text(look)) => Some(look.text.as_str()),
-        _ => None,
-    }
-}
-
 /// A week of fifty events, some of them titled past one column's width.
 fn fifty_items(days: &[Date]) -> Vec<TimelineItem> {
     (0..50)
@@ -355,76 +333,49 @@ tilo_test_env::scenario! {
         host.relayout();
         let composition = host.composition();
         let grid = by_widget(&composition.root, "Timeline").expect("the grid is composed");
+        let access = grid.semantics.as_ref().expect("the grid says what it is");
 
-        let sections: Vec<&Composed> = grid
+        let sections: Vec<_> = access
             .children
             .iter()
-            .filter(|child| child.tag == Some("section"))
+            .filter(|child| child.role == crate::a11y::Role::Group)
             .collect();
         assert_eq!(sections.len(), 7, "a week is seven day groups");
         let mut buttons = Vec::new();
         for (column, section) in sections.iter().enumerate() {
-            let access = section.semantics.as_ref().expect("a day says what it is");
-            assert_eq!(access.role, crate::a11y::Role::Group);
             let day = days[column];
             let iso = day.to_string();
             let heading = crate::format::day_heading(day, false);
-            assert_eq!(access.value.as_deref(), Some(iso.as_str()));
-            assert_eq!(access.name.as_deref(), Some(heading.as_str()));
-            let date = section
-                .children
-                .iter()
-                .find(|part| part.tag == Some("time"))
-                .expect("the day's date is a time");
-            assert_eq!(attr(date, "datetime"), Some(iso.as_str()));
-            assert_eq!(words(date), Some(heading.as_str()));
+            assert_eq!(section.value.as_deref(), Some(iso.as_str()));
+            assert_eq!(section.name.as_deref(), Some(heading.as_str()));
             buttons.extend(
                 section
                     .children
                     .iter()
-                    .filter(|part| part.tag == Some("button")),
+                    .filter(|part| part.role == crate::a11y::Role::Button),
             );
         }
         assert!(buttons.len() > 10, "the events the viewport shows are buttons");
         for &button in &buttons {
-            let access = button.semantics.as_ref().expect("an event says what it is");
-            assert_eq!(access.role, crate::a11y::Role::Button);
-            assert_eq!(words(button), access.name.as_deref());
-            let value = access.value.as_deref().expect("an event carries its time");
+            let value = button.value.as_deref().expect("an event carries its time");
             assert!(value.contains('T') && value.contains('/'), "{value}");
-            assert_eq!(
-                access.description.as_deref().map(str::to_owned),
-                button
-                    .children
-                    .iter()
-                    .find(|part| part.tag == Some("time"))
-                    .and_then(|time| words(time).map(str::to_owned))
-            );
-            let time = button
-                .children
-                .iter()
-                .find(|part| part.tag == Some("time"))
-                .expect("an event's hours are a time");
-            assert_eq!(attr(time, "datetime"), Some(value));
-            let target = access
+            assert!(button.description.is_some(), "an event says its hours");
+            let target = button
                 .action_target
                 .as_deref()
                 .expect("an event names what a press on it acts on");
             assert!(target.starts_with("tilo.key-action:timeline:"), "{target}");
         }
 
-        // The page itself: sections and times a person's browser lays out, the long titles intact
-        // and each event's element acting as its own press.
+        // The page itself: sections a person's browser lays out, each headed by its day, the
+        // long titles intact and each event's element acting as its own press.
         let html = crate::composition::page::Page::new().render(&composition);
-        assert!(html.contains("<section"), "a day is a section");
-        assert_eq!(html.matches("<section").count(), 7);
-        assert!(
-            html.matches("<time ").count() >= 7,
-            "each day's date is a time: {html}"
-        );
-        assert!(html.contains(&format!("datetime=\"{}\"", days[0])));
+        assert_eq!(html.matches("<section").count(), 7, "a day is a section: {html}");
+        assert!(html.contains(&crate::composition::page::escape(
+            &crate::format::day_heading(days[0], false)
+        )));
         assert!(html.contains("a title long enough to run past the width of one day"));
-        assert!(html.contains("data-t=\"tilo.key-action:timeline:"));
+        assert!(html.contains("data-a=\"activate\" data-t=\"tilo.key-action:timeline:"));
     }
 
     phase activating_an_events_element_presses_what_a_click_on_it_presses;
@@ -446,19 +397,18 @@ tilo_test_env::scenario! {
         host.relayout();
         let composition = host.composition();
         let grid = by_widget(&composition.root, "Timeline").expect("the grid is composed");
-        let mut all = Vec::new();
-        parts(grid, &mut all);
-        let button = all
-            .iter()
-            .find(|part| part.tag == Some("button"))
-            .expect("the event is a button");
-        let target = button
+        let button = grid
             .semantics
             .as_ref()
-            .and_then(|access| access.action_target.clone())
-            .expect("the button names its event");
-
-        let [x, y, width, height] = button.rect;
+            .expect("the grid says what it is")
+            .nodes()
+            .into_iter()
+            .find(|part| part.role == crate::a11y::Role::Button && part.action_target.is_some())
+            .expect("the event is a button");
+        let target = button.action_target.clone().expect("the button names its event");
+        let bounds = button.bounds.expect("the event stands somewhere");
+        let (x, y, width, height) =
+            (bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0);
         host.click_at(x + width / 2.0, y + height / 2.0);
         let clicked = queue.take();
         assert_eq!(clicked.len(), 1, "the click pressed the event");

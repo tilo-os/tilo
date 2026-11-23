@@ -1792,10 +1792,6 @@ pub(crate) fn past_tense(action: Action) -> &'static str {
 }
 
 impl Widget for ContainersApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
         for child in self.children_mut() {
             child.settle(edits, path);

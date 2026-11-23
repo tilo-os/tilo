@@ -985,20 +985,6 @@ fn thumb_colors(
 }
 
 impl Widget for Slider {
-    /// A slider as a page's own `<input type=range>`: the range it spans, the
-    /// value it holds and how the app says it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::Control;
-        cx.control(Control::Range {
-            value: self.value,
-            min: self.range.0,
-            max: self.range.1,
-            step: self.step,
-            text: (self.value_text.is_some() || self.shows_value).then(|| self.spoken_value()),
-            shown: self.shows_value,
-        });
-    }
-
     crate::described!();
 
     crate::provides!(

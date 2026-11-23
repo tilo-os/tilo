@@ -3525,9 +3525,6 @@ impl ActivityTimeline {
     }
 }
 
-#[path = "activity_timeline_html.rs"]
-mod html;
-
 mod widget_impl;
 
 impl ActivityTimeline {

@@ -1026,11 +1026,6 @@ struct TileState {
 }
 
 impl Widget for DisplayPlacement {
-    /// The placement as it draws it, each display a choice a page reaches.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.painted_targets(self.paint_generation);
-    }
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn build_layout(

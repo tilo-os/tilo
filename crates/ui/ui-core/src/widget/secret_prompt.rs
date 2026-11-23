@@ -2439,66 +2439,6 @@ impl Drop for SecretPrompt {
 }
 
 impl Widget for SecretPrompt {
-    /// A secret prompt as a page's own dialog: its fields, its choices and the
-    /// two answers, each naming the key that presses it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, ControlOption, InputKind, TextLook};
-        cx.element("dialog");
-        let theme = cx.theme().clone();
-        let colors = &theme.tokens.colors;
-        let style = theme.text(crate::tokens::TextRole::Body);
-        for field in &self.fields {
-            // A secret's characters never reach the page: it shows as many
-            // dots as the field holds, and what the person types reaches the
-            // widget as keys do.
-            cx.control(Control::Entry {
-                input: InputKind::Search,
-                text: "•".repeat(field.input.value().chars().count()),
-                placeholder: field.label.clone(),
-                min: None,
-                max: None,
-                step: None,
-                steppers: false,
-                increase: None,
-                decrease: None,
-                secret: true,
-            });
-        }
-        let label = TextLook::new(self.title.clone(), &style, Some(colors.text_primary));
-        let mut options: Vec<ControlOption> = self
-            .choices
-            .iter()
-            .enumerate()
-            .map(|(index, choice)| {
-                ControlOption::new(choice.clone())
-                    .with_target(crate::composition::keyed_target(
-                        "secret-prompt",
-                        &[CHOICE_KEY + index as u64],
-                    ))
-                    .selected(self.choice == index)
-            })
-            .collect();
-        options.push(
-            ControlOption::new(widget_text(&self.cancel_label)).with_target(
-                crate::composition::keyed_target("secret-prompt", &[CANCEL_KEY]),
-            ),
-        );
-        options.push(
-            ControlOption::new(widget_text(&self.primary_label))
-                .with_target(crate::composition::keyed_target(
-                    "secret-prompt",
-                    &[PRIMARY_KEY],
-                ))
-                .disabled(self.busy.is_some()),
-        );
-        cx.control(Control::Choices {
-            list: "group",
-            item: "button",
-            label: Some(label),
-            options,
-        });
-    }
-
     fn needs_redraw(&self) -> bool {
         self.chrome_changed()
             || self.answer.deadline().is_some()

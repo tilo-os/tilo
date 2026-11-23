@@ -1894,10 +1894,6 @@ impl ui::undo::UndoControl for ContactsApp {
 }
 
 impl Widget for ContactsApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     ui::provides!(dyn ui::undo::UndoControl, dyn ui::undo::LocalUndo);
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

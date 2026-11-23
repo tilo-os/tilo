@@ -680,6 +680,14 @@ impl Replica {
         (self.view.composition(), self.view.theme())
     }
 
+    /// The view laid out at its page's size ([`AttachedView::resize_page`]).
+    ///
+    /// # Errors
+    /// The view could not be laid out at that size.
+    pub fn resize_page(&mut self, viewport: (u32, u32)) -> Result<(), String> {
+        self.view.resize_page(viewport)
+    }
+
     /// What its member did on the view's page ([`AttachedView::act_on_page`]).
     ///
     /// # Errors

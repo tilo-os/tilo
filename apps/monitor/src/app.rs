@@ -1468,10 +1468,6 @@ impl MonitorState {
 }
 
 impl Widget for MonitorApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.dirty = true;
         self.follow_document();

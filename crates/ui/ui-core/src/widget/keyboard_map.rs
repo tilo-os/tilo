@@ -589,14 +589,6 @@ impl KeyboardMap {
 }
 
 impl Widget for KeyboardMap {
-    /// A keyboard as a page shows it: the keys are a drawing of one, so it is
-    /// its paint, read as its name and each key's legends by assistive
-    /// technology.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("figure");
-        cx.picture();
-    }
-
     fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
         KeyboardMap::observe_physical_input(self, input);
     }

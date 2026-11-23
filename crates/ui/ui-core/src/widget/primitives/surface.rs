@@ -56,20 +56,6 @@ impl SurfaceLevel {
         })
     }
 
-    /// `node`, at `rect`, as a page shows this level: on its ground, a window or a panel
-    /// floating over what is under it.
-    pub fn compose(self, theme: &Theme, rect: Rect, node: &mut crate::composition::Composed) {
-        let fill = self.color(theme);
-        let floats = matches!(self, Self::Window | Self::Floating);
-        node.ground = Some(crate::composition::Ground {
-            fill: Some(crate::composition::rgba8(fill)),
-            edge: floats.then(|| crate::composition::rgba8(theme.window_edge())),
-            radius: self.radius(theme).min(rect.height() / 2.0),
-            inset: [0.0; 2],
-        });
-        node.floats = floats;
-    }
-
     /// The radius of something inset `inset` inside a surface of this
     /// level: concentric with it, never below `radii.detail`.
     #[must_use]
@@ -347,14 +333,6 @@ impl Surface {
 }
 
 impl Widget for Surface {
-    /// The surface it raises under what it holds.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("section");
-        let theme = cx.theme();
-        self.level.compose(theme, self.rect, cx.node());
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -564,12 +542,6 @@ impl DensityRegion {
 }
 
 impl Widget for DensityRegion {
-    /// What it holds, at its density.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

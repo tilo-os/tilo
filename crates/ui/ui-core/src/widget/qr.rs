@@ -251,13 +251,6 @@ impl QrWidget {
 }
 
 impl Widget for QrWidget {
-    /// The code's own modules, exactly as drawn, named by what it opens.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        cx.attr("aria-label", self.alt.clone());
-        cx.picture();
-    }
-
     crate::described!();
 
     #[allow(

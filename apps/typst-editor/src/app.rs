@@ -1134,10 +1134,6 @@ impl ui::widget::Findable for TypstApp {
 }
 
 impl Widget for TypstApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     ui::provides!(
         dyn ui::widget::Findable,
         dyn ui::widget::controls::ActionControls

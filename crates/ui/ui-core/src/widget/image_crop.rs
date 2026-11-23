@@ -352,12 +352,6 @@ impl ImageCropEditor {
 }
 
 impl Widget for ImageCropEditor {
-    /// The picture with its crop's edges and handles, as its paint shows them.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        cx.picture();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -429,13 +429,6 @@ impl Widget for BackgroundLayer {
         dyn ui::host_operation::ResourceOperations
     );
 
-    /// The wallpaper, the band the bar's buttons stand on and the area the windows fill, each
-    /// where this lays it out.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let changed = self.area.update(state, path);
         if !self.hosts_cards {

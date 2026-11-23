@@ -48,11 +48,6 @@ impl Tripwire {
 }
 
 impl Widget for Tripwire {
-    /// A button that says what it is, and nothing else.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        self.check();
-        cx.element("button");
-    }
     fn provide<'a>(&'a self, _request: &mut crate::widget::capability::Request<'a, '_>) {
         self.check();
     }
@@ -183,10 +178,6 @@ impl Replacing {
 }
 
 impl Widget for Replacing {
-    /// The child it holds now, as its content.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.children();
-    }
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.replace_if(ReplaceAt::Sync);
     }

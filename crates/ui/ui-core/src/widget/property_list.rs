@@ -916,87 +916,6 @@ impl PropertyList {
 }
 
 impl Widget for PropertyList {
-    /// Its rows as a page's own list: each label with the value beside it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::TextLook;
-        let theme = cx.theme();
-        cx.element("dl");
-        let metrics = self
-            .metrics
-            .clone()
-            .unwrap_or_else(|| ListMetrics::new(theme, self.density));
-        // A page never paints the list, so it lays its rows out itself when no paint has.
-        let outer = self.outer();
-        let layout = crate::text_render::with_layout_renderer(theme, |text| {
-            self.lay_out_at(text, &metrics, outer.origin(), outer.width())
-        });
-        let mut properties = self.properties();
-        let mut group_at = 0;
-        for (group_index, (title, rows)) in self.groups.iter().enumerate() {
-            if let Some(group) = layout.groups.get(group_index)
-                && let Some(title) = title.as_deref().filter(|title| !title.is_empty())
-            {
-                let style = metrics.group.clone();
-                let line = f64::from(style.line_height_px());
-                let look = TextLook::new(title.to_owned(), &style, Some(theme.text_dim))
-                    .with_max_lines(Some(1));
-                cx.words(
-                    &format!("group:{group_index}"),
-                    "p",
-                    crate::kurbo::Rect::new(
-                        group.title_at.x,
-                        group.title_at.y,
-                        self.rect.x1,
-                        group.title_at.y + line,
-                    ),
-                    look,
-                );
-            }
-            for _ in 0..rows.len() {
-                let Some(property) = properties.next() else {
-                    break;
-                };
-                let Some(row) = layout.rows.get(group_at) else {
-                    break;
-                };
-                group_at += 1;
-                let label_style = metrics.label.clone();
-                let value_style = metrics.value.clone();
-                let look = TextLook::new(
-                    property.label.clone(),
-                    &label_style,
-                    Some(theme.tokens.colors.text_dim),
-                )
-                .with_max_lines(Some(1));
-                cx.words(
-                    &format!("label:{group_at}"),
-                    "dt",
-                    crate::kurbo::Rect::new(
-                        row.label.x,
-                        row.label.y,
-                        row.value.x,
-                        row.label.y + f64::from(label_style.line_height_px()),
-                    ),
-                    look,
-                );
-                let value = row.elided.clone().unwrap_or_else(|| property.value.clone());
-                let look =
-                    TextLook::new(value, &value_style, Some(theme.tokens.colors.text_primary));
-                cx.words(
-                    &format!("value:{group_at}"),
-                    "dd",
-                    crate::kurbo::Rect::new(
-                        row.value.x,
-                        row.value.y,
-                        row.value.x + row.value_width,
-                        row.value.y + f64::from(value_style.line_height_px()),
-                    ),
-                    look,
-                );
-            }
-        }
-    }
-
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn build_layout(
@@ -1414,25 +1333,6 @@ impl PropertyValue {
 }
 
 impl Widget for PropertyValue {
-    /// The value as a page sets it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let theme = cx.theme();
-        let style = self
-            .metrics
-            .as_ref()
-            .map_or_else(|| theme.text(crate::TextRole::Body), |m| m.value.clone());
-        let ink = match self.kind {
-            crate::text_render::TextKind::Prose => theme.tokens.colors.text_primary,
-            _ => theme.tokens.colors.text_dim,
-        };
-        cx.element("span");
-        cx.text(crate::composition::TextLook::new(
-            self.value.clone(),
-            &style,
-            Some(ink),
-        ));
-    }
-
     fn test_id(&self) -> Option<&str> {
         self.id.as_deref()
     }

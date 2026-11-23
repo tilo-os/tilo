@@ -2022,23 +2022,6 @@ impl ListRow {
         self.selected
     }
 
-    /// The row's parts as a page shows them.
-    pub(crate) fn compose_html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let check = cx.semantics().and_then(|node| {
-            node.children
-                .iter()
-                .find(|child| child.role == Role::Checkbox)
-                .cloned()
-        });
-        // Its trailing control is a widget of its own; its words, icons and
-        // marks stand where the canvas paints them, around it.
-        cx.children();
-        cx.place_children();
-        let band = self.text_band();
-        self.with_face(|face| face.compose(cx, band, check));
-        self.flow_html(cx);
-    }
-
     fn reveal_actions(&self) -> bool {
         (self.selected && !self.environment.supports_hover()) || self.armed_action.is_some()
     }
@@ -2597,12 +2580,6 @@ fn settle_trailing(
 }
 
 impl Widget for ListRow {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("li");
-        cx.selected(self.selected);
-        self.compose_html(cx);
-    }
-
     crate::provides!(
         dyn crate::widget::CardBody,
         dyn crate::widget::controls::ActionControls,
@@ -3367,7 +3344,6 @@ mod colour;
 mod paint;
 
 mod held;
-mod html;
 pub(crate) use paint::paint_code_badge;
 
 mod spans;

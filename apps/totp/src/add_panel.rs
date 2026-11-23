@@ -325,10 +325,6 @@ impl AddForm {
 }
 
 impl Widget for AddForm {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.dirty = true;
         // The tree is replaced here, where the window expects a widget to change its

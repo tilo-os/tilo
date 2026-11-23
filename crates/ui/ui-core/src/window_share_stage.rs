@@ -98,12 +98,6 @@ impl Shown {
 }
 
 impl Widget for Shown {
-    /// The view's app, as its content.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

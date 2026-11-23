@@ -54,11 +54,6 @@ impl<E: Effect> EffectEndpoint<E> {
 impl<E: Effect> Widget for EffectEndpoint<E> {
     ui_core::provides!(dyn ResourceOperations);
 
-    /// It shows nothing: it answers the vocabulary, and a page shows no element of it.
-    fn html(&self, cx: &mut ui_core::composition::HtmlCx<'_>) {
-        cx.element("div");
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

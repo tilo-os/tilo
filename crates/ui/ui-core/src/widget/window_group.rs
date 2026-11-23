@@ -2727,10 +2727,6 @@ impl FloatingSurfaceProvider for WindowGroup {
 }
 
 impl Widget for WindowGroup {
-    /// Its bar, its window and the controls it holds, each where it puts them.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.children();
-    }
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
         dyn crate::collaboration::presences::CollaborationTopology,

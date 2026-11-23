@@ -204,6 +204,16 @@ pub enum PageAction {
         anchor: u32,
         focus: u32,
     },
+    /// One step up of a slider or a stepper, as its arrow key takes it.
+    Increment,
+    /// One step down.
+    Decrement,
+    /// The page's window is `width` by `height` CSS pixels: the view lays itself out at that
+    /// size, as a window does at the size it is given, and the page shows it there.
+    Resize {
+        width: u32,
+        height: u32,
+    },
 }
 
 /// One element of a page replaced: the one numbered `id` takes `html`.

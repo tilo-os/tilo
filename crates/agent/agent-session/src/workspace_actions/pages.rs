@@ -950,7 +950,12 @@ impl Worker {
                 self.search_again(page, workspace_id, &caller, &text)
             }
             PageAction::Activate => self.run_search_row(page, workspace_id, &caller, id),
-            PageAction::Toggle | PageAction::Focus | PageAction::Select { .. } => Ok(Vec::new()),
+            PageAction::Toggle
+            | PageAction::Focus
+            | PageAction::Select { .. }
+            | PageAction::Increment
+            | PageAction::Decrement
+            | PageAction::Resize { .. } => Ok(Vec::new()),
         }
     }
 

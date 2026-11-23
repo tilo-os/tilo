@@ -166,10 +166,6 @@ pub(crate) fn window(cx: &ViewCx<Library>, mut music: Music) -> Element {
 }
 
 impl Widget for MusicApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     ui::provides!(dyn Continuable, dyn ActionControls, dyn Queryable);
 
     fn modal_capture(&self) -> Option<Rect> {

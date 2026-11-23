@@ -350,211 +350,42 @@ impl FrameHarness {
         })
     }
 
-    /// The row as HTML: a toolbar across the top of the window, each part a real button showing its
-    /// face, named as a reader hears it, and the location as its words — or the notice's card
-    /// alone where the app's own row is the bar.
+    /// The row as a page shows it: a toolbar across the top of the window, its paint with each
+    /// part it names acting where it stands — or the notice's card alone where the app's own row
+    /// is the bar.
     pub(super) fn part_row_composition(&self) -> Option<crate::composition::Composed> {
-        use crate::composition::{Composed, Own};
-        use std::hash::{Hash, Hasher};
+        use crate::composition::{Composed, Picture};
         let hosted = self.part_row.as_ref()?;
         if !hosted.row.is_shown() {
             return None;
         }
+        let nodes = hosted.row.accessibility();
         if hosted.row.is_notice_card() {
-            return self.notice_card_composition(hosted);
+            let card = hosted.row.strip_card(&self.theme)?;
+            let mut strip = Composed::new(
+                format!("{WINDOW_PARTS}#strip"),
+                "WindowNoticeStrip",
+                [card.x0, card.y0, card.width(), card.height()],
+            );
+            strip.semantics = nodes
+                .into_iter()
+                .find(|node| node.live.is_some() && node.role == crate::a11y::Role::StaticText);
+            return Some(strip);
         }
         let window = Rect::new(0.0, 0.0, f64::from(self.viewport.0), hosted.inset);
-        let nodes = hosted.row.accessibility();
-        let named = |key: &str| {
-            nodes
-                .iter()
-                .find(|node| node.action_target.as_deref() == Some(key))
-                .cloned()
-        };
         let mut row = Composed::new(
             WINDOW_PARTS.into(),
             "WindowParts",
             [window.x0, window.y0, window.width(), window.height()],
         );
-        row.tag = Some("header");
         row.semantics = Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
-                .with_name(self.window_tab().title),
+                .with_name(self.window_tab().title)
+                .with_bounds(window)
+                .with_children(nodes),
         );
-        if !hosted.row.composes() {
-            // Its paint, with each part a real button over it.
-            let mut hash = std::collections::hash_map::DefaultHasher::new();
-            serde_json::to_string(&nodes)
-                .unwrap_or_default()
-                .hash(&mut hash);
-            window.width().to_bits().hash(&mut hash);
-            format!("{:?}", self.theme.tokens.colors.text_primary).hash(&mut hash);
-            row.own = Some(Own::Painted {
-                version: hash.finish(),
-                picture: None,
-            });
-            row.children = nodes
-                .iter()
-                .filter_map(|part| {
-                    let rect = part.bounds?.to_rect();
-                    (rect.width() > 0.0 && rect.height() > 0.0).then(|| {
-                        let mut button = Composed::new(
-                            format!(
-                                "{WINDOW_PARTS}#{}",
-                                part.action_target.as_deref().unwrap_or_default()
-                            ),
-                            "WindowPart",
-                            [rect.x0, rect.y0, rect.width(), rect.height()],
-                        );
-                        button.tag = Some("button");
-                        button.semantics = Some(part.clone());
-                        button.focusable = true;
-                        button
-                    })
-                })
-                .collect();
-            return Some(row);
-        }
-        row.surfaces.push((
-            [window.x0, window.y0, window.width(), window.height()],
-            "ground",
-        ));
-        let strip = hosted.row.strip_card(&self.theme);
-        for (key, rect, own) in hosted.row.composed_parts(&self.theme) {
-            let notice = key == crate::widget::window_toolbar_row::STRIP_KEY;
-            let location = key == crate::widget::window_toolbar_row::LOCATION_KEY;
-            let mut part = Composed::new(
-                format!("{WINDOW_PARTS}#{key}"),
-                "WindowPart",
-                [rect.x0, rect.y0, rect.width(), rect.height()],
-            );
-            part.own = Some(own);
-            if notice {
-                part.widget = "WindowNotice".into();
-                part.semantics = nodes
-                    .iter()
-                    .find(|node| node.live.is_some() && node.role == crate::a11y::Role::StaticText)
-                    .cloned();
-            } else if location {
-                part.widget = "WindowLocation".into();
-                part.semantics =
-                    named(crate::widget::window_toolbar_row::LOCATION_TARGET).or_else(|| {
-                        nodes
-                            .iter()
-                            .find(|node| node.bounds.is_some_and(|b| b.to_rect() == rect))
-                            .cloned()
-                    });
-                if part
-                    .semantics
-                    .as_ref()
-                    .is_some_and(|node| node.action_target.is_some())
-                {
-                    part.tag = Some("button");
-                    part.focusable = true;
-                }
-            } else {
-                part.tag = Some("button");
-                part.focusable = true;
-                part.semantics = named(&key);
-            }
-            row.children.push(part);
-        }
-        if let Some(band) = strip {
-            let mut card = Composed::new(
-                format!("{WINDOW_PARTS}#strip"),
-                "WindowNoticeStrip",
-                [band.x0, band.y0, band.width(), band.height()],
-            );
-            card.surfaces
-                .push(([band.x0, band.y0, band.width(), band.height()], "raised"));
-            if let Some(index) = row
-                .children
-                .iter()
-                .position(|child| child.widget == "WindowNotice")
-            {
-                card.children.push(row.children.remove(index));
-            }
-            row.children.push(card);
-        }
+        row.picture = Some(Picture::default());
         Some(row)
-    }
-
-    /// The notice's card as the frame's inspection shows it, with the notice and its buttons.
-    fn notice_card_inspection(&self, hosted: &HostedParts) -> Option<InspectionNode> {
-        let card = hosted.row.strip_card(&self.theme)?;
-        let nodes = hosted.row.accessibility();
-        let buttons = nodes
-            .iter()
-            .filter(|node| node.action_target.is_some() && node.role == crate::a11y::Role::Button)
-            .map(|node| {
-                let rect = node.bounds.map_or(Rect::ZERO, |bounds| bounds.to_rect());
-                InspectionNode {
-                    path: format!(
-                        "{WINDOW_PARTS}#{}",
-                        node.action_target.as_deref().unwrap_or_default()
-                    ),
-                    widget: "WindowPart".into(),
-                    test_id: None,
-                    focusable: node.state.focusable,
-                    rect: [rect.x0, rect.y0, rect.width(), rect.height()],
-                    child_clip: None,
-                    page_title: None,
-                    layout: None,
-                    paint_key: None,
-                    semantics: Some(node.clone()),
-                    children: Vec::new(),
-                }
-            })
-            .collect();
-        Some(InspectionNode {
-            path: WINDOW_PARTS.into(),
-            widget: "WindowNoticeStrip".into(),
-            test_id: None,
-            focusable: false,
-            rect: [card.x0, card.y0, card.width(), card.height()],
-            child_clip: None,
-            page_title: None,
-            layout: None,
-            paint_key: None,
-            semantics: nodes.into_iter().find(|node| node.live.is_some()),
-            children: buttons,
-        })
-    }
-
-    /// The notice's card alone, over the app at the window's foot: what the frame composes
-    /// where the app's own row is the bar.
-    fn notice_card_composition(
-        &self,
-        hosted: &HostedParts,
-    ) -> Option<crate::composition::Composed> {
-        use crate::composition::Composed;
-        let card = hosted.row.strip_card(&self.theme)?;
-        let mut strip = Composed::new(
-            format!("{WINDOW_PARTS}#strip"),
-            "WindowNoticeStrip",
-            [card.x0, card.y0, card.width(), card.height()],
-        );
-        strip
-            .surfaces
-            .push(([card.x0, card.y0, card.width(), card.height()], "raised"));
-        let nodes = hosted.row.accessibility();
-        for (key, rect, own) in hosted.row.composed_parts(&self.theme) {
-            if key != crate::widget::window_toolbar_row::STRIP_KEY {
-                continue;
-            }
-            let mut notice = Composed::new(
-                format!("{WINDOW_PARTS}#{key}"),
-                "WindowNotice",
-                [rect.x0, rect.y0, rect.width(), rect.height()],
-            );
-            notice.own = Some(own);
-            notice.semantics = nodes
-                .iter()
-                .find(|node| node.live.is_some() && node.role == crate::a11y::Role::StaticText)
-                .cloned();
-            strip.children.push(notice);
-        }
-        Some(strip)
     }
 
     /// The row's band alone, at `scale`, for its picture.
@@ -699,80 +530,6 @@ mod tests {
         assert!(
             !harness.hosts_window_parts(),
             "no row of parts stands over the header row the shell draws"
-        );
-    }
-
-    /// The app's own row is the window's bar: the app keeps its parts in it, and the window's
-    /// notice comes on a card over the frame instead of a bar of the frame's.
-    #[test]
-    fn an_apps_own_bar_keeps_its_parts_and_its_notice_comes_on_a_card() {
-        use crate::widget::NavShell;
-        use crate::widget::toast::ToastKind;
-        let shell = NavShell::new()
-            .content_kind(crate::widget::ContentKind::Page)
-            .sidebar(Box::new(crate::widget::Button::new("one", "One")))
-            .content(Box::new(crate::widget::Button::new("two", "Two")))
-            .sidebar_header("Places", Vec::new())
-            .content_header("A page", Vec::new());
-        let mut harness = FrameHarness::for_root(
-            crate::State::new(),
-            shell,
-            (1280, 800),
-            crate::theme::Theme::dark().with_reduce_motion(true),
-        );
-        harness.host_window_parts();
-        harness.relayout();
-        assert!(
-            !crate::window_toolbar::is_hosted(),
-            "the app draws its own parts in its row"
-        );
-
-        crate::window_toolbar::notify(Some(crate::window_toolbar::ToolbarNotice::new(
-            "Saved",
-            ToastKind::Success,
-        )));
-        harness.relayout();
-        harness.relayout();
-        let composition = harness.composition();
-        fn named<'a>(
-            node: &'a crate::composition::Composed,
-            widget: &str,
-        ) -> Vec<&'a crate::composition::Composed> {
-            let mut found: Vec<&crate::composition::Composed> = node
-                .children
-                .iter()
-                .flat_map(|child| named(child, widget))
-                .collect();
-            if node.widget == widget {
-                found.insert(0, node);
-            }
-            found
-        }
-        assert!(
-            named(&composition.root, "WindowParts").is_empty(),
-            "no bar of the frame's stands over the app's own"
-        );
-        let card = composition
-            .layers
-            .iter()
-            .flat_map(|layer| named(layer, "WindowNoticeStrip"))
-            .next()
-            .expect("the notice's card");
-        assert!(card.rect[2] <= 520.0, "a card, not a band: {:?}", card.rect);
-        assert!(
-            card.rect[1] > 600.0,
-            "at the window's foot: {:?}",
-            card.rect
-        );
-        let notice = named(card, "WindowNotice");
-        let Some(crate::composition::Own::Face(face)) =
-            notice.first().and_then(|notice| notice.own.as_ref())
-        else {
-            panic!("the notice says itself: {card:#?}");
-        };
-        assert_eq!(
-            face.label.as_ref().map(|label| label.text.as_str()),
-            Some("Saved")
         );
     }
 

@@ -4128,10 +4128,6 @@ impl ui::content_zoom::ContentZoom for BrowserWidget {
 }
 
 impl Widget for BrowserWidget {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn has_pending_visual_work(&self) -> bool {
         self.service_catalog_pending.is_some()
             || {

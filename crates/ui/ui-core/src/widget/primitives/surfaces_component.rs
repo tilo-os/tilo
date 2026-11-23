@@ -112,11 +112,6 @@ impl DeclaredModal {
 }
 
 impl Widget for DeclaredModal {
-    /// The dialog itself: its title, its words and its actions.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        Widget::html(&self.dialog, cx);
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -346,11 +341,6 @@ impl DeclaredPanel {
 }
 
 impl Widget for DeclaredPanel {
-    /// The panel itself.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        Widget::html(&self.panel, cx);
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -553,11 +543,6 @@ impl DeclaredPopover {
 }
 
 impl Widget for DeclaredPopover {
-    /// The popover itself.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        Widget::html(&self.popover, cx);
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -749,11 +734,6 @@ impl DeclaredPopoverButton {
 }
 
 impl Widget for DeclaredPopoverButton {
-    /// The button and, while open, what it reveals.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        Widget::html(&self.pair, cx);
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

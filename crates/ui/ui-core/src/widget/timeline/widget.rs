@@ -701,9 +701,10 @@ impl Timeline {
 
     /// The one thing an action on `item`'s element acts on: the item, by its day and its own key.
     fn item_target(item: &TimelineItem) -> String {
-        crate::composition::keyed_target(
-            "timeline",
-            &[Self::day_key(item.day), Self::item_key(item)],
+        format!(
+            "tilo.key-action:timeline:{}/{}",
+            Self::day_key(item.day),
+            Self::item_key(item)
         )
     }
 
@@ -866,73 +867,6 @@ fn datetime_iso(day: Date, minute: i64) -> String {
 }
 
 impl Widget for Timeline {
-    /// The grid as a page lays it out: a column for each day with its date, and each event a
-    /// button showing its title and the hours it takes. The days, their dates and their events
-    /// are the structure [`Self::accessibility`] publishes, so a reader, a page's find and a
-    /// press all reach the same thing.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Ground, SemanticText, TextLook, rgba8};
-        let theme = cx.theme().clone();
-        let colors = &theme.tokens.colors;
-        let surfaces = colors.surfaces.content;
-        let styles = super::TimelineText::of(&theme);
-        let by_id: HashMap<&str, &TimelineItem> = self
-            .items
-            .iter()
-            .map(|item| (item.id.as_str(), item))
-            .collect();
-        let columns = if self.mode == TimelineMode::Month {
-            7
-        } else {
-            self.days.len().max(1)
-        };
-        cx.element("div");
-        cx.flow(&format!(
-            "display:grid;grid-template-columns:repeat({columns},minmax(0,1fr));gap:12px;\
-             padding:8px;min-width:0;"
-        ));
-        let look = |node: &AccessNode| -> SemanticText {
-            if node.role == Role::Group {
-                let words = TextLook::new(String::new(), &styles.day, Some(colors.text_primary));
-                return SemanticText::new(words.clone(), words).on(Ground {
-                    fill: Some(rgba8(surfaces)),
-                    edge: Some(rgba8(theme.border_standard)),
-                    radius: f64::from(theme.radius_standard),
-                    inset: [0.0, 0.0],
-                });
-            }
-            let item = node.item.as_deref().and_then(|id| by_id.get(id).copied());
-            let Some(item) = item else {
-                return SemanticText::new(
-                    TextLook::new(String::new(), &styles.title, Some(colors.text_primary)),
-                    TextLook::new(String::new(), &styles.subtitle, Some(colors.text_dim)),
-                );
-            };
-            let wash = if item.all_day {
-                super::face::ALL_DAY_WASH
-            } else {
-                0.22
-            };
-            let tinted = colors.tinted_chip_on(
-                surfaces,
-                item.tone.color(&theme),
-                wash,
-                crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
-            );
-            SemanticText::new(
-                TextLook::new(String::new(), &styles.title, Some(tinted.ink)),
-                TextLook::new(String::new(), &styles.subtitle, Some(tinted.ink)),
-            )
-            .on(Ground {
-                fill: Some(rgba8(tinted.fill)),
-                edge: Some(rgba8(tinted.border)),
-                radius: f64::from(theme.tokens.radii.item),
-                inset: [0.0, 0.0],
-            })
-        };
-        cx.semantic_children("days", &look);
-    }
-
     crate::described!();
 
     fn build_layout(

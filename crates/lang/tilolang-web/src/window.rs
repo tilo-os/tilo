@@ -46,7 +46,6 @@ pub struct Staging<'a> {
 /// What a page shows other than as the browser's own elements ([`AppPage::gaps`]).
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Gaps {
-    pub fallback: BTreeMap<String, usize>,
     pub painted: BTreeMap<String, usize>,
     pub placed: BTreeMap<String, usize>,
 }
@@ -301,10 +300,9 @@ impl AppPage {
     }
 
     /// What of the window the page cannot show as the browser's own elements, by widget, with how
-    /// many of each it holds: `fallback`, widgets with no HTML of their own, written from their
-    /// layout and role; `painted`, widgets that are their own picture, an empty `<canvas>` here
-    /// since nothing paints in a page; `placed`, containers that place their children at
-    /// rectangles of their own, which the page flows instead.
+    /// many of each it holds: `painted`, widgets that show as a picture of their paint, which
+    /// nothing paints in a page here; `placed`, containers that place their children at
+    /// rectangles of their own, which the page places at those rectangles.
     #[must_use]
     pub fn gaps(&self) -> Gaps {
         let composition = self.harness.composition();
@@ -316,13 +314,10 @@ impl AppPage {
                 let held = kind.entry(node.widget.clone()).or_default();
                 *held = held.saturating_add(1);
             };
-            if node.fallback {
-                count(&mut gaps.fallback);
-            }
-            if matches!(node.own, Some(ui::composition::Own::Painted { .. })) {
+            if node.picture.is_some() {
                 count(&mut gaps.painted);
             }
-            if !node.flows && !node.places && !node.children.is_empty() && node.own.is_none() {
+            if !node.flows && !node.children.is_empty() {
                 count(&mut gaps.placed);
             }
             stack.extend(node.children.iter());

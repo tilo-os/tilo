@@ -2882,39 +2882,6 @@ fn a_tab_dragged_onto_the_other_display_opens_its_window_there() {
     );
 }
 
-/// The desktop is a real `<main>` of strips: each strip a widget row of its own, never one picture
-/// of the desktop.
-#[test]
-fn the_desktop_composes_as_its_strips() {
-    let (surface, _handle) = desktop(2);
-    let mut frame = ui::headless::FrameHarness::for_root(
-        ui::state::State::new(),
-        surface,
-        (1600, 900),
-        Theme::dark(),
-    );
-    frame.relayout();
-    frame.poll_frame().expect("a frame draws the desktop");
-    let composition = frame.composition();
-    let surfaces = collect(&composition.root, "DesktopSurface");
-    let desktop = surfaces
-        .first()
-        .unwrap_or_else(|| panic!("the desktop: {composition:#?}"));
-    assert_eq!(desktop.tag, Some("main"));
-    assert!(
-        desktop.own.is_none(),
-        "the desktop is not a picture of itself"
-    );
-    assert!(!desktop.children.is_empty(), "the strips stand in it");
-    assert!(
-        !collect(&composition.root, "GroupRow").is_empty(),
-        "a row per display, composed as what it holds"
-    );
-    let hints = collect(&composition.root, "ArrivalHints");
-    assert_eq!(hints.len(), 1, "the arrival hints stand over the strips");
-    assert_eq!(hints[0].tag, Some("aside"));
-}
-
 /// A window carried by its bar and let go over another joins it as a tab, as a person drags one
 /// window onto another's bar. A window of one tab shows it as the bar's title, so the drag lifts
 /// the whole window: the place it carries lands in the window it is let go over.

@@ -881,10 +881,6 @@ fn export_picked(picked: &PortalChannel, entries: &[LogEntry]) -> Option<String>
     }
 }
 impl Widget for LogsWindow {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.dirty.paint = true;
         self.follow_document();

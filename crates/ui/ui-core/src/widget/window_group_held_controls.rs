@@ -61,23 +61,6 @@ impl HeldControl {
 }
 
 impl Widget for HeldControl {
-    /// The control's glyph as a button, where the row has room for it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        if !self.placed() {
-            return;
-        }
-        cx.element("button");
-        let theme = cx.theme().clone();
-        let name = self.kind.name(self.resize);
-        let face = crate::widget::BarControlFace::new(&name)
-            .icon(self.kind.icon(self.resize))
-            .focused(self.focused);
-        let ground = theme.tokens.colors.surfaces.content;
-        match crate::composition::bar_control_face(&face, &theme, ground) {
-            Some(face) => cx.face(face),
-            None => cx.picture(),
-        }
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

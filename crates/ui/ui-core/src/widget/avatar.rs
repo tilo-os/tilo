@@ -421,43 +421,6 @@ impl<'a> AvatarFace<'a> {
         RoundedRect::from_rect(rect, radius)
     }
 
-    /// The mark at `rect` as `node`'s look on a page: a tinted disc (a rounded square)
-    /// with the initials on it, or a picture of its paint for a photo or a glyph.
-    pub fn compose(&self, theme: &Theme, rect: Rect, node: &mut crate::composition::Composed) {
-        if self.image.is_some() || self.glyph.is_some() || self.unnamed_person() {
-            node.painted(0);
-            return;
-        }
-        let initials = self.initials();
-        if initials.is_empty() {
-            return;
-        }
-        // The initials are its picture, not its name, so a reader hears the person.
-        let fill = self.colour(theme);
-        let neutral = self.tint == Tint::Neutral;
-        node.ground = Some(crate::composition::Ground {
-            fill: Some(crate::composition::rgba8(fill)),
-            edge: neutral.then(|| crate::composition::rgba8(crate::surface::edge_on(fill))),
-            radius: self.shape(rect, theme).radii().top_left,
-            inset: [0.0; 2],
-        });
-        let style = initials_style(theme, rect.height());
-        let ink = if neutral {
-            theme.text_primary
-        } else {
-            initial_ink(fill, theme)
-        };
-        let mut look =
-            crate::composition::TextLook::new(initials, &style, Some(ink)).with_max_lines(Some(1));
-        // Centred on the disc, as the canvas sets them.
-        look.align = "center";
-        look.line_height = crate::num::f32_of_f64(rect.height() / f64::from(look.size));
-        let part = node.part("initials", "Text", rect);
-        part.tag = Some("span");
-        part.own = Some(crate::composition::Own::Text(look));
-        part.attrs.push(("aria-hidden", "true".into()));
-    }
-
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -963,32 +926,6 @@ impl Avatar {
 }
 
 impl Widget for Avatar {
-    /// A person's mark: their picture where a page can load its address, their initials
-    /// otherwise, and their name for a reader.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        if self.placeholder {
-            cx.element("div");
-            cx.attr("aria-hidden", "true");
-            return;
-        }
-        let rect = Widget::get_rect(self);
-        if let Picture::Lazy { url, .. } = &self.picture
-            && let Some(src) = crate::composition::web_picture(url)
-        {
-            cx.element("img");
-            cx.attr("src", src.to_owned());
-            cx.attr("alt", self.name.clone());
-            return;
-        }
-        cx.element("span");
-        let theme = cx.theme();
-        if self.image.is_some() || self.glyph.is_some() || self.face().unnamed_person() {
-            cx.picture();
-            return;
-        }
-        self.face().compose(theme, rect, cx.node());
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

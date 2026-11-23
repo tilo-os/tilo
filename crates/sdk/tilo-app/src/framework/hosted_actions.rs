@@ -125,11 +125,6 @@ impl HostedActions {
 impl Widget for HostedActions {
     ui_core::provides!(dyn ResourceOperations, dyn PublishesResources);
 
-    /// It shows nothing: it answers the app's operations, and a page shows no element of it.
-    fn html(&self, cx: &mut ui_core::composition::HtmlCx<'_>) {
-        cx.element("div");
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

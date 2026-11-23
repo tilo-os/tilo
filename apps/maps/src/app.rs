@@ -458,10 +458,6 @@ impl FloatingSurfaceProvider for MapsApp {
 }
 
 impl Widget for MapsApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.picture();
-    }
-
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::controls::ActionControls

@@ -1311,12 +1311,6 @@ impl Widget for PeerView {
         dyn ResourceOperations
     );
 
-    /// The tile it shows: the picture of the other device's window, and what the window is called.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn name(&self) -> &'static str {
         "PeerView"
     }

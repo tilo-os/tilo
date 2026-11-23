@@ -951,11 +951,6 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-        self.list.compose_html(cx);
-    }
-
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         // The chooser answers between frames, off the UI thread, and a browser
         // page's chooser leaves nothing else changed when it closes: the answer is
@@ -2036,29 +2031,5 @@ pub(crate) mod tests {
         for child in &node.children {
             rows_of(child, out);
         }
-    }
-    #[test]
-    fn the_list_composes_accounts_and_their_hidden_codes_as_text() {
-        let (mut app, state) = app_with_state();
-        app.refresh_list();
-        let mut harness =
-            ui::headless::FrameHarness::for_root(state, app, (600, 700), Theme::dark());
-        harness.relayout();
-        let composed = harness.composition();
-        let mut rows = Vec::new();
-        rows_of(&composed.root, &mut rows);
-        assert!(
-            !rows.is_empty(),
-            "the demo accounts are listed: {:#?}",
-            composed.root
-        );
-        let Some(ui::composition::Own::Text(look)) = &rows[0].own else {
-            panic!("a row shows its words: {:#?}", rows[0]);
-        };
-        assert!(
-            look.text.contains('\u{2022}'),
-            "a hidden code shows dots, never its digits: {}",
-            look.text
-        );
     }
 }

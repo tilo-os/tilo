@@ -749,11 +749,6 @@ impl ScreenshotMarkup {
 }
 
 impl Widget for ScreenshotMarkup {
-    /// The markup as it draws it, its tools and colours buttons over it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.painted_targets(self.paint_generation);
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

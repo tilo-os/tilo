@@ -188,12 +188,6 @@ impl Widget for WindowMenuPopup {
         self.menu.is_open()
     }
 
-    /// The menu it shows, wherever the press opened it.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn name(&self) -> &'static str {
         "WindowMenuPopup"
     }

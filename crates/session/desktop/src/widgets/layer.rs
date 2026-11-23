@@ -1148,19 +1148,6 @@ impl WidgetLayer {
 }
 
 impl Widget for WidgetLayer {
-    /// The widgets it keeps around the work are drawn: a picture of them, with each widget and
-    /// each control on it a button where it stands.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("aside");
-        if self.overview.get() {
-            return;
-        }
-        cx.picture();
-        if let Some(access) = self.accessibility() {
-            cx.controls("widget", &access);
-        }
-    }
-
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Who is here can change with the tree alone: lay the widget out again for it.
         let people = self.team_rows();
