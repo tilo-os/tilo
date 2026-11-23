@@ -2,11 +2,7 @@
   "app": "tasks",
   "said": "Tasks",
   "family": "apps",
-  "live": "rust",
-  "rust": {
-    "id": "so.tilo.tasks",
-    "native": "tasks"
-  },
+  "live": "tl",
   "tl": {
     "id": "so.tilo.tasks",
     "package": "tasks"

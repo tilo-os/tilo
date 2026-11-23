@@ -1,6 +1,8 @@
 {
   "app": "sheets",
   "said": "Sheets",
+  "family": "apps",
+  "live": "tl",
   "tl": {
     "id": "so.tilo.sheets",
     "package": "sheets"
