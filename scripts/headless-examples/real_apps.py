@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import select
 import shlex
 import shutil
@@ -99,6 +100,41 @@ def app_id(name: str) -> str:
     if name == "files":
         name = "file-explorer"
     return f"so.tilo.{name}"
+
+
+def launch_lines(log: str) -> list[dict]:
+    """Every `tilo::launch_latency` line of a session log, with its fields: the session's own
+    account of each open, from the ask (`requested`) through the launcher's start (`spawned`) and
+    the window's mapping (`mapped`) to the frame showing it on screen (`presented`), each with
+    its `stage`, its `epoch` and the fields it logged."""
+    from datetime import datetime, timezone
+
+    pattern = re.compile(
+        r"^\S+Z\s+\w+\s+(?P<target>[A-Za-z0-9_:]+):\s*(?P<message>.*)$")
+    fields = re.compile(r"(\w+)=(\S+)")
+    lines = []
+    for raw in log.splitlines():
+        match = pattern.match(raw.strip())
+        if not match or match.group("target") != "tilo::launch_latency":
+            continue
+        message = match.group("message")
+        stage = None
+        for name, word in (("requested", "application launch requested"),
+                           ("spawned", "application launcher spawned"),
+                           ("mapped", "application toplevel mapped"),
+                           ("presented", "application first frame presented")):
+            if message.startswith(word):
+                stage = name
+        if stage is None:
+            continue
+        line = dict(fields.findall(message))
+        line["stage"] = stage
+        line["message"] = message
+        line["epoch"] = datetime.fromisoformat(
+            raw.strip().split()[0].replace("Z", "+00:00")
+        ).astimezone(timezone.utc).timestamp()
+        lines.append(line)
+    return lines
 
 
 def run(argv, **kwargs) -> str:

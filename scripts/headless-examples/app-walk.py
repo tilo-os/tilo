@@ -75,6 +75,10 @@ WALKS = HERE / "app-walks"
 # action and a field that edits a record publish it.
 ID_SEP = "\x1f"
 VARIANTS = ("rust", "tl")
+# How long a person waits for an app that is on their device, from asking for it to the frame
+# that shows its window: the product's bar for every app, held to each open that starts the app
+# in a walk (`Walk.opens`), read from the session's own launch timings.
+OPEN_BAR_MS = 100
 # The shell's own verbs: a window is focused and closed by the tab it holds.
 SHELL = "so.tilo.session"
 SHELL_RESOURCE = "desktop:shell"
@@ -453,7 +457,9 @@ def session_env(state: Path) -> dict:
     """What a walk's session is told about the stand-ins beside it: where the
     wireless display broker listens, so the display sheet finds the walk's
     stand-in rather than a service this machine does not run."""
-    return {"TILO_PROJECTOR_RUNTIME_DIR": str(state / "projector")}
+    return {"TILO_PROJECTOR_RUNTIME_DIR": str(state / "projector"),
+            # Each open's timings, which the walk holds to the open bar (`Walk.opens`).
+            "RUST_LOG": f"{os.environ.get('RUST_LOG') or 'warn'},tilo::launch_latency=info"}
 
 
 def resolved(served: dict, value):
@@ -860,6 +866,46 @@ class Walk:
         self.appearances: dict[str, dict | None] = {}
         # What an op kept of an answer (`op_use`'s `keep`), for the ops after it.
         self.kept: dict = {}
+        # When the walk's first step began, by the session log's clock: its opens are the
+        # launches of its app the log records after it.
+        self.began_epoch = time.time()
+        # Whether a step asked for this walk's app: a walk that did and finds no open of it in the
+        # session's launch timings is red, not a pass with nothing measured.
+        self.asked_open = False
+
+    def opens(self) -> list[dict]:
+        """Every open in this walk that started its app, as the session's launch timings
+        record it: the first is the app's cold open, each later one follows the app's quit (its
+        last window closed, or it was ended). Each says how long from the ask to the frame that
+        showed the window (`ms`), and where that went: the launcher's start (`spawn_ms`) and the
+        window's mapping (`map_ms`). An open with no presented frame says so (`never_shown`)."""
+        ident = self.v.get("id")
+        if ident is None:
+            return []
+        # A launch is named by its id within the session that ran it: a walk that restarts the
+        # session counts launches from one again.
+        by_launch: dict[tuple[str, str], dict] = {}
+        for line in real_apps.launch_lines(self.session.log()):
+            if line.get("package_id") != ident or line["epoch"] < self.began_epoch - 0.05:
+                continue
+            key = (line.get("launch_generation", ""), line.get("launch_id", ""))
+            by_launch.setdefault(key, {})[line["stage"]] = line
+        found = []
+        for (_generation, launch_id), stages in by_launch.items():
+            if "spawned" not in stages:
+                continue
+            record = {"open": "cold" if not found else "after a quit", "launch_id": launch_id,
+                      "spawn_ms": round(int(stages["spawned"]["request_to_spawn_us"]) / 1000)}
+            if "mapped" in stages:
+                record["map_ms"] = round(int(stages["mapped"]["spawn_to_map_us"]) / 1000)
+            if "presented" in stages:
+                record["ms"] = round(int(stages["presented"]["request_to_first_present_us"]) / 1000)
+            else:
+                record["never_shown"] = True
+            found.append(record)
+        if self.asked_open and not found:
+            found.append({"open": "cold", "never_shown": True, "unlogged": True})
+        return found
 
     def targets(self) -> list[dict]:
         """The controls the desktop offers now, as the walk records them where a
@@ -898,6 +944,7 @@ class Walk:
         """Open the app through the desktop's own launcher. Without `wait`, the
         walk goes on the moment the launcher takes it: what a person presses
         before the app is ready."""
+        self.asked_open = True
         self.session.open(self.v["id"])
         if wait:
             until_value(f"the window of {self.v['id']}", self.window_of, deadline)
@@ -1018,6 +1065,7 @@ class Walk:
             # launch is a cold one, and the window left behind is theirs.
             self.close_window()
         began = time.monotonic()
+        self.asked_open = True
         self.session.open(self.v["id"])
 
         def shown():
@@ -1966,6 +2014,7 @@ class Walk:
                 self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
                                     {"tab": str(window["tab"])})
                 until_value(f"{ident} to end", lambda: not self.session.processes(ident), 30)
+        self.asked_open = self.asked_open or ident == self.v.get("id")
         self.session.launch(ident, 120)
         until_value(f"the window of {ident}",
                     lambda: next((w for w in self.session.windows()
@@ -2346,6 +2395,7 @@ class Walk:
             started = round((time.monotonic() - began) * 1000)
             print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
         began = time.monotonic()
+        self.began_epoch = time.time()
         try:
             for index, step in enumerate(spec["steps"], start=1):
                 self.step(index, step)
@@ -2354,6 +2404,10 @@ class Walk:
                      "session_start_ms": started,
                      "walk_ms": round((time.monotonic() - began) * 1000),
                      "steps": self.steps}
+            try:
+                found["opens"] = self.opens()
+            except OSError as error:
+                found["opens_unread"] = str(error)
             if self.devices is not None:
                 found["devices_ms"] = self.devices.took
                 if self.devices.trouble:
@@ -2541,9 +2595,37 @@ def write_report(report: dict, out: Path) -> Path:
         found = " / ".join(f"{v}: {step_found(steps[v].get(step['id'], {}))}" for v in variants)
         lines.append(f"| **{step['id']}** — {step['said']} | " + " | ".join(cells)
                      + f" | {found} |")
+    lines += ["", f"Opens that started the app, held to {OPEN_BAR_MS} ms from the ask to the frame "
+              "that showed its window:", ""]
+    for variant in variants:
+        for opened in report["variants"][variant].get("opens") or []:
+            lines.append(f"- **{variant}** {opened['open']}: {open_words(opened)}")
     lines.append("")
     (out / "walk.md").write_text("\n".join(lines))
     return out / "walk.md"
+
+
+def open_words(opened: dict) -> str:
+    """An open in the words of the walk's page and its verdict: its time against the bar and
+    where the time went."""
+    if opened.get("unlogged"):
+        return "asked for, and the session's launch timings record no open of it"
+    where = f"launcher started after {opened['spawn_ms']} ms"
+    if "map_ms" in opened:
+        where += f", window mapped {opened['map_ms']} ms after that"
+    if "ms" not in opened:
+        return f"never shown ({where})"
+    over = " over the bar" if opened["ms"] > OPEN_BAR_MS else ""
+    return f"{opened['ms']} ms{over} ({where})"
+
+
+def slow_opens(report: dict) -> list[str]:
+    """Each open of the walk over the open bar, or never shown, in words for its verdict."""
+    return [f"{report['walk']} {variant} {walked['app']} {opened['open']} open: "
+            f"{open_words(opened)}; the bar is {OPEN_BAR_MS} ms"
+            for variant, walked in report["variants"].items()
+            for opened in walked.get("opens") or []
+            if opened.get("ms", OPEN_BAR_MS + 1) > OPEN_BAR_MS]
 
 
 def load_walk(name: str | None, path: str | None = None) -> tuple[Path, dict]:
@@ -2913,6 +2995,14 @@ def main() -> int:
                         print(f"REGRESSION {walk_name} {regression['version']} {regression['step']}: "
                               f"{regression['why']}", file=sys.stderr)
                     verdict = verdict or (1 if comparison["regressions"] else 0)
+            for slow in slow_opens(report):
+                print(f"SLOW-OPEN {slow}", file=sys.stderr)
+                verdict = 1
+            for variant, walked in report["variants"].items():
+                if "opens_unread" in walked:
+                    print(f"SLOW-OPEN {walk_name} {variant}: the session's launch timings could "
+                          f"not be read: {walked['opens_unread']}", file=sys.stderr)
+                    verdict = 1
             times = {v: f.get("walk_ms") for v, f in report["variants"].items()}
             print(f"==> {walk_name}: walked in {times} ms", file=sys.stderr)
             printed.append({"walk": str(where / "walk.json"), "report": str(report_path),

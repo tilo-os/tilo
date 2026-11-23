@@ -95,7 +95,7 @@ suites = ["scripts/headless-examples/test_tilolang_e2e.py"]
 
 [[group]]
 name = "app-walk"
-inputs = ["scripts/headless-examples/app-walk.py", "scripts/headless-examples/app-walks/"]
+inputs = ["scripts/headless-examples/app-walk.py", "scripts/headless-examples/app-walks/", "scripts/headless-examples/real_apps.py"]
 suites = ["scripts/headless-examples/test_app_walk.py"]
 
 [[group]]

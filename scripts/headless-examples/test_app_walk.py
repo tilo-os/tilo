@@ -724,5 +724,96 @@ class ServingAPageAndAPicture(unittest.TestCase):
         self.assertTrue(Path(found["image"]).read_bytes().startswith(b"\x89PNG"))
 
 
+class HoldingEachOpenToTheBar(unittest.TestCase):
+    """Every open in a walk that starts its app, read from the session's launch timings and held
+    to the open bar: the session's log is all a walk's verdict reads, so the log here is one a
+    session writes."""
+
+    APP = "so.tilo.lang.gallery"
+
+    class Session:
+        def __init__(self, log):
+            self.text = log
+
+        def log(self):
+            return self.text
+
+    @staticmethod
+    def line(at: str, message: str) -> str:
+        return f"2026-11-23T10:00:{at}Z  INFO tilo::launch_latency: {message}"
+
+    def opened(self, launch: int, at: str, spawn_us: int, present_us: int | None,
+               app: str = APP, generation: int = 41) -> list[str]:
+        named = f"launch_id={launch} launch_generation={generation} package_id={app}"
+        lines = [self.line(at, f"application launch requested {named}"),
+                 self.line(at, f"application launcher spawned {named} pid=7 "
+                               f"request_to_spawn_us={spawn_us}"),
+                 self.line(at, f"application toplevel mapped {named} spawn_to_map_us=31000")]
+        if present_us is not None:
+            lines.append(self.line(at, f"application first frame presented {named} "
+                                       f"request_to_first_present_us={present_us}"))
+        return lines
+
+    def walk_with(self, lines: list[str]):
+        spec = {"tl": {"id": self.APP, "package": "gallery"}, "steps": []}
+        walked = walk.Walk(spec, "tl", Path("/nonexistent"), Path("/nonexistent"),
+                           session=self.Session("\n".join(lines)))
+        # The walk began before every line here.
+        walked.began_epoch = 0
+        return walked
+
+    def report(self, opens) -> dict:
+        return {"walk": "gallery", "variants": {"tl": {"app": self.APP, "opens": opens}}}
+
+    def test_the_first_open_is_cold_and_each_later_one_follows_a_quit(self):
+        walked = self.walk_with(self.opened(1, "01", 9000, 80000)
+                                + self.opened(2, "05", 8000, 95000)
+                                + self.opened(3, "09", 7000, 60000, app="so.tilo.notes"))
+        self.assertEqual(walked.opens(), [
+            {"open": "cold", "launch_id": "1", "spawn_ms": 9, "map_ms": 31, "ms": 80},
+            {"open": "after a quit", "launch_id": "2", "spawn_ms": 8, "map_ms": 31, "ms": 95}])
+        self.assertEqual(walk.slow_opens(self.report(walked.opens())), [])
+
+    def test_a_restarted_session_s_launches_are_not_taken_for_earlier_ones(self):
+        walked = self.walk_with(self.opened(1, "01", 9000, 80000)
+                                + self.opened(1, "05", 8000, 95000, generation=42))
+        self.assertEqual([(o["open"], o["ms"]) for o in walked.opens()],
+                         [("cold", 80), ("after a quit", 95)])
+
+    def test_an_open_over_the_bar_is_red_with_its_numbers(self):
+        walked = self.walk_with(self.opened(1, "01", 9000, 80000)
+                                + self.opened(2, "05", 41000, 412000))
+        slow = walk.slow_opens(self.report(walked.opens()))
+        self.assertEqual(len(slow), 1)
+        self.assertIn("after a quit open: 412 ms over the bar", slow[0])
+        self.assertIn("launcher started after 41 ms", slow[0])
+        self.assertIn(f"the bar is {walk.OPEN_BAR_MS} ms", slow[0])
+
+    def test_an_open_never_shown_is_red(self):
+        walked = self.walk_with(self.opened(1, "01", 9000, None))
+        self.assertEqual(walk.slow_opens(self.report(walked.opens())),
+                         [f"gallery tl {self.APP} cold open: never shown (launcher started after "
+                          f"9 ms, window mapped 31 ms after that); the bar is "
+                          f"{walk.OPEN_BAR_MS} ms"])
+
+    def test_an_open_asked_for_and_not_in_the_timings_is_red_not_a_pass(self):
+        walked = self.walk_with([])
+        self.assertEqual(walked.opens(), [])
+        walked.asked_open = True
+        slow = walk.slow_opens(self.report(walked.opens()))
+        self.assertEqual(len(slow), 1)
+        self.assertIn("record no open of it", slow[0])
+
+    def test_the_page_lists_each_open_against_the_bar(self):
+        import tempfile
+        out = Path(tempfile.mkdtemp(prefix="app-walk-test-"))
+        walked = self.walk_with(self.opened(1, "01", 9000, 412000))
+        report = {"walk": "gallery", "steps": [],
+                  "variants": {"tl": {"app": self.APP, "session_start_ms": 900, "steps": [],
+                                      "opens": walked.opens()}}}
+        page = walk.write_report(report, out).read_text()
+        self.assertIn("**tl** cold: 412 ms over the bar", page)
+
+
 if __name__ == "__main__":
     unittest.main()
