@@ -1,7 +1,7 @@
 {
   "app": "capabilities-unused-styles",
   "said": "Shell styles: a person makes a shipped style their own and shows it",
-  "live": "rust",
+  "live": "tl",
   "apps": "",
   "rust": {},
   "tl": {
@@ -10,7 +10,7 @@
   "steps": [
     {
       "id": "signed-in",
-      "said": "Sign in: the shell draws",
+      "said": "Sign in: the shell draws, and its switch names the style it shows",
       "ops": [
         {"theme": false},
         {"state": {"chrome.session_locked": false}},
@@ -39,10 +39,29 @@
       "said": "Install it: the style is offered without a restart",
       "ops": [
         {"act": ["session-authoring", "install", {"package": "mine.shell"}]},
-        {"targets": true},
-        {"actions": "style"}
+        {"targets": true}
       ],
       "budget_ms": 120000
+    },
+    {
+      "id": "show-it",
+      "said": "Pick my style in the shell's switch",
+      "ops": [
+        {"press": {"rust": "Showing Strips", "tl": "Showing Strips"}},
+        {"wait_for": {"shown": "My shell"}},
+        {"press": "My shell"}
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "it-is-shown",
+      "said": "The switch says the shell shows my style",
+      "ops": [
+        {"must": ["Showing My shell"]}
+      ],
+      "dark": true,
+      "budget_ms": 10000
     }
   ]
 }
