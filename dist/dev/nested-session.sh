@@ -907,61 +907,103 @@ else
 fi
 # The person's own workspace, served as a Tilo device serves it (`fs.service` at
 # /var/workspace): the Files app's windowless endpoint on the record route, and the mounted
-# folder a file uploaded in Files lands in. A session started from a build under test serves
-# its own, because the mount underneath belongs to the image and its wire is an older one; and
-# a session with none shows the computer's own Home in Files instead of the workspace.
-files_state=$XDG_STATE_HOME/tilo/files
-files_runtime=$runtime/tilo/files-workspace
-mkdir -p "$files_state/mount" "$files_state/cache" "$files_runtime" "$runtime/tilo/files-storage"
-chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
-# The workspace mounts where the system says a workspace mounts (/var/workspace,
-# tilo_paths::WORKSPACE_MOUNT) whenever this session may mount there: the session's own
-# grants and the sandbox each app is given are written in that path's terms, so only a mount
-# at that path is the workspace to the apps. A session that may not mount there keeps its
-# own folder and says so: its apps then see no workspace.
-files_mount=$files_state/mount
-if [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; then
-    mkdir -p /var/workspace 2>/dev/null || true
+# folder a file uploaded in Files lands in. A machine that already serves the person's
+# workspace — a device's service, or a walk that starts one as a device does — hands this
+# session the mount and the document-media socket it serves, and this starts no daemon of its
+# own: two mounts of one workspace at one path cannot both stand. A session started from a
+# build under test that no machine serves for serves its own, because the mount underneath
+# belongs to the image and its wire is an older one; and a session with none shows the
+# computer's own Home in Files instead of the workspace.
+machine_files=0
+if [[ ${TILO_SESSION_MACHINE_FILES:-} == 1 && -n ${TILO_FS_BLOB_SOCKET:-} ]]; then
+    # The daemon is the machine's and starts beside this session, after the person's identity
+    # is minted: wait for the socket it serves and the mount it publishes, as a login waits for
+    # its unit. A machine that never serves them leaves this session its own to start.
+    deadline=$((SECONDS + 180))
+    while [[ ! -S $TILO_FS_BLOB_SOCKET ]]; do
+        if [[ -s /run/tilo/fs.failed ]]; then
+            say "the machine's files workspace did not start ($(< /run/tilo/fs.failed)); this session serves its own"
+            break
+        fi
+        if ((SECONDS >= deadline)); then
+            say "the machine did not serve $TILO_FS_BLOB_SOCKET; this session serves its own workspace"
+            break
+        fi
+        sleep 0.2
+    done
+    if [[ -S $TILO_FS_BLOB_SOCKET ]]; then
+        machine_files=1
+        deadline=$((SECONDS + 60))
+        while ! mountpoint -q "$TILO_WORKSPACE_ROOTS" 2>/dev/null; do
+            ((SECONDS < deadline)) || break
+            sleep 0.1
+        done
+    fi
 fi
-if [[ -d /var/workspace ]] && { [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; } \
-    && ! mountpoint -q /var/workspace 2>/dev/null; then
-    files_mount=/var/workspace
-    chmod 700 "$files_mount" 2>/dev/null || true
-fi
-say "the session's workspace mounts at $files_mount"
-# This build's daemon, mounting this session's workspace with the capability list a device's
-# `fs.service` starts with: the shipped one, which grants the local person the whole workspace,
-# until the session tells the daemon its own and the daemon keeps that one here instead. The
-# workspace's file keys are given only as that list allows. Its authority and content sockets live in /run/tilo on a Tilo machine, which the image's tmpfiles
-# make; a desktop that is not Tilo has none, so they go in a private directory of this user's
-# whose path any socket fits (a socket path over 107 bytes is refused).
-if [[ ! -d /run/tilo ]] || [[ ! -w /run/tilo ]]; then
-    export TILO_AUTHORITY_SOCKET_DIR=/tmp/tilo-files-$(id -u)
-    mkdir -p -m 700 "$TILO_AUTHORITY_SOCKET_DIR"
-fi
-# One person's session: the mount is theirs alone, as the process harness takes it, so no
-# desktop's /etc/fuse.conf has to allow other users in.
-files_acl=$files_state/fs-capabilities.json
-[[ -f $files_acl ]] || cp "$repo_root/os/usr/share/tilo/fs-capabilities.json" "$files_acl"
-TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_mount" --cache-dir "$files_state/cache" \
-    --storage-sock "$runtime/tilo/files-storage/storage.sock" \
-    --blob-sock "$files_runtime/fs-blobs.sock" \
-    --acl "$files_acl" --member person:local \
-    --backend fuse > "$logs/files-workspace.log" 2>&1 &
-files_pid=$!
-children+=("$files_pid")
-# Files reads the workspace where the mount is (`TILO_WORKSPACE_ROOTS`, as a device's login
-# gives it), keeps document media at this session's socket, and records the daemon as its
-# endpoint, as it records the login's unit.
-if wait_for_socket "$files_runtime/fs-blobs.sock" "$files_pid"; then
-    export TILO_WORKSPACE_ROOTS=$files_mount
-    export TILO_FS_BLOB_SOCKET=$files_runtime/fs-blobs.sock
-    export TILO_FILES_ENDPOINT_PID=$files_pid
+if ((machine_files)); then
+    # What Files reads, as a device's login gives it: the mount, the document media the daemon
+    # serves, and the daemon's main pid, which the session records as it records the login's
+    # unit so the daemon's connections are admitted to the workspace it mounts.
+    export TILO_WORKSPACE_ROOTS=${TILO_WORKSPACE_ROOTS:-/var/workspace}
+    export TILO_FS_BLOB_SOCKET
+    if [[ -r /run/tilo/fs.pid ]]; then
+        export TILO_FILES_ENDPOINT_PID=$(< /run/tilo/fs.pid)
+    fi
+    say "the machine serves the session's workspace at $TILO_WORKSPACE_ROOTS"
 else
-    # Why, in the session's own output: a failure nobody can read is a failure
-    # nobody can fix, and this one runs inside a machine that keeps its logs.
-    say "the session's files workspace did not start: Files shows the computer's Home (see $logs/files-workspace.log)"
-    sed 's/^/    fs: /' "$logs/files-workspace.log" >&2 2>/dev/null || true
+    files_state=$XDG_STATE_HOME/tilo/files
+    files_runtime=$runtime/tilo/files-workspace
+    mkdir -p "$files_state/mount" "$files_state/cache" "$files_runtime" "$runtime/tilo/files-storage"
+    chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
+    # The workspace mounts where the system says a workspace mounts (/var/workspace,
+    # tilo_paths::WORKSPACE_MOUNT) whenever this session may mount there: the session's own
+    # grants and the sandbox each app is given are written in that path's terms, so only a mount
+    # at that path is the workspace to the apps. A session that may not mount there keeps its
+    # own folder and says so: its apps then see no workspace.
+    files_mount=$files_state/mount
+    if [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; then
+        mkdir -p /var/workspace 2>/dev/null || true
+    fi
+    if [[ -d /var/workspace ]] && { [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; } \
+        && ! mountpoint -q /var/workspace 2>/dev/null; then
+        files_mount=/var/workspace
+        chmod 700 "$files_mount" 2>/dev/null || true
+    fi
+    say "the session's workspace mounts at $files_mount"
+    # This build's daemon, mounting this session's workspace with the capability list a device's
+    # `fs.service` starts with: the shipped one, which grants the local person the whole workspace,
+    # until the session tells the daemon its own and the daemon keeps that one here instead. The
+    # workspace's file keys are given only as that list allows. Its authority and content sockets live in /run/tilo on a Tilo machine, which the image's tmpfiles
+    # make; a desktop that is not Tilo has none, so they go in a private directory of this user's
+    # whose path any socket fits (a socket path over 107 bytes is refused).
+    if [[ ! -d /run/tilo ]] || [[ ! -w /run/tilo ]]; then
+        export TILO_AUTHORITY_SOCKET_DIR=/tmp/tilo-files-$(id -u)
+        mkdir -p -m 700 "$TILO_AUTHORITY_SOCKET_DIR"
+    fi
+    # One person's session: the mount is theirs alone, as the process harness takes it, so no
+    # desktop's /etc/fuse.conf has to allow other users in.
+    files_acl=$files_state/fs-capabilities.json
+    [[ -f $files_acl ]] || cp "$repo_root/os/usr/share/tilo/fs-capabilities.json" "$files_acl"
+    TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_mount" --cache-dir "$files_state/cache" \
+        --storage-sock "$runtime/tilo/files-storage/storage.sock" \
+        --blob-sock "$files_runtime/fs-blobs.sock" \
+        --acl "$files_acl" --member person:local \
+        --backend fuse > "$logs/files-workspace.log" 2>&1 &
+    files_pid=$!
+    children+=("$files_pid")
+    # Files reads the workspace where the mount is (`TILO_WORKSPACE_ROOTS`, as a device's login
+    # gives it), keeps document media at this session's socket, and records the daemon as its
+    # endpoint, as it records the login's unit.
+    if wait_for_socket "$files_runtime/fs-blobs.sock" "$files_pid"; then
+        export TILO_WORKSPACE_ROOTS=$files_mount
+        export TILO_FS_BLOB_SOCKET=$files_runtime/fs-blobs.sock
+        export TILO_FILES_ENDPOINT_PID=$files_pid
+    else
+        # Why, in the session's own output: a failure nobody can read is a failure
+        # nobody can fix, and this one runs inside a machine that keeps its logs.
+        say "the session's files workspace did not start: Files shows the computer's Home (see $logs/files-workspace.log)"
+        sed 's/^/    fs: /' "$logs/files-workspace.log" >&2 2>/dev/null || true
+    fi
 fi
 
 # The person's cloud account folders, served as a Tilo device serves them

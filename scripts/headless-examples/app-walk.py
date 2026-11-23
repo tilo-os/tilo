@@ -254,6 +254,157 @@ def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
     return until(what, check, deadline, step)
 
 
+class MachineFiles:
+    """The machine's files daemon, started the way a device's service starts it.
+
+    The walk's session runs as the person, as a seat's does, and a FUSE mount by an ordinary
+    account is refused where the machine gives the person no fusermount3 privilege. So the
+    daemon is the machine's, as it is on a device: root, mounting the person's workspace at
+    ``/var/workspace`` with them as its owner and the shipped capability list in force, its
+    document-media socket group-connectable by the launcher. The session is told
+    ``TILO_SESSION_MACHINE_FILES`` and uses what this serves instead of starting one of its
+    own (``dist/dev/nested-session.sh``).
+
+    The machine's start waits for the person's identity, which the session mints as it comes
+    up: the daemon presents that identity, so it starts beside the session and the session
+    waits for it (the blob socket and pid below) before it starts the desktop. Only a caller
+    that is root and named a session account starts one; a walk on a developer's own desktop
+    keeps the session's own daemon."""
+
+    #: Where the daemon announces its main pid, as a service manager announces a unit's: the
+    #: session reads it to record the login's files endpoint.
+    PIDFILE = Path("/run/tilo/fs.pid")
+    #: Why the daemon did not start, when it did not: the session reads it and serves its own
+    #: workspace instead of waiting out the socket.
+    FAILED = Path("/run/tilo/fs.failed")
+    #: Where the daemon serves document media, and the workspace it mounts.
+    BLOB_SOCKET = Path("/run/tilo/fs-blobs.sock")
+    WORKSPACE = Path("/var/workspace")
+    #: How long the machine may take to start its daemon: the session mints an identity first.
+    START_WITHIN = 300.0
+
+    def __init__(self, state: Path, out: Path):
+        self.state = state
+        self.out = out
+        self.account = real_apps.session_account()
+        self.proc: subprocess.Popen | None = None
+        self.log = None
+        self.thread: threading.Thread | None = None
+        self.stopping = threading.Event()
+        #: Why the machine's daemon did not start, for the walk's report; None when it did.
+        self.trouble: str | None = None
+
+    def env(self) -> dict:
+        """What the session is told so it uses the machine's workspace, and serves none."""
+        return {"TILO_SESSION_MACHINE_FILES": "1",
+                "TILO_WORKSPACE_ROOTS": str(self.WORKSPACE),
+                "TILO_FS_BLOB_SOCKET": str(self.BLOB_SOCKET)}
+
+    def start(self) -> dict:
+        """Begin starting the machine's daemon, and what the session is told of it."""
+        if self.account is None:
+            return {}
+        with contextlib.suppress(OSError):
+            self.FAILED.unlink(missing_ok=True)
+        self.thread = threading.Thread(target=self._serve, name="walk-machine-files",
+                                       daemon=True)
+        self.thread.start()
+        return self.env()
+
+    def _serve(self) -> None:
+        try:
+            self._await_identity()
+            if self.stopping.is_set():
+                return
+            self._launch()
+        except BaseException as error:  # the walk reports it, and serves its own workspace
+            self.trouble = str(error)
+            with contextlib.suppress(OSError):
+                self.FAILED.write_text(f"{error}\n")
+            print(f"==> the machine's files workspace did not start: {error}", file=sys.stderr)
+
+    def _await_identity(self) -> None:
+        """Wait for the person's identity, which the session mints: the daemon presents it and
+        starts nowhere without it."""
+        cert = self.state / "identity/device/cert.bin"
+        deadline = time.monotonic() + self.START_WITHIN
+        while not cert.is_file():
+            if self.stopping.is_set():
+                return
+            if time.monotonic() >= deadline:
+                raise Failed(f"the session minted no identity at {cert}")
+            time.sleep(0.1)
+
+    def _launch(self) -> None:
+        logs = self.out / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        argv = [
+            str(BUILD / "bin/fs"), "serve",
+            "--mount-point", str(self.WORKSPACE),
+            "--cache-dir", "/var/cache/quick-fs",
+            "--storage-sock", "/run/tilo/fs-storage/storage.sock",
+            "--blob-sock", str(self.BLOB_SOCKET),
+            "--acl", str(REPO / "os/usr/share/tilo/fs-capabilities.json"),
+            "--member", "person:local",
+            "--backend", "fuse",
+            "--native-owner", f"{self.account.pw_uid}:{self.account.pw_gid}",
+        ]
+        env = {**os.environ,
+               "TILO_IDENTITY_ROOT": str(self.state / "identity"),
+               # The login's sockets, so the mount dials the session's workspace service as
+               # the login's daemon would; the seat's directory is the one the session gets.
+               "XDG_RUNTIME_DIR": (os.environ.get("TILO_SESSION_RUNTIME")
+                                   or f"/run/user/{self.account.pw_uid}"),
+               "TILO_MACHINE": "hosted",
+               "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_fs=info")}
+        self.log = (logs / "machine-files.log").open("w")
+        self.proc = subprocess.Popen(argv, stdout=self.log, stderr=subprocess.STDOUT,
+                                     env=env, start_new_session=True)
+        self.PIDFILE.write_text(f"{self.proc.pid}\n")
+        until("the machine's document media socket",
+              lambda: self.BLOB_SOCKET.is_socket()
+              or (self.proc.poll() is not None and self._died()), 120.0, 0.1)
+        until("the machine's workspace mount", lambda: os.path.ismount(self.WORKSPACE),
+              120.0, 0.1)
+
+    def _died(self):
+        """The daemon ended, so the wait for its socket cannot be met: raise what it said."""
+        said = self.log_path().read_text(errors="replace") if self.log_path().is_file() else ""
+        raise Failed(f"the machine's files daemon ended ({self.proc.returncode}): {said[-1200:]}")
+
+    def log_path(self) -> Path:
+        return self.out / "logs" / "machine-files.log"
+
+    def stop(self) -> None:
+        """End the machine's daemon and unmount its workspace, as a walk that ends leaves neither."""
+        if self.account is None:
+            # No machine was started: the session served its own, and this machine's own
+            # workspace (a developer's desktop) is not the walk's to unmount.
+            return
+        self.stopping.set()
+        proc = self.proc
+        if proc is not None and proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(30)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(10)
+        self.proc = None
+        for marker in (self.PIDFILE, self.FAILED):
+            with contextlib.suppress(OSError):
+                marker.unlink(missing_ok=True)
+        if os.path.ismount(self.WORKSPACE):
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(["umount", "--lazy", str(self.WORKSPACE)],
+                               capture_output=True, timeout=30, check=False)
+        if self.log is not None:
+            self.log.close()
+            self.log = None
+
+
 # --- what the app holds, read back ------------------------------------------------------------
 
 def app_action(session: Session, app: str, operation: str, resource: str | None = None):
@@ -888,6 +1039,9 @@ class Walk:
         # The stand-in services this walk started beside the session (op `serve`),
         # stopped when its session goes.
         self.services: list = []
+        # The machine's files daemon, when this walk started its own session on a machine it
+        # root (a check's VM): a family's is the family's, stopped with its session.
+        self.machine: MachineFiles | None = None
         # What the run answered and a later step may name: a stand-in's address,
         # a provider's id (`{"served": "provider.id"}`), a page server's address.
         self.served: dict = {}
@@ -2445,16 +2599,20 @@ class Walk:
         if not self.shared:
             tapps = self.tapps()
             began = time.monotonic()
-            self.session.start(apps=apps_of(spec, self.variant),
-                               fresh=True, out=self.out / "logs", tag=self.variant,
-                               tapps=tapps, session_args=session_args_of(spec, self.variant),
-                               env=first_device_env(self.state, spec))
+            machine = MachineFiles(self.state, self.out)
+            env = {**first_device_env(self.state, spec), **machine.start()}
             try:
+                self.session.start(apps=apps_of(spec, self.variant),
+                                   fresh=True, out=self.out / "logs", tag=self.variant,
+                                   tapps=tapps, session_args=session_args_of(spec, self.variant),
+                                   env=env)
                 self.devices = start_devices(spec, self.variant, self.session, self.state,
                                              self.out, apps_of(spec, self.variant), tapps)
             except BaseException:
                 self.session.stop()
+                machine.stop()
                 raise
+            self.machine = machine
             started = round((time.monotonic() - began) * 1000)
             print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
         began = time.monotonic()
@@ -2499,6 +2657,7 @@ class Walk:
                 if self.devices is not None:
                     self.devices.stop()
                 self.session.stop()
+                self.machine.stop()
             self.stop_services()
         return found
 
@@ -3063,6 +3222,7 @@ def main() -> int:
             first = mine[0][1]
             session = None
             devices = None
+            machine = None
             started = 0
             if family:
                 packages = []
@@ -3074,14 +3234,16 @@ def main() -> int:
                             packages.append(package)
                 tapps = [build_tapp(package, out / "build" / variant, state) for package in packages]
                 session = Session(state)
+                machine = MachineFiles(state, out)
+                env = {**first_device_env(state, first), **machine.start()}
                 began = time.monotonic()
-                session.start(apps=apps, fresh=True, out=out / "logs", tag=variant, tapps=tapps,
-                              session_args=session_args_of(first, variant),
-                              env=first_device_env(state, first))
                 try:
+                    session.start(apps=apps, fresh=True, out=out / "logs", tag=variant,
+                                  tapps=tapps, session_args=session_args_of(first, variant), env=env)
                     devices = start_devices(first, variant, session, state, out, apps, tapps)
                 except BaseException:
                     session.stop()
+                    machine.stop()
                     raise
                 started = round((time.monotonic() - began) * 1000)
                 print(f"==> {name}: the {variant} session up in {started} ms", file=sys.stderr)
@@ -3105,6 +3267,8 @@ def main() -> int:
                     devices.stop()
                 if session is not None:
                     session.stop()
+                if machine is not None:
+                    machine.stop()
         verdict = 0
         printed = []
         for walk_name, report in reports.items():

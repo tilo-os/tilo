@@ -57,6 +57,39 @@ if [[ $(id -u) == 0 ]]; then
     # without it the screen never locks.
     install -D -m 0755 "$build/bin/tilo-unlock-helper" /usr/libexec/tilo-unlock-helper
     install -D -m 0644 dist/session/tilo-unlock.pam /etc/pam.d/tilo-unlock
+    # The machine the session runs on, as a Tilo device presents it: the device's own group and
+    # directories (`os/usr/lib/tmpfiles.d/tilo.conf`), the account in that group, and the FUSE
+    # device node and setuid mount helper its fuse3 package installs. The files daemon is the
+    # machine's and runs as root (scripts/headless-examples/app-walk.py), so the person's own
+    # FUSE mounts — the document portal's and the session's document store — are the only users
+    # of the node and the helper. `/var/workspace` is root's, 0755, as the image makes it: every
+    # account traverses it into the folders the daemon presents as theirs.
+    walk_group=tilo-identity
+    getent group "$walk_group" >/dev/null 2>&1 || groupadd --system "$walk_group"
+    id -nG "$walk_account" | tr ' ' '\n' | grep -qx "$walk_group" \
+        || usermod -aG "$walk_group" "$walk_account"
+    install -d -m 0755 -o root -g root /var/workspace
+    install -d -m 2755 -o root -g "$walk_group" /var/cache/quick-fs
+    install -d -o root -g "$walk_group" /run/tilo /run/tilo/fs-storage
+    chown root:"$walk_group" /run/tilo /run/tilo/fs-storage
+    chmod 3770 /run/tilo
+    chmod 2750 /run/tilo/fs-storage
+    # A device node is the kernel's, and a device's is open to every account; the image's fuse3
+    # package installs fusermount3 setuid. A job sandbox that copies neither leaves a person's
+    # FUSE mount with "failed to open /dev/fuse: Permission denied".
+    [[ ! -e /dev/fuse ]] || chmod 0666 /dev/fuse
+    if [[ -x /usr/bin/fusermount3 ]] && [[ ! -u /usr/bin/fusermount3 ]]; then
+        chmod u+s /usr/bin/fusermount3 2>/dev/null || true
+    fi
+    # A mount a walk that ended badly left behind answers nothing, and the directory cannot be
+    # mounted again until it is gone.
+    if mountpoint -q /var/workspace 2>/dev/null; then
+        umount --lazy /var/workspace 2>/dev/null || true
+    fi
+    rm -f /run/tilo/fs.pid /run/tilo/fs.failed
+    # The machine's shape is this script's, so its teardown is too: a walk on a developer's own
+    # desktop (not root) never reaches here, and never unmounts that desktop's workspace.
+    machine_ready=1
 fi
 
 out=$(realpath -m "$out")
@@ -74,6 +107,20 @@ rm -rf -- "$out"
 mkdir -p -- "$out"
 # What a person reads a walk by: its page, its verdict, the snapshots and the logs.
 keep() {
+    # The machine's files daemon goes with the walk: it is root's, started beside the sessions
+    # (scripts/headless-examples/app-walk.py), and a walk that ended early leaves neither it nor
+    # its mount behind.
+    if [[ ${machine_ready:-0} == 1 ]]; then
+        if [[ -r /run/tilo/fs.pid ]]; then
+            local fs_pid tries=50
+            fs_pid=$(< /run/tilo/fs.pid)
+            kill -TERM "$fs_pid" 2>/dev/null || true
+            while ((tries--)) && kill -0 "$fs_pid" 2>/dev/null; do sleep 0.1; done
+            kill -KILL "$fs_pid" 2>/dev/null || true
+            rm -f /run/tilo/fs.pid /run/tilo/fs.failed
+        fi
+        mountpoint -q /var/workspace 2>/dev/null && umount --lazy /var/workspace 2>/dev/null || true
+    fi
     local from=$run/walk
     [[ -d $from ]] || from=$run
     (cd "$from" && find . -maxdepth 6 -type f \
