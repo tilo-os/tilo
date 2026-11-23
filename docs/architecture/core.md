@@ -290,6 +290,16 @@ app's actions. The shell is a view. A person, or an agent in a chat, writes a
 new view in tilolang from existing views and actions, without a build. One
 view output is drawn as native widgets and as semantic HTML on the web page.
 
+Live activities (something playing, a running timer, a call, a recording)
+are views too. A resource type declares a `live` view, built from ordinary
+components and its own actions, and states from its own fields when an
+instance is live. The resource index lists the live instances across the
+workspace's devices, with the device and the time it started. A reader sees
+only the rows for resources they can read. The shell shows each row's `live`
+view in the bar, quick settings and the lock screen, on every device. Media
+keys and the lock screen's controls call the type's actions. No app calls a
+shell interface to start or end one.
+
 ## The rule for every piece
 
 - One type, one store, one protocol for each concept. A second copy is a
