@@ -17,8 +17,8 @@
 //!   or access arrives on its link, and it says when an instance ended
 //!   ([`FromProcess::Ended`]) and, last, why it exits ([`FromProcess::Exiting`]).
 //!
-//! Only the Linux session starts processes this way; elsewhere there is no link and every call
-//! says so.
+//! The Linux session and the Windows device start processes this way ([`spawn`]); a Windows link
+//! is a message pipe whose handles go down to the process alone (`crate::packet`).
 
 use std::io;
 
@@ -27,6 +27,15 @@ use tilo_action_policy::MemberAccess;
 use tilo_formats::RegionFormats;
 
 pub use crate::packet::{Descriptor, Packet, pair};
+
+#[cfg(windows)]
+mod windows;
+
+/// A process [`spawn`] started.
+#[cfg(unix)]
+pub type Child = std::process::Child;
+#[cfg(windows)]
+pub use windows::Child;
 
 /// The service name the launcher hands the link under: `TILO_SVC_PROCESS_FD`.
 pub const SERVICE: &str = "process";
@@ -330,7 +339,7 @@ const fn max(left: usize, right: usize) -> usize {
     if left > right { left } else { right }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl InstanceFds {
     /// The same connections, each a descriptor of its own: to hand the instance to another
     /// process when the one it went to has ended.
@@ -545,6 +554,7 @@ mod policy_text {
 }
 
 /// `descriptor` as the raw descriptor it owns, handed on to whatever closes it.
+#[cfg(not(windows))]
 #[must_use]
 pub fn into_raw(descriptor: Descriptor) -> crate::RawFd {
     #[cfg(unix)]
@@ -560,21 +570,14 @@ pub fn into_raw(descriptor: Descriptor) -> crate::RawFd {
 ///
 /// # Errors
 ///
-/// The descriptor could not be duplicated, or [`io::ErrorKind::Unsupported`] where there
-/// are no descriptors: no caller can hold a link to duplicate there.
+/// The descriptor could not be duplicated.
 pub fn try_clone(link: &Descriptor) -> io::Result<Descriptor> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         link.try_clone()
     }
-    #[cfg(not(unix))]
-    {
-        let _ = link;
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "only the Linux session links its processes",
-        ))
-    }
+    #[cfg(not(any(unix, windows)))]
+    match *link {}
 }
 
 /// The link the launcher handed this process, taken once.
@@ -606,7 +609,22 @@ pub fn take() -> Option<Descriptor> {
             }
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{FromRawHandle as _, OwnedHandle, RawHandle};
+        static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let value: usize = std::env::var(FD_ENV).ok()?.parse().ok()?;
+        if TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return None;
+        }
+        // SAFETY: the process that started this one made this handle inheritable for the link
+        // alone and named it here, and the flag above lets it be owned exactly once.
+        let handle = unsafe { OwnedHandle::from_raw_handle(value as RawHandle) };
+        tilo_socket::Stream::from_handle(handle)
+            .ok()
+            .map(Descriptor::from_starter)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     None
 }
 
@@ -629,10 +647,23 @@ fn off_stdin(link: Descriptor) -> io::Result<Descriptor> {
 /// Start `command` with the other end of a new link as its stdin, named by [`FD_ENV`] ([`take`]
 /// reads it): not a `pre_exec` step, which would make the spawn `fork()` the whole caller.
 ///
+/// On Windows the link's handle is named by [`FD_ENV`] instead, and the process inherits only it,
+/// the null device as its input and output, and a pipe its error output goes to
+/// ([`Child::stderr`]); it is started suspended and runs once its link names it.
+///
+/// # Errors
+/// No link could be made, or the program did not start.
+#[cfg(windows)]
+pub fn spawn(command: std::process::Command) -> io::Result<(Descriptor, Child)> {
+    windows::spawn(&command)
+}
+
+/// As above, on Unix.
+///
 /// # Errors
 /// No link could be made, or the program did not start.
 #[cfg(unix)]
-pub fn spawn(mut command: std::process::Command) -> io::Result<(Descriptor, std::process::Child)> {
+pub fn spawn(mut command: std::process::Command) -> io::Result<(Descriptor, Child)> {
     let (ours, theirs) = pair()?;
     command
         .env(FD_ENV, "0")
@@ -645,13 +676,17 @@ pub fn spawn(mut command: std::process::Command) -> io::Result<(Descriptor, std:
 /// instead of waiting unread in a process that no longer reads it.
 ///
 /// # Errors
-/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux and Windows.
 pub fn close(link: &Descriptor) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         Ok(rustix::net::shutdown(link, rustix::net::Shutdown::Both)?)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        link.stream().shutdown(std::net::Shutdown::Both)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = link;
         Err(io::Error::new(
@@ -679,7 +714,11 @@ pub fn hung_up(link: &Descriptor) -> bool {
                 .intersects(PollFlags::RDHUP | PollFlags::HUP | PollFlags::ERR)
         })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        link.stream().hung_up()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = link;
         false

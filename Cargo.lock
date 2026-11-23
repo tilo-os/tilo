@@ -14589,8 +14589,10 @@ dependencies = [
  "tilo-files",
  "tilo-formats",
  "tilo-lock",
+ "tilo-socket",
  "tilo-test-env",
  "tokio",
+ "windows-sys 0.61.2",
  "wire-frame",
  "workspace-hack",
 ]

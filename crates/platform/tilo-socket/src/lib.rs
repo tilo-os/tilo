@@ -28,7 +28,7 @@ pub mod tokio;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{Listener, MAX_PATH, SocketAddr, Stream};
+pub use windows::{Listener, MAX_PATH, SocketAddr, Stream, link};
 
 /// The longest socket path the kernel takes, without its terminating NUL.
 #[cfg(any(target_os = "linux", target_os = "android"))]

@@ -231,6 +231,22 @@ impl CollabClient {
         Ok(Self::connected(tokio::net::UnixStream::from_std(socket)?))
     }
 
+    /// [`Self::connected`] over the connected pipe `pipe`, opened for overlapped I/O, which this
+    /// takes ownership of.
+    #[cfg(windows)]
+    pub fn from_connected_pipe(
+        pipe: std::os::windows::io::OwnedHandle,
+    ) -> Result<(Self, ConnectionEnd), NotAvailable> {
+        use std::os::windows::io::IntoRawHandle as _;
+        // SAFETY: an overlapped pipe handle, owned here and handed over exactly once.
+        let pipe = unsafe {
+            tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(
+                pipe.into_raw_handle(),
+            )
+        }?;
+        Ok(Self::connected(pipe))
+    }
+
     /// The wire client underneath.
     #[must_use]
     pub const fn wire(&self) -> &Client {

@@ -97,7 +97,7 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     ;;
   runtime)
     sdk="${3:?SDK archive}" out="${4:?output directory}"
-    windows_platform_tests="tilo-socket tilo-identity"
+    windows_platform_tests="tilo-socket tilo-identity runtime-portal"
     use_windows_sdk "$arch" "$sdk"
     # The daemon and the tilolang runtime programs of a Tilo desktop: cross-built
     # so that a platform arm which stops compiling is a failed check, and so the

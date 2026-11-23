@@ -50,6 +50,12 @@ rustix = { workspace = true, features = ["event", "net", "process"] }
 # Service descriptors are Unix sockets; other hosts report `NotAvailable`.
 tokio = { workspace = true, features = ["net"] }
 
+# A link is a message pipe (`tilo_socket::link`) whose handles the sender duplicates into the
+# process it started (`packet`, `process_link::spawn`).
+[target.'cfg(windows)'.dependencies]
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Threading"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 tilo-test-env = { path = "../../../tools/test-env" }

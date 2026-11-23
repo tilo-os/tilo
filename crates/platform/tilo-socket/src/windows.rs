@@ -14,6 +14,8 @@
 //! Every instance is opened for overlapped I/O, so a read or a write waits
 //! at most its stream's timeout, as a socket's does, and the runtime's
 //! listener takes over the instance this one created.
+pub mod link;
+
 use crate::account::{Account, LocalAllocation, attributes};
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};

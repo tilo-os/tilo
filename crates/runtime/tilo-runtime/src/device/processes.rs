@@ -731,7 +731,7 @@ impl Processes {
         key: &HostKey,
         generation: u64,
         followed: &OwnedFd,
-        mut child: std::process::Child,
+        mut child: runtime_portal::process_link::Child,
         said: Said,
     ) {
         // Why the process says it exits; none when it ended without saying (killed, crashed).
@@ -811,13 +811,19 @@ impl Processes {
 /// is `tilo-launcher tilolang-process`, which takes the link off its stdin and starts the host in
 /// its sandbox; a `page` window's patch connection and page link go to it as descriptors 3 and 4,
 /// and it keeps the link while the window runs.
+/// On Windows the link names the process it is handed to, and every connection an instance is
+/// given later goes to that process alone.
 fn spawn_host(
     launcher: &Path,
     key: &HostKey,
     storage: &Path,
     earlier: Option<(&Path, &Path)>,
     page: Option<(OwnedFd, OwnedFd)>,
-) -> std::io::Result<(OwnedFd, std::process::Child)> {
+) -> std::io::Result<(
+    runtime_portal::process_link::Descriptor,
+    runtime_portal::process_link::Child,
+)> {
+    #[cfg(unix)]
     use std::os::unix::process::CommandExt as _;
     let mut command = std::process::Command::new(launcher);
     command
@@ -860,7 +866,8 @@ fn spawn_host(
             });
         }
     }
-    // Read here: what it said last is why it ended when it could not say so itself.
+    // Read here: what it said last is why it ended when it could not say so itself. (A Windows
+    // link pipes it always.)
     command.stderr(std::process::Stdio::piped());
     let spawned = runtime_portal::process_link::spawn(command);
     drop(page);

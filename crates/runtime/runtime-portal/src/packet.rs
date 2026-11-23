@@ -1,6 +1,8 @@
 //! Typed packets on a connected `SOCK_SEQPACKET` socket: one postcard value per
 //! packet, with the descriptors the value names carried beside it as
-//! `SCM_RIGHTS`.
+//! `SCM_RIGHTS`. On Windows a packet is a message on a message-mode pipe, and
+//! the handles it carries are duplicated into the process at the other end
+//! (`packet::windows`).
 //!
 //! A message type states its descriptors in its own fields: a field marked
 //! `#[serde(with = "packet::fd")]` (or [`optional_fd`]) is a descriptor. Writing
@@ -24,14 +26,32 @@ use std::io;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+#[cfg(windows)]
+mod windows;
+
 /// A descriptor a packet carries.
 #[cfg(unix)]
 pub type Descriptor = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub use windows::Descriptor;
 /// There are no packet sockets where there are no descriptors. Nothing can own a
 /// value of this type, so copying one owns nothing either.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 #[derive(Clone, Copy, Debug)]
 pub enum Descriptor {}
+
+/// The raw form of a descriptor a value being written names.
+#[cfg(unix)]
+type Raw = std::os::fd::RawFd;
+#[cfg(windows)]
+type Raw = std::os::windows::io::RawHandle;
+
+/// The most descriptors one packet carries.
+#[cfg(unix)]
+const MAX_FDS: usize = crate::message::MAX_FDS;
+/// The most handles one packet carries, as many as a Unix packet's descriptors.
+#[cfg(windows)]
+const MAX_FDS: usize = 7;
 
 /// The largest packet: a workspace's policy as one app sees it, which the session
 /// bounds at 64 KiB, and the rest of its message.
@@ -50,8 +70,8 @@ const VERSIONED: u8 = 0xFF;
 
 thread_local! {
     /// The descriptors of the value being written, in the order its encoding met them.
-    #[cfg(unix)]
-    static OUTGOING: RefCell<Option<Vec<std::os::fd::RawFd>>> = const { RefCell::new(None) };
+    #[cfg(any(unix, windows))]
+    static OUTGOING: RefCell<Option<Vec<Raw>>> = const { RefCell::new(None) };
     /// The descriptors of the packet being read, until its value takes them.
     static INCOMING: RefCell<Option<VecDeque<Descriptor>>> = const { RefCell::new(None) };
 }
@@ -98,12 +118,12 @@ pub trait Packet: Serialize + DeserializeOwned {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn invalid(what: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
@@ -111,14 +131,16 @@ fn unsupported() -> io::Error {
     )
 }
 
-#[allow(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "off Unix a descriptor has no values, and its callers hold a reference to one"
+#[cfg_attr(
+    not(any(unix, windows)),
+    allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "here a descriptor has no values, and its callers hold a reference to one"
+    )
 )]
 fn send<T: Packet>(socket: &Descriptor, message: &T) -> io::Result<()> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
-        use std::os::fd::{AsFd as _, BorrowedFd};
         OUTGOING.with(|outgoing| *outgoing.borrow_mut() = Some(Vec::new()));
         let encoded = postcard::to_stdvec(message);
         let raw = OUTGOING
@@ -129,31 +151,42 @@ fn send<T: Packet>(socket: &Descriptor, message: &T) -> io::Result<()> {
         // An empty packet with no descriptors is how the socket reads its end.
         if (encoded.is_empty() && raw.is_empty())
             || encoded.len().saturating_add(2) > MAX_PACKET
-            || raw.len() > crate::message::MAX_FDS
+            || raw.len() > MAX_FDS
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let mut packet = Vec::with_capacity(encoded.len().saturating_add(2));
         packet.extend_from_slice(&[VERSIONED, VERSION]);
         packet.extend_from_slice(&encoded);
-        // SAFETY: every descriptor was read from a field of `message`, which stays
-        // borrowed until the packet is sent.
-        let fds: Vec<BorrowedFd<'_>> = raw
-            .iter()
-            .map(|fd| unsafe { BorrowedFd::borrow_raw(*fd) })
-            .collect();
-        crate::message::send_bytes(socket.as_fd(), &packet, &fds)
+        #[cfg(windows)]
+        {
+            windows::send(socket, &packet, &raw)
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::{AsFd as _, BorrowedFd};
+            // SAFETY: every descriptor was read from a field of `message`, which stays
+            // borrowed until the packet is sent.
+            let fds: Vec<BorrowedFd<'_>> = raw
+                .iter()
+                .map(|fd| unsafe { BorrowedFd::borrow_raw(*fd) })
+                .collect();
+            crate::message::send_bytes(socket.as_fd(), &packet, &fds)
+        }
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (socket, message);
         Err(unsupported())
     }
 }
 
-#[allow(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "off Unix a descriptor has no values, and its callers hold a reference to one"
+#[cfg_attr(
+    not(any(unix, windows)),
+    allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "here a descriptor has no values, and its callers hold a reference to one"
+    )
 )]
 fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> {
     #[cfg(unix)]
@@ -167,7 +200,14 @@ fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> 
         };
         decode(buffer.get(..length).unwrap_or_default(), fds).map(Some)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let Some((bytes, handles)) = windows::receive(socket, wait)? else {
+            return Ok(None);
+        };
+        decode(&bytes, handles).map(Some)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (socket, wait);
         Err(unsupported())
@@ -177,7 +217,7 @@ fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> 
 /// The message `bytes` hold, with the descriptors `fds` in the fields that name them. A packet
 /// of another [`VERSION`], or one written before the link carried a version, is refused naming
 /// both, never read by this build's shapes.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn decode<T: Packet>(bytes: &[u8], fds: Vec<Descriptor>) -> io::Result<T> {
     match bytes {
         [] => Err(invalid("a packet with no version")),
@@ -195,7 +235,7 @@ fn decode<T: Packet>(bytes: &[u8], fds: Vec<Descriptor>) -> io::Result<T> {
 }
 
 /// The message `bytes` hold at this build's [`VERSION`].
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn decoded<T: Packet>(bytes: &[u8], fds: Vec<Descriptor>) -> io::Result<T> {
     INCOMING.with(|incoming| *incoming.borrow_mut() = Some(fds.into()));
     let decoded = postcard::take_from_bytes::<T>(bytes);
@@ -243,7 +283,25 @@ pub mod fd {
             }
             serializer.serialize_unit()
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            use serde::ser::Error as _;
+            use std::os::windows::io::AsRawHandle as _;
+            let carried = super::OUTGOING.with(|outgoing| {
+                outgoing
+                    .borrow_mut()
+                    .as_mut()
+                    .map(|handles| handles.push(fd.as_raw_handle()))
+                    .is_some()
+            });
+            if !carried {
+                return Err(S::Error::custom(
+                    "a descriptor travels only beside a packet",
+                ));
+            }
+            serializer.serialize_unit()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             use serde::ser::Error as _;
             let _ = (fd, serializer);
@@ -308,7 +366,7 @@ pub mod optional_fd {
 /// A connected pair of packet sockets.
 ///
 /// # Errors
-/// The system's error, or [`io::ErrorKind::Unsupported`] off Linux.
+/// The system's error, or [`io::ErrorKind::Unsupported`] off Linux and Windows.
 pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
     #[cfg(target_os = "linux")]
     {
@@ -320,10 +378,12 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
             None,
         )?)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    return windows::pair();
+    #[cfg(not(any(target_os = "linux", windows)))]
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "packet socket pairs are made on Linux only",
+        "packet socket pairs are made on Linux and Windows only",
     ))
 }
 

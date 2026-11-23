@@ -1880,6 +1880,9 @@ impl DocumentReassembly {
 enum SdkConnectSource {
     Env,
     Fd(RawFd),
+    /// A connected pipe the window was handed.
+    #[cfg(windows)]
+    Pipe(std::os::windows::io::OwnedHandle),
 }
 
 impl SdkConnectSource {
@@ -1891,6 +1894,8 @@ impl SdkConnectSource {
     > {
         match self {
             SdkConnectSource::Env => runtime_collab::try_connect_until_closed(),
+            #[cfg(windows)]
+            SdkConnectSource::Pipe(pipe) => runtime_collab::CollabClient::from_connected_pipe(pipe),
             SdkConnectSource::Fd(fd) => {
                 #[cfg(unix)]
                 {
@@ -2505,8 +2510,13 @@ impl CollaborationManager {
         // handed the process is its first window's.
         let source = match connection {
             crate::NativeConnection::Window(None) => return Ok(Self::disabled()),
+            #[cfg(not(windows))]
             crate::NativeConnection::Window(Some(connection)) => {
                 SdkConnectSource::Fd(runtime_portal::process_link::into_raw(connection))
+            }
+            #[cfg(windows)]
+            crate::NativeConnection::Window(Some(connection)) => {
+                SdkConnectSource::Pipe(connection.into_stream().into_handle())
             }
             crate::NativeConnection::Launch => {
                 if runtime_portal::service_fd("collab").is_none() {
