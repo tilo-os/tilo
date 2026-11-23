@@ -5,8 +5,9 @@
 //! The frame is kept in a canvas in ordinary memory ([`crate::canvas`]):
 //! dumb buffers are often write-combined, and a rasterizer that reads what
 //! it blends over would crawl on them. Each frame copies into the buffer not
-//! on screen what that buffer lacks, which is this frame's damage and the
-//! damage of the frame before, which went to the other buffer.
+//! on screen what that buffer lacks: the damage of every frame since the one
+//! it holds ([`crate::scanout_history`]), bounded, and all of it when that is
+//! not known.
 
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -18,6 +19,8 @@ use drm::control::{
     framebuffer,
 };
 use tilo_cpu_raster::Region;
+
+use crate::scanout_history::{History, Holds, Identity};
 
 /// The card the host was handed, open and the master of its display.
 pub(crate) struct Card(OwnedFd);
@@ -57,8 +60,8 @@ struct Scanout {
     buffer: dumbbuffer::DumbBuffer,
     framebuffer: framebuffer::Handle,
     map: Mapping,
-    /// What this buffer lacks of the canvas; `None` when it holds none of it.
-    stale: Option<Vec<Region>>,
+    /// The frame of the canvas this buffer holds; `None` when it holds none.
+    holds: Option<Holds>,
 }
 
 fn map(card: &Card, buffer: &dumbbuffer::DumbBuffer) -> io::Result<Mapping> {
@@ -93,7 +96,11 @@ pub struct Display {
     scanouts: Vec<Scanout>,
     /// The scanout on screen, once the first frame is.
     front: Option<usize>,
+    /// The scanout a flip was asked for, until it lands.
+    flipping: Option<usize>,
     flip_pending: bool,
+    /// What the last frames changed in the canvas.
+    history: History,
     cursor: Option<Cursor>,
 }
 
@@ -179,7 +186,7 @@ impl Display {
                     buffer,
                     framebuffer,
                     map,
-                    stale: None,
+                    holds: None,
                 });
             }
             let physical_mm = info
@@ -195,7 +202,9 @@ impl Display {
                 physical_mm,
                 scanouts,
                 front: None,
+                flipping: None,
                 flip_pending: false,
+                history: History::default(),
                 cursor,
             });
         }
@@ -235,29 +244,29 @@ impl Display {
     /// frame presented; `None` is all of it.
     pub fn present(&mut self, canvas: &[u8], damage: Option<&[Region]>) -> io::Result<()> {
         let (width, height) = self.size;
-        let whole = [Region::new(0, 0, width, height)];
-        let damage = damage.unwrap_or(&whole);
-        let back = self.front.map_or(0, |front| front ^ 1);
-        // The other buffer will lack what this frame changed.
-        if let Some(front) = self.front
-            && let Some(other) = self.scanouts.get_mut(front)
-            && let Some(stale) = other.stale.as_mut()
-        {
-            stale.extend_from_slice(damage);
-        }
+        self.history.push(damage, self.size);
+        // The buffer neither on screen nor on its way there.
+        let Some(back) = (0..self.scanouts.len())
+            .find(|index| Some(*index) != self.front && Some(*index) != self.flipping)
+        else {
+            return Err(io::Error::other("no scanout buffer is free"));
+        };
         let Some(target) = self.scanouts.get_mut(back) else {
             return Err(io::Error::other("no scanout buffer"));
         };
-        let pitch = target.buffer.pitch() as usize;
-        let regions = match target.stale.take() {
-            Some(mut lacking) => {
-                lacking.extend_from_slice(damage);
-                lacking
-            }
-            None => whole.to_vec(),
+        let identity = Identity {
+            width,
+            height,
+            pitch: target.buffer.pitch() as usize,
         };
-        copy_regions(canvas, width, target.map.bytes(), pitch, &regions);
-        target.stale = Some(Vec::new());
+        if !self
+            .history
+            .bring_up_to_date(&mut target.holds, identity, canvas, target.map.bytes())
+        {
+            return Err(io::Error::other(
+                "the frame does not fit its scanout buffer",
+            ));
+        }
         let framebuffer = target.framebuffer;
         if self.front.is_none() {
             // The first frame sets the mode; every later one flips.
@@ -269,16 +278,16 @@ impl Display {
                 Some(self.mode),
             )?;
             self.front = Some(back);
-            if let Some(other) = self.scanouts.get_mut(back ^ 1) {
-                other.stale = None;
-            }
             return Ok(());
         }
         match self
             .card
             .page_flip(self.crtc, framebuffer, PageFlipFlags::EVENT, None)
         {
-            Ok(()) => self.flip_pending = true,
+            Ok(()) => {
+                self.flip_pending = true;
+                self.flipping = Some(back);
+            }
             Err(error) => {
                 // A driver that cannot flip still takes the buffer whole;
                 // the frame then shows at once, unpaced.
@@ -306,7 +315,9 @@ impl Display {
                 && self.flip_pending
             {
                 self.flip_pending = false;
-                self.front = self.front.map(|front| front ^ 1);
+                if let Some(landed) = self.flipping.take() {
+                    self.front = Some(landed);
+                }
                 flipped = true;
             }
         }
@@ -428,14 +439,15 @@ fn draw_arrow(bytes: &mut [u8], pitch: usize) {
 
 /// Copy `regions` of a premultiplied RGBA canvas `width` pixels wide into an
 /// XRGB8888 buffer with rows of `pitch` bytes. The display shows opaque
-/// pixels, so the colour channels are taken as they are.
+/// pixels, so the colour channels are taken as they are. Returns whether
+/// every row of every region was there to copy, in the canvas and the buffer.
 pub(crate) fn copy_regions(
     canvas: &[u8],
     width: u32,
     target: &mut [u8],
     pitch: usize,
     regions: &[Region],
-) {
+) -> bool {
     let stride = (width as usize).saturating_mul(4);
     for region in regions {
         let x0 = (region.x.min(width) as usize).saturating_mul(4);
@@ -445,15 +457,15 @@ pub(crate) fn copy_regions(
         }
         for row in region.y..region.y.saturating_add(region.height) {
             let row = row as usize;
-            let Some(source) = canvas.get(row.saturating_mul(stride).saturating_add(x0)..) else {
-                break;
-            };
-            let Some(source) = source.get(..x1.saturating_sub(x0)) else {
-                break;
+            let Some(source) = canvas
+                .get(row.saturating_mul(stride).saturating_add(x0)..)
+                .and_then(|line| line.get(..x1.saturating_sub(x0)))
+            else {
+                return false;
             };
             let start = row.saturating_mul(pitch).saturating_add(x0);
             let Some(dest) = target.get_mut(start..start.saturating_add(source.len())) else {
-                break;
+                return false;
             };
             for (rgba, xrgb) in source.chunks_exact(4).zip(dest.chunks_exact_mut(4)) {
                 if let ([r, g, b, _], [db, dg, dr, dx]) = (rgba, xrgb) {
@@ -465,6 +477,7 @@ pub(crate) fn copy_regions(
             }
         }
     }
+    true
 }
 
 #[cfg(test)]
@@ -479,13 +492,14 @@ mod tests {
             .collect();
         let pitch = 32;
         let mut target = vec![7_u8; pitch * height as usize];
-        copy_regions(
+        let whole = copy_regions(
             &canvas,
             width,
             &mut target,
             pitch,
             &[Region::new(1, 1, 2, 1), Region::new(3, 2, 9, 9)],
         );
+        assert!(!whole, "rows past the canvas were not there to copy");
         // Row 1, pixels 1 and 2: canvas pixels 5 and 6, as B, G, R, X.
         assert_eq!(
             &target[pitch + 4..pitch + 12],

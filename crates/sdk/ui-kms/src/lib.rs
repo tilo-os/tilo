@@ -13,6 +13,7 @@ mod canvas;
 pub mod display;
 mod input;
 mod keyboard;
+mod scanout_history;
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd as _, OwnedFd};
