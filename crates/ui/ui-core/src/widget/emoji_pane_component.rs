@@ -106,6 +106,23 @@ impl Described for EmojiPane {
 }
 
 impl Widget for EmojiPane {
+    /// The picker's own elements inside the dialog the pane stands as: its card name, the search,
+    /// the groups and every emoji a button named for it. A closed pane paints nothing and shows
+    /// as an empty, hidden element.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        if !self.is_open() {
+            cx.element("div");
+            cx.attr("aria-hidden", "true");
+            return;
+        }
+        cx.element("dialog");
+        cx.attr(
+            "aria-label",
+            crate::i18n::widget_format("emoji-chooser-title", &[]),
+        );
+        Widget::html(&self.picker, cx);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
