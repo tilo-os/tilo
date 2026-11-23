@@ -243,19 +243,19 @@ tilo_test_env::scenario! {
 
 const OFFICE_DOCX: &[u8] = {
     mod fixture {
-        include!("../../cloud-source-gdrive/tests/fixtures/docx.rs");
+        include!("../../../integrations/cloud-source-gdrive/tests/fixtures/docx.rs");
     }
     fixture::BYTES
 };
 const OFFICE_XLSX: &[u8] = {
     mod fixture {
-        include!("../../cloud-source-gdrive/tests/fixtures/xlsx.rs");
+        include!("../../../integrations/cloud-source-gdrive/tests/fixtures/xlsx.rs");
     }
     fixture::BYTES
 };
 const OFFICE_PPTX: &[u8] = {
     mod fixture {
-        include!("../../cloud-source-gdrive/tests/fixtures/pptx.rs");
+        include!("../../../integrations/cloud-source-gdrive/tests/fixtures/pptx.rs");
     }
     fixture::BYTES
 };

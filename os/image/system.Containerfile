@@ -402,7 +402,7 @@ RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselec
 #
 # 70-tilo-console.rules hands a VM's console port (org.tilo.console.0, which
 # only a hypervisor can attach) to the greetd user, whose greeter answers the
-# tilo-control action protocol there (crates/session/console-control).
+# tilo-control action protocol there (crates/os/console-control).
 #
 # 70-tilo-ddc.rules hands the display controllers' I²C buses to the active
 # session so external monitors' brightness can be set over DDC/CI; the
@@ -472,7 +472,7 @@ COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-po
 COPY os/etc/systemd/ /etc/systemd/
 COPY os/etc/locale.conf /etc/locale.conf
 COPY os/etc/chrony.conf /etc/chrony.conf
-COPY crates/session/install-profile-model/locales.txt /usr/share/tilo/installer-locales.txt
+COPY crates/os/install-profile-model/locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync transport and diagnostics doc).

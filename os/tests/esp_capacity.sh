@@ -25,8 +25,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 DISK_IMAGE="$REPO/os/dev/disk-image.sh"
-ROLLBACK_LIB="$REPO/crates/system/tilo-rollback/src/lib.rs"
-RETENTION="$REPO/crates/system/tilo-rollback/src/retention.rs"
+ROLLBACK_LIB="$REPO/crates/os/tilo-rollback/src/lib.rs"
+RETENTION="$REPO/crates/os/tilo-rollback/src/retention.rs"
 
 fail=0
 ok()  { printf 'ok    %s\n' "$*"; }
@@ -87,7 +87,7 @@ if [ "$esp_mib" -ge "$need" ]; then
 else
   bad "ESP ${esp}G (${esp_mib} MiB) cannot hold $(( retain + newer + repair )) x ${budget} MiB + ${slack} MiB = ${need} MiB
       Raise ESP_SIZE in os/dev/disk-image.sh, or lower retained_generations in
-      crates/system/tilo-rollback/src/lib.rs. Highest window this ESP supports:
+      crates/os/tilo-rollback/src/lib.rs. Highest window this ESP supports:
       $(( (esp_mib - slack) / budget - newer - repair ))."
 fi
 

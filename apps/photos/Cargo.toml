@@ -37,7 +37,7 @@ tilo-content = { path = "../../crates/system/content" }
 # The shared preview pipeline behind the library grid.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-vision = { path = "../../crates/media/vision" }
-agent-provider-config = { path = "../../crates/agent/provider-config" }
+agent-provider-config = { path = "../../crates/integrations/provider-config" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 automerge.workspace = true

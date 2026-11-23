@@ -53,7 +53,7 @@ ACCOUNTS_OWNER = "so.tilo.settings"
 ACCOUNTS_RECORD = "derived:tilo.accounts@tab:0000000000000000"
 # Where a device kept an account's password before the workspace's vault held it, under the
 # device's config root (`$XDG_CONFIG_HOME/tilo`): the accounts store, the device's own secret
-# vault, and the account-credentials hand-over to the storage daemon (crates/system/accounts).
+# vault, and the account-credentials hand-over to the storage daemon (crates/integrations/accounts).
 ACCOUNTS_STORE = "accounts/store.json"
 DEVICE_VAULT = "accounts/vault"
 HANDOFF = "accounts/handoff"

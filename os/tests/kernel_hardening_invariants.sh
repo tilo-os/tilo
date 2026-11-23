@@ -803,7 +803,7 @@ done
 [ "$fail" -ne 0 ] || ok 'PrivateIPC user units run one process; their roots come from tmpfiles'
 
 rollback_harden_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.service"
-rollback_exec="$repo/crates/system/tilo-rollback/src/exec.rs"
+rollback_exec="$repo/crates/os/tilo-rollback/src/exec.rs"
 for required in \
   'Nice=10' \
   'CPUWeight=20' \
@@ -1118,7 +1118,7 @@ fi
 # and the checker must pass the shipped policy and fail every weakened copy. A
 # grep for fragments is satisfied by a signed sibling scope while the Tilo
 # scope itself accepts anything.
-# The checker is compiled (crates/system/image-policy-check): build the
+# The checker is compiled (crates/os/image-policy-check): build the
 # image's own binary, or use the one TILO_IMAGE_POLICY_CHECK_BIN names.
 image_policy_check="${TILO_IMAGE_POLICY_CHECK_BIN:-}"
 if [ -z "$image_policy_check" ]; then

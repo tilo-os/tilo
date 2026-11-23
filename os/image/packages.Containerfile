@@ -259,7 +259,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     #
     # `ntfs-3g` is the userspace NTFS driver behind "Open safely": the NTFS
     # mount service runs it confined, as its own account, for drives the person
-    # does not know (crates/system/ntfs-mount). Its probe also checks a volume
+    # does not know (crates/os/ntfs-mount). Its probe also checks a volume
     # for hibernation and an unfinished journal before any driver mounts it.
     #
     # NetworkManager is Tilo's sole network and DNS authority. The Fedora bootc
@@ -349,7 +349,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # glibc language pack so each accepted profile remains functional after first
     # boot; advertising languages backed by only glibc-langpack-en would silently
     # apply an unusable LANG value and fall back to English. Keep this curated set
-    # in lock-step with crates/session/install-profile-model/locales.txt rather than pulling
+    # in lock-step with crates/os/install-profile-model/locales.txt rather than pulling
     # the much larger all-locales archive into every download. libevdev is the
     # runtime library of joycond (see joycond-builder).
     && dnf install -y --setopt=reposdir=/repo \

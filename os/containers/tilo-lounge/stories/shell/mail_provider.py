@@ -1,7 +1,7 @@
 """The mail a shell story reads: the stand-in mail server it runs as the account's provider, and
 what a person does in Settings and Mail to use it.
 
-The account is the tree's stand-in mail server (`crates/platform/account-probe/examples/
+The account is the tree's stand-in mail server (`crates/integrations/account-probe/examples/
 mail_stand_in.rs`), the same program a tilo.sh stack runs for a stack's mail account
 (`stack.sh mail-account`): an IMAP and an SMTP server over real sockets that take one made-up
 login, hold a few made-up messages and keep the mail they are handed. Here it is started by the

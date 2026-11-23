@@ -14,7 +14,7 @@ serde_json.workspace = true
 settings-store = { path = "../../system/settings-store" }
 tilo-actions = { path = "../../collab/actions" }
 # What is booted, staged and rolled back to, as the deployment status socket lists it.
-tilo-deployment-status = { path = "../../system/deployment-status" }
+tilo-deployment-status = { path = "../../os/deployment-status" }
 # Following the live update's state as it is written.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-location = { path = "../../platform/tilo-location" }

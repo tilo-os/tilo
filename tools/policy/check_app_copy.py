@@ -362,7 +362,7 @@ INDIRECT = {
 # Catalogues a crate's resolver falls back to after its own: Settings' `t`
 # resolves the shared provider administration copy it embeds
 # (apps/settings/src/i18n.rs).
-FALLBACK = {"apps/settings": ["crates/sdk/provider-settings-ui"]}
+FALLBACK = {"apps/settings": ["crates/integrations/provider-settings-ui"]}
 
 
 def catalogues(crate: Path) -> dict[str, set[str]]:

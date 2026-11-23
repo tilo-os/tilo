@@ -56,7 +56,7 @@ class ServiceCandidateBridge(unittest.TestCase):
         self.assertEqual(contract.decode(encoded), value)
 
     def test_measured_closure_matches_the_installed_producer(self):
-        source = (ROOT / 'crates/platform/imager-backend/src/account_admission.rs').read_text()
+        source = (ROOT / 'crates/os/imager-backend/src/account_admission.rs').read_text()
         block = source.split('pub const RECEIVING_DEPENDENCIES: &[&str] = &[', 1)[1].split('];', 1)[0]
         self.assertEqual(tuple(re.findall(r'"([^"]+)"', block)), contract.RECEIVING_DEPENDENCIES)
 

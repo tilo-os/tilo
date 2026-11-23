@@ -589,7 +589,7 @@ Two details matter at the release boundary:
 
 ## Interface for generation-bound unlock
 
-`crates/system/tilo-rollback` wants four things from the boot chain, and the sealed
+`crates/os/tilo-rollback` wants four things from the boot chain, and the sealed
 layout supplies all four.
 
 **PCR 7.** The firmware measures the Secure Boot policy into it on every boot,

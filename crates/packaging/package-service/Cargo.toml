@@ -52,7 +52,7 @@ tilo-app-package = { path = "../tilo-app-package" }
 # The one package registry; the daemon (`service`) also writes its store and
 # keeps none of its own.
 package-store = { path = "../package-store" }
-app-cli = { path = "../app-cli", optional = true }
+app-cli = { path = "../../os/app-cli", optional = true }
 runtime-bundle = { path = "../runtime-bundle", optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 

@@ -27,7 +27,7 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-contact-directory-engine/thin"]
 
 [dependencies]
-tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
+tilo-contact-directory = { path = "../../crates/integrations/tilo-contact-directory" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }

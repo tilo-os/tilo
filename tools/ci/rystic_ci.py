@@ -243,7 +243,7 @@ def build(artifacts):
             "compiler_path": str(executable),
         }
     # The native DOCX contract embeds the source validator's absolute path.
-    validator = ROOT / "crates/system/cloud-source-gdrive/tests/validate_docx.py"
+    validator = ROOT / "crates/integrations/cloud-source-gdrive/tests/validate_docx.py"
     manifest = {
         "schema": 3,
         "harness_sha256": digest(__file__),

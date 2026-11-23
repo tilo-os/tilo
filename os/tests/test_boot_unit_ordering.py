@@ -238,7 +238,7 @@ class BootOrdering(unittest.TestCase):
         unit = parse(shipped_units()["tilo-extension-activate.service"])
         self.assertEqual(unit["Unit"]["ConditionPathExistsGlob"], ["|/var/lib/tilo/extensions/*/enabled"])
         self.assertEqual(unit["Unit"]["ConditionDirectoryNotEmpty"], ["|/var/lib/extensions"])
-        helper = (REPO / "crates/system/extension-helper/src/machine.rs").read_text()
+        helper = (REPO / "crates/os/extension-helper/src/machine.rs").read_text()
         self.assertIn('self.at("/var/lib/tilo/extensions")', helper)
         self.assertIn('self.state(ident).join("enabled")', helper)
         self.assertIn('self.at("/var/lib/extensions")', helper)
@@ -251,7 +251,7 @@ class BootOrdering(unittest.TestCase):
         # layer is linked and marked only under /run, so no boot finds it: at
         # boot the two conditions above remain the whole early return.
         self.assertIn("    if !wanted && !live_linked && !live_was_merged {\n        return Ok(0);\n", helper)
-        live = (REPO / "crates/system/extension-helper/src/live.rs").read_text()
+        live = (REPO / "crates/os/extension-helper/src/live.rs").read_text()
         self.assertIn('    layout.at("/run/tilo/live-update/merged")\n', live)
         self.assertIn('    let dir = layout.at("/run/extensions");\n', live)
 

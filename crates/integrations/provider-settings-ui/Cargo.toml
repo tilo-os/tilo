@@ -1,0 +1,29 @@
+[package]
+name = "provider-settings-ui"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+description = "Portable provider administration panel and standalone application for Tilo."
+
+[features]
+test-support = []
+
+[dependencies]
+ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app", default-features = false }
+agent-provider-config = { version = "0.1.0", path = "../provider-config", features = ["model"] }
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+zeroize.workspace = true
+taffy.workspace = true
+
+[dev-dependencies]
+# Mounted native tests use the SDK's complete native test driver.
+ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app", features = ["test-support"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

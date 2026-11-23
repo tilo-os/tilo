@@ -61,6 +61,18 @@ from rust_source import is_test_file, line_number, production_source  # noqa: E4
 ROOT = Path(__file__).resolve().parents[2]
 # The toolkit, the session (shell, desktop) and the apps: everything that draws UI.
 SCANNED = (Path("crates/sdk"), Path("crates/session"), Path("apps"))
+# Crates of the same kind that live in other groups.
+SCANNED += (
+    Path("crates/integrations/provider-settings-ui"),
+    Path("crates/os/console-control"),
+    Path("crates/os/greetd-client"),
+    Path("crates/os/greeter"),
+    Path("crates/os/install-plan"),
+    Path("crates/os/install-profile-model"),
+    Path("crates/integrations/messaging-service"),
+    Path("crates/os/tilo-ntfs-helper"),
+    Path("crates/os/tilo-ntfs-protocol"),
+)
 
 # Where motion math belongs.
 LIBRARY = (

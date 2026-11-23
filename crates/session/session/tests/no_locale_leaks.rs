@@ -96,10 +96,10 @@ const WINDOWS: &[Window] = &[
     },
     Window {
         name: "Settings' providers",
-        source: catalogue!("/../../sdk/provider-settings-ui/locales/en-US.ftl"),
+        source: catalogue!("/../../integrations/provider-settings-ui/locales/en-US.ftl"),
         german: Some((
             "de-DE",
-            catalogue!("/../../sdk/provider-settings-ui/locales/de-DE.ftl"),
+            catalogue!("/../../integrations/provider-settings-ui/locales/de-DE.ftl"),
         )),
     },
 ];

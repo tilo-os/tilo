@@ -18,7 +18,7 @@ fixture = []
 test-support = []
 
 [dependencies]
-accounts = { path = "../../system/accounts", features = ["person"] }
+accounts = { path = "../../integrations/accounts", features = ["person"] }
 # What a typo-free edit to the workspace's accounts record is.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 base64.workspace = true

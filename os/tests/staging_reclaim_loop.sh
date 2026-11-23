@@ -12,7 +12,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # The handoff guard and the reclaim logic are compiled
-# (crates/system/install-helpers, crates/system/staging-reclaim); their fixture
+# (crates/os/install-helpers, crates/os/staging-reclaim); their fixture
 # examples take the firmware variables, ESP and lsblk output, and the record,
 # root mount and loop allowance, from the environment, which the shipped
 # binaries never do.

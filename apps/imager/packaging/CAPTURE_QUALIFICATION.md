@@ -61,7 +61,7 @@ list after compilation or restamp an old producer.
 The required source map covers the checkout's actual Rust, Cargo and Fluent
 inputs, Imager packaging, OS scripts and installed helper sources, including
 untracked candidate source files. The canonical data contract is measured at
-`crates/platform/imager-backend/src/imager_model.rs`, alongside the native setup
+`crates/os/imager-backend/src/imager_model.rs`, alongside the native setup
 source tree; a frontend reexport is not a substitute for those bytes.
 Capture these *before* each actual role build
 and again after, rather than synthesizing them from this documentation. A new

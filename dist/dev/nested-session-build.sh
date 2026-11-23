@@ -141,7 +141,7 @@ build_host() {
         -p tilo-account-probe --example mail_stand_in || return 1
     # The power authorities a session serves on its own system bus, for a machine with no battery,
     # no platform profile and no polkit behind them (a check's VM,
-    # crates/system/power/examples/fake_power.rs).
+    # crates/os/power/examples/fake_power.rs).
     cargo build --locked --timings "${args[@]}" \
         -p tilo-power-mgmt --example fake_power || return 1
     # The gateway, on a build of its own: its binary needs `server`, which no

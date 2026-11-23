@@ -42,7 +42,7 @@ audio = ["dep:gstreamer", "media/decode"]
 live = ["dep:rustypipe", "dep:tilo-innertube", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
 
 [dependencies]
-tilo-spotify = { path = "../../crates/platform/tilo-spotify", optional = true }
+tilo-spotify = { path = "../../crates/integrations/tilo-spotify", optional = true }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -87,13 +87,13 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 # Its queries, compiled once beside it (in the YouTube engine library in a
 # release) rather than in this executable.
-tilo-innertube = { path = "../../crates/platform/tilo-innertube", optional = true }
+tilo-innertube = { path = "../../crates/integrations/tilo-innertube", optional = true }
 
 [dev-dependencies]
 # Tests build their image fixtures.
 image = { workspace = true, features = ["png"] }
 test-http = { path = "../../tools/test-http" }
-tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
+tilo-oauth = { path = "../../crates/integrations/tilo-oauth", features = ["fake"] }
 serial_test.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../tools/test-env", features = ["document"] }

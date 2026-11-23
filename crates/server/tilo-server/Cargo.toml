@@ -127,11 +127,11 @@ blake3.workspace = true
 hex.workspace = true
 # A planned machine's disk rule and open choices are the installer's own
 # model, so a plan the person's devices write is one the installer reads.
-install-profile-model = { path = "../../session/install-profile-model" }
+install-profile-model = { path = "../../os/install-profile-model" }
 # A server's rollback floor moves by approvals the person's floor key signs.
-tilo-rollback = { path = "../../system/tilo-rollback" }
+tilo-rollback = { path = "../../os/tilo-rollback" }
 # How this boot's system volume opened, as early boot noted it.
-tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
+tilo-unlock-protocol = { path = "../../os/tilo-unlock-protocol" }
 tilo-crypto = { path = "../../system/tilo-crypto", default-features = false }
 uuid.workspace = true
 # A bot's calendar schedules fire on this host's wall clock.
@@ -196,15 +196,15 @@ tilo-moderation = { path = "../../collab/moderation", features = ["host"], optio
 # A persistent public workspace's chat opens with the operator's channels.
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
 discord = { path = "../../../apps/discord", optional = true }
-tilo-connector = { path = "../../agent/connector", optional = true }
+tilo-connector = { path = "../../integrations/connector", optional = true }
 tilo-automation = { path = "../../collab/automation", optional = true }
 # A source outside that an event waits on is read through the one fetch an
 # agent's own read of a page goes through, and a feed's entries by the parser
 # the Feeds app reads them with.
-tilo-web-search = { path = "../../platform/tilo-web-search", optional = true }
+tilo-web-search = { path = "../../integrations/tilo-web-search", optional = true }
 feed-rs = { version = "2.4", optional = true }
-tilo-bot-directory = { path = "../../packaging/bot-directory", optional = true }
-app-cli = { path = "../../packaging/app-cli", optional = true }
+tilo-bot-directory = { path = "../../integrations/bot-directory", optional = true }
+app-cli = { path = "../../os/app-cli", optional = true }
 # The admin workspace's record of the person's servers, and its actions.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The workspace's emoji, which a bot's program may be told of.
@@ -304,7 +304,7 @@ rcgen.workspace = true
 # keeps them building on their own, rather than only when another crate in the
 # same build turns it on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["test-support", "agents", "session-pages"] }
-install-plan = { path = "../../session/install-plan" }
+install-plan = { path = "../../os/install-plan" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
@@ -334,7 +334,7 @@ hyper = { version = "1", features = ["client", "http1"] }
 test-http = { path = "../../../tools/test-http" }
 # The sources a test has an event look at are servers the test starts, which
 # the fetch reaches only through its fixture entry.
-tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
+tilo-web-search = { path = "../../integrations/tilo-web-search", features = ["fixture-servers"] }
 # The packet relay on this machine's loopback these tests run their hosts and devices on, and
 # the keys no two runs share: no test reaches a relay or directory out on the internet.
 test-server = { path = "../../../tools/test-server" }

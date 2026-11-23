@@ -51,8 +51,8 @@ runtime-dylib = { path = "../../runtime-dylib", optional = true }
 # The features Settings builds them with (apps/settings/Cargo.toml): one copy
 # of each in the thin graph, or the app's symbols would name a crate hash this
 # library does not export.
-provider-settings-ui = { path = "../../../sdk/provider-settings-ui", optional = true }
-tilo-ntfs-mount = { path = "../../../system/ntfs-mount", default-features = false, optional = true }
+provider-settings-ui = { path = "../../../integrations/provider-settings-ui", optional = true }
+tilo-ntfs-mount = { path = "../../../os/ntfs-mount", default-features = false, optional = true }
 tilo-wallpapers = { path = "../../../platform/tilo-wallpapers", optional = true }
 tilo-accessibility-settings = { path = "../../../platform/tilo-accessibility-settings", features = ["model"], optional = true }
 tilo-pc-keyboard-geometry = { path = "../../../platform/pc-keyboard-geometry", optional = true }

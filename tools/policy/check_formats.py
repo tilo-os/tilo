@@ -43,6 +43,18 @@ from rust_source import is_test_file, line_number, matching, production_source  
 
 ROOT = Path(__file__).resolve().parents[2]
 SCOPES = (Path("apps"), Path("crates/session"), Path("crates/sdk"))
+# Crates of the same kind that live in other groups.
+SCOPES += (
+    Path("crates/os/console-control"),
+    Path("crates/os/greetd-client"),
+    Path("crates/os/greeter"),
+    Path("crates/os/install-plan"),
+    Path("crates/os/install-profile-model"),
+    Path("crates/integrations/messaging-service"),
+    Path("crates/os/tilo-ntfs-helper"),
+    Path("crates/os/tilo-ntfs-protocol"),
+    Path("crates/integrations/provider-settings-ui"),
+)
 # The formatter itself, its toolkit-free half, and the clock it formats times of day with.
 FORMATTER = (
     Path("crates/sdk/tilo-formats/src"),

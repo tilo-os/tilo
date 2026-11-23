@@ -51,7 +51,7 @@ print(json.dumps({
 
 
 # The closed receipts the prepared setup helper's consumer checks export
-# (crates/platform/imager-backend/src/installed_consumers/data.rs).
+# (crates/os/imager-backend/src/installed_consumers/data.rs).
 HOME_KEYS = {"schema", "archive_protocol", "seed_protocol", "firstboot_user_sha256",
              "seed_helper_sha256", "prepared_helper_sha256", "tar_sha256"}
 APPS_KEYS = {"schema", "subset_protocol", "prepared_helper_sha256",

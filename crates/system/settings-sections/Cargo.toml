@@ -11,7 +11,7 @@ name = "settings_sections"
 path = "src/lib.rs"
 
 [dependencies]
-agent-provider-config = { path = "../../agent/provider-config", features = ["model"] }
+agent-provider-config = { path = "../../integrations/provider-config", features = ["model"] }
 automerge.workspace = true
 # The calendar a data period is counted by.
 jiff.workspace = true

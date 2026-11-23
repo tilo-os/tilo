@@ -47,7 +47,7 @@ tilo-workspace-service = { path = "../../server/tilo-workspace-service", feature
 tilo-rt.workspace = true
 tilo-seal = { path = "../../system/tilo-seal" }
 tilo-session-client = { path = "../client" }
-tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
+tilo-unlock-protocol = { path = "../../os/tilo-unlock-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 # The join contract's transport hint, named where it is owned.
 tilo-workspace-join = { path = "../../collab/workspace-join" }

@@ -36,7 +36,7 @@ tilo-app-process-engine = { path = "../../crates/runtime/engines/app-process", o
 # with the desktop's search box, which offers the same registries' apps
 # — one definition, so the two cannot drift into disagreeing about
 # whether an entry verifies.
-app-cli = { path = "../../crates/packaging/app-cli" }
+app-cli = { path = "../../crates/os/app-cli" }
 # The app host's client side only. Its daemon (`service`) is the privileged
 # api this app talks to over the launcher-issued capability, not code it
 # links; with it, the content store and the filesystem would also land in

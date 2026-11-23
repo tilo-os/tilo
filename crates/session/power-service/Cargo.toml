@@ -27,7 +27,7 @@ service = [
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-tilo-power-mgmt = { path = "../../system/power", default-features = false, features = ["serde"] }
+tilo-power-mgmt = { path = "../../os/power", default-features = false, features = ["serde"] }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-actions = { path = "../../collab/actions", optional = true }
 tilo-lock = { path = "../../platform/tilo-lock", optional = true }

@@ -17,7 +17,9 @@ service.
 | `doc/` | Native document model, format-provider interfaces and import/export adapters |
 | `hosting/` | Relay and home-peer services |
 | `import/` | Reading another product's data (browser profiles, other computers' accounts), behind `tilo migrate` |
+| `integrations/` | Other services Tilo connects to: mail, calendars and DAV, cloud drives, messaging bridges and model providers |
 | `media/` | Shared media primitives, OCR, thumbnail generation, and vision libraries |
+| `os/` | The operating system: install and boot, disks, hardware, networking, rollback and system extensions |
 | `packaging/` | Package format, registry, installation, sandboxed launch, and app hosting |
 | `platform/` | Per-capability platform crates with one API on Linux, macOS and the web; the only place app-reachable code may use target `cfg` |
 | `runtime/` | App-facing service clients, CLI helpers, and optional dynamic SDK |

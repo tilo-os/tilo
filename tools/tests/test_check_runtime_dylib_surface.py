@@ -139,12 +139,12 @@ class RuntimeSurfaceTests(unittest.TestCase):
         # again maps it into every app process, even though apps reach it.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
-            "4serde v1.0.228\n2account-credentials v0.1.0 (/repo/crates/system/account-credentials)\n"
+            "4serde v1.0.228\n2account-credentials v0.1.0 (/repo/crates/integrations/account-credentials)\n"
             "2jiff-tzdb v0.1.10\n",
         ).replace(
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
-            "1account-credentials v0.1.0 (/repo/crates/system/account-credentials) (*)\n"
+            "1account-credentials v0.1.0 (/repo/crates/integrations/account-credentials) (*)\n"
             "1jiff-tzdb v0.1.10 (*)\n0store",
         )
         found = checker.violations(tree, ["notes", "store"], TARGET)

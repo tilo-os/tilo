@@ -28,7 +28,7 @@ behaviour. The one thing that survives every change is the person's data.
 ### Live system updates
 
 `tilo-live-update.service` (`tilo-extension live:system`,
-`crates/system/extension-helper/src/live.rs`) runs after every staging, with
+`crates/os/extension-helper/src/live.rs`) runs after every staging, with
 the machinery `tilo device swap` uses on a development machine:
 
 1. It opens the staged and the booted deployment read-only: on the sealed

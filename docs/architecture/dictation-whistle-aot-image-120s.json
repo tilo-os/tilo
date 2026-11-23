@@ -380,7 +380,7 @@
           "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
           "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
           "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
-          "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+          "crates/integrations/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
         },
         "features": [
           "whistle-aot"

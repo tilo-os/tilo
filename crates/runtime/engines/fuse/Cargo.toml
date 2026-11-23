@@ -39,7 +39,7 @@ thin = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 runtime-dylib = { path = "../../runtime-dylib", optional = true }
-runtime-fs-fuse = { path = "../../runtime-fs-fuse", optional = true }
+runtime-fs-fuse = { path = "../../../os/runtime-fs-fuse", optional = true }
 fuser = { workspace = true, optional = true }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.

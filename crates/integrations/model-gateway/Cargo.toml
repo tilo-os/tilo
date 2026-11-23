@@ -1,0 +1,113 @@
+[package]
+name = "tilo-model-gateway"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Per-user Tilo gateway for hosted agent model providers."
+
+[lib]
+name = "tilo_model_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-model-gateway"
+path = "src/main.rs"
+required-features = ["server"]
+
+[[bin]]
+name = "tilo-model-http"
+path = "src/http_main.rs"
+required-features = ["server"]
+
+[[test]]
+name = "socket_activation"
+path = "tests/socket_activation.rs"
+required-features = ["server"]
+
+[features]
+default = []
+runtime-client = ["tilo-model-client/runtime-client"]
+# Hosted-provider relay and HTTP adapter, without in-process inference.
+server = [
+    "dep:tilo-clock",
+    "dep:accounts",
+    "dep:account-credentials",
+    "dep:settings-store",
+    "dep:reqwest",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:tilo-rt",
+    "dep:clap",
+    "dep:base64",
+    "dep:bytes",
+    "dep:futures-util",
+    "dep:tilo-files",
+    "dep:rustix",
+    "dep:tilo-api",
+    "dep:anyhow",
+]
+# Trusted host CLIs share the server's provider transport and credential policy.
+host-backend = ["server", "tilo-net/proxy-host"]
+# Desktop gateway only: load installed segmentation models in this process.
+local-models = ["server", "dep:tilo-segment", "dep:local-model-service", "dep:image"]
+
+[dependencies]
+tilo-model-client = { version = "0.1.0", path = "../../agent/model-client", default-features = false }
+libc.workspace = true
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+hex.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+wire-frame = { path = "../../system/wire-frame" }
+tilo-files = { optional = true, path = "../../platform/tilo-files" }
+url.workspace = true
+agent-provider-config = { path = "../provider-config" }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tilo-clock = { path = "../../platform/tilo-clock", optional = true }
+accounts = { path = "../accounts", optional = true }
+# Ownership refreshes the Google grant sealed by Settings; no API key is stored.
+account-credentials = { path = "../account-credentials", optional = true }
+settings-store = { path = "../../system/settings-store", optional = true }
+reqwest = { workspace = true, features = ["json"], optional = true }
+hyper = { optional = true, version = "1", features = ["server", "http1"] }
+hyper-util = { optional = true, version = "0.1", features = ["tokio"] }
+http-body-util = { version = "0.1", optional = true }
+tilo-rt = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+clap = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+# The person's model is asked through the session this computer holds with
+# their workspace's server, as its `tilo` commands are.
+tilo-api = { path = "../../server/tilo-api", optional = true }
+anyhow = { workspace = true, optional = true }
+
+workspace-hack = { version = "0.1" }
+# The subject of a picture is found here, with the segmentation model the
+# person installed, so no app holds the model or its runtime.
+tilo-segment = { optional = true, path = "../../media/segment", features = ["infer"] }
+local-model-service = { optional = true, path = "../../agent/local-model-service" }
+image = { optional = true, workspace = true, features = ["png", "jpeg", "webp"] }
+
+[dev-dependencies]
+# Tests keep their provider settings in memory.
+settings-store = { path = "../../system/settings-store" }
+tempfile.workspace = true
+test-http = { path = "../../../tools/test-http" }
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"], optional = true }

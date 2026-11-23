@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-manager="$repo/crates/system/extension-helper/src/bin/tilo-system-extension-manager.rs"
+manager="$repo/crates/os/extension-helper/src/bin/tilo-system-extension-manager.rs"
 stage="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.service"
 path="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.path"
 dispatch="$repo/os/usr/libexec/tilo-system-extension-dispatch"

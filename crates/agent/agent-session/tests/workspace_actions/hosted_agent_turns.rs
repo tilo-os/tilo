@@ -1748,9 +1748,9 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
 
 /// The engines' recorded result pages, served to a turn's web tools from this machine.
 const BRAVE_RESULTS: &str =
-    include_str!("../../../../platform/tilo-web-search/tests/fixtures/brave.html");
+    include_str!("../../../../integrations/tilo-web-search/tests/fixtures/brave.html");
 const BING_RESULTS: &str =
-    include_str!("../../../../platform/tilo-web-search/tests/fixtures/bing.html");
+    include_str!("../../../../integrations/tilo-web-search/tests/fixtures/bing.html");
 
 /// Look `query` up with the turn's own `search_web`, then answer.
 fn searches_then_answers(query: &'static str, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {

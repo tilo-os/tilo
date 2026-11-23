@@ -10,7 +10,7 @@ from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
-DRIVER = ROOT / 'crates/system/accounts/web/run.mjs'
+DRIVER = ROOT / 'crates/integrations/accounts/web/run.mjs'
 
 
 class AccountsWebStorageTests(unittest.TestCase):

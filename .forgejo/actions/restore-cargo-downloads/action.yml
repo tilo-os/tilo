@@ -37,7 +37,7 @@ runs:
       continue-on-error: true
       with:
         path: ${{ steps.home.outputs.paths }}
-        key: cargo-deps-${{ hashFiles(inputs.lockfile) }}-${{ hashFiles(format('{0}/crates/sdk/ui-core/assets/fonts/manifest.toml', steps.home.outputs.source), format('{0}/crates/sdk/ui-core/assets/fonts/artifacts.json', steps.home.outputs.source)) }}-${{ hashFiles(format('{0}/crates/session/tilo-ntfs-helper/vendor/ntfs-3g.lock', steps.home.outputs.source)) }}
+        key: cargo-deps-${{ hashFiles(inputs.lockfile) }}-${{ hashFiles(format('{0}/crates/sdk/ui-core/assets/fonts/manifest.toml', steps.home.outputs.source), format('{0}/crates/sdk/ui-core/assets/fonts/artifacts.json', steps.home.outputs.source)) }}-${{ hashFiles(format('{0}/crates/os/tilo-ntfs-helper/vendor/ntfs-3g.lock', steps.home.outputs.source)) }}
         restore-keys: cargo-deps-
 
     - name: Prepare source fonts for offline builds
@@ -60,11 +60,11 @@ runs:
         fi
 
     - name: Prepare pinned NTFS source for offline builds
-      if: hashFiles(format('{0}/crates/session/tilo-ntfs-helper/source_artifact.py', steps.home.outputs.source)) != ''
+      if: hashFiles(format('{0}/crates/os/tilo-ntfs-helper/source_artifact.py', steps.home.outputs.source)) != ''
       shell: bash
       env:
         SOURCE: ${{ steps.home.outputs.source }}
       run: |
         source=$(realpath "$SOURCE")
-        python3 "$source/crates/session/tilo-ntfs-helper/source_artifact.py"
+        python3 "$source/crates/os/tilo-ntfs-helper/source_artifact.py"
         printf 'TILO_NTFS_SOURCE_CACHE=%s/target/ntfs-source\nTILO_NTFS_SOURCE_OFFLINE=1\n' "$source" >> "$GITHUB_ENV"

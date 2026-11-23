@@ -34,7 +34,7 @@ semver.workspace = true
 app-registry = { path = "../app-registry" }
 # `update` resolves a newer version through the store client's registries
 # and catalogue: the same path `app update` takes.
-app-cli = { path = "../app-cli" }
+app-cli = { path = "../../os/app-cli" }
 
 # Registers the runtime's GNOME Shell and KRunner search providers.
 
@@ -42,7 +42,7 @@ app-cli = { path = "../app-cli" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-tilo-os-search = { path = "../../runtime/os-search" }
+tilo-os-search = { path = "../../integrations/os-search" }
 
 [dev-dependencies]
 getrandom.workspace = true

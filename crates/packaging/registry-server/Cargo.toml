@@ -64,9 +64,9 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Compaction tests verify served snapshots with the native and browser clients.
-app-cli = { path = "../app-cli" }
+app-cli = { path = "../../os/app-cli" }
 # The bot directory test plans an install from what it published.
-tilo-bot-directory = { path = "../bot-directory" }
+tilo-bot-directory = { path = "../../integrations/bot-directory" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-test-env = { path = "../../../tools/test-env" }
 getrandom.workspace = true

@@ -79,7 +79,7 @@ def decode(raw):
 
 RECEIVING_ENTRY = '/usr/libexec/tilo-installer-receive-fixture/receive.py'
 # The measured receiving closure; the installed producer
-# (crates/platform/imager-backend, RECEIVING_DEPENDENCIES) binds the same list.
+# (crates/os/imager-backend, RECEIVING_DEPENDENCIES) binds the same list.
 RECEIVING_DEPENDENCIES = tuple(
     '/usr/libexec/tilo-installer-receive-fixture/' + name + '.py'
     for name in ('receive', 'semantic', 'firstuse', 'delivery', 'namespace',
@@ -93,7 +93,7 @@ PREPARED = '/usr/libexec/tilo-prepared-setup'
 
 def selected(deadline, log):
     """The signed receiving Browser and CEF runtime in the canonical image store, as the
-    installed producer selects and verifies them (crates/platform/imager-backend), or None."""
+    installed producer selects and verifies them (crates/os/imager-backend), or None."""
     value = json.loads(bounded_command([PREPARED, '--receiving-browser'], deadline, log, maximum=64 * 1024))
     require(value is None or (type(value) is dict and set(value) == {
         'package_id_hex', 'publisher_key_hex', 'runtime', 'browser', 'version', 'bundle'}),

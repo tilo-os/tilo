@@ -63,7 +63,7 @@ uuid.workspace = true
 # The device's network, which an app's `web.get` and `web.post` reach once per request.
 tilo-net = { version = "0.1.0", path = "../tilo-net", default-features = false, features = ["blocking"] }
 # The mail origin, reaching the connector process the system runs for the app.
-tilolang-mail = { path = "../tilolang-mail", default-features = false }
+tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
 # The device's content store, which an app's files are kept in, and the person's own chooser.
 tilo-content = { version = "0.1.0", path = "../../system/content" }
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }

@@ -554,16 +554,16 @@ and `crates/session/session/src/app_wire.rs`, plus
 
 ## P1-5 — No lock on suspend; idle auto-lock off by default
 
-`crates/system/power/src/service.rs:255-265` handles `PrepareForSleep`: the `true` branch only logs.
+`crates/os/power/src/service.rs:255-265` handles `PrepareForSleep`: the `true` branch only logs.
 Nothing locks the session before sleep or on resume, so suspend-then-open-lid lands in an unlocked
-session. `crates/system/power/src/logind.rs:19-20` documents this as working — *"so the compositor
+session. `crates/os/power/src/logind.rs:19-20` documents this as working — *"so the compositor
 can lock before the machine sleeps"* — which is not implemented.
 
 `crates/session/compositor/src/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
 reachable only via `TILO_IDLE_LOCK_SECS`.
 
 **Resolved.** The power service maps `PrepareForSleep(true)` to
-`PowerSignal::PreparingForSleep` (`crates/system/power/src/service.rs`), and the compositor
+`PowerSignal::PreparingForSleep` (`crates/os/power/src/service.rs`), and the compositor
 answers it with a mandatory lock before sleep (`IdleState::prepare_for_sleep` in
 `crates/session/compositor/src/idle.rs`); the resume edge resets idle state. The compositor
 defaults both blanking and locking to five minutes; an explicit `TILO_IDLE_LOCK_SECS=0` remains the
@@ -1169,7 +1169,7 @@ and `crates/runtime/tilo-identity/src/broker.rs::tests::broker_answers_metadata_
 ## P1-13 — The boot sign-in screen has no screen reader and no touch
 
 `os/usr/share/plymouth/themes/tilo/tilo.script` ("Sign-in"), driven by
-`crates/system/boot-signin`. On a machine whose system volume does not open by
+`crates/os/boot-signin`. On a machine whose system volume does not open by
 itself, the first screen is the sign-in screen in the initramfs
 ([sign-in.md](sign-in.md) §3.2). Plymouth draws it: it lays out the person's name, the field
 for their secret, the message line and the other ways in like the login screen, but
@@ -1192,8 +1192,8 @@ to first frame are guarded.
 
 **Status in source:** the Plymouth sign-in layout this describes is removed. The
 sign-in screen in the initramfs is the greeter in boot mode
-(`crates/system/boot-signin/src/greeter.rs`, `os/usr/lib/dracut/modules.d/94tilo-greeter`).
-When it can't start, `crates/system/boot-signin/src/screen.rs` ends Plymouth and
+(`crates/os/boot-signin/src/greeter.rs`, `os/usr/lib/dracut/modules.d/94tilo-greeter`).
+When it can't start, `crates/os/boot-signin/src/screen.rs` ends Plymouth and
 asks through systemd's console password agent.
 
 ---

@@ -40,7 +40,7 @@ tilo-feedback-transport = { path = "../../collab/feedback-transport" }
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }
 # The kinds of work a transform's model is chosen by.
-agent-provider-config = { path = "../provider-config" }
+agent-provider-config = { path = "../../integrations/provider-config" }
 # The apps an agent can open in a browser session: those whose manifests declare
 # the web platform.
 activity = { path = "../../../apps/activity" }
@@ -117,7 +117,7 @@ hex.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
 # The requests and answers of the model calls a host's agents make.
-tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../model-gateway" }
+tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../../integrations/model-gateway" }
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
@@ -192,7 +192,7 @@ chat = { path = "../../../apps/chat", default-features = false, features = ["sam
 # Text a test lays out uses the pinned catalog, never the fonts the machine
 # running it has installed.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
-accounts = { path = "../../system/accounts", features = ["person"] }
+accounts = { path = "../../integrations/accounts", features = ["person"] }
 tempfile.workspace = true
 tilo-paths.workspace = true
 # An installed app's package, and the module it carries: the packaged-model

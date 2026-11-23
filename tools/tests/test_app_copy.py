@@ -121,7 +121,7 @@ class AppCopyTests(unittest.TestCase):
             root = Path(temporary)
             self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
             shared = "agent-cancel = Cancel\n"
-            self.crate(root, "crates/sdk/provider-settings-ui",
+            self.crate(root, "crates/integrations/provider-settings-ui",
                        {"en-US": shared, "de-DE": shared}, "")
             own = "settings-x = X\n"
             self.crate(root, "apps/settings", {"en-US": own, "de-DE": own},

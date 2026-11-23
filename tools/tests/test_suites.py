@@ -381,7 +381,7 @@ class CargoReaderTests(unittest.TestCase):
 
     def test_office_fixture_changes_select_their_mount_consumers(self):
         manifest = suites.load()
-        prefix = "crates/system/cloud-source-gdrive/tests/fixtures/"
+        prefix = "crates/integrations/cloud-source-gdrive/tests/fixtures/"
         for fixture in ("docx.rs", "xlsx.rs", "pptx.rs"):
             with self.subTest(fixture=fixture):
                 self.assertEqual(

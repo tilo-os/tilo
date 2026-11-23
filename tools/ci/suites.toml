@@ -125,9 +125,9 @@ name = "os"
 # script suites build and run tilo-staging-handoff, which their scripts hand
 # their checks to.
 inputs = [
-  "os/", "tools/perf/image_size.py", "crates/system/extension-helper/src/machine.rs",
-  "crates/platform/imager-backend/src/account_admission.rs",
-  "crates/system/install-helpers/",
+  "os/", "tools/perf/image_size.py", "crates/os/extension-helper/src/machine.rs",
+  "crates/os/imager-backend/src/account_admission.rs",
+  "crates/os/install-helpers/",
   "apps/staging-handoff-model/",
   # The packing reads the app set's plan and the tilolang packages' build steps,
   # which the release's packing shares.
@@ -383,7 +383,7 @@ inputs = [
   "crates/os/tilo-device-steps/data/tilo-vm-incoming.service",
   "crates/os/tilo-device-steps/data/tilo-vm-restore.service", "crates/os/tilo-device-steps/data/tilo-vm-session@.service",
   "crates/os/tilo-device-steps/data/tilo-vm-vkms.conf", "crates/os/tilo-device-steps/data/tilo-vm-community.toml",
-  "crates/session/install-profile-model/locales.txt",
+  "crates/os/install-profile-model/locales.txt",
   "docs/recovery.md", "docs/app-model/", "docs/security/boot-chain.md", "docs/security/repair-mode.md",
   "docs/security/rollback.md", "docs/windows-presentation.md", "docs/windows-vm.md",
   "keys/cosign.pub", "keys/cosign-dev.pub", "keys/extensions.pub", "keys/tpm2-pcr-signing.public.pem",
@@ -416,12 +416,12 @@ suites = ["os/tests/app_store.sh"]
 
 [[group]]
 name = "system-extension"
-inputs = ["os/", "crates/system/extension-helper/"]
+inputs = ["os/", "crates/os/extension-helper/"]
 suites = ["os/tests/boot_pack_invariants.sh"]
 
 [[group]]
 name = "rollback"
-inputs = ["os/", "crates/system/tilo-rollback/"]
+inputs = ["os/", "crates/os/tilo-rollback/"]
 suites = ["os/tests/esp_capacity.sh"]
 
 [[group]]
@@ -465,7 +465,7 @@ inputs = [
   "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/compat/",
   # test_windows_compat_sysext.py: the helper that installs the image, and the checks that
   # publish it.
-  "crates/system/extension-helper/src/",
+  "crates/os/extension-helper/src/",
 ]
 suites = [
   "os/tests/test_windows_compat_sysext.py",
@@ -489,8 +489,8 @@ suites = ["tools/ci/test_native_store_virtio.py"]
 
 [[group]]
 name = "ntfs-helper"
-inputs = ["crates/session/tilo-ntfs-helper/"]
-suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py", "crates/session/tilo-ntfs-helper/tests/test_source_artifact.py"]
+inputs = ["crates/os/tilo-ntfs-helper/"]
+suites = ["crates/os/tilo-ntfs-helper/tests/test_build_native.py", "crates/os/tilo-ntfs-helper/tests/test_source_artifact.py"]
 
 [[group]]
 name = "dist"
@@ -857,9 +857,9 @@ package = "tilolang-youtube"
 # The origin's tests compile tube's package from its source and ids lock.
 inputs = ["apps/tl/tube/"]
 readers = [
-  "crates/platform/tilolang-youtube/tests/native_tube.rs",
-  "crates/platform/tilolang-youtube/tests/origin.rs",
-  "crates/platform/tilolang-youtube/tests/recorded_answer.rs",
+  "crates/integrations/tilolang-youtube/tests/native_tube.rs",
+  "crates/integrations/tilolang-youtube/tests/origin.rs",
+  "crates/integrations/tilolang-youtube/tests/recorded_answer.rs",
 ]
 
 [[cargo]]
@@ -926,8 +926,8 @@ readers = ["crates/session/onboarding-walk/tests/names.rs"]
 [[cargo]]
 package = "provider-settings-ui"
 # The provider screenshots list the models of the provider config's recorded OpenRouter answer.
-inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
-readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
+inputs = ["crates/integrations/provider-config/tests/fixtures/openrouter-models.json"]
+readers = ["crates/integrations/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
 package = "calendar"
@@ -973,8 +973,8 @@ inputs = [
   "os/usr/lib/bootc/kargs.d/",
 ]
 readers = [
-  "crates/system/esp-write/tests/esp_write.rs",
-  "crates/system/esp-write/tests/uki_cmdline.rs",
+  "crates/os/esp-write/tests/esp_write.rs",
+  "crates/os/esp-write/tests/uki_cmdline.rs",
 ]
 
 [[cargo]]
@@ -1007,8 +1007,8 @@ inputs = [
   "os/components.toml",
 ]
 readers = [
-  "crates/system/extension-helper/tests/support/mod.rs",
-  "crates/system/extension-helper/src/bin/tilo-system-extension-manager.rs",
+  "crates/os/extension-helper/tests/support/mod.rs",
+  "crates/os/extension-helper/src/bin/tilo-system-extension-manager.rs",
 ]
 
 [[cargo]]
@@ -1022,7 +1022,7 @@ package = "tilo-firstboot-files"
 # The first-boot cases run the shipped tilo-firstboot-user with this helper, which
 # publishes through the compatibility oracle.
 inputs = ["os/usr/libexec/tilo-firstboot-user", "os/tests/oracles/tilo-firstboot-home-seeds.py"]
-readers = ["crates/system/firstboot-files/tests/firstboot_user.rs"]
+readers = ["crates/os/firstboot-files/tests/firstboot_user.rs"]
 
 [[cargo]]
 package = "tilo-board-successor"
@@ -1035,8 +1035,8 @@ inputs = [
   "os/dev/hardware_profile.py",
 ]
 readers = [
-  "crates/system/board-successor/tests/successor.rs",
-  "crates/system/board-successor/tests/profile.rs",
+  "crates/os/board-successor/tests/successor.rs",
+  "crates/os/board-successor/tests/profile.rs",
 ]
 
 [[cargo]]
@@ -1044,7 +1044,7 @@ package = "tilo-image-policy-check"
 # The checker's tests judge the shipped container policy against the release
 # trust it is generated from, and check that the boot audit runs it.
 inputs = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit", "keys/release/**"]
-readers = ["crates/system/image-policy-check/tests/policy.rs"]
+readers = ["crates/os/image-policy-check/tests/policy.rs"]
 
 [[cargo]]
 package = "tilo-staging-reclaim"
@@ -1057,27 +1057,27 @@ inputs = [
   "os/Containerfile.installer",
   "os/components.toml",
 ]
-readers = ["crates/system/staging-reclaim/tests/reclaim.rs"]
+readers = ["crates/os/staging-reclaim/tests/reclaim.rs"]
 
 [[covered]]
 suite = "os/tests/test_firstboot_credential_transport.py"
-by = "crates/system/install-helpers/tests/native_python.rs"
+by = "crates/os/install-helpers/tests/native_python.rs"
 
 [[covered]]
 suite = "os/tests/test_firstboot_home_seeds_native.py"
-by = "crates/system/install-helpers/tests/native_python.rs"
+by = "crates/os/install-helpers/tests/native_python.rs"
 
 [[covered]]
 suite = "os/tests/test_firstboot_transaction.py"
-by = "crates/system/install-helpers/tests/native_python.rs"
+by = "crates/os/install-helpers/tests/native_python.rs"
 
 [[covered]]
 suite = "os/tests/test_installer_firstboot_runtime.py"
-by = "crates/system/install-helpers/tests/native_python.rs"
+by = "crates/os/install-helpers/tests/native_python.rs"
 
 [[covered]]
 suite = "os/tests/test_prepared_first_use_binding.py"
-by = "crates/system/install-helpers/tests/native_python.rs"
+by = "crates/os/install-helpers/tests/native_python.rs"
 
 [[cargo]]
 package = "tilo-install-helpers"
@@ -1089,7 +1089,7 @@ package = "tilo-install-helpers"
 inputs = [
   "os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition",
   "os/usr/libexec/tilo-installer-profile-extract",
-  "os/usr/libexec/tilo-firstboot-user", "crates/system/firstboot-files/",
+  "os/usr/libexec/tilo-firstboot-user", "crates/os/firstboot-files/",
   "os/usr/libexec/tilo-firstboot-autologin-cleanup",
   "os/usr/libexec/tilo-session-recovery",
   "os/usr/lib/systemd/system/tilo-firstboot-user.service",
@@ -1107,15 +1107,15 @@ inputs = [
   "os/dev/dev-target-uki.py", "os/hardware/profiles/lenovo-83ed.json",
 ]
 readers = [
-  "crates/system/install-helpers/tests/native_python.rs",
-  "crates/system/install-helpers/tests/handoff_copy.rs",
-  "crates/system/install-helpers/tests/dev_ssh.rs",
-  "crates/system/install-helpers/tests/offline_target.rs",
-  "crates/system/install-helpers/tests/staging_handoff.rs",
-  "crates/system/install-helpers/tests/install_proof.rs",
-  "crates/system/install-helpers/tests/code_refresh.rs",
-  "crates/system/install-helpers/tests/dev_target_uki.rs",
-  "crates/system/install-helpers/tests/backend_commands.rs",
+  "crates/os/install-helpers/tests/native_python.rs",
+  "crates/os/install-helpers/tests/handoff_copy.rs",
+  "crates/os/install-helpers/tests/dev_ssh.rs",
+  "crates/os/install-helpers/tests/offline_target.rs",
+  "crates/os/install-helpers/tests/staging_handoff.rs",
+  "crates/os/install-helpers/tests/install_proof.rs",
+  "crates/os/install-helpers/tests/code_refresh.rs",
+  "crates/os/install-helpers/tests/dev_target_uki.rs",
+  "crates/os/install-helpers/tests/backend_commands.rs",
 ]
 
 [[cargo]]
@@ -1123,13 +1123,13 @@ package = "greeter"
 # The greeter offers exactly the sessions the image ships, and records its
 # input where the boot assessment reads it.
 inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-health", "os/usr/libexec/tilo-cage-session"]
-readers = ["crates/session/greeter/src/greeter_app/tests.rs", "crates/session/greeter/src/seat_input.rs"]
+readers = ["crates/os/greeter/src/greeter_app/tests.rs", "crates/os/greeter/src/seat_input.rs"]
 
 [[cargo]]
 package = "pam-tilo"
 # The conversation tests run the PAM services the image ships.
 inputs = ["os/etc/pam.d/tilo-auth", "os/etc/pam.d/greetd", "os/etc/pam.d/tilo-unlock", "os/etc/pam.d/polkit-1", "os/etc/pam.d/sudo"]
-readers = ["crates/system/pam-tilo/tests/conversation.rs"]
+readers = ["crates/os/pam-tilo/tests/conversation.rs"]
 
 [[cargo]]
 package = "launcher"
@@ -1211,7 +1211,7 @@ readers = [
 package = "app-cli"
 # The canonical downloader proves its staging path against the installed host unit.
 inputs = ["crates/packaging/package-service/systemd/tilo-package-service.service"]
-readers = ["crates/packaging/app-cli/src/install.rs"]
+readers = ["crates/os/app-cli/src/install.rs"]
 
 [[cargo]]
 package = "tilo-app-cli"
@@ -1232,6 +1232,21 @@ inputs = [
   "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
+  "crates/integrations/provider-settings-ui/",
+  "crates/integrations/account-probe/",
+  "crates/os/imager-backend/",
+  "crates/integrations/mail-engine/",
+  "crates/integrations/mail-session/",
+  "crates/integrations/tilo-cloud-files/",
+  "crates/integrations/tilo-contact-directory/",
+  "crates/os/tilo-handoff/",
+  "crates/integrations/tilo-host-search/",
+  "crates/integrations/tilo-innertube/",
+  "crates/integrations/tilo-messaging/",
+  "crates/integrations/tilo-spotify/",
+  "crates/integrations/tilo-web-search/",
+  "crates/integrations/tilolang-mail/",
+  "crates/integrations/tilolang-youtube/",
   # Tests over every app of the workspace read each one's manifests and sources: the
   # capability check, the record kinds each manifest must declare, the
   # SDK graph of every app, workspace certification and the packaging fixtures.
@@ -1287,8 +1302,8 @@ package = "settings"
 inputs = [
   # The provider admin pane's tests run the shared provider settings fake
   # backend and mounted tests against Settings' own mount.
-  "crates/sdk/provider-settings-ui/src/fake_backend.rs",
-  "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
+  "crates/integrations/provider-settings-ui/src/fake_backend.rs",
+  "crates/integrations/provider-settings-ui/src/mounted_tests.rs",
   # The Updates pane's tests read this image's own Windows support offer, so
   # the sizes they disclose are the ones the image ships.
   "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json",
@@ -1301,9 +1316,9 @@ readers = [
 [[cargo]]
 package = "tilo-fs"
 inputs = [
-  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
-  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
-  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  "crates/integrations/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/integrations/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/integrations/cloud-source-gdrive/tests/fixtures/pptx.rs",
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "dist/session/tilo-files-workspace.service",
   "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
@@ -1344,12 +1359,12 @@ readers = [
 [[cargo]]
 package = "imager"
 inputs = [
-  "crates/system/block-devices/tests/fixtures/imager.json",
+  "crates/os/block-devices/tests/fixtures/imager.json",
   "os/usr/libexec/tilo-guided-partition",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
-  "crates/platform/imager-backend/capture_build.rs",
+  "crates/os/imager-backend/capture_build.rs",
 ]
 readers = [
   "apps/imager/build.rs", "apps/imager/src/setup/desktop_install.rs",
@@ -1362,17 +1377,17 @@ package = "imager-backend"
 inputs = [
   "keys/tpm2-pcr-signing.public.pem",
   "os/usr/libexec/tilo-firstboot-user",
-  "crates/system/block-devices/tests/fixtures/imager.json",
+  "crates/os/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
-  "crates/system/block-devices/tests/fixtures/installer.json",
+  "crates/os/block-devices/tests/fixtures/installer.json",
   "apps/browser/tilo-app.toml",
 ]
 readers = [
-  "crates/platform/imager-backend/src/destination/disks.rs",
-  "crates/platform/imager-backend/src/destination/online_accounts/browser.rs",
-  "crates/platform/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
-  "crates/platform/imager-backend/src/probe.rs",
-  "crates/platform/imager-backend/src/setup/prepared_tpm/native.rs",
+  "crates/os/imager-backend/src/destination/disks.rs",
+  "crates/os/imager-backend/src/destination/online_accounts/browser.rs",
+  "crates/os/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
+  "crates/os/imager-backend/src/probe.rs",
+  "crates/os/imager-backend/src/setup/prepared_tpm/native.rs",
 ]
 
 [[cargo]]
@@ -1389,7 +1404,7 @@ readers = ["tools/imager-profile/tests/embed.rs"]
 
 [[cargo]]
 package = "disks"
-inputs = ["crates/system/block-devices/tests/fixtures/disks.json"]
+inputs = ["crates/os/block-devices/tests/fixtures/disks.json"]
 readers = ["apps/disks/src/probe.rs"]
 
 [[cargo]]
@@ -1618,11 +1633,11 @@ by = "os/tests/test_windows_dxvk_load_evidence.py"
 
 [[covered]]
 suite = "os/tests/test_installer_target_boot_digest.py"
-by = "crates/system/esp-write/tests/uki_cmdline.rs"
+by = "crates/os/esp-write/tests/uki_cmdline.rs"
 
 [[covered]]
 suite = "os/tests/test_installer_target_cmdline.py"
-by = "crates/system/esp-write/tests/uki_cmdline.rs"
+by = "crates/os/esp-write/tests/uki_cmdline.rs"
 
 [[covered]]
 suite = "os/tests/test_installer_selinux_bridge.py"
@@ -1715,7 +1730,7 @@ reason = "starts the built API server image with buildah as root in a loopback n
 check = "test-image-api"
 
 [[covered]]
-suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
+suite = "crates/os/tilo-ntfs-helper/tests/test_stage_install.py"
 check = "ntfs-stage-install"
 
 [[unrequired]]

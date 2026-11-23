@@ -1,0 +1,88 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "mail-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Mail's model and its IMAP and SMTP engine, without a window: accounts, folders and messages, the mail this device keeps, and the worker that keeps a mailbox in step with its servers."
+
+[lib]
+name = "mail_engine"
+path = "src/lib.rs"
+
+# The integration tests: one binary, its files included as modules by
+# `tests/it.rs` (a file per binary linked the whole engine once each).
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[dependencies]
+# The resource model the mailbox and its rows are declared through.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+# The clock a message's times are read from, and the file a person picked to
+# attach.
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+# The shared multi-account store + encrypted secret vault: Mail reads its
+# email accounts from here (Settings owns the write lifecycle).
+accounts = { path = "../accounts", features = ["person"] }
+# Tilo's one OAuth client registration per provider, and the ownership of
+# Mail's grants: sign-in, sealing and refresh.
+account-credentials = { path = "../account-credentials", default-features = false }
+# Content store for draft attachments. Drafts carry only a verified content
+# identity; the bytes live in the content store.
+tilo-content = { path = "../../system/content" }
+# Crash-safe file replacement for the mail this device keeps.
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-sort = { path = "../../platform/tilo-sort" }
+tilo-mime = { path = "../../platform/tilo-mime" }
+# MIME parsing and message construction; both are pure Rust with no native,
+# TLS, or async dependencies.
+mail-builder = { version = "0.4.4", default-features = false }
+mail-parser = "0.11.4"
+fnv.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+
+# Live IMAP and SMTP for the engine, guarded by `live`: Tilo's one mail client,
+# which a workspace's host runs too. The default build without it uses the
+# offline backend.
+tilo-mail-session = { path = "../mail-session", optional = true }
+# The delivery envelope a send is handed over in, and the certificates an engine
+# is told to trust.
+lettre = { version = "0.11.24", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
+rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[features]
+# The default build includes the live account engine; it remains idle without
+# a configured account.
+default = ["live"]
+# Compile the IMAP/SMTP backend; requires a TLS/async stack and a configured
+# account at runtime.
+live = ["account-credentials/store", "dep:tilo-mail-session", "dep:lettre", "dep:rustls", "mail-builder/gethostname"]
+# The constructors a dependent's tests build with, such as an engine that
+# trusts a test server's certificate. Never in a release.
+test-support = ["live"]
+
+[dev-dependencies]
+# The stand-in IMAP and SMTP servers the engine's tests sign in to.
+tilo-account-probe = { path = "../account-probe", features = ["test-support"] }
+# A separate config directory keeps tests away from the user's account store.
+tempfile.workspace = true
+# A replica of a resource without a window.
+tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
+# The fake authorization server and browser for the Gmail and Outlook
+# sign-in tests.
+tilo-oauth = { path = "../tilo-oauth", features = ["fake"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

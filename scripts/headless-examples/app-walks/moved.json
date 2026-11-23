@@ -61,11 +61,11 @@
   },
   "so.tilo.mail tilo.accounts#remove-account": {
     "to": "so.tilo.settings tilo.accounts#remove-account",
-    "test": "crates/system/accounts/src/person.rs:761"
+    "test": "crates/integrations/accounts/src/person.rs:761"
   },
   "so.tilo.mail tilo.accounts#save-account": {
     "to": "so.tilo.settings tilo.accounts#save-account",
-    "test": "crates/system/accounts/src/person.rs:680"
+    "test": "crates/integrations/accounts/src/person.rs:680"
   },
   "so.tilo.notes notes.notebook#append-to-note": {
     "to": "so.tilo.notes tl.so.tilo.notes.Notebook#append_to_note",
@@ -137,7 +137,7 @@
   },
   "so.tilo.tube tube.library#search": {
     "to": "so.tilo.tube tl.so.tilo.tube.YouTube#search",
-    "test": "crates/platform/tilolang-youtube/tests/origin.rs:209"
+    "test": "crates/integrations/tilolang-youtube/tests/origin.rs:209"
   },
   "so.tilo.tube tube.library#seek": {
     "to": "so.tilo.video-player video-player.library#seek",
@@ -157,7 +157,7 @@
   },
   "so.tilo.tube tube.watch-history#import-previous": {
     "to": "so.tilo.tube tl.so.tilo.tube.YouTube#carry_native_tube",
-    "test": "crates/platform/tilolang-youtube/tests/native_tube.rs:123"
+    "test": "crates/integrations/tilolang-youtube/tests/native_tube.rs:123"
   },
   "so.tilo.tube tube.watch-history#progress": {
     "to": "so.tilo.tube tl.so.tilo.tube.Video#progress",

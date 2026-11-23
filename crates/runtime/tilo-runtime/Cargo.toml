@@ -103,9 +103,9 @@ tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 # runtime's own words (consent prompt, device grants), from Fluent. The
 # broker links it on every platform already.
 # The one per-user index the host's own search reads.
-tilo-os-search = { path = "../os-search" }
+tilo-os-search = { path = "../../integrations/os-search" }
 # The native request an app hands a host search result back with.
-tilo-host-search = { path = "../../platform/tilo-host-search" }
+tilo-host-search = { path = "../../integrations/tilo-host-search" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }

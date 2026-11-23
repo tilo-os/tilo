@@ -32,7 +32,7 @@ toml.workspace = true
 # answers) as milliseconds since the epoch.
 jiff.workspace = true
 # What is booted, staged and rolled back to, asked of the status socket (`tilo status`).
-tilo-deployment-status = { path = "../deployment-status" }
+tilo-deployment-status = { path = "../../os/deployment-status" }
 # `tilo cleanup` takes its record's lock.
 tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
@@ -87,10 +87,10 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # An install plan is the installer's own model: `tilo machine add` writes a
 # plan the live installer and the Imager both read.
-install-profile-model = { path = "../../session/install-profile-model" }
+install-profile-model = { path = "../../os/install-profile-model" }
 # The one maker of a machine's plan and its single-use token, shared with the
 # Imager's window so both write the same document.
-install-plan = { path = "../../session/install-plan" }
+install-plan = { path = "../../os/install-plan" }
 # `tilo migrate`'s cloud drives, opened as the filesystem opens them, and the folder marks
 # `tilo folders` sets on a file.
 tilo-fs = { package = "tilo-fs", path = "../fs" }
@@ -106,10 +106,10 @@ tilo-server-session = { path = "../../server/tilo-server-session" }
 # Linear), brought into the workspace from this computer.
 migration-sources = { path = "../../import/migration-sources" }
 # An email account's settings as Mail keeps them, for the person's accounts.
-accounts = { path = "../accounts" }
+accounts = { path = "../../integrations/accounts" }
 # Cloud drives sign in, refresh and resolve their storage as the installer and Settings do.
-account-credentials = { path = "../account-credentials" }
-cloud-source = { path = "../cloud-source" }
+account-credentials = { path = "../../integrations/account-credentials" }
+cloud-source = { path = "../../integrations/cloud-source" }
 # A browser profile's bookmarks and history, read by the installer's readers.
 browser-continuity = { workspace = true, features = ["native"] }
 url.workspace = true
@@ -136,8 +136,8 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # A server a ticket's computer enters, as the person's device.
 migration-sources = { path = "../../import/migration-sources", features = ["fixture"] }
 # Fake cloud drives for `tilo migrate`'s cloud sources.
-cloud-source-dav = { path = "../cloud-source-dav", features = ["fake-server"] }
-cloud-source-gdrive = { path = "../cloud-source-gdrive", features = ["fake-server"] }
+cloud-source-dav = { path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
 
 [[test]]
 name = "it"

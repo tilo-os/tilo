@@ -56,7 +56,7 @@ RULES = ("exact", "compatible", "newest")
 ARCHITECTURES = ("x86_64", "aarch64")
 
 # The base package fingerprint. The device computes the same value from its
-# own rpm database (crates/system/extension-helper); a change here is a change
+# own rpm database (crates/os/extension-helper); a change here is a change
 # of the published URL layout and of the contract.
 FINGERPRINT_DOMAIN = b"tilo.base-packages.v1\n"
 RPM_FINGERPRINT_QUERY = "%{NAME} %{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n"

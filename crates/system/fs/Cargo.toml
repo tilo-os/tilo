@@ -132,10 +132,10 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # it rather than minting its own, so the node id names the device.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
-tilo-power-mgmt = { version = "0.1.0", path = "../power", default-features = false, optional = true }
+tilo-power-mgmt = { version = "0.1.0", path = "../../os/power", default-features = false, optional = true }
 # NetworkManager's connectivity and primary-connection metering, followed by
 # signal, for the same policy.
-tilo-nm = { version = "0.1.0", path = "../tilo-nm", optional = true }
+tilo-nm = { version = "0.1.0", path = "../../os/tilo-nm", optional = true }
 runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true }
 libc = { workspace = true, optional = true }
@@ -156,13 +156,13 @@ futures-util.workspace = true
 redb.workspace = true
 # Cloud accounts as mounted folders: the account store and credential
 # handoff, the provider interface and the providers.
-accounts = { version = "0.1.0", path = "../accounts", optional = true }
-cloud-source = { version = "0.1.0", path = "../cloud-source", optional = true }
-cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", optional = true }
-cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", optional = true }
-cloud-source-onedrive = { version = "0.1.0", path = "../cloud-source-onedrive", optional = true }
-cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", optional = true }
-cloud-source-icloud = { version = "0.1.0", path = "../cloud-source-icloud", optional = true }
+accounts = { version = "0.1.0", path = "../../integrations/accounts", optional = true }
+cloud-source = { version = "0.1.0", path = "../../integrations/cloud-source", optional = true }
+cloud-source-dav = { version = "0.1.0", path = "../../integrations/cloud-source-dav", optional = true }
+cloud-source-gdrive = { version = "0.1.0", path = "../../integrations/cloud-source-gdrive", optional = true }
+cloud-source-onedrive = { version = "0.1.0", path = "../../integrations/cloud-source-onedrive", optional = true }
+cloud-source-dropbox = { version = "0.1.0", path = "../../integrations/cloud-source-dropbox", optional = true }
+cloud-source-icloud = { version = "0.1.0", path = "../../integrations/cloud-source-icloud", optional = true }
 zeroize = { workspace = true, optional = true }
 tracing.workspace = true
 # The daemon's log, on its standard error.
@@ -183,10 +183,10 @@ image = { workspace = true, features = ["png"] }
 # The idle endpoint tests' relay is a loopback one no test shares.
 tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
-cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
-cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }
-cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", features = ["fake-server"] }
-accounts = { version = "0.1.0", path = "../accounts", features = ["sign-ins-fixture"] }
+cloud-source-dav = { version = "0.1.0", path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { version = "0.1.0", path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
+cloud-source-dropbox = { version = "0.1.0", path = "../../integrations/cloud-source-dropbox", features = ["fake-server"] }
+accounts = { version = "0.1.0", path = "../../integrations/accounts", features = ["sign-ins-fixture"] }
 
 [lints]
 workspace = true

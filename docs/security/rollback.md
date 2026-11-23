@@ -6,7 +6,7 @@ running system with a known hole in it.
 
 This document covers what an operator needs, and the contract the boot chain has
 to satisfy. The reasoning behind the design lives with the code, in
-`crates/system/tilo-rollback/src/lib.rs`.
+`crates/os/tilo-rollback/src/lib.rs`.
 
 ## The two mechanisms, and why neither is enough alone
 
@@ -16,7 +16,7 @@ to satisfy. The reasoning behind the design lives with the code, in
 | NV floor counter | the TPM | nothing available to software or to disk surgery | header restore, downgrade, image relabelling |
 
 Unlock requires **both**: the token for the running generation must be in the
-header, *and* the NV policy must pass. `crates/system/tilo-rollback/tests/mechanism.rs`
+header, *and* the NV policy must pass. `crates/os/tilo-rollback/tests/mechanism.rs`
 performs the header-restore attack and shows the resurrected token still cannot
 unseal.
 

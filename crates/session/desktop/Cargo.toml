@@ -51,7 +51,7 @@ tilo-app-id = { path = "../../platform/tilo-app-id" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-failure = { path = "../../platform/tilo-failure" }
 # The models an agent may plan with: the person's own provider settings.
-agent-provider-config = { path = "../../agent/provider-config" }
+agent-provider-config = { path = "../../integrations/provider-config" }
 ed25519-dalek.workspace = true
 # The bar's clock reads the weekday of the local time.
 jiff.workspace = true

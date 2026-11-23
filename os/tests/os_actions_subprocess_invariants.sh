@@ -8,7 +8,7 @@ PROCESS="$ROOT/crates/system/os-actions/src/process.rs"
 FIRMWARE="$ROOT/crates/system/os-actions/src/firmware.rs"
 PRIVACY="$ROOT/crates/system/os-actions/src/privacy.rs"
 OS_ACTIONS_SRC="$ROOT/crates/system/os-actions/src"
-NM_CONTROL="$ROOT/crates/system/tilo-nm/src/control.rs"
+NM_CONTROL="$ROOT/crates/os/tilo-nm/src/control.rs"
 
 fails=0
 checks=0

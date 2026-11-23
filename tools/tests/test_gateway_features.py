@@ -23,7 +23,7 @@ CI_ENV = {**os.environ, "CI": "true"}
 
 class GatewayFeaturesTests(unittest.TestCase):
     def test_recipe_covers_the_production_features_but_not_client_dependents(self):
-        manifest = tomllib.loads((ROOT / "crates/agent/model-gateway/Cargo.toml").read_text())
+        manifest = tomllib.loads((ROOT / "crates/integrations/model-gateway/Cargo.toml").read_text())
         declared = manifest["features"]
         self.assertEqual(declared["default"], [])
         self.assertIn("server", declared["local-models"])

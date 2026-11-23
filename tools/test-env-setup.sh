@@ -278,7 +278,7 @@ audio() {
 }
 
 ntfs() {
-    local crate="$repo/crates/session/tilo-ntfs-helper"
+    local crate="$repo/crates/os/tilo-ntfs-helper"
     local key root dir stage status=0
     if [[ -n ${TILO_NTFS_FIXTURES:-} ]]; then
         provide TILO_NTFS_FIXTURES "$TILO_NTFS_FIXTURES"

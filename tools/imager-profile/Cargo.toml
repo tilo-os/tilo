@@ -12,7 +12,7 @@ license = "AGPL-3.0-only"
 [workspace]
 
 [dependencies]
-install-profile-model = { path = "../../crates/session/install-profile-model" }
+install-profile-model = { path = "../../crates/os/install-profile-model" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.177"

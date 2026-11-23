@@ -36,12 +36,12 @@ package-service = 6
 
 # App ↔ messaging service: the person's messaging accounts for Messages and
 # the service's permission requests for Passwords, on the messaging service
-# only those two apps are handed (crates/platform/tilo-messaging/interface.toml).
+# only those two apps are handed (crates/integrations/tilo-messaging/interface.toml).
 messaging = 1
 
 # Settings ↔ session: the connections adding an account makes to its servers,
 # on the accounts service only Settings is handed, whose sandbox has no network
-# (crates/platform/account-probe/interface.toml).
+# (crates/integrations/account-probe/interface.toml).
 accounts = 1
 
 [runtime]

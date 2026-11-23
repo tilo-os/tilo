@@ -69,7 +69,7 @@ enum = "FileOp"
 reason = "the journal and the Files document keep it as JSON text in the record (`json_model!`), where a variant is named; the queue is replayed within one version, not read back from a positional frame"
 
 [[break]]
-file = "crates/agent/provider-config/src/local.rs"
+file = "crates/integrations/provider-config/src/local.rs"
 enum = "ModelArtifactFormat"
 reason = "signed catalog data read as JSON (`rename_all = snake_case`), so a format is named; the catalog is versioned and re-signed rather than read positionally"
 
@@ -159,17 +159,17 @@ enum = "Event"
 reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation event went with the private connection that delivered it, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
 
 [[break]]
-file = "crates/session/messaging-service/src/service"
+file = "crates/integrations/messaging-service/src/service"
 enum = "Call"
 reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the calls that carried private Tilo texts went with that connection, and no byte of the wire is kept"
 
 [[break]]
-file = "crates/session/messaging-service/src/service"
+file = "crates/integrations/messaging-service/src/service"
 enum = "Reply"
 reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the reply carrying a device certificate went with the private Tilo connection, and no byte of the wire is kept"
 
 [[break]]
-file = "crates/session/messaging-service/src/service"
+file = "crates/integrations/messaging-service/src/service"
 enum = "PublicationKind"
 reason = "the kind of an account the service publishes into the person's accounts record, tagged by name on the same one-image wire; the compositor turns it into that record's own fields, which keep no variant name, so the Tilo account kind went with the lane that received private texts"
 
@@ -413,12 +413,12 @@ enum = "ContentPutStep"
 reason = "renames Standing to Progress in place: stored formats change with the code and nothing written before is read"
 
 [[break]]
-file = "crates/collab/tilo-unlock-protocol/src/wire.rs"
+file = "crates/os/tilo-unlock-protocol/src/wire.rs"
 enum = "RefusalReason"
 reason = "renames NotACustodian to NotAKeyHolder in place: both devices of an unlock speak one build's format"
 
 [[break]]
-file = "crates/platform/imager-backend/src/home_transfer/promotion.rs"
+file = "crates/os/imager-backend/src/home_transfer/promotion.rs"
 enum = "Kind"
 reason = "renames InactiveCustody to InactiveOwnership in place: stored formats change with the code and nothing written before is read"
 
@@ -453,7 +453,7 @@ enum = "Request"
 reason = "the raw-body plan request had no caller left once every model turn went through the neutral complete request; a request is JSON (named by its verb) on a live socket between an app and its gateway, which ship together, and nothing keeps it, so an app that still sent the verb is refused as an unknown request rather than misread"
 
 [[break]]
-file = "crates/agent/provider-config/src/management.rs"
+file = "crates/integrations/provider-config/src/management.rs"
 enum = "CredentialStatus"
 reason = "an unbound provider key is no longer read or adopted, so there is no state left to report; the status is JSON (renamed by a snake_case name) on a live socket between an app and its gateway, which ship together, and nothing keeps it, so a person with an old unbound key enters it again"
 [[break]]
@@ -536,7 +536,7 @@ file = "crates/agent/model-client/src/lib.rs"
 enum = "Request"
 reason = "the verbs that read and kept a provider key on this computer go: a computer keeps no key, its model is asked on the workspace's server. The gateway and its clients speak tagged JSON by verb name over a local socket, never by position, and nothing writes a request down"
 [[break]]
-file = "crates/agent/provider-config/src/management.rs"
+file = "crates/integrations/provider-config/src/management.rs"
 enum = "CredentialStatus"
 reason = "said whether this computer kept a provider key, which it no longer does; it was only ever an answer on the gateway's local socket, never stored"
 
@@ -601,7 +601,7 @@ enum = "PersonalFabricAction"
 reason = "sent between a person's devices as it happens and never kept; every device updates together, so no build reads another's numbering"
 
 [[break]]
-file = "crates/platform/imager-backend/src/account_sources/mod.rs"
+file = "crates/os/imager-backend/src/account_sources/mod.rs"
 enum = "Provider"
 reason = "the installer's private discovery, review and handoff values live in one running install and are never read by another build: the deferred journal is bound to the install plan it was written for and every account is re-discovered before it is imported, so no bytes are kept"
 
@@ -621,7 +621,7 @@ enum = "FileReply"
 reason = "a mounted account's answer to one file request, relayed as JSON lines inside the same build's service and mount processes; nothing is kept"
 
 [[break]]
-file = "crates/platform/tilo-cloud-files/src/cloud.rs"
+file = "crates/integrations/tilo-cloud-files/src/cloud.rs"
 enum = "FileReply"
 reason = "the browser build's copy of the same one-request answer; it mirrors the native type and carries nothing stored"
 
@@ -646,22 +646,22 @@ enum = "ActionServiceFrame"
 reason = "a frame on a live action stream, never kept; the removed `Offer` was its last variant, so `Action` keeps its position and every frame either build sends the other reads the same. An offer from the previous build no longer decodes and its stream closes unanswered, which that build reads as the device not taking the work, and runs it where it was asked"
 
 [[break]]
-file = "crates/system/accounts/src/sign_ins.rs"
+file = "crates/integrations/accounts/src/sign_ins.rs"
 enum = "Ask"
 reason = "the account sign-ins socket: newline-delimited JSON, by name, between the session and the processes it serves on this device, and no line of it is kept. The session, the cloud service and the connectors the session starts ship in one image. `Hurry` let a connector's ask for accounts go after its person said yes on its window, and no connector asks its person for a sign-in now"
 
 [[break]]
-file = "crates/system/accounts/src/sign_ins.rs"
+file = "crates/integrations/accounts/src/sign_ins.rs"
 enum = "Answer"
 reason = "the session's half of the same socket: newline-delimited JSON over a local connection, never kept. `Asks` told a connector to ask its person; the session answers a sign-in or a refusal"
 
 [[break]]
-file = "crates/platform/tilolang-mail/src/wire.rs"
+file = "crates/integrations/tilolang-mail/src/wire.rs"
 enum = "ToConnector"
 reason = "length-prefixed JSON, by name, between a mail origin and the connector the session started beside it on the same device, and no frame of it is kept. `Allow` carried a yes from Mail's Ask bar, which no longer asks: the workspace's host asks the person"
 
 [[break]]
-file = "crates/platform/tilolang-mail/src/wire.rs"
+file = "crates/integrations/tilolang-mail/src/wire.rs"
 enum = "FromConnector"
 reason = "the connector's half of the same connection: length-prefixed JSON, by name, never kept. `Asks` named the accounts waiting on the person's yes for Mail's Ask bar, which no longer asks"
 

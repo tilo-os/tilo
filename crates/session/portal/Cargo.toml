@@ -19,7 +19,7 @@ tilo-service = { path = "../service" }
 tilo-notifications-service = { path = "../notifications-service" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # Holds taken for an app are the session's own inhibitions.
-tilo-power-mgmt = { path = "../../system/power", default-features = false }
+tilo-power-mgmt = { path = "../../os/power", default-features = false }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 # The writable-folder choice the app-side chooser asks with.

@@ -42,11 +42,11 @@ tilo-crypto = { path = "../tilo-crypto", default-features = false }
 # Bluetooth is the one control here that cannot be a shell-out: a scan lives
 # as long as its D-Bus connection, and pairing needs an agent object BlueZ
 # calls back into. See src/bluez.rs.
-tilo-bluez = { path = "../tilo-bluez" }
+tilo-bluez = { path = "../../os/tilo-bluez" }
 # Every network read and change goes through the one NetworkManager client
 # every OS reader shares.
-tilo-nm = { path = "../tilo-nm" }
-tilo-power-mgmt = { path = "../power" }
+tilo-nm = { path = "../../os/tilo-nm" }
+tilo-power-mgmt = { path = "../../os/power" }
 tilo-rt.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 zbus = { workspace = true, features = ["tokio"] }

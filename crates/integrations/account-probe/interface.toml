@@ -1,0 +1,68 @@
+# Written by `python3 tools/policy/check_interfaces.py write` from the code;
+# review a change here like an API change (docs/architecture/compatibility.md).
+# Everything above [schema] is authored; [schema] and `version` are written.
+
+# Settings ↔ session: the `accounts` service the launcher hands Settings alone,
+# whose sandbox has no network, so the session makes the connections adding an
+# account needs (an account's sign-in, its calendars, a Nextcloud sign-in).
+# JSON lines (crates/integrations/account-probe/src/connect.rs), apart from the
+# runtime interface every app speaks.
+name = "accounts"
+version = 1
+version_const = "crates/integrations/account-probe/src/connect.rs:PROTOCOL"
+encoding = "json"
+served_to_apps = true
+sources = [
+    "crates/integrations/account-probe/src/connect.rs",
+    "crates/integrations/accounts/src/lib.rs",
+    "crates/integrations/accounts/src/vault.rs",
+]
+roots = ["Request", "Reply"]
+
+[opaque]
+"Value" = "serde_json::Value, an account's settings as its type writes them"
+
+[schema]
+"Account" = "struct"
+"Account.config" = "Value optional"
+"Account.display_name" = "String optional"
+"Account.enabled" = "bool optional"
+"Account.id" = "AccountId"
+"Account.owner" = "Option<String> optional"
+"Account.tint" = "u8 optional"
+"Account.type_id" = "AccountTypeId"
+"AccountId" = "tuple(String) transparent"
+"AccountTypeId" = "tuple(String) transparent"
+"Calendar" = "struct"
+"Calendar.href" = "String"
+"Calendar.name" = "String"
+"Calendar.read_only" = "bool"
+"Reply" = "enum internal tag=answer"
+"Reply::calendars" = "struct"
+"Reply::calendars.calendars" = "Vec<Calendar>"
+"Reply::failed" = "struct"
+"Reply::failed.message" = "String"
+"Reply::nextcloud_page" = "struct"
+"Reply::nextcloud_page.shown" = "bool optional"
+"Reply::nextcloud_page.url" = "String"
+"Reply::nextcloud_signed_in" = "struct"
+"Reply::nextcloud_signed_in.app_password" = "String"
+"Reply::nextcloud_signed_in.login_name" = "String"
+"Reply::nextcloud_signed_in.server" = "String"
+"Reply::nextcloud_waiting" = "unit"
+"Reply::tested" = "struct"
+"Reply::tested.said" = "String"
+"Request" = "enum internal tag=ask"
+"Request::discover_calendars" = "struct"
+"Request::discover_calendars.account" = "Account"
+"Request::discover_calendars.secret" = "Secret"
+"Request::nextcloud_begin" = "struct"
+"Request::nextcloud_begin.server" = "String"
+"Request::nextcloud_end" = "unit"
+"Request::nextcloud_poll" = "unit"
+"Request::test" = "struct"
+"Request::test.account" = "Account"
+"Request::test.secret" = "Secret"
+"Secret" = "struct"
+"Secret.password" = "String optional"
+"Secret.token" = "Option<String> optional"

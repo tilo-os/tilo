@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-app_cli="$root/crates/packaging/app-cli/src/install.rs"
+app_cli="$root/crates/os/app-cli/src/install.rs"
 package_service="$root/crates/packaging/package-service/src/service.rs"
 
 for source in "$app_cli" "$package_service"; do

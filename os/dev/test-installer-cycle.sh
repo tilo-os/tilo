@@ -4,7 +4,7 @@
 # The live installer is driven through the actions it publishes — the same
 # addresses its own buttons invoke — over its console channel: a virtio-serial
 # port that only this VM's command line attaches (os/dev/vm.sh console;
-# crates/session/console-control), speaking action frames.
+# crates/os/console-control), speaking action frames.
 # Its state, never including the recovery key, is the completion oracle. The
 # installed target has no such channel yet, so its unlock prompt, first-login
 # OOBE and desktop are driven with QEMU keyboard events and observed from the

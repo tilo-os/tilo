@@ -19,7 +19,7 @@ LIMIT = 2 * 1024 * 1024
 # target UKI, tilo-staging-handoff, tilo-vm-install-proof with the refresh
 # daemon) come from the base image's install-helpers component
 # in os/components.toml; a checkout holds no file to send for them. The guest
-# daemon (crates/system/install-helpers/src/code_refresh.rs) holds the same
+# daemon (crates/os/install-helpers/src/code_refresh.rs) holds the same
 # list and must accept exactly what this module bundles.
 ALLOWLIST = frozenset({
     'usr/libexec/tilo-install',

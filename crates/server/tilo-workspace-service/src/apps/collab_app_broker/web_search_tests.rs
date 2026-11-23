@@ -21,9 +21,9 @@ use tilo_web_search::Engine;
 use tilo_web_search::fixtures::{FixtureServer, Route};
 
 const BRAVE_RESULTS: &str =
-    include_str!("../../../../../platform/tilo-web-search/tests/fixtures/brave.html");
+    include_str!("../../../../../integrations/tilo-web-search/tests/fixtures/brave.html");
 const BING_RESULTS: &str =
-    include_str!("../../../../../platform/tilo-web-search/tests/fixtures/bing.html");
+    include_str!("../../../../../integrations/tilo-web-search/tests/fixtures/bing.html");
 
 fn broker(web: WebSearch) -> (Arc<AppBrokerState>, String, String) {
     let owner = hex::encode([41; 32]);

@@ -46,8 +46,8 @@ tilolang = { path = "../../crates/lang/tilolang" }
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo", features = ["test-support"] }
 # Mail's engine, the stand-in IMAP and SMTP servers Mail's tests run against, and the engine's
 # content store.
-mail-engine = { path = "../../crates/platform/mail-engine", features = ["test-support"] }
-tilo-account-probe = { path = "../../crates/platform/account-probe", features = ["test-support"] }
+mail-engine = { path = "../../crates/integrations/mail-engine", features = ["test-support"] }
+tilo-account-probe = { path = "../../crates/integrations/account-probe", features = ["test-support"] }
 tilo-content = { path = "../../crates/system/content" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`),
@@ -87,17 +87,17 @@ tilo-app-module = { version = "0.1.0", path = "../../crates/platform/tilo-app-mo
 [target.'cfg(not(any(target_arch = "wasm32", windows)))'.dependencies]
 # The mail origin: in the window's process outside a host, and the connector process the
 # system runs for a hosted Mail.
-tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
+tilolang-mail = { path = "../../crates/integrations/tilolang-mail" }
 # YouTube as an outside origin: a live window of an app whose types hold YouTube's resources
 # keeps them in step with it, in native code with the network.
-tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
+tilolang-youtube = { path = "../../crates/integrations/tilolang-youtube" }
 
 [target.'cfg(windows)'.dependencies]
 # An origin reaches its connector over a socket the session handed both; a Windows host has
 # no session yet, and this runtime refuses to run there (src/main.rs), so it takes the
 # origins without their connectors.
-tilolang-mail = { path = "../../crates/platform/tilolang-mail", default-features = false }
-tilolang-youtube = { path = "../../crates/platform/tilolang-youtube", default-features = false }
+tilolang-mail = { path = "../../crates/integrations/tilolang-mail", default-features = false }
+tilolang-youtube = { path = "../../crates/integrations/tilolang-youtube", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # A web page installs a package by its address (`src/page.rs`): its files are fetched there.

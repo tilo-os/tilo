@@ -152,7 +152,7 @@ tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream" }
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }
 # A host search result the OS wakes this app for goes to the runtime.
-tilo-host-search = { version = "0.1.0", path = "../../platform/tilo-host-search", optional = true }
+tilo-host-search = { version = "0.1.0", path = "../../integrations/tilo-host-search", optional = true }
 # Test builds bound their waits with the shared hang bound.
 tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }

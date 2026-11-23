@@ -52,7 +52,7 @@ tilo-server-protocol = { path = "../tilo-server-protocol" }
 tilo-reference = { path = "../../collab/reference" }
 # What a planned machine's installation is to become: the destinations, disk
 # rules and open choices its entry carries.
-install-profile-model = { path = "../../session/install-profile-model" }
+install-profile-model = { path = "../../os/install-profile-model" }
 tilo-server-client = { path = "../tilo-server-client" }
 tilo-server-session = { path = "../tilo-server-session" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
@@ -87,7 +87,7 @@ sha2.workspace = true
 tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 # A person's own provider, asked through the gateway's transport with the key
 # their vault keeps: the wires, the stream reading and the price table are its.
-tilo-model-gateway = { path = "../../agent/model-gateway", default-features = false, features = ["host-backend"], optional = true }
+tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 # A person's calendars on their host are read, expanded and filed by the
 # Calendar model's own code, so a device and its host agree about time. The
@@ -152,28 +152,28 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # The model runtime a package's module links against, fetched from the
 # registry that offers the runtime bundle the package names when this host's
 # image carries another release's.
-app-cli = { path = "../../packaging/app-cli" }
+app-cli = { path = "../../os/app-cli" }
 # A host's workspaces keep their content in directories.
 tilo-content = { path = "../../system/content", features = ["dir"] }
 # The person's own accounts and model providers, kept beside their
 # workspace: the shared account store and vault, the settings document the
 # model configuration lives in, and the sign-in probes that reach a server a
 # page cannot.
-accounts = { path = "../../system/accounts", features = ["person"] }
+accounts = { path = "../../integrations/accounts", features = ["person"] }
 # Which vault items a workspace's machine hands its programs: a Terminal document.
 tilo-environment = { path = "../../vm/environment", optional = true }
-agent-provider-config = { path = "../../agent/provider-config" }
+agent-provider-config = { path = "../../integrations/provider-config" }
 # Server-sent event framing for streamable HTTP MCP connections (`connections::mcp`).
 wire-frame = { path = "../../system/wire-frame" }
 settings-store = { path = "../../system/settings-store" }
-tilo-account-probe = { path = "../../platform/account-probe" }
+tilo-account-probe = { path = "../../integrations/account-probe" }
 # The client registrations, token renewal and Nextcloud login flow a
 # provider's own page leaves a person's account signed in with.
-account-credentials = { path = "../../system/account-credentials", features = ["store"] }
-tilo-oauth = { path = "../../system/tilo-oauth" }
+account-credentials = { path = "../../integrations/account-credentials", features = ["store"] }
+tilo-oauth = { path = "../../integrations/tilo-oauth" }
 # The calendar servers of the accounts a person keeps here.
-tilo-dav = { path = "../../system/tilo-dav" }
-tilo-mail-session = { path = "../../platform/mail-session" }
+tilo-dav = { path = "../../integrations/tilo-dav" }
+tilo-mail-session = { path = "../../integrations/mail-session" }
 # The one request a person's model providers make from here: a provider's own
 # list of models, asked with the key the vault keeps, through the client the
 # fetch proxy guards its own requests with.
@@ -193,8 +193,8 @@ chat = { path = "../../../apps/chat", default-features = false, optional = true 
 tasks = { path = "../../../apps/tasks", optional = true }
 tasks-model = { path = "../../../apps/tasks-model", optional = true }
 tilo-mcp = { path = "../../runtime/tilo-mcp", optional = true }
-tilo-agent-turn = { path = "../../agent/agent-turn", optional = true }
-tilo-web-search = { path = "../../platform/tilo-web-search", optional = true }
+tilo-agent-turn = { path = "../../integrations/agent-turn", optional = true }
+tilo-web-search = { path = "../../integrations/tilo-web-search", optional = true }
 jiff = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -202,7 +202,7 @@ rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
 # The stand-in authorization server a sign-in test walks the browser through.
-tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
+tilo-oauth = { path = "../../integrations/tilo-oauth", features = ["fake"] }
 # A fake OpenAI sign-in and model providers, for signing in on the real path.
 fake-model-providers = { path = "../../../tools/fake-model-providers" }
 # The MCP tools a device's session takes for an agent whose turn is in its own process, taken as its session's
@@ -218,7 +218,7 @@ tasks-model = { path = "../../../apps/tasks-model" }
 # bounded by the test rather than by what a live link holds.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 # The engines and pages the web tools' tests read, served from this machine.
-tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
+tilo-web-search = { path = "../../integrations/tilo-web-search", features = ["fixture-servers"] }
 # The store's continuity tests count each thread's heap.
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tokio = { workspace = true, features = ["test-util"] }
@@ -233,7 +233,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # A test's mail server answers over real sockets, and the tester trusts its
 # certificate, which no authority signed.
-tilo-account-probe = { path = "../../platform/account-probe", features = ["test-support"] }
+tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 

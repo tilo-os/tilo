@@ -349,7 +349,7 @@ else
   echo 'compiling without a compiler cache' >&2
 fi
 
-python3 -I crates/system/ntfs-mount/native/build.py --out "$out/ntfs-mount/fuse-handoff.so"
+python3 -I crates/os/ntfs-mount/native/build.py --out "$out/ntfs-mount/fuse-handoff.so"
 
 # The app set this image ships, planned from the sources as a release plans one
 # (tools/apps/app_release.py): the collection names every native app, and the

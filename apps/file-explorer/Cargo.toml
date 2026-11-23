@@ -93,10 +93,10 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
 tilo-archive-engine = { path = "../../crates/runtime/engines/archive", optional = true }
 tilo-automation = { path = "../../crates/collab/automation", optional = true }
-accounts = { path = "../../crates/system/accounts", features = ["person"], optional = true }
+accounts = { path = "../../crates/integrations/accounts", features = ["person"], optional = true }
 # Remote account folders are named exactly as the storage daemon's cloud
 # service names its mounts (`cloud_source::tree::mount_names`).
-cloud-source = { path = "../../crates/system/cloud-source", optional = true }
+cloud-source = { path = "../../crates/integrations/cloud-source", optional = true }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity", optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 # Which apps open a kind of file, as the session answers: the workspace tree asks it too, on
@@ -104,7 +104,7 @@ ed25519-dalek = { workspace = true, optional = true }
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 # Credential-free cloud access: the service's protocol, and owner-writable copies staged into
 # the workspace.
-tilo-cloud-files = { path = "../../crates/platform/tilo-cloud-files", optional = true }
+tilo-cloud-files = { path = "../../crates/integrations/tilo-cloud-files", optional = true }
 tokio = { workspace = true, features = ["rt", "net", "io-util"], optional = true }
 sha2 = { workspace = true, optional = true }
 # Shared thumbnail generator and cache. PDF previews come from the PDF engine

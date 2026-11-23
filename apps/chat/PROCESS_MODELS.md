@@ -51,7 +51,7 @@ The gateway uses the one wire codec (`agent_provider_config::wire`) for provider
 translation and streaming, and the common
 accounts credential broker for service-, purpose- and origin-bound provider
 keys. A light HTTP host can expose the gateway without running a server/node.
-See [`model-gateway`](../../crates/agent/model-gateway/README.md) for session
+See [`model-gateway`](../../crates/integrations/model-gateway/README.md) for session
 authentication, revocation and deployment requirements.
 
 Provider-exposed reasoning is retained separately from answer text and labelled

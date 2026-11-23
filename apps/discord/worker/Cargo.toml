@@ -30,7 +30,7 @@ futures-util = { workspace = true, features = ["sink"] }
 percent-encoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tilo-connector = { path = "../../../crates/agent/connector" }
+tilo-connector = { path = "../../../crates/integrations/connector" }
 tilo-net = { path = "../../../crates/platform/tilo-net", features = ["http"] }
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls.workspace = true

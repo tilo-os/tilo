@@ -73,16 +73,16 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-paths.workspace = true
-agent-provider-config = { path = "../provider-config" }
+agent-provider-config = { path = "../../integrations/provider-config" }
 # The person's Hugging Face token, read from the device vault Settings
 # stores it in.
-accounts = { path = "../../system/accounts" }
+accounts = { path = "../../integrations/accounts" }
 # Renewing a Hugging Face sign-in stored there, and signing in by device
 # code from the command line.
-account-credentials = { path = "../../system/account-credentials", default-features = false, features = ["hugging-face"] }
-tilo-oauth = { path = "../../system/tilo-oauth" }
+account-credentials = { path = "../../integrations/account-credentials", default-features = false, features = ["hugging-face"] }
+tilo-oauth = { path = "../../integrations/tilo-oauth" }
 # The signed desired-state half of the extension helper.
-tilo-extension = { path = "../../system/extension-helper" }
+tilo-extension = { path = "../../os/extension-helper" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 bounded-command = { path = "../../system/bounded-command" }

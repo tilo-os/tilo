@@ -2,7 +2,7 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-app="$repo_root/crates/session/greeter/src/greeter_app.rs"
+app="$repo_root/crates/os/greeter/src/greeter_app.rs"
 policy="$repo_root/os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules"
 container="$repo_root/os/Containerfile"
 lock_auth="$repo_root/crates/session/session/src/unlock.rs"

@@ -111,7 +111,7 @@ class PageServer(SimpleHTTPRequestHandler):
 # The stand-in mail server a walk adds a mail account against: the address's own
 # domain, the server names a mail program works out from it, the ports it asks
 # them on, and the address it takes. The tree's stand-in serves them
-# (crates/platform/account-probe/examples/mail_stand_in.rs), staged the way the
+# (crates/integrations/account-probe/examples/mail_stand_in.rs), staged the way the
 # lounge's mail stories stage one
 # (os/containers/tilo-lounge/stories/shell/mail_provider.py).
 MAIL_DOMAIN = "story.tilo.test"

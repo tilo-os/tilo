@@ -67,9 +67,9 @@ tilo-identity-client = { path = "../tilo-identity-client" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-fs = { package = "tilo-fs-client", path = "../tilo-fs-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
-tilo-bluez = { path = "../../system/tilo-bluez" }
-accounts = { path = "../../system/accounts" }
-agent-provider-config = { path = "../../agent/provider-config" }
+tilo-bluez = { path = "../../os/tilo-bluez" }
+accounts = { path = "../../integrations/accounts" }
+agent-provider-config = { path = "../../integrations/provider-config" }
 # Only the gateway's client: its daemon (`service`) runs the models and the
 # provider clients, and no app process maps them.
 tilo-model-client = { path = "../../agent/model-client", default-features = false }

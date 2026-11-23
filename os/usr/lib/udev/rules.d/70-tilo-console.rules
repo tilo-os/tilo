@@ -1,4 +1,4 @@
-# The console channel of a VM (crates/session/console-control).
+# The console channel of a VM (crates/os/console-control).
 #
 # A virtio-serial port named org.tilo.console.0 exists only when a hypervisor
 # attaches one (os/dev/vm.sh does, for every boot); a

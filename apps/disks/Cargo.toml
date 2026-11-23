@@ -29,7 +29,7 @@ default = ["live"]
 live = ["block-devices/udisks"]
 
 [dependencies]
-block-devices = { path = "../../crates/system/block-devices" }
+block-devices = { path = "../../crates/os/block-devices" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # vello / taffy / winit / automerge are reached through `ui::` — the toolkit
 # re-exports its own stack so there is exactly one copy of each in the binary,

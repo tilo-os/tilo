@@ -2,7 +2,7 @@
 """Drive a VM's installer or greeter through its console channel.
 
 The installer and the greeter answer action frames, and `state_dump` for their
-state (crates/session/console-control), on the virtio-serial port os/dev/vm.sh
+state (crates/os/console-control), on the virtio-serial port os/dev/vm.sh
 attaches, whose host end is the Unix socket `vm.sh console` prints. Windows WHPX
 uses a loopback `tcp://host:port` socket instead. `tilo-control --socket <path>
 raw` sends the same lines; this stdlib-only client exists for release jobs that

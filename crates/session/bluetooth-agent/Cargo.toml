@@ -11,7 +11,7 @@ description = "Bluetooth pairing agent: asks the person through the session's qu
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tilo-bluez = { path = "../../system/tilo-bluez" }
+tilo-bluez = { path = "../../os/tilo-bluez" }
 tilo-service = { path = "../service" }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing.workspace = true

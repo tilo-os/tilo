@@ -80,7 +80,7 @@ pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandL
 const NATIVE_OUTPUTS: &[(&str, &str, &str)] = &[(
     "/usr/lib/tilo/ntfs-mount/fuse-handoff.so",
     "ntfs-mount/fuse-handoff.so",
-    "crates/system/ntfs-mount/native/build.py",
+    "crates/os/ntfs-mount/native/build.py",
 )];
 
 pub fn native_builds(component: &Component, target_dir: &str) -> Vec<CommandLine> {
@@ -424,7 +424,7 @@ mod tests {
                 assert_eq!(
                     builds,
                     [format!(
-                        "python3 crates/system/ntfs-mount/native/build.py --out /t/{}/ntfs-mount/fuse-handoff.so",
+                        "python3 crates/os/ntfs-mount/native/build.py --out /t/{}/ntfs-mount/fuse-handoff.so",
                         ntfs.profile_dir()
                     )]
                 );

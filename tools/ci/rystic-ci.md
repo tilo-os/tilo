@@ -33,7 +33,7 @@ whole-repository hash, Git command or expected source SHA is used here. An optio
 caller-supplied commit is recorded as `build_commit` provenance only: unchanged dependency
 inputs may validly reuse an artifact built on a different main commit.
 Retain the checkout at its builder path: the strict DOCX test embeds the absolute
-path of `crates/system/cloud-source-gdrive/tests/validate_docx.py`. Its digest is
+path of `crates/integrations/cloud-source-gdrive/tests/validate_docx.py`. Its digest is
 also recorded and checked. Runtime must have the builder's compatible libc and
 native shared libraries; these executables are not portable static binaries.
 Runtime needs Python 3 and curl (the filesystem fixture uses curl).

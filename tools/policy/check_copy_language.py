@@ -671,6 +671,17 @@ TEXT_CONSTRUCTORS = (
 # Where a surface's own words are painted: the roots whose crates draw a
 # window a person opens.
 SURFACE_ROOTS = ("apps/", "crates/session/")
+# Crates of the same kind that live in other groups.
+SURFACE_ROOTS += (
+    "crates/os/console-control/",
+    "crates/os/greetd-client/",
+    "crates/os/greeter/",
+    "crates/os/install-plan/",
+    "crates/os/install-profile-model/",
+    "crates/integrations/messaging-service/",
+    "crates/os/tilo-ntfs-helper/",
+    "crates/os/tilo-ntfs-protocol/",
+)
 
 # Crates a window's words can be written in without painting a window of their
 # own: the imager paints a filesystem's name from the backend that writes the
@@ -678,6 +689,18 @@ SURFACE_ROOTS = ("apps/", "crates/session/")
 # source language to a German window as a literal would. The toolkit's own
 # crates are outside that sweep (a widget's demo paints sample content).
 LIBRARY_SKIP = ("crates/sdk/", "crates/session/")
+# Crates of the same kind that live in other groups.
+LIBRARY_SKIP += (
+    "crates/integrations/provider-settings-ui/",
+    "crates/os/console-control/",
+    "crates/os/greetd-client/",
+    "crates/os/greeter/",
+    "crates/os/install-plan/",
+    "crates/os/install-profile-model/",
+    "crates/integrations/messaging-service/",
+    "crates/os/tilo-ntfs-helper/",
+    "crates/os/tilo-ntfs-protocol/",
+)
 
 
 def library_source(unit: str) -> bool:

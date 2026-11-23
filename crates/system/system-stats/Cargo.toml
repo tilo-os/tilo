@@ -29,7 +29,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 # The session lists the machine's block devices with lsblk.
 [target.'cfg(target_os = "linux")'.dependencies]
-block-devices = { path = "../block-devices" }
+block-devices = { path = "../../os/block-devices" }
 # Matches the zbus the disk tools resolve, so one copy stays in the lock.
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 

@@ -17,7 +17,7 @@ tilo-image-codec = { path = "../../platform/tilo-image-codec" }
 tilo-model-client = { path = "../../agent/model-client", default-features = false }
 tilo-ocr = { path = "../../media/ocr" }
 tilo-vision = { path = "../../media/vision" }
-agent-provider-config = { path = "../../agent/provider-config" }
+agent-provider-config = { path = "../../integrations/provider-config" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
