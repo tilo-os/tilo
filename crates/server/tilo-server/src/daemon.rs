@@ -565,6 +565,9 @@ impl Server {
             // their admin workspace gives it, applied once it is open.
             label: cfg.web_entry.as_deref().map_or_else(String::new, site_name),
             rented: cfg.rented,
+            // The address it signs carries its site's origin, so a member's device finds the
+            // site's pages and API without guessing them from its name.
+            origin: cfg.web_entry.as_deref().and_then(site_origin),
             trust_policy: cfg.trust_policy.clone(),
             max_workspace_grants: cfg.max_workspace_grants,
             apps,
@@ -773,14 +776,6 @@ impl Server {
                 app_serving,
             )),
         );
-        // The host is a member of every workspace it holds: its own device is on
-        // those rosters, so it reads and serves them as any key holder does.
-        for workspace in workspaces.lock().await.values() {
-            workspace
-                .lock()
-                .await
-                .admit_device(identity.device_cert.device_public_key)?;
-        }
         // This device's own web UI, on until its person turns it off: the host operation
         // `web.serve` reaches it through the workspaces it governs.
         #[cfg(feature = "web")]
@@ -1019,6 +1014,14 @@ impl Server {
     pub fn device_signing_key(&self) -> &ed25519_dalek::SigningKey {
         &self.sessions.identity.signing_key
     }
+}
+
+/// The https origin of the site `web_entry` names (`https://eu1.tilo.sh`), which the address
+/// this keeper signs carries: `None` for an entry that is no https address.
+fn site_origin(web_entry: &str) -> Option<String> {
+    let rest = web_entry.strip_prefix("https://")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    (!host.is_empty()).then(|| format!("https://{host}"))
 }
 
 /// The site name a keeper's web entry names: `tilo.sh` for

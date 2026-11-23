@@ -281,9 +281,7 @@ tilo-test-env = { path = "../../../tools/test-env" }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["local", "test-support"] }
 # The offloadable action the offload journey runs: a batch of thumbnails.
 tilo-thumbnail = { path = "../../engines/thumbnail" }
-# The app that publishes it, whose handler is its local run, and the content
-# store that handler keeps its outputs in.
-photos = { path = "../../../apps/photos" }
+# The content store that handler keeps its outputs in.
 tilo-content = { path = "../../system/content" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
@@ -294,10 +292,6 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 hyper = { version = "1", features = ["client", "http1"] }
 # The fetch proxy test's target.
 test-http = { path = "../../../tools/test-http" }
-# Nearby pairing redeems enrollment tokens through the identity host's one
-# redemption, and the machine tests mint their tokens with the identity crate.
-tilo-enrollment = { path = "../../collab/tilo-enrollment" }
-tilo-identity = { path = "../../runtime/tilo-identity" }
 # The packet relay on this machine's loopback these tests run their hosts and devices on, and
 # the keys no two runs share: no test reaches a relay or directory out on the internet.
 test-server = { path = "../../../tools/test-server" }
