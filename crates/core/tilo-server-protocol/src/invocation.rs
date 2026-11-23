@@ -455,7 +455,7 @@ pub fn verify_agent_invocation(
     now_ns: u64,
 ) -> Result<DeviceCert, InvocationError> {
     let cert = verify_invocation(workspace, request, revocations, now_ns)?;
-    if !agent_grant(&cert) {
+    if !signs_as_agent(&cert, agent) {
         return Err(InvocationError::NotAgentSigned);
     }
     if &cert.user_public_key != person
@@ -483,12 +483,22 @@ fn certified_for(cert: &DeviceCert, agent: &str) -> bool {
 
 /// Whether `cert` is a key its person certified for an agent: an agent's grant, or an agent
 /// device's certificate, which carries no capability and acts by the delegation beside it.
-/// Never a device's own key, nor a key the person made for their own programs: those act as
-/// the person.
+/// Never a device's own key, nor a key the person made for their own programs: that one signs
+/// only as the agent it is itself ([`signs_as_agent`]).
 fn agent_grant(cert: &DeviceCert) -> bool {
     let capabilities = &cert.capabilities;
     (capabilities.agent.is_some() && !capabilities.server_key)
         || *capabilities == tilo_user_identity::DeviceCapabilities::nothing()
+}
+
+/// Whether `cert` signs as the agent `agent`: a key its person certified for an agent
+/// ([`agent_grant`]), or a key the person made for their own programs acting as the agent the
+/// key itself is ([`tilo_action_policy::key_agent_id`]), which is how every host admits such a
+/// key. That key signs for no other agent, and a device's own key signs for none.
+fn signs_as_agent(cert: &DeviceCert, agent: &str) -> bool {
+    agent_grant(cert)
+        || (cert.capabilities.agent.is_some()
+            && tilo_action_policy::key_of_agent(agent) == Some(cert.device_public_key))
 }
 
 /// The agent `acting` names as the one who acted with its own key: an agent no device of its
@@ -509,7 +519,7 @@ fn agent_signed(
 ) -> Result<(), InvocationError> {
     let agent = invoker.and_then(own_key_agent);
     match (agent, agent_grant(cert)) {
-        (Some(_), false) => Err(InvocationError::NotAgentSigned),
+        (Some(agent), _) if !signs_as_agent(cert, agent) => Err(InvocationError::NotAgentSigned),
         (None, true) if !invoker.is_some_and(|acting| acting.handed && acting.is_agent()) => {
             Err(InvocationError::NotInvoker)
         }
@@ -885,6 +895,22 @@ mod tests {
                     expected
                 );
             }
+            // A key the person made for their programs acts as the agent it is itself, and as
+            // no other.
+            let mut server_key = cert_of(&root, &key(15), None);
+            server_key.capabilities = DeviceCapabilities::server_key_grant();
+            sign_device_cert(&mut server_key, &root).unwrap();
+            let keyed = key(15).verifying_key().to_bytes();
+            let asked = signed(&request(), &server_key, &key(15), NOW);
+            let as_agent = |agent: &str| {
+                verify_agent_invocation(WORKSPACE, &asked, (&person, agent, &keyed), &none, NOW)
+            };
+            assert_eq!(as_agent(&tilo_action_policy::key_agent_id(&keyed)), Ok(server_key.clone()));
+            assert_eq!(as_agent("scribe"), Err(InvocationError::NotAgentSigned));
+            assert_eq!(
+                as_agent(&tilo_action_policy::key_agent_id(&[9; 32])),
+                Err(InvocationError::NotAgentSigned)
+            );
         }
 
         phase a_change_names_an_agent_only_when_its_own_key_asked;
@@ -929,6 +955,19 @@ mod tests {
             // A sub-agent the agent started works under the agent's key.
             let helper = Acting::handed_agent("helper", person.as_str());
             assert_eq!(kept(&by_agent, &helper, true), Ok(Some(agent)));
+            // A key the person made for their programs is kept as the agent it is itself, and its
+            // signature names no other agent, nor the agent the key's id names unsigned.
+            let program = SigningKey::from_bytes(&[13; 32]);
+            let mut server_key = cert_of(&root, &program, None);
+            server_key.capabilities = DeviceCapabilities::server_key_grant();
+            sign_device_cert(&mut server_key, &root).unwrap();
+            let by_key = signed(&request(), &server_key, &program, NOW);
+            let itself = for_person(Acting::agent(tilo_action_policy::key_agent_id(
+                &program.verifying_key().to_bytes(),
+            )));
+            assert_eq!(kept(&by_key, &itself, true), Ok(Some(server_key)));
+            assert_eq!(kept(&by_key, &scout, true), Err(InvocationError::NotAgentSigned));
+            assert_eq!(kept(&by_key, &itself, false), Err(InvocationError::NotAgentSigned));
         }
 
         phase a_change_outside_the_calls_target_is_refused;
