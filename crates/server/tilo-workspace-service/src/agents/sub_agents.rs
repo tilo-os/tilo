@@ -678,13 +678,16 @@ impl ServerAgents {
         .await
     }
 
-    /// Say on its item how the sub-agent `agent` stands, as the sub-agent itself. The server
-    /// that works it writes the item, as it writes what an agent spent: the list lets only a
-    /// sub-agent's own runner say it, and no tool of a turn is asked for it.
-    async fn stands(&self, workspace: &str, agent: &Agent, stands: Stands, line: &str) {
+    /// Say on its item how the sub-agent `agent` stands, as the sub-agent itself in the whole
+    /// chain its turn `scope` works in. The server that works it writes the item, as it writes
+    /// what an agent spent: the list lets only a sub-agent's own runner say it, and no tool of
+    /// a turn is asked for it. A sub-agent holds no grant of its own, so the write is decided
+    /// as its turn's are: as one more actor in its starter's chain, which bounds it.
+    async fn stands(&self, scope: &super::TurnScope, agent: &Agent, stands: Stands, line: &str) {
+        let workspace = scope.workspace.as_str();
         let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let (id, acts_for) = (agent.id.0.clone(), agent.acts_for.clone());
-        let item = tilo_resource::Id::from_raw(id.clone());
+        let chain = scope.agent.acting().clone();
+        let item = tilo_resource::Id::from_raw(agent.id.0.clone());
         let line = cut(line.trim(), sub::MAX_LINE.saturating_mul(2)).to_owned();
         let written = self
             .workspaces
@@ -697,7 +700,7 @@ impl ServerAgents {
                 |doc| {
                     let mut saying =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_agent_for(&id, &acts_for)
+                            .as_acting(chain.clone())
                             .in_app(tilo_workspace_agent::OWNER, "Assistant");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     saying.set_now_ms(tilo_clock::unix_now_ms_i64());
@@ -722,13 +725,12 @@ impl ServerAgents {
     }
 
     /// A turn of a sub-agent begins: its item says it works.
-    pub(super) async fn sub_began(&self, workspace: &str, turn: &Turn) {
+    pub(super) async fn sub_began(&self, scope: &super::TurnScope, turn: &Turn) {
         let Some(sub) = &turn.agent.sub else {
             return;
         };
         if sub.stands != Stands::Working || !sub.line.is_empty() {
-            self.stands(workspace, &turn.agent, Stands::Working, "")
-                .await;
+            self.stands(scope, &turn.agent, Stands::Working, "").await;
         }
     }
 
@@ -796,8 +798,7 @@ impl ServerAgents {
             Outcome::Failed(words) => (Stands::Failed, words.as_str()),
             Outcome::Cancelled => (Stands::Stopped, ""),
         };
-        self.stands(&acting.workspace, &turn.agent, stands, said)
-            .await;
+        self.stands(acting, &turn.agent, stands, said).await;
         let from_starter = from_starter || turn.line.as_ref().is_some_and(|line| line.from_starter);
         if !from_starter || stands == Stands::Stopped {
             return;

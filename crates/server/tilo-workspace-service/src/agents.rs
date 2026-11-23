@@ -1888,7 +1888,7 @@ impl ServerAgents {
         };
         let clock = tilo_clock::now();
         reply.taken().await;
-        self.sub_began(workspace, &turn).await;
+        self.sub_began(&scope, &turn).await;
         let from_starter = turn.line.as_ref().is_some_and(|line| line.from_starter);
         let day = today();
         // A sub-agent spends on the day of the person's own agent it works under.
