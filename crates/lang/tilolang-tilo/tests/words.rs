@@ -426,15 +426,15 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
 
     let (host, package) = notes("de-DE");
     let notebook = notebook(&host, &package);
-    let contacts = contacts::actions::ContactsEffect::declarations()
+    let passwords = passwords::actions::PasswordsEffect::declarations()
         .iter()
-        .map(EffectDecl::spec_of::<contacts::actions::ContactsEffect>)
+        .map(EffectDecl::spec_of::<passwords::actions::PasswordsEffect>)
         .fold(
-            tilo_actions::ResourceSpec::new("contacts", "contacts.effect", "Kontakte"),
+            tilo_actions::ResourceSpec::new("passwords", "passwords.effect", "Passwörter"),
             tilo_actions::ResourceSpec::with_action,
         );
     let palette = Published(vec![
-        PublishedActions::of("so.tilo.contacts", "workspace", &[contacts]),
+        PublishedActions::of("so.tilo.passwords", "workspace", &[passwords]),
         PublishedActions::of(NOTES, "workspace", &[notebook]),
     ]);
     let rows = |query: &str| -> Vec<String> {
@@ -444,10 +444,10 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
             .map(|hit| hit.title)
             .collect()
     };
-    let native = rows("Gruppe");
+    let native = rows("Zugriffe");
     assert!(
-        native.iter().any(|title| title == "Gruppe öffnen"),
-        "the contacts app's action reads in German: {native:?}"
+        native.iter().any(|title| title == "App-Zugriffe anzeigen"),
+        "the passwords app's action reads in German: {native:?}"
     );
     let notes = rows("Notiz");
     assert!(
