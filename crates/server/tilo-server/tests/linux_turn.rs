@@ -26,7 +26,7 @@ use tilo_agent_session::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_runtime::device::take_work;
 use tilo_server::linux_devices::{LinuxDevices, Timing, WAITING};
-use tilo_server::servers::{self, Servers, person_workspace_id};
+use tilo_server::servers::{self, person_workspace_id};
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
@@ -146,18 +146,24 @@ pub(super) async fn placed_with(count: usize, browsers: Option<std::path::PathBu
             browsers.clone(),
         )
         .unwrap();
-        // Its entry among the operator's servers says where it is reached.
+        // It logs in as the ticket it started with leaves it, and enters
+        // itself among the operator's servers at the address it answers on.
+        let login = tilo_device_identity::login::Device {
+            site: "https://tilo.test/".into(),
+            host_origin: "https://tilo.test".into(),
+            workspace: person_workspace_id(&operator.user_pk),
+            workspace_name: None,
+            agent: String::new(),
+            cert: vm_host.cert.clone(),
+            server_cert: shell.cert.clone(),
+            server_address: Some(tilo_server_protocol::web::ServerAddress {
+                endpoint_addr: hosted.host.node_addr(),
+                relay_url: None,
+                web: None,
+            }),
+        };
+        member.log_in(&vm_host.sk, &login).await.unwrap();
         let device = vm_host.device_pubkey();
-        servers::apply(
-            workspaces,
-            Servers::ENROLL_SERVER.with((
-                hex::encode(device),
-                format!("tilo-vm-host-{at}"),
-                serde_json::to_string(&member_at(device, &address)).unwrap(),
-            )),
-        )
-        .await
-        .unwrap();
         vm_hosts.push(VmHost {
             member: Mutex::new(Some(member)),
             device,
@@ -249,6 +255,28 @@ async fn until(what: &str, done: impl Fn() -> bool) {
         assert!(started.elapsed() < Duration::from_secs(60), "{what}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// A VM host started with its ticket enters itself among the operator's
+/// servers, at the address it answers on: nothing else writes its entry, and
+/// the server finds it there for the workspace's Linux turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vm_host_started_with_a_ticket_is_found_for_a_linux_turn() {
+    let placed = placed().await;
+    let vm_host = &placed.vm_hosts[0];
+    let servers = servers::read(placed.hosted.host.workspaces())
+        .await
+        .unwrap();
+    let entry = servers.servers.get(&servers::device_id(&vm_host.device));
+    let endpoint: EndpointAddr = serde_json::from_str(&entry.unwrap().endpoint).unwrap();
+    assert_eq!(
+        endpoint.id.as_bytes(),
+        &vm_host.device,
+        "its entry is its own"
+    );
+    let ran = run(&placed, "echo found").await.unwrap();
+    assert_eq!(String::from_utf8(ran.output).unwrap(), "found\n");
+    stop(placed).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -653,7 +653,7 @@ async fn a_ticket_that_names_a_server_leaves_its_entry() {
     let hosted = &host.hosted;
 
     let (desk_key, desk_cert) = enrol(&root, "home", DeviceCapabilities::primary());
-    super::ticket::server_entry(hosted, None, &desk_cert, false)
+    super::ticket::server_entry(hosted, (None, &desk_cert), None, false)
         .await
         .expect("the certified server is taken in among the person's servers");
     let device = tilo_workspace_service::workspaces::servers::device_id(

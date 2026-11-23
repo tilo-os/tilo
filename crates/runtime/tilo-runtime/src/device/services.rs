@@ -271,7 +271,8 @@ impl Daemon {
     )]
     fn start(root: &Path, stage: &mut dyn FnMut(&str), serving: Serving) -> io::Result<Self> {
         let identity = Identity::here()?;
-        let take_work = taking_work(identity.login.as_ref().map(|(_, device)| device))?;
+        let take_work =
+            take_work::Server::from_login(identity.login.as_ref().map(|(_, device)| device));
         unix::private_directory(identity.place.dir())?;
         let place = DaemonPlace::of(
             identity.place.dir(),
@@ -535,16 +536,6 @@ fn open_workspaces(
         .await
     })
     .map_err(io::Error::other)
-}
-
-/// The server whose work this profile takes, when it is a member: what the
-/// environment names, else the server the profile's login joined. A broken
-/// environment is no profile's: it is refused here, not served with.
-pub(super) fn taking_work(login: Option<&Device>) -> io::Result<Option<take_work::Server>> {
-    match take_work::Server::from_env().map_err(io::Error::other)? {
-        Some(server) => Ok(Some(server)),
-        None => Ok(take_work::Server::from_login(login)),
-    }
 }
 
 /// The device action service this profile answers its server's work on, when it takes

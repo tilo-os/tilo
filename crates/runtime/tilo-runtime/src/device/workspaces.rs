@@ -66,6 +66,8 @@ pub(crate) struct ServiceWorkspaces {
     /// The session this device entered with, once a holder ran: what the device's own actions are
     /// asked of its host through.
     session: std::sync::OnceLock<Entered>,
+    /// Whether this device takes its server's work, and so is one of its person's servers.
+    takes_work: std::sync::atomic::AtomicBool,
     /// The record content service of these workspaces, once it is made.
     content: OnceLock<Arc<RouteContent>>,
     /// What the service hands the content its members answer this device with,
@@ -139,6 +141,7 @@ impl ServiceWorkspaces {
             keys: None,
             own: OnceLock::new(),
             session: std::sync::OnceLock::new(),
+            takes_work: std::sync::atomic::AtomicBool::new(false),
             content: OnceLock::new(),
             keepers: Mutex::new(Vec::new()),
         }
@@ -181,8 +184,20 @@ impl ServiceWorkspaces {
     /// Hold each workspace `device` entered as a member copy here, synced with the server that
     /// hosts it: those not held yet, each at the address its host signed as it let this device in.
     /// This service is the device's one copy of them; the session keeps none of its own.
+    ///
+    /// A device that takes its server's work enters itself among its person's servers through
+    /// its first session, at the address its endpoint answers on, as a server does on each start:
+    /// the server finds it there for its workspaces' Linux turns.
     pub(crate) async fn hold(&self, device: &Entered) {
-        let _ = self.session.set(device.clone());
+        if self.session.set(device.clone()).is_ok()
+            && self.takes_work.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let me = (Some(device), &self.identity.device_cert);
+            let at = Some(self.endpoint.addr());
+            if let Err(error) = super::ticket::server_entry(self.copies(), me, at, false).await {
+                tracing::warn!(%error, "this device was not entered among its person's servers");
+            }
+        }
         own_device::hold_as_members(self.service.workspaces(), device.hosts()).await;
     }
 
@@ -192,6 +207,12 @@ impl ServiceWorkspaces {
     pub(crate) async fn shutdown(&self) {
         self.service.shutdown().await;
         self.endpoint.close().await;
+    }
+
+    /// This device takes its server's work: its first session enters it among its person's servers.
+    pub(crate) fn take_work(&self) {
+        self.takes_work
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The session this device entered with, once a holder ran: its own actions are asked of its

@@ -125,7 +125,7 @@ elif [ -n "${TILO_VM_TICKET:-}" ]; then
 elif [ "${TILO_VM_FOUND:-0}" = 1 ]; then
   say "this host founds its own identity, as a machine with no owner before it does"
 else
-  say "this host has no identity and no TILO_VM_TICKET: make a ticket with \`tilo device add\` on an owner device"
+  say "this host has no identity and no TILO_VM_TICKET: make a ticket with \`tilo device add --server\` on an owner device"
   exit 1
 fi
 

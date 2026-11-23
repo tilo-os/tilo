@@ -306,7 +306,9 @@ impl Admission {
         self.runtime.spawn(async move {
             let session = session.as_ref();
             let written = match role {
-                Role::Server => server_entry(service.copies(), session, &cert, founds).await,
+                Role::Server => {
+                    server_entry(service.copies(), (session, &cert), None, founds).await
+                }
                 Role::Plan(plan) => plan_entry(service.copies(), session, &plan, &cert).await,
             };
             if let Err(error) = written {
@@ -317,21 +319,24 @@ impl Admission {
 }
 
 /// Record the certified `cert` as a server in the person's Servers document, as a server's own
-/// start does when it is taken in: an entry under its device key, its endpoint filled by the
-/// server itself when it first starts.
+/// start does when it is taken in: an entry under its device key, dialled at `endpoint`, or by its
+/// key alone until the server fills its endpoint itself when it first starts.
 pub(super) async fn server_entry(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
-    session: Option<&Entered>,
-    cert: &DeviceCert,
+    (session, cert): (Option<&Entered>, &DeviceCert),
+    endpoint: Option<iroh::EndpointAddr>,
     founds: bool,
 ) -> Result<(), String> {
     use tilo_workspace_service::workspaces::servers;
 
-    let endpoint = iroh::EndpointAddr::from_parts(
-        iroh::EndpointId::from_bytes(&cert.device_public_key)
-            .map_err(|error| format!("the server's device key: {error}"))?,
-        Vec::new(),
-    );
+    let endpoint = match endpoint {
+        Some(endpoint) => endpoint,
+        None => iroh::EndpointAddr::from_parts(
+            iroh::EndpointId::from_bytes(&cert.device_public_key)
+                .map_err(|error| format!("the server's device key: {error}"))?,
+            Vec::new(),
+        ),
+    };
     if let Some(device) = session {
         let bytes = tilo_user_identity::canonical::canonical_bytes(cert)
             .map_err(|error| format!("the server's certificate: {error}"))?;
