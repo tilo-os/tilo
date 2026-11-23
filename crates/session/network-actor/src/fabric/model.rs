@@ -4,14 +4,12 @@
 //! applies one policy model to media, clipboard, roaming preferences, secret
 //! references and cross-screen input.
 
-use std::collections::{BTreeSet, VecDeque};
-
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
-use crate::fabric::MAX_FABRIC_ACTION_BYTES;
 use crate::fabric::carried::CarriedDrag;
-use crate::fabric::{DeviceId, FabricStamp};
+use tilo_continuity::notifications::{ContinuityNotificationProjection, NotificationId};
+use tilo_fabric::wake::WakeOutcome;
+use tilo_fabric::{DeviceId, FabricError, MAX_FABRIC_ACTION_BYTES, valid_fabric_identifier};
 
 /// Locally derived focus identity of a physical gamepad's target. None of
 /// these fields are accepted from a remote peer or an untrusted application.
@@ -22,17 +20,7 @@ pub struct PhysicalGamepadBinding {
     pub session_id: String,
 }
 
-pub const MAX_DEVICES: usize = 64;
-/// More network interfaces than any one device wakes through.
-pub const MAX_WAKE_ROUTES: usize = 8;
-pub const MAX_CLIPBOARD_ITEMS: usize = 50;
-pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
-pub const MAX_WIFI_CREDENTIALS: usize = 256;
-pub const MAX_SEALED_SECRET_BYTES: usize = 16 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
-pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
-/// Inline fast path only; larger nearby drops belong on the object stream.
-pub const MAX_NEARBY_DROP_BYTES: usize = 48 * 1024;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
 /// of being interpreted as raw PCM with potentially incompatible framing.
 pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 2;
@@ -60,132 +48,6 @@ pub fn remote_audio_media_ns(media_ts: u64) -> Option<u64> {
         .checked_div(u128::from(REMOTE_AUDIO_SAMPLE_RATE_HZ))?;
     u64::try_from(ns).ok()
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceKind {
-    Desktop,
-    Laptop,
-    Tablet,
-    Phone,
-    Television,
-    Speaker,
-    Server,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "wire capabilities are an independently negotiable set, not mutually exclusive state"
-)]
-pub struct FabricCapabilities {
-    pub display: bool,
-    pub pointer: bool,
-    pub keyboard: bool,
-    pub audio_output: bool,
-    pub video_output: bool,
-    pub clipboard: bool,
-    pub roaming_settings: bool,
-    pub secret_store: bool,
-    pub app_continuation: bool,
-    /// The device can play as a member of a speaker group.
-    pub audio_group: bool,
-}
-
-/// The kind of network interface a device can be woken through.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WakeInterfaceKind {
-    Ethernet,
-    WiFi,
-}
-
-/// An IPv4 network in canonical form: no host bits set beyond the prefix.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Ipv4Subnet {
-    pub network: [u8; 4],
-    pub prefix: u8,
-}
-
-impl Ipv4Subnet {
-    /// The subnet `address/prefix` lies in, or `None` for a prefix that names
-    /// no broadcast domain (wider than /8 or a single host).
-    #[must_use]
-    pub fn containing(address: std::net::Ipv4Addr, prefix: u8) -> Option<Self> {
-        if !(8..=30).contains(&prefix) {
-            return None;
-        }
-        let mask = u32::MAX.checked_shl(32_u32.checked_sub(u32::from(prefix))?)?;
-        Some(Self {
-            network: (u32::from(address) & mask).to_be_bytes(),
-            prefix,
-        })
-    }
-
-    #[must_use]
-    pub fn is_canonical(self) -> bool {
-        Self::containing(std::net::Ipv4Addr::from(self.network), self.prefix) == Some(self)
-    }
-
-    /// The subnet's directed broadcast address.
-    #[must_use]
-    pub fn broadcast(self) -> std::net::Ipv4Addr {
-        let host = u32::MAX.checked_shr(u32::from(self.prefix)).unwrap_or(0);
-        std::net::Ipv4Addr::from(u32::from_be_bytes(self.network) | host)
-    }
-}
-
-impl std::fmt::Display for Ipv4Subnet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}/{}",
-            std::net::Ipv4Addr::from(self.network),
-            self.prefix
-        )
-    }
-}
-
-/// One network interface of a device, as the network sees it: what a sibling
-/// on the same LAN needs to wake it with a magic packet. Only the person's
-/// own devices receive it, inside their certified presence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WakeRoute {
-    /// The MAC the network sees, which for Wi-Fi is the per-network one.
-    pub mac: [u8; 6],
-    pub kind: WakeInterfaceKind,
-    /// Whether the interface wakes the device on a magic packet.
-    pub magic_packet: bool,
-    /// The IPv4 subnet the interface was last seen on.
-    pub subnet: Option<Ipv4Subnet>,
-}
-
-impl WakeRoute {
-    pub(super) fn valid(&self) -> bool {
-        // A unicast, non-zero MAC; a multicast one cannot address a NIC.
-        self.mac != [0; 6]
-            && self.mac.first().is_some_and(|octet| octet & 1 == 0)
-            && self.subnet.is_none_or(Ipv4Subnet::is_canonical)
-    }
-}
-
-/// Whether the person's session on a device is locked, when they last locked
-/// or unlocked it themselves, and when they last used it
-/// (the shell's owner session).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OwnerSession {
-    pub locked: bool,
-    /// The person's own lock or unlock. `0` while the device is locked by
-    /// its idle timer or by following another device: a lock the others do
-    /// not follow.
-    pub changed_unix_ms: u64,
-    /// Their last input, rounded down to [`OWNER_SESSION_ACTIVE_STEP_MS`] so
-    /// typing does not republish the presence.
-    pub active_unix_ms: u64,
-}
-
-/// How finely [`OwnerSession::active_unix_ms`] follows input.
-pub const OWNER_SESSION_ACTIVE_STEP_MS: u64 = 10_000;
 
 /// A locator usable on another Tilo device. Workspace paths hydrate through
 /// Files; stream URLs travel only in an ephemeral exact-target action and are
@@ -284,34 +146,6 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         address: String,
     },
-    /// The target discovered the exact address locally and its compositor
-    /// issued this one-shot grant after an explicit local approval.
-    BluetoothHandoffPairingOffered {
-        request_id: [u8; 16],
-        address: String,
-        authorization: [u8; 16],
-    },
-    /// Echo the target-issued grant only after the source released the
-    /// accessory. The target consumes it before asking `BlueZ` to pair.
-    BluetoothHandoffPairingCommit {
-        request_id: [u8; 16],
-        address: String,
-        authorization: [u8; 16],
-    },
-    /// Inline fast path of the one Nearby transfer protocol: a file up to
-    /// [`MAX_NEARBY_DROP_BYTES`] rides in this action instead of an offer and
-    /// a byte stream, saving a round trip. It shares the transfer's consent
-    /// queue and integrity check; it is not a second protocol.
-    NearbyDrop {
-        file_name: String,
-        content_hash: [u8; 32],
-        bytes: Vec<u8>,
-    },
-    NearbyDropResult {
-        request_id: [u8; 16],
-        file_name: String,
-        accepted: bool,
-    },
     /// Durable object offer. The source path never leaves its device; the ID
     /// addresses an immutable private spool object. A played-on transfer is
     /// admitted by the `ResumeMedia` that named its ID, never by Files.
@@ -346,46 +180,17 @@ pub enum PersonalFabricAction {
     /// Ephemeral, policy-redacted notification state. Authorship comes only
     /// from the authenticated envelope source; the payload names no device.
     NotificationProject {
-        notification: crate::fabric::notification::ContinuityNotificationProjection,
+        notification: ContinuityNotificationProjection,
     },
     NotificationRetire {
-        id: crate::fabric::notification::ContinuityNotificationId,
+        id: NotificationId,
     },
     NotificationDismiss {
-        id: crate::fabric::notification::ContinuityNotificationId,
+        id: NotificationId,
     },
     NotificationInvoke {
-        id: crate::fabric::notification::ContinuityNotificationId,
+        id: NotificationId,
         action_key: String,
-    },
-    /// Request one fixed-profile virtual gamepad on the exact target. The
-    /// payload contains semantic controls only: descriptors, HID reports,
-    /// serials, and arbitrary evdev codes are not representable.
-    GamepadForwardRequest {
-        forwarding_id: [u8; 16],
-        app_id: String,
-        workspace_id: String,
-        session_id: String,
-        label: String,
-    },
-    /// Target acknowledgement. A nonzero lease nonce is minted only after
-    /// the constrained virtual device exists on that certified target.
-    GamepadForwardGrant {
-        forwarding_id: [u8; 16],
-        accepted: bool,
-        lease_nonce: [u8; 16],
-    },
-    /// One logical event for the exact target-issued lease. Replay and rate
-    /// checks are enforced again by the target's privileged broker.
-    GamepadForwardEvent {
-        forwarding_id: [u8; 16],
-        lease_nonce: [u8; 16],
-        sequence: u64,
-        event: os_actions::ForwardedGamepadEvent,
-    },
-    GamepadForwardStop {
-        forwarding_id: [u8; 16],
-        lease_nonce: [u8; 16],
     },
     /// Request a shell-owned, live audio route. Local `PipeWire` node identities
     /// never cross the certified-device boundary. Appending wire variants is
@@ -554,15 +359,6 @@ pub enum PersonalFabricAction {
         sweep: [u8; 16],
         hearing: crate::fabric::speaker_group::SpeakerHearing,
     },
-    /// The legacy app windows this device shows right now, each at the size it shows it.
-    /// The device running a listed window streams that one window here and stops once a
-    /// refresh no longer lists it or the refreshes stop. `decode` is what this device's
-    /// hardware decoders take, so the host encodes nothing they would hand back to the
-    /// CPU.
-    WindowViews {
-        views: Vec<WindowView>,
-        decode: Vec<HardwareDecode>,
-    },
     /// Wake `target` with a magic packet on a LAN this device is on, then
     /// watch for it to rejoin. The receiver reads the target's wake routes
     /// from its own copy of the person's fabric, never from the request.
@@ -582,16 +378,6 @@ pub enum PersonalFabricAction {
     WakeProbeReply {
         nonce: [u8; 16],
     },
-    /// Certify a device the sender paired: the devices that can approve it
-    /// ask their person (the shell's device certification). The ask,
-    /// postcard-encoded.
-    CertifyAsk {
-        ask: Vec<u8>,
-    },
-    /// A device's postcard-encoded answer to a [`Self::CertifyAsk`].
-    CertifyAnswer {
-        answer: Vec<u8>,
-    },
     /// The sender's pointer pushes against the edge that leads to the
     /// receiving device: grant it an [`InputLease`] if this device takes
     /// the person's input from their other devices.
@@ -602,64 +388,6 @@ pub enum PersonalFabricAction {
         lease_nonce: [u8; 16],
         drag: CarriedDrag,
     },
-}
-
-/// What became of one request to wake a device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WakeOutcome {
-    /// The magic packet went out on this subnet; the waker now waits.
-    Sent { subnet: Ipv4Subnet },
-    /// The target is back on the person's device network.
-    Rejoined,
-    /// The target did not come back within the wait.
-    NotRejoined,
-    /// The waker shares no LAN with any wakeable interface of the target.
-    NotOnTargetLan,
-    /// The packet could not be sent.
-    SendFailed,
-}
-
-/// Upper bound on the windows one [`PersonalFabricAction::WindowViews`] lists:
-/// more than a person can see at once on any one screen.
-pub const MAX_WINDOW_VIEWS: usize = 32;
-/// Largest window side, in logical pixels, a viewer may ask for.
-pub const MAX_WINDOW_VIEW_SIDE: u32 = 8192;
-
-/// One legacy app window a device shows: the workspace tab holding it and the
-/// tile's size in logical pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowView {
-    pub tab: u64,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// One codec a device decodes in hardware, with the largest picture its
-/// decoder takes when it has a limit.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HardwareDecode {
-    /// The codec's stream label (`h264`, `vp9`, `av1`, `hevc-main10`).
-    pub codec: String,
-    pub max: Option<(u32, u32)>,
-}
-
-impl HardwareDecode {
-    fn valid(&self) -> bool {
-        media::StreamCodec::from_wire_label(&self.codec).is_some()
-            && self.max.is_none_or(|(width, height)| {
-                (2..=MAX_WINDOW_VIEW_SIDE).contains(&width)
-                    && (2..=MAX_WINDOW_VIEW_SIDE).contains(&height)
-            })
-    }
-}
-
-impl WindowView {
-    fn valid(&self) -> bool {
-        self.tab != 0
-            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.width)
-            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.height)
-    }
 }
 
 /// Ephemeral action envelope authenticated by the exact QUIC device route.
@@ -686,15 +414,13 @@ impl PersonalFabricActionEnvelope {
         local_target: &DeviceId,
         now_unix_ms: u64,
     ) -> Result<(), FabricError> {
-        if self.request_id == [0; 16]
-            || &self.source != transport_source
-            || &self.target != local_target
-            || self.source == self.target
-            || self.issued_unix_ms > now_unix_ms.saturating_add(30_000)
-            || now_unix_ms.saturating_sub(self.issued_unix_ms) > MAX_FABRIC_ACTION_AGE_MS
-        {
-            return Err(FabricError::InvalidAction);
+        tilo_fabric::Envelope {
+            request_id: self.request_id,
+            source: self.source.clone(),
+            target: self.target.clone(),
+            issued_unix_ms: self.issued_unix_ms,
         }
+        .check_at(transport_source, local_target, now_unix_ms)?;
         match &self.action {
             PersonalFabricAction::ResumeMedia {
                 session_id,
@@ -869,21 +595,6 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::WindowViews { views, decode } => {
-                let mut tabs = BTreeSet::new();
-                let mut codecs = BTreeSet::new();
-                if views.len() > MAX_WINDOW_VIEWS
-                    || !views
-                        .iter()
-                        .all(|view| view.valid() && tabs.insert(view.tab))
-                    || decode.len() > media::StreamCodec::ALL.len()
-                    || !decode
-                        .iter()
-                        .all(|codec| codec.valid() && codecs.insert(codec.codec.as_str()))
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::SpeakerGroupDecision { group, .. }
             | PersonalFabricAction::SpeakerListenDecision { group, .. }
             | PersonalFabricAction::SpeakerGroupLeave { group } => {
@@ -924,12 +635,6 @@ impl PersonalFabricActionEnvelope {
             PersonalFabricAction::InputLeaseAsk => {}
             PersonalFabricAction::DragCarried { lease_nonce, drag } => {
                 if lease_nonce == &[0; 16] || !drag.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::CertifyAsk { ask: message }
-            | PersonalFabricAction::CertifyAnswer { answer: message } => {
-                if message.is_empty() {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -978,43 +683,6 @@ impl PersonalFabricActionEnvelope {
                 address,
             } => {
                 if request_id == &[0; 16] || !os_actions::bluez::valid_address(address) {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::BluetoothHandoffPairingOffered {
-                request_id,
-                address,
-                authorization,
-            }
-            | PersonalFabricAction::BluetoothHandoffPairingCommit {
-                request_id,
-                address,
-                authorization,
-            } => {
-                if !valid_bluetooth_pairing_action(request_id, address, authorization) {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::NearbyDrop {
-                file_name,
-                content_hash,
-                bytes,
-            } => {
-                if !tilo_nearby_service::valid_nearby_file_name(file_name)
-                    || bytes.is_empty()
-                    || bytes.len() > MAX_NEARBY_DROP_BYTES
-                    || blake3::hash(bytes).as_bytes() != content_hash
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::NearbyDropResult {
-                request_id,
-                file_name,
-                ..
-            } => {
-                if request_id == &[0; 16] || !tilo_nearby_service::valid_nearby_file_name(file_name)
-                {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1083,58 +751,6 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::GamepadForwardRequest {
-                forwarding_id,
-                app_id,
-                workspace_id,
-                session_id,
-                label,
-            } => {
-                if forwarding_id == &[0; 16]
-                    || !valid_fabric_identifier(app_id, 256)
-                    || !valid_fabric_identifier(workspace_id, 128)
-                    || !valid_fabric_identifier(session_id, 256)
-                    || label.is_empty()
-                    || label.len() > 128
-                    || label.chars().any(char::is_control)
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::GamepadForwardGrant {
-                forwarding_id,
-                accepted,
-                lease_nonce,
-            } => {
-                if forwarding_id == &[0; 16]
-                    || (*accepted && lease_nonce == &[0; 16])
-                    || (!*accepted && lease_nonce != &[0; 16])
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::GamepadForwardEvent {
-                forwarding_id,
-                lease_nonce,
-                sequence,
-                event,
-            } => {
-                if forwarding_id == &[0; 16]
-                    || lease_nonce == &[0; 16]
-                    || *sequence == 0
-                    || !event.is_valid()
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::GamepadForwardStop {
-                forwarding_id,
-                lease_nonce,
-            } => {
-                if forwarding_id == &[0; 16] || lease_nonce == &[0; 16] {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::InputLeaseGranted { lease } => {
                 if &lease.target != transport_source
                     || &lease.controller != local_target
@@ -1154,184 +770,6 @@ impl PersonalFabricActionEnvelope {
         if bytes.len() > MAX_FABRIC_ACTION_BYTES {
             return Err(FabricError::ActionTooLarge);
         }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClipboardPayload {
-    Text(String),
-    Binary { mime: String, bytes: Vec<u8> },
-}
-
-impl ClipboardPayload {
-    pub fn byte_len(&self) -> usize {
-        match self {
-            Self::Text(value) => value.len(),
-            Self::Binary { bytes, .. } => bytes.len(),
-        }
-    }
-
-    fn validate(&self) -> Result<(), FabricError> {
-        if self.byte_len() > MAX_CLIPBOARD_ITEM_BYTES {
-            return Err(FabricError::ClipboardItemTooLarge);
-        }
-        if let Self::Binary { mime, .. } = self
-            && (!valid_mime(mime) || mime == ui::clipboard::SECRET_MIME)
-        {
-            return Err(FabricError::InvalidClipboardMime);
-        }
-        Ok(())
-    }
-}
-
-/// Content-addressed clipboard item. Secret fields and primary-selection churn
-/// do not construct this type; a caller must explicitly classify a copy as
-/// shareable before it reaches the person's private device connection.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClipboardEntry {
-    pub id: [u8; 32],
-    pub payload: ClipboardPayload,
-    pub origin: DeviceId,
-    pub created_unix_ms: u64,
-    pub pinned: bool,
-    pub stamp: FabricStamp,
-}
-
-impl ClipboardEntry {
-    /// Construct a content-addressed item the caller has classified as safe to leave the
-    /// originating device.
-    /// # Errors
-    /// An oversized or invalid payload, or a foreign stamp.
-    pub fn shareable(
-        payload: ClipboardPayload,
-        origin: DeviceId,
-        created_unix_ms: u64,
-        stamp: FabricStamp,
-    ) -> Result<Self, FabricError> {
-        payload.validate()?;
-        if stamp.device != origin {
-            return Err(FabricError::ForeignAuthorship);
-        }
-        let mut material = Vec::with_capacity(payload.byte_len().saturating_add(128));
-        material.extend_from_slice(origin.as_str().as_bytes());
-        match &payload {
-            ClipboardPayload::Text(value) => {
-                material.extend_from_slice(b"text\0");
-                material.extend_from_slice(value.as_bytes());
-            }
-            ClipboardPayload::Binary { mime, bytes } => {
-                material.extend_from_slice(mime.as_bytes());
-                material.push(0);
-                material.extend_from_slice(bytes);
-            }
-        }
-        Ok(Self {
-            id: *blake3::hash(&material).as_bytes(),
-            payload,
-            origin,
-            created_unix_ms,
-            pinned: false,
-            stamp,
-        })
-    }
-
-    /// Whether this is a copy `owner` made, as it made it.
-    /// # Errors
-    /// A copy another device made, or one whose content is not what its id names.
-    pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
-        if &self.origin != owner || &self.stamp.device != owner {
-            return Err(FabricError::ForeignAuthorship);
-        }
-        let rebuilt = Self::shareable(
-            self.payload.clone(),
-            self.origin.clone(),
-            self.created_unix_ms,
-            self.stamp.clone(),
-        )?;
-        if rebuilt.id != self.id {
-            return Err(FabricError::ClipboardHashMismatch);
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ClipboardHistory {
-    entries: VecDeque<ClipboardEntry>,
-}
-
-impl ClipboardHistory {
-    pub fn entries(&self) -> impl Iterator<Item = &ClipboardEntry> {
-        self.entries.iter()
-    }
-
-    /// Add or promote an item, enforcing the bounded history policy.
-    /// # Errors
-    /// An invalid item, or every history slot pinned.
-    pub fn push(&mut self, entry: ClipboardEntry) -> Result<bool, FabricError> {
-        entry.payload.validate()?;
-        if let Some(index) = self.entries.iter().position(|item| item.id == entry.id) {
-            let Some(mut prior) = self.entries.remove(index) else {
-                return Ok(false);
-            };
-            if entry.stamp.is_newer_than(&prior.stamp) {
-                prior.stamp = entry.stamp;
-                prior.pinned = entry.pinned;
-            }
-            self.entries.push_front(prior);
-            return Ok(false);
-        }
-        while self.entries.len() >= MAX_CLIPBOARD_ITEMS {
-            let Some(index) = self.entries.iter().rposition(|item| !item.pinned) else {
-                return Err(FabricError::ClipboardHistoryFull);
-            };
-            self.entries.remove(index);
-        }
-        self.entries.push_front(entry);
-        Ok(true)
-    }
-
-    pub fn remove(&mut self, id: [u8; 32]) -> bool {
-        let Some(index) = self.entries.iter().position(|entry| entry.id == id) else {
-            return false;
-        };
-        self.entries.remove(index);
-        true
-    }
-}
-
-/// Versioned per-recipient ciphertext envelopes. Plaintext credentials are
-/// intentionally impossible to represent in fabric state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WifiCredential {
-    pub network_id: [u8; 32],
-    pub ssid: String,
-    pub security: os_actions::WifiSecurity,
-    pub sealed_secret: Vec<u8>,
-    pub nonce: [u8; 24],
-    pub stamp: FabricStamp,
-}
-
-impl WifiCredential {
-    /// Whether this is a sealed passphrase of a network one could join.
-    /// # Errors
-    /// [`FabricError::InvalidWifiCredential`] for anything else.
-    pub fn validate(&self) -> Result<(), FabricError> {
-        if self.ssid.is_empty()
-            || self.ssid.len() > 128
-            || matches!(
-                self.security,
-                os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Unknown
-            )
-            || self.sealed_secret.is_empty()
-            || self.sealed_secret.len() > MAX_SEALED_SECRET_BYTES
-        {
-            return Err(FabricError::InvalidWifiCredential);
-        }
-        crate::fabric::secrets::validate_wifi_envelopes(&self.sealed_secret)
-            .map_err(|_| FabricError::InvalidWifiCredential)?;
         Ok(())
     }
 }
@@ -1437,22 +875,6 @@ impl InputLease {
     }
 }
 
-pub(crate) fn valid_fabric_identifier(value: &str, max: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= max
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '/'))
-}
-
-pub(crate) fn valid_mime(value: &str) -> bool {
-    value.len() <= 128
-        && value.contains('/')
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+' | '_'))
-}
-
 fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
     match locator {
         MediaSourceLocator::Workspace { path } => {
@@ -1509,67 +931,6 @@ fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
                     .any(|character| character.is_control() || matches!(character, '/' | '\\'))
         }
     }
-}
-
-fn valid_bluetooth_pairing_action(
-    request_id: &[u8; 16],
-    address: &str,
-    authorization: &[u8; 16],
-) -> bool {
-    request_id != &[0; 16] && authorization != &[0; 16] && os_actions::bluez::valid_address(address)
-}
-
-pub(super) fn unique<T: Ord>(items: impl IntoIterator<Item = T>) -> Result<(), FabricError> {
-    let mut seen = BTreeSet::new();
-    if items.into_iter().all(|item| seen.insert(item)) {
-        Ok(())
-    } else {
-        Err(FabricError::DuplicateItem)
-    }
-}
-
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum FabricError {
-    #[error("what a device says of itself exceeds its bound")]
-    TooLarge,
-    #[error("a value was authored by a different device")]
-    ForeignAuthorship,
-    #[error("invalid device label")]
-    InvalidLabel,
-    #[error("invalid identifier")]
-    InvalidIdentifier,
-    #[error("clipboard item exceeds the sync limit")]
-    ClipboardItemTooLarge,
-    #[error("clipboard MIME type is invalid or secret-only")]
-    InvalidClipboardMime,
-    #[error("clipboard content hash does not match its payload")]
-    ClipboardHashMismatch,
-    #[error("clipboard history is full of pinned entries")]
-    ClipboardHistoryFull,
-    #[error("invalid encrypted Wi-Fi credential")]
-    InvalidWifiCredential,
-    #[error("invalid display placement")]
-    InvalidDisplayPlacement,
-    #[error("invalid input lease")]
-    InvalidInputLease,
-    #[error("input lease has expired")]
-    ExpiredInputLease,
-    #[error("a device says one thing twice")]
-    DuplicateItem,
-    #[error("unknown target device")]
-    UnknownDevice,
-    #[error("invalid personal-fabric action")]
-    InvalidAction,
-    #[error("personal-fabric action exceeds its wire bound")]
-    ActionTooLarge,
-    #[error("invalid speaker group")]
-    InvalidSpeakerGroup,
-    #[error("that device cannot play in this speaker group")]
-    IneligibleSpeakerMember,
-    #[error("invalid disk-unlock enrolment or setting")]
-    InvalidUnlockEnrolment,
-    #[error("invalid wake route")]
-    InvalidWakeRoute,
 }
 
 #[cfg(test)]

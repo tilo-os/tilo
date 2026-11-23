@@ -521,6 +521,8 @@ members = [
     "crates/session/liveness",
     "crates/session/native-media",
     "crates/session/network-actor",
+    "crates/core/tilo-fabric",
+    "crates/services/tilo-continuity",
     "crates/session/network-secret-agent",
     "crates/session/notification-banners",
     "crates/session/activities",

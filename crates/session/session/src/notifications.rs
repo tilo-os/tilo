@@ -11,8 +11,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::platform::fabric::ContinuityNotificationProjection;
 use crate::platform::fabric::SharedLink;
+use crate::platform::fabric::{ContinuityNotificationProjection, NotificationId};
 use crate::platform::fabric::{DeviceId, PersonalFabricAction};
 
 use serde_json::{Map, Value};
@@ -20,8 +20,8 @@ use settings_store::notification_policy::{EffectiveNotificationPolicy, Notificat
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_desktop_surface::notifications::{
-    self, BannerAsk, ContinuityNotificationId, Notification, NotificationIconKind,
-    NotificationPerson, QuietReason, RemoteNotificationRoute, ScheduledNotificationTarget,
+    self, BannerAsk, Notification, NotificationIconKind, NotificationPerson, QuietReason,
+    RemoteNotificationRoute, ScheduledNotificationTarget,
 };
 use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
 use tilo_lock::MutexRecover as _;
@@ -637,7 +637,7 @@ impl SessionNotifications {
         let route = RemoteNotificationRoute {
             source_device: source.as_str().to_owned(),
             source_label: source_label.to_owned(),
-            notification_id: projection.id,
+            notification_id: mirror::shown(projection.id),
         };
         let mut notification = Notification::new(
             projection.title.clone(),
@@ -683,9 +683,10 @@ impl SessionNotifications {
     }
 
     /// Take away what another of the person's devices projected.
-    pub(crate) fn remote_retire(&self, source: &DeviceId, id: ContinuityNotificationId) {
+    pub(crate) fn remote_retire(&self, source: &DeviceId, id: NotificationId) {
         self.mirror.retire_shown(source, id);
-        self.desktop.retire_remote(source.as_str(), id);
+        self.desktop
+            .retire_remote(source.as_str(), mirror::shown(id));
     }
 
     /// Answer what another device asked of the notification this one projected: `action` the person

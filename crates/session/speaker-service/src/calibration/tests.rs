@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use tilo_network_actor::fabric::FabricStamp;
+use tilo_fabric::FabricStamp;
 use tilo_network_actor::fabric::speaker_group::{SpeakerGroupMember, SpeakerRole, StereoSide};
 
 fn id(value: &str) -> DeviceId {

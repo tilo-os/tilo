@@ -11,89 +11,20 @@ use std::time::Instant;
 
 use crate::person_resources::PersonResources;
 use iroh::EndpointId;
-use settings_store::continuity_privacy::ContinuityCapability;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::PersonalFabricPayload;
 
 use super::live::Live;
 use super::store;
 use super::{
-    ClipboardEntry, ContinuityNotificationProjection, DeviceAbout, DeviceKind, FabricCapabilities,
-    FabricLink, MediaSourceLocator, NearbySpoolOffer, OwnerSession, PersonDevices,
-    PersonalFabricAction, PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink,
-    UnlockFabricState, WakeRoute, clock, open_wifi_credential,
+    ClipboardEntry, Continuity, ContinuityNotificationProjection, DeviceAbout, DeviceKind,
+    FabricCapabilities, FabricLink, MediaSourceLocator, NearbySpoolOffer, OwnerSession,
+    PersonDevices, PersonalFabricAction, PersonalFabricActionEnvelope, PersonalFabricSendError,
+    SharedLink, UnlockFabricState, WakeRoute, clock, open_wifi_credential,
 };
 use crate::platform::fabric::{DeviceId, FabricStamp, nonzero};
 /// Where this session's frames leave for the person's other devices.
 type Outbox = crate::sync::HostOutbox;
-
-/// What the person lets of this device continue on their other devices: each
-/// facet's switch of their `continuity` settings, under the master switch,
-/// each on unless they turned it off. The session's settings watch keeps them
-/// current ([`Continuity::read`]).
-#[derive(Clone, Debug, Default)]
-pub struct Continuity {
-    media: Arc<AtomicBool>,
-    wifi_settings: Arc<AtomicBool>,
-    file_transfer: Arc<AtomicBool>,
-    notifications: Arc<AtomicBool>,
-    display_input: Arc<AtomicBool>,
-}
-
-impl Continuity {
-    /// Take the switches from a settings document, as Settings writes it.
-    pub fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
-        let section = document.get("continuity");
-        let on = |name: &str| match section {
-            None => settings_store::continuity_privacy::ON_UNLESS_SET,
-            Some(serde_json::Value::Object(section)) => section
-                .get(name)
-                .map_or(settings_store::continuity_privacy::ON_UNLESS_SET, |value| {
-                    value.as_bool() == Some(true)
-                }),
-            Some(_) => false,
-        };
-        let enabled = on("enabled");
-        for (switch, facet) in [
-            (&self.media, ContinuityCapability::Media),
-            (&self.wifi_settings, ContinuityCapability::WifiSettings),
-            (&self.file_transfer, ContinuityCapability::FileTransfer),
-            (&self.notifications, ContinuityCapability::Notifications),
-        ] {
-            switch.store(enabled && on(facet.key()), Ordering::Relaxed);
-        }
-        // This device takes the keyboard and pointer of the person's other devices only with
-        // Display & input on and its automatic grants left on, as Settings words both.
-        self.display_input.store(
-            enabled
-                && on(ContinuityCapability::DisplayInput.key())
-                && on("automatic_display_input"),
-            Ordering::Relaxed,
-        );
-    }
-
-    fn media_permitted(&self) -> bool {
-        self.media.load(Ordering::Relaxed)
-    }
-
-    fn wifi_settings_permitted(&self) -> bool {
-        self.wifi_settings.load(Ordering::Relaxed)
-    }
-
-    fn notifications_permitted(&self) -> bool {
-        self.notifications.load(Ordering::Relaxed)
-    }
-
-    /// Whether the person's other devices may drive this one's keyboard and pointer.
-    pub(crate) fn display_input_permitted(&self) -> bool {
-        self.display_input.load(Ordering::Relaxed)
-    }
-
-    /// Whether the person lets files they send move to their other devices.
-    pub(crate) fn file_transfer_permitted(&self) -> bool {
-        self.file_transfer.load(Ordering::Relaxed)
-    }
-}
 
 /// What this device says of itself that lasts, as its first session writes it: what the person
 /// calls it, and what it does for their other devices. Input, display and speaker groups are not
@@ -317,13 +248,6 @@ impl SessionFabric {
                     nearby.frame(&device, frame);
                 }
             }
-            // What the person's devices carry for each other of their records belongs to their
-            // own store's links; this session routes none of it and drops it rather than
-            // half-handling it.
-            PersonalFabricPayload::Document { .. }
-            | PersonalFabricPayload::DocumentContentWant { .. }
-            | PersonalFabricPayload::DocumentContentPiece { .. }
-            | PersonalFabricPayload::DocumentContentLacks { .. } => {}
         }
     }
 
@@ -563,7 +487,7 @@ impl FabricLink for SessionFabric {
             .keys()
             .cloned()
             .collect::<Vec<DeviceId>>();
-        let credential = tilo_network_actor::fabric::secrets::seal_wifi_credential(
+        let credential = tilo_continuity::secrets::seal_wifi_credential(
             ssid,
             security,
             password,
@@ -599,10 +523,10 @@ impl FabricLink for SessionFabric {
 
     fn share_display(
         &self,
-        rect: tilo_network_actor::fabric::DisplayRect,
+        rect: tilo_fabric::DisplayRect,
         scale_milli: u16,
-        connectors: Vec<tilo_network_actor::fabric::DisplayConnectorPlacement>,
-        outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
+        connectors: Vec<tilo_fabric::DisplayConnectorPlacement>,
+        outputs: Vec<tilo_fabric::DisplayOutputObservation>,
     ) -> bool {
         self.say("displays", |presence| {
             presence.display = Some(super::DeviceDisplay {
@@ -678,8 +602,6 @@ impl crate::Session {
             | PersonalFabricAction::InputLeaseRevoked { .. }
             | PersonalFabricAction::Input { .. }
             | PersonalFabricAction::DragCarried { .. }
-            | PersonalFabricAction::NearbyDrop { .. }
-            | PersonalFabricAction::NearbyDropResult { .. }
             // A Nearby Send reaches no session here: the client that carries one hands its offer,
             // checkpoint, withdrawal and ending to its own engine, so what is left is a session
             // running none.
@@ -696,13 +618,7 @@ impl crate::Session {
             | PersonalFabricAction::BluetoothHandoffCommit { .. }
             | PersonalFabricAction::BluetoothHandoffFinished { .. }
             | PersonalFabricAction::BluetoothHandoffAccepted { .. }
-            | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
-            | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
             | PersonalFabricAction::BluetoothHandoffCancel { .. }
-            | PersonalFabricAction::GamepadForwardRequest { .. }
-            | PersonalFabricAction::GamepadForwardGrant { .. }
-            | PersonalFabricAction::GamepadForwardEvent { .. }
-            | PersonalFabricAction::GamepadForwardStop { .. }
             // A clock probe is answered where its frame arrived and a report measured from there,
             // so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
@@ -711,11 +627,6 @@ impl crate::Session {
             | PersonalFabricAction::WakeReport { .. }
             | PersonalFabricAction::WakeProbe { .. }
             | PersonalFabricAction::WakeProbeReply { .. }
-            | PersonalFabricAction::WindowViews { .. }
-            // No device of the person certifies another over the fabric any more: an ask or an
-            // answer from an older device is dropped.
-            | PersonalFabricAction::CertifyAsk { .. }
-            | PersonalFabricAction::CertifyAnswer { .. }
             | PersonalFabricAction::SpeakerGroupInvite { .. }
             | PersonalFabricAction::SpeakerGroupDecision { .. }
             | PersonalFabricAction::SpeakerGroupLeave { .. }

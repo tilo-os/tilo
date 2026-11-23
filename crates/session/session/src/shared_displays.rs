@@ -8,9 +8,7 @@
 use crate::platform::fabric::SharedLink;
 use settings_store::hardware::{DisplayHardwareSnapshot, DisplaySet};
 use settings_store::person_displays::{DeviceOutput, PersonDevice, PersonDisplays};
-use tilo_network_actor::fabric::{
-    DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect,
-};
+use tilo_fabric::{DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect};
 
 /// Where this device's outputs stand and what their hardware says, as the person's other devices
 /// hear it: the live session they make, and one entry per output with the place it holds on it. The live session

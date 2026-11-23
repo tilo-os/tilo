@@ -14,8 +14,8 @@ use std::time::Instant;
 use super::{
     CONSENT_TTL, Egress, SpeakerConsentScope, SpeakerConsentView, SpeakerGroupCore, egress,
 };
-use tilo_network_actor::fabric::DeviceId;
-use tilo_network_actor::fabric::FabricStamp;
+use tilo_fabric::DeviceId;
+use tilo_fabric::FabricStamp;
 use tilo_network_actor::fabric::speaker_group::{
     EndpointSelector, MAX_SPEAKER_LISTENERS, SpeakerGroup, SpeakerGroupId, SpeakerListener,
 };

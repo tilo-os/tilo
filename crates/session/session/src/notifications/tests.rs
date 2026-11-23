@@ -1187,7 +1187,7 @@ fn rig_on_fabric(permitted: bool) -> (Rig, Arc<FakeFabric>) {
 /// What another of the person's devices projected: a mail to Ada, with its archive action.
 fn projection() -> ContinuityNotificationProjection {
     ContinuityNotificationProjection {
-        id: ContinuityNotificationId {
+        id: crate::platform::fabric::NotificationId {
             epoch: [1; 16],
             token: [2; 16],
         },
@@ -1375,7 +1375,7 @@ tilo_test_env::scenario! {
             Some(RemoteNotificationRoute {
                 source_device: "laptop".into(),
                 source_label: "Laptop".into(),
-                notification_id: projection().id,
+                notification_id: super::mirror::shown(projection().id),
             })
         );
         assert!(

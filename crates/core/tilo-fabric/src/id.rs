@@ -1,0 +1,205 @@
+//! Who a device is ([`DeviceId`]), the revision a fact carries ([`FabricStamp`]), the fresh ids
+//! that name one exchange, and where its screens are: the display facts a device says of itself.
+
+use getrandom::SysRng;
+use getrandom::rand_core::{Rng as _, UnwrapErr};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
+
+/// The largest frame between two of the person's devices: what a device says of itself and the
+/// copies it offers, never media data.
+pub const MAX_FABRIC_FRAME_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
+const MAX_DEVICE_ID_BYTES: usize = 128;
+
+/// A stable, human-identity-certified device identifier.
+///
+/// The network layer will supply this from an authenticated device key. It is
+/// kept textual here so the pure model does not depend on a transport crate.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceId(String);
+
+/// A device id that is empty, too long, carries characters outside
+/// `[A-Za-z0-9.-_:]` or looks like a local path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("device id is invalid")]
+pub struct InvalidDeviceId;
+
+impl DeviceId {
+    /// The device whose key is `key`: the person's devices are named by their keys.
+    #[must_use]
+    pub fn of_key(key: &[u8; 32]) -> Self {
+        Self(hex::encode(key))
+    }
+
+    /// The key this device is named by, when its id is one.
+    #[must_use]
+    pub fn key(&self) -> Option<[u8; 32]> {
+        let mut key = [0; 32];
+        hex::decode_to_slice(&self.0, &mut key).ok()?;
+        Some(key)
+    }
+
+    /// # Errors
+    /// [`InvalidDeviceId`] for an id no device could carry.
+    pub fn new(value: impl Into<String>) -> Result<Self, InvalidDeviceId> {
+        let value = value.into();
+        if !valid_identifier(&value, MAX_DEVICE_ID_BYTES) {
+            return Err(InvalidDeviceId);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for DeviceId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        DeviceId::new(self.0.clone())
+            .map_err(S::Error::custom)?
+            .0
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        DeviceId::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+/// A short machine identifier that can never name a local file: ASCII
+/// letters, digits and `.-_:`, at most `max` bytes, and nothing shaped like
+/// a path.
+pub fn valid_identifier(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && !looks_like_local_path(value)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':'))
+}
+
+/// Whether `value` reads as a local path on any platform.
+pub fn looks_like_local_path(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with('~')
+        || value.starts_with("file:")
+        || value.starts_with("\\\\")
+        || value.as_bytes().get(1) == Some(&b':')
+        || value.contains('/')
+        || value.contains('\\')
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct FabricStamp {
+    pub counter: u64,
+    pub device: DeviceId,
+}
+
+impl FabricStamp {
+    pub fn is_newer_than(&self, other: &Self) -> bool {
+        (self.counter, self.device.as_str()) > (other.counter, other.device.as_str())
+    }
+}
+
+/// Fresh bytes from the host's generator, for ids and nonces.
+pub fn bytes<const N: usize>() -> [u8; N] {
+    let mut value = [0; N];
+    UnwrapErr(SysRng).fill_bytes(&mut value);
+    value
+}
+
+/// `N` random bytes, never all zero: the id and nonce formats reserve zero for "none".
+pub fn nonzero<const N: usize>() -> [u8; N] {
+    loop {
+        let value = bytes::<N>();
+        if value != [0; N] {
+            return value;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl DisplayRect {
+    /// Logical geometry shared with the Displays placement control.
+    /// Malformed or overflowing screen bounds are never crossing targets.
+    pub fn logical_placement(self) -> Option<settings_store::display_placement::Placement> {
+        let width = i32::try_from(self.width).ok()?;
+        let height = i32::try_from(self.height).ok()?;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        self.x.checked_add(width)?;
+        self.y.checked_add(height)?;
+        Some(settings_store::display_placement::Placement::new(
+            self.x, self.y, width, height,
+        ))
+    }
+
+    pub fn intersects(&self, other: Self) -> bool {
+        self.x < other.x.saturating_add_unsigned(other.width)
+            && self.x.saturating_add_unsigned(self.width) > other.x
+            && self.y < other.y.saturating_add_unsigned(other.height)
+            && self.y.saturating_add_unsigned(self.height) > other.y
+    }
+}
+
+/// A physical connector in its owner's logical coordinate space.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayConnectorPlacement {
+    pub connector: String,
+    pub label: String,
+    pub rect: DisplayRect,
+    pub scale_milli: u16,
+}
+
+/// Rich hardware facts accompanying the connector extension. They describe
+/// an output but never grant control or change its live geometry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayOutputObservation {
+    pub connector: String,
+    pub output: settings_store::person_displays::DeviceOutput,
+}
+
+/// An identifier a fabric value carries: ASCII letters, digits and `.-_:/`, at most `max` bytes.
+#[must_use]
+pub fn valid_fabric_identifier(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '/'))
+}
+
+/// A MIME type a fabric value may name.
+#[must_use]
+pub fn valid_mime(value: &str) -> bool {
+    value.len() <= 128
+        && value.contains('/')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+' | '_'))
+}
+
+/// Whether `items` names nothing twice.
+///
+/// # Errors
+/// [`crate::FabricError::DuplicateItem`] for an item said twice.
+pub fn unique<T: Ord>(items: impl IntoIterator<Item = T>) -> Result<(), crate::FabricError> {
+    let mut seen = std::collections::BTreeSet::new();
+    if items.into_iter().all(|item| seen.insert(item)) {
+        Ok(())
+    } else {
+        Err(crate::FabricError::DuplicateItem)
+    }
+}

@@ -2,7 +2,7 @@
 //! Every device of the person holds the sibling halves of the others, as
 //! [`UnlockEnrolment`]s sealed to the person's root-derived secret-sync key, so
 //! only a device that holds the root can open one. Early boot of an enrolled device
-//! asks over [`tilo_unlock_protocol::UNLOCK_ALPN`]; [`UnlockSibling`] answers.
+//! asks through the unlock actions ([`crate::UNLOCK_SCOPE`]); [`UnlockSibling`] answers.
 //! A sibling releases a half only when the boot key is signed by the person's root
 //! and matches an enrolment, the request answers a challenge this sibling issued,
 //! this boot was not served before and the device is within its rate limit, and the
@@ -26,9 +26,9 @@ use tilo_user_identity::{
     device_cert_signing_digest, verify_device_cert,
 };
 
-use crate::fabric::DeviceId;
-use crate::fabric::FabricError;
-use crate::fabric::FabricStamp;
+use crate::DeviceId;
+use crate::FabricError;
+use crate::FabricStamp;
 
 /// The typed action the owner approves a pending unlock with.
 pub const DEVICE_UNLOCK_ACTION: &str = "device.unlock";
@@ -269,7 +269,7 @@ pub struct UnlockFabricState {
 impl UnlockFabricState {
     pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if self.enrolments.len() > MAX_UNLOCK_ENROLMENTS
-            || self.auto_approvals.len() > crate::fabric::MAX_DEVICES
+            || self.auto_approvals.len() > crate::MAX_DEVICES
             || self.decisions.len() > MAX_UNLOCK_DECISIONS
         {
             return Err(FabricError::TooLarge);

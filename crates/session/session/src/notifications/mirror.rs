@@ -1,7 +1,7 @@
 //! Notifications that continue across the person's own devices: what this device shows its others
 //! of what it was told, and what they told it.
 //! A notification an app sent on this device is projected to each of the person's devices that is
-//! online, under an id this session minted ([`ContinuityNotificationId`]): another device shows it
+//! online, under an id this session minted ([`NotificationId`]): another device shows it
 //! as its own banner and centre row, named after this device. The projection carries what the
 //! person's policy lets leave (the body only with previews on) and the actions the app offered, and
 //! it stops being shown once its window on the other device runs out or the person here is done
@@ -16,7 +16,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 use crate::platform::fabric::{
-    ContinuityNotificationProjection, MAX_CONTINUITY_NOTIFICATION_TTL_MS,
+    ContinuityNotificationProjection, MAX_CONTINUITY_NOTIFICATION_TTL_MS, NotificationId,
 };
 use crate::platform::fabric::{DeviceId, PersonalFabricAction};
 use crate::platform::fabric::{FabricLink as _, SharedLink};
@@ -28,9 +28,25 @@ use tilo_desktop_surface::notifications::{
 /// and centres anyway.
 const MAX_PROJECTED: usize = 128;
 
+/// How the shell here names a projection another device sent.
+pub(crate) fn shown(id: NotificationId) -> ContinuityNotificationId {
+    ContinuityNotificationId {
+        epoch: id.epoch,
+        token: id.token,
+    }
+}
+
+/// How the device that projected it names a projection the shell here shows.
+fn sent(id: ContinuityNotificationId) -> NotificationId {
+    NotificationId {
+        epoch: id.epoch,
+        token: id.token,
+    }
+}
+
 /// One notification this device projected to the person's other devices.
 struct Projected {
-    id: ContinuityNotificationId,
+    id: NotificationId,
     /// The shell's id for the notification here.
     log_id: u64,
     /// The actions the app offered, which only those may be invoked on.
@@ -47,7 +63,7 @@ struct State {
     /// What this device projected, by the daemon notification it came from.
     out: HashMap<u32, Projected>,
     /// The daemon notification each projection came from.
-    by_id: HashMap<ContinuityNotificationId, u32>,
+    by_id: HashMap<NotificationId, u32>,
     /// What another of the person's devices projected here, by the shell's id,
     /// so a choice on it is answered where it came from.
     shown: HashMap<u64, RemoteNotificationRoute>,
@@ -95,7 +111,7 @@ impl Mirroring {
         notification: &Notification,
         previews: bool,
         now_unix_ms: u64,
-    ) -> Option<ContinuityNotificationId> {
+    ) -> Option<NotificationId> {
         let link = self.link()?;
         let (app_id, app_name) = app;
         let mut state = self.state.borrow_mut();
@@ -104,7 +120,7 @@ impl Mirroring {
         let id = match state.out.get(&daemon_id) {
             Some(projected) => projected.id,
             None if state.out.len() >= MAX_PROJECTED => return None,
-            None => ContinuityNotificationId {
+            None => NotificationId {
                 epoch: state.epoch,
                 token: crate::platform::fabric::nonzero::<16>(),
             },
@@ -262,7 +278,7 @@ impl Mirroring {
     pub(crate) fn answer(
         &self,
         log_id: u64,
-        command: impl FnOnce(&DeviceId, ContinuityNotificationId) -> PersonalFabricAction,
+        command: impl FnOnce(&DeviceId, NotificationId) -> PersonalFabricAction,
     ) {
         let Some(route) = self.route_of(log_id) else {
             return;
@@ -271,7 +287,7 @@ impl Mirroring {
         let Ok(source) = DeviceId::new(route.source_device.clone()) else {
             return;
         };
-        self.deliver(&source, command(&source, route.notification_id));
+        self.deliver(&source, command(&source, sent(route.notification_id)));
     }
 
     /// Tell the device `route` shows the notification here what the person did with it: run
@@ -283,10 +299,10 @@ impl Mirroring {
         };
         let action = action.map_or_else(
             || PersonalFabricAction::NotificationDismiss {
-                id: route.notification_id,
+                id: sent(route.notification_id),
             },
             |key| PersonalFabricAction::NotificationInvoke {
-                id: route.notification_id,
+                id: sent(route.notification_id),
                 action_key: key.to_owned(),
             },
         );
@@ -294,8 +310,9 @@ impl Mirroring {
     }
 
     /// A retirement arrived from `source` : the shell forgets every copy of the projection it names.
-    pub(crate) fn retire_shown(&self, source: &DeviceId, id: ContinuityNotificationId) {
+    pub(crate) fn retire_shown(&self, source: &DeviceId, id: NotificationId) {
         let source = source.as_str();
+        let id = shown(id);
         self.state
             .borrow_mut()
             .shown

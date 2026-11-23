@@ -36,8 +36,8 @@ use media::sync_playout::{
 };
 use rand_core::Rng;
 
+use tilo_fabric::DeviceId;
 use tilo_lock::MutexRecover as _;
-use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::PhysicalGamepadBinding;
 use tilo_network_actor::fabric::clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutClock};
 use tilo_network_actor::fabric::clock::{
@@ -1204,7 +1204,7 @@ pub fn request(
             LocalAudioSelection::System => crate::i18n::t("remote-audio-all-system-audio"),
             LocalAudioSelection::Application { label, .. } => label.clone(),
         };
-        let session_id = tilo_network_actor::fabric::nonzero::<16>();
+        let session_id = tilo_fabric::nonzero::<16>();
         let now = Instant::now();
         state.outbound.insert(
             session_id,
@@ -1264,7 +1264,7 @@ pub fn authorize(
         .pending
         .remove(&session_id)
         .ok_or_else(|| crate::i18n::t("remote-audio-error-request-expired"))?;
-    let authorization = approved.then(tilo_network_actor::fabric::nonzero::<16>);
+    let authorization = approved.then(tilo_fabric::nonzero::<16>);
     if let Some(authorization) = authorization {
         let playback = match start_playback(
             media::pw_stream::native_streams(),

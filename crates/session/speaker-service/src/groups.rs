@@ -27,8 +27,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tilo_network_actor::fabric::link::FabricLink;
 
-use tilo_network_actor::fabric::DeviceId;
-use tilo_network_actor::fabric::FabricStamp;
+use tilo_fabric::DeviceId;
+use tilo_fabric::FabricStamp;
 use tilo_network_actor::fabric::clock::{ClockSyncFailure, ClockSyncState};
 use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState, SpeakerGroup,
@@ -1881,7 +1881,7 @@ pub fn handle_action(
             &envelope.source,
             &envelope.action,
             Instant::now(),
-            &mut tilo_network_actor::fabric::nonzero::<16>,
+            &mut tilo_fabric::nonzero::<16>,
         )
     };
     match out {
@@ -2219,7 +2219,7 @@ pub fn create_group(
     members: &[MemberSpec],
 ) -> Result<SpeakerGroupId, String> {
     with_core(network, |core, fabric, local| {
-        let id = SpeakerGroupId(tilo_network_actor::fabric::nonzero::<16>());
+        let id = SpeakerGroupId(tilo_fabric::nonzero::<16>());
         let out = core.create_group(fabric, local, id, name, members, Instant::now())?;
         Ok((id, out))
     })
@@ -2334,7 +2334,7 @@ pub fn start_session(
     source: GroupAudioSource,
 ) -> Result<[u8; 16], String> {
     with_core(network, |core, fabric, local| {
-        let session_id = tilo_network_actor::fabric::nonzero::<16>();
+        let session_id = tilo_fabric::nonzero::<16>();
         let out = core.start_session(fabric, local, group, source, session_id, Instant::now())?;
         Ok((session_id, out))
     })

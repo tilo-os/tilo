@@ -1209,6 +1209,7 @@ doc = false
 "tilo-content-blocker" = { path = "../../../crates/browser/content-blocker", default-features = false, features = [] }
 "tilo-content-device" = { path = "../../../crates/system/content-device", default-features = false, features = [] }
 "tilo-content-types" = { path = "../../../crates/system/content-types", default-features = false, features = [] }
+"tilo-continuity" = { path = "../../../crates/services/tilo-continuity", default-features = false, features = [] }
 "tilo-control" = { path = "../../../crates/session/control-cli", default-features = false, features = [] }
 "tilo-copy-lint" = { path = "../../../crates/dev/copy-lint", default-features = false, features = [] }
 "tilo-cpu-raster" = { path = "../../../crates/sdk/tilo-cpu-raster", default-features = false, features = [] }
@@ -1241,6 +1242,7 @@ doc = false
 "tilo-environment" = { path = "../../../crates/runtime/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../../crates/system/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../../crates/system/extension-helper", default-features = false, features = [] }
+"tilo-fabric" = { path = "../../../crates/core/tilo-fabric", default-features = false, features = ["test-support"] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../../crates/platform/tilo-failure", default-features = false, features = [] }
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }

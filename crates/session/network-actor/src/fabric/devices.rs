@@ -13,160 +13,14 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use tilo_continuity::clipboard::{ClipboardEntry, ClipboardHistory};
+use tilo_continuity::wifi::WifiCredential;
+use tilo_fabric::unlock::UnlockFabricState;
+use tilo_fabric::{DeviceAbout, DeviceId, DevicePresence, FabricError};
 
-use crate::fabric::model::unique;
 use crate::fabric::speaker_group::{
     SpeakerFabricState, SpeakerGroup, SpeakerGroupId, SpeakerMemberStatus,
 };
-use crate::fabric::unlock::UnlockFabricState;
-use crate::fabric::{
-    ClipboardEntry, ClipboardHistory, DeviceId, DeviceKind, DisplayConnectorPlacement,
-    DisplayOutputObservation, DisplayRect, FabricCapabilities, FabricError, MAX_WAKE_ROUTES,
-    OwnerSession, WakeRoute, WifiCredential,
-};
-
-/// What a device says it is, in its own part of the person's store: the name the person knows it
-/// by, what kind of device it is, and what it does for their other devices.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceAbout {
-    pub label: String,
-    pub kind: DeviceKind,
-    pub capabilities: FabricCapabilities,
-}
-
-impl DeviceAbout {
-    /// A device of the person's that wrote nothing of itself yet: named as its certificate names
-    /// it, and offering nothing.
-    #[must_use]
-    pub fn named(label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            kind: DeviceKind::Desktop,
-            capabilities: FabricCapabilities::default(),
-        }
-    }
-
-    /// # Errors
-    /// [`FabricError::InvalidLabel`] for a name no one could read.
-    pub fn validate(&self) -> Result<(), FabricError> {
-        if self.label.len() > 128 || self.label.chars().any(char::is_control) {
-            return Err(FabricError::InvalidLabel);
-        }
-        Ok(())
-    }
-}
-
-/// Where a device's displays stand and what the hardware behind each says.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceDisplay {
-    /// The area its outputs make together.
-    pub rect: DisplayRect,
-    pub scale_milli: u16,
-    /// Where each connector's output stands.
-    pub connectors: Vec<DisplayConnectorPlacement>,
-    /// What the hardware behind each output says: every placed connector has its active output
-    /// here, at the same place and scale.
-    pub outputs: Vec<DisplayOutputObservation>,
-}
-
-impl DeviceDisplay {
-    /// # Errors
-    /// [`FabricError::InvalidDisplayPlacement`] when the area, a connector or an output is out of
-    /// bounds, or the outputs do not describe the connectors.
-    pub fn validate(&self) -> Result<(), FabricError> {
-        let invalid = Err(FabricError::InvalidDisplayPlacement);
-        if self.rect.width == 0
-            || self.rect.height == 0
-            || !(500..=4000).contains(&self.scale_milli)
-            || self.connectors.len() > 32
-            || self.outputs.len() > settings_store::person_displays::MAX_DEVICE_OUTPUTS
-        {
-            return invalid;
-        }
-        unique(
-            self.connectors
-                .iter()
-                .map(|output| output.connector.as_str()),
-        )?;
-        unique(self.outputs.iter().map(|item| item.connector.as_str()))?;
-        unique(self.outputs.iter().map(|item| item.output.id.as_str()))?;
-        for connector in &self.connectors {
-            if !valid_name(&connector.connector)
-                || connector.label.len() > 256
-                || connector.label.chars().any(char::is_control)
-                || connector.rect.logical_placement().is_none()
-                || !(500..=4000).contains(&connector.scale_milli)
-            {
-                return invalid;
-            }
-        }
-        for item in &self.outputs {
-            if !valid_name(&item.connector) || !item.output.valid() {
-                return invalid;
-            }
-            let placed = self
-                .connectors
-                .iter()
-                .find(|connector| connector.connector == item.connector);
-            let output = &item.output;
-            match placed {
-                Some(connector) if output.active() => {
-                    let rect = DisplayRect {
-                        x: output.x,
-                        y: output.y,
-                        width: output.width,
-                        height: output.height,
-                    };
-                    if connector.rect != rect || connector.scale_milli != output.scale_milli {
-                        return invalid;
-                    }
-                }
-                Some(_) => return invalid,
-                None if output.active() => return invalid,
-                None => {}
-            }
-        }
-        if self.connectors.iter().any(|connector| {
-            !self
-                .outputs
-                .iter()
-                .any(|item| item.connector == connector.connector && item.output.active())
-        }) {
-            return invalid;
-        }
-        Ok(())
-    }
-}
-
-/// What a device says of itself while it is there, on its session with each of the person's other
-/// devices. Nothing keeps it: once the session ends, the device is gone until it says it again.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DevicePresence {
-    /// How siblings on the same LAN can wake it.
-    pub wake_routes: Vec<WakeRoute>,
-    /// The person's session on it, which their other devices' locks follow.
-    pub session: OwnerSession,
-    /// Its displays, when it offers them.
-    pub display: Option<DeviceDisplay>,
-}
-
-impl DevicePresence {
-    /// # Errors
-    /// Why this is not what a device could say of itself.
-    pub fn validate(&self) -> Result<(), FabricError> {
-        if self.wake_routes.len() > MAX_WAKE_ROUTES {
-            return Err(FabricError::TooLarge);
-        }
-        if !self.wake_routes.iter().all(WakeRoute::valid) {
-            return Err(FabricError::InvalidWakeRoute);
-        }
-        unique(self.wake_routes.iter().map(|route| route.mac))?;
-        self.display
-            .as_ref()
-            .map_or(Ok(()), DeviceDisplay::validate)
-    }
-}
 
 /// One of the person's devices, as this one knows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -280,24 +134,27 @@ impl PersonDevices {
             .collect()
     }
 
+    /// The devices as the fabric reads them: what each is and last said, and whether it is here.
+    #[must_use]
+    pub fn listed(&self) -> tilo_fabric::Devices {
+        tilo_fabric::Devices::new(self.devices.values().map(|device| tilo_fabric::Device {
+            device: device.device.clone(),
+            about: device.about.clone(),
+            online: device.online,
+            nearby: false,
+            last_seen_unix_ms: device.last_seen_unix_ms,
+            presence: device.presence.clone(),
+        }))
+    }
+
     /// Every copy the person's devices offer, newest first, as one bounded history.
     #[must_use]
     pub fn merged_clipboard(&self) -> ClipboardHistory {
-        let mut items: Vec<_> = self
-            .devices
-            .values()
-            .flat_map(|device| device.clipboard.iter().cloned())
-            .collect();
-        // Oldest first: each copy goes in front of the ones before it, and a full history lets
-        // the oldest go.
-        items.sort_by(|a, b| (a.created_unix_ms, &a.stamp).cmp(&(b.created_unix_ms, &b.stamp)));
-        let mut history = ClipboardHistory::default();
-        for item in items {
-            if history.push(item).is_err() {
-                break;
-            }
-        }
-        history
+        tilo_continuity::clipboard::merged(
+            self.devices
+                .values()
+                .flat_map(|device| device.clipboard.iter().cloned()),
+        )
     }
 
     /// Every group any of the person's devices leads, the newest of each.
@@ -384,10 +241,6 @@ impl PersonDevices {
         }
         Ok(())
     }
-}
-
-fn valid_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
 }
 
 #[cfg(test)]

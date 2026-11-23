@@ -4,7 +4,7 @@
 //! six `0xFF` bytes then the target's MAC sixteen times, broadcast on the LAN
 //! it last sat on. Only a device sharing that LAN can send it, so the person's
 //! other devices cooperate: the one that shares it sends the packet, and any
-//! device may ask for the wake ([`crate::fabric::PersonalFabricAction::WakeDevice`]).
+//! device may ask for the wake (the fabric's `wake#ask` action).
 //!
 //! What each device needs known here is pure and decided by the fabric the
 //! session already keeps: which device a name or id names, which of them can
@@ -20,7 +20,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::fabric::{DeviceId, Ipv4Subnet, MAX_WAKE_ROUTES, PersonDevices, WakeOutcome, WakeRoute};
+use serde::{Deserialize, Serialize};
+
+use crate::{DeviceId, Devices, Ipv4Subnet, MAX_WAKE_ROUTES, WakeRoute};
 
 /// The port a magic packet goes to.
 pub const MAGIC_PACKET_PORT: u16 = 9;
@@ -107,6 +109,22 @@ impl std::fmt::Display for WakeRefusal {
 
 impl std::error::Error for WakeRefusal {}
 
+/// What became of one request to wake a device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeOutcome {
+    /// The magic packet went out on this subnet; the waker now waits.
+    Sent { subnet: Ipv4Subnet },
+    /// The target is back on the person's device network.
+    Rejoined,
+    /// The target did not come back within the wait.
+    NotRejoined,
+    /// The waker shares no LAN with any wakeable interface of the target.
+    NotOnTargetLan,
+    /// The packet could not be sent.
+    SendFailed,
+}
+
 /// Which device sends the magic packet, and on which subnet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WakePlan {
@@ -121,7 +139,7 @@ pub struct WakePlan {
 /// # Errors
 ///
 /// Returns why `name` names no single device.
-pub fn resolve_device(fabric: &PersonDevices, name: &str) -> Result<DeviceId, WakeRefusal> {
+pub fn resolve_device(fabric: &Devices, name: &str) -> Result<DeviceId, WakeRefusal> {
     let name = name.trim();
     if let Some(snapshot) = fabric
         .devices()
@@ -143,7 +161,7 @@ pub fn resolve_device(fabric: &PersonDevices, name: &str) -> Result<DeviceId, Wa
 }
 
 /// The subnets a magic packet can wake `target` on, in its own order.
-fn wakeable_subnets(fabric: &PersonDevices, target: &DeviceId) -> Vec<Ipv4Subnet> {
+fn wakeable_subnets(fabric: &Devices, target: &DeviceId) -> Vec<Ipv4Subnet> {
     let mut subnets = Vec::new();
     for route in fabric
         .devices()
@@ -178,7 +196,7 @@ fn on_subnet(routes: &[WakeRoute], subnet: Ipv4Subnet) -> bool {
 ///
 /// Returns why nothing can wake the target, naming the subnets searched.
 pub fn plan_wake(
-    fabric: &PersonDevices,
+    fabric: &Devices,
     local: &DeviceId,
     local_routes: &[WakeRoute],
     target: &DeviceId,
@@ -225,7 +243,7 @@ pub fn plan_wake(
 /// of the target on a subnet this device is on.
 #[must_use]
 pub fn magic_packets_for(
-    fabric: &PersonDevices,
+    fabric: &Devices,
     local_routes: &[WakeRoute],
     target: &DeviceId,
 ) -> Vec<([u8; 6], Ipv4Subnet)> {
@@ -324,7 +342,7 @@ impl WakeWatch {
                 requester,
                 started: now,
                 last_probe: None,
-                nonce: crate::fabric::nonzero::<16>(),
+                nonce: crate::nonzero::<16>(),
             },
         );
         true
@@ -399,7 +417,7 @@ impl WakeWatch {
 }
 
 /// What the person who asked to wake a device is told.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WakeEvent {
     pub target: DeviceId,
     pub label: String,
@@ -541,9 +559,8 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::fabric::{
-        DeviceAbout, DeviceKind, DevicePresence, FabricCapabilities, PersonDevice,
-        WakeInterfaceKind,
+    use crate::{
+        Device, DeviceAbout, DeviceKind, DevicePresence, FabricCapabilities, WakeInterfaceKind,
     };
 
     fn id(value: &str) -> DeviceId {
@@ -564,8 +581,8 @@ mod tests {
         }
     }
 
-    fn device(name: &str, label: &str, routes: Vec<WakeRoute>) -> PersonDevice {
-        let mut device = PersonDevice::new(
+    fn device(name: &str, label: &str, routes: Vec<WakeRoute>) -> Device {
+        let mut device = Device::new(
             id(name),
             DeviceAbout {
                 label: label.into(),
@@ -581,8 +598,8 @@ mod tests {
         device
     }
 
-    fn fabric(devices: Vec<PersonDevice>) -> PersonDevices {
-        PersonDevices::new(devices, Vec::new())
+    fn fabric(devices: Vec<Device>) -> Devices {
+        Devices::new(devices)
     }
 
     #[test]

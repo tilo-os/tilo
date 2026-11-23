@@ -120,10 +120,10 @@ impl SurfaceWireFrame {
 pub enum PersonalFabricPayload {
     /// What the sending device says of itself while it is there: sent when its
     /// session with a sibling starts and whenever it changes, and never kept.
-    Presence(Box<crate::fabric::DevicePresence>),
+    Presence(Box<tilo_fabric::DevicePresence>),
     /// The copies the sending device offers, as it offers them now: sent when
     /// its session with a sibling starts and whenever they change.
-    Clipboard(Vec<crate::fabric::ClipboardEntry>),
+    Clipboard(Vec<tilo_continuity::clipboard::ClipboardEntry>),
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through workspace history.
     Action(Vec<u8>),
@@ -131,28 +131,6 @@ pub enum PersonalFabricPayload {
     /// and media handoffs alike. Offers and resume checkpoints travel as
     /// authenticated actions; this worker carries bounded bytes only.
     NearbyTransfer(PersonalNearbyTransferFrame),
-    /// One signed mutation of a record in the person's own store. Its scope is
-    /// implied by the route: the fabric only ever joins one person's devices.
-    /// `document_id` is the sealed wire name, as on a workspace topic.
-    Document {
-        app_id: String,
-        document_id: String,
-        envelope: Box<collab_types::SignedOp>,
-    },
-    /// A device of the person asking for content one of `app_id`'s person
-    /// records references. Its scope is the person's, implied by the route.
-    DocumentContentWant { app_id: String, hash: String },
-    /// One bounded piece of that content, for the device that asked alone.
-    DocumentContentPiece {
-        app_id: String,
-        hash: String,
-        total: u64,
-        offset: u64,
-        bytes: Vec<u8>,
-    },
-    /// Word to the device that asked ([`Self::DocumentContentWant`]) that this
-    /// one keeps none of that content.
-    DocumentContentLacks { app_id: String, hash: String },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -808,7 +786,7 @@ fn read_personal_fabric(
                 return;
             };
             let bytes = match recv
-                .read_to_end(crate::fabric::MAX_FABRIC_FRAME_BYTES + 128)
+                .read_to_end(tilo_fabric::MAX_FABRIC_FRAME_BYTES + 128)
                 .await
             {
                 Ok(bytes) => bytes,
@@ -1423,7 +1401,7 @@ impl ActorState {
         payload: PersonalFabricPayload,
         exact_target: Option<EndpointId>,
     ) {
-        if matches!(payload, PersonalFabricPayload::Action(ref bytes) if bytes.len() > crate::fabric::MAX_FABRIC_ACTION_BYTES)
+        if matches!(payload, PersonalFabricPayload::Action(ref bytes) if bytes.len() > tilo_fabric::MAX_FABRIC_ACTION_BYTES)
         {
             tracing::warn!("personal fabric action exceeds wire limit");
             return;
@@ -1435,7 +1413,7 @@ impl ActorState {
         let Ok(bytes) = postcard::to_allocvec(&wire) else {
             return;
         };
-        if bytes.len() > crate::fabric::MAX_FABRIC_FRAME_BYTES + 128 {
+        if bytes.len() > tilo_fabric::MAX_FABRIC_FRAME_BYTES + 128 {
             tracing::warn!(
                 bytes = bytes.len(),
                 "personal fabric frame exceeds wire limit"
@@ -2612,7 +2590,7 @@ async fn send_nearby_transfer_frame(
         payload: PersonalFabricPayload::NearbyTransfer(frame),
     };
     let bytes = postcard::to_allocvec(&wire).map_err(|_| ())?;
-    if bytes.len() > crate::fabric::MAX_FABRIC_FRAME_BYTES + 128 {
+    if bytes.len() > tilo_fabric::MAX_FABRIC_FRAME_BYTES + 128 {
         return Err(());
     }
     let send = async {

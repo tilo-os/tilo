@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tilo_network_actor::fabric::DeviceId;
+use tilo_fabric::DeviceId;
 use tilo_network_actor::fabric::PersonalFabricAction;
 use tilo_network_actor::fabric::speaker_group::{
     EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerTrim,

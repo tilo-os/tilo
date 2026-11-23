@@ -25,6 +25,7 @@ use tilo_actions::ApiError;
 use tilo_actions::remote::{RemoteActionTarget, application_action_target};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
+use tilo_fabric::interfaces::WakeInterfaces;
 use tilo_quick_settings::RowPart;
 use tilo_quick_settings::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, SOUND_KEY};
 use tilo_session::platform::fabric::wake::{self, MagicPackets};
@@ -36,7 +37,7 @@ use tilo_session::platform::fabric::{
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::surfaces::Surface;
-use tilo_session::{AppActions, AppLists, Lists, Options, Session, WakeInterfaces, WakeIo};
+use tilo_session::{AppActions, AppLists, Lists, Options, Session, WakeIo};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 

@@ -173,7 +173,7 @@ impl Live {
         peer: EndpointId,
         bytes: &[u8],
     ) -> Result<PersonalFabricAction, FabricError> {
-        if bytes.len() > tilo_network_actor::fabric::MAX_FABRIC_ACTION_BYTES {
+        if bytes.len() > tilo_fabric::MAX_FABRIC_ACTION_BYTES {
             return Err(FabricError::ActionTooLarge);
         }
         let (envelope, trailing) = postcard::take_from_bytes::<PersonalFabricActionEnvelope>(bytes)

@@ -8,9 +8,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use tilo_continuity::clipboard::ClipboardPayload;
+use tilo_fabric::{FabricStamp, OwnerSession};
 use tilo_network_actor::PersonalFabricPayload;
 use tilo_network_actor::fabric::link::FabricLink as _;
-use tilo_network_actor::fabric::{ClipboardPayload, FabricStamp, OwnerSession};
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 use super::super::{Continuity, Reach, SessionFabric};

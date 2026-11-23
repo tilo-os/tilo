@@ -1,0 +1,42 @@
+[package]
+name = "tilo-fabric"
+description = "A person's devices as one: who is here and nearby, the lock that follows the person, waking a sleeping device and unlocking another device's disk at boot, as actions on the device link."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[features]
+# The in-memory devices the fabric's tests and its services' tests are wired from.
+test-support = []
+
+[dependencies]
+blake3.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+libc.workspace = true
+os-actions = { path = "../../system/os-actions" }
+postcard = { workspace = true, features = ["alloc"] }
+serde.workspace = true
+serde_json.workspace = true
+settings-store = { path = "../../system/settings-store" }
+thiserror.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-seal = { path = "../../system/tilo-seal" }
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
+tilo-fabric = { path = ".", features = ["test-support"] }
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

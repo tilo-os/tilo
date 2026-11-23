@@ -35,7 +35,7 @@ use crate::calibration::{
 use crate::groups::{
     ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
 };
-use tilo_network_actor::fabric::DeviceId;
+use tilo_fabric::DeviceId;
 use tilo_network_actor::fabric::PersonDevices;
 use tilo_network_actor::fabric::speaker_group::{
     AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, SpeakerTrim,
@@ -908,7 +908,7 @@ fn start_calibration(
         microphones,
         listening,
         timed_source(network, local, &peers),
-        Box::new(tilo_network_actor::fabric::nonzero::<16>),
+        Box::new(tilo_fabric::nonzero::<16>),
         Instant::now(),
     )?;
     state()

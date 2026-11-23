@@ -4,10 +4,9 @@ use std::time::{Duration, Instant};
 use media::sync_playout::ChannelRole;
 
 use super::*;
+use tilo_fabric::{DeviceAbout, DeviceKind, FabricCapabilities};
 use tilo_network_actor::fabric::speaker_group::{StereoSide, SurroundChannel};
-use tilo_network_actor::fabric::{
-    DeviceAbout, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
-};
+use tilo_network_actor::fabric::{PersonDevice, PersonDevices};
 
 const LEFT: SpeakerRole = SpeakerRole::Stereo(StereoSide::Left);
 const RIGHT: SpeakerRole = SpeakerRole::Stereo(StereoSide::Right);

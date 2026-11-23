@@ -1,7 +1,7 @@
 //! What a drag that crosses between the person's devices carries: never a byte of content, only
 //! what names it in the workspace.
 
-use crate::fabric::{valid_fabric_identifier, valid_mime};
+use tilo_fabric::{valid_fabric_identifier, valid_mime};
 
 /// What a drag that crossed between the person's devices carries. No byte of content rides in
 /// it: content is kept in the workspace and named, a resource is named by its address.

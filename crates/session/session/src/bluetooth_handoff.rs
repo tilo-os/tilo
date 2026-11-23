@@ -180,11 +180,6 @@ impl Handoffs {
                 request_id,
                 address,
             } => self.cancelled(shared, fabric, envelope, request_id, address),
-            // A destination that wants the accessory paired with this approval has none to give
-            // here: this session asks the person for no pairing, so nothing ever offers one and an
-            // offer that arrives anyway is dropped.
-            PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
-            | PersonalFabricAction::BluetoothHandoffPairingCommit { .. } => {}
             _ => return false,
         }
         true

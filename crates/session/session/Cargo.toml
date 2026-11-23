@@ -238,6 +238,10 @@ tilo-server-account = { path = "../../server/tilo-server-account" }
 # The session asks the model gateway as Activity, the way an app it starts
 # does, for the history's descriptions and group names.
 tilo-model-client = { path = "../../agent/model-client", features = ["runtime-client"] }
+# What crosses between the person's own devices: who each is, its lock, wake and unlock, and
+# the clipboard, notifications and Wi-Fi they hand each other.
+tilo-continuity = { path = "../../services/tilo-continuity" }
+tilo-fabric = { path = "../../core/tilo-fabric" }
 # Who is here: the session's own membership of each workspace, on the
 # peer network's peer actor.
 tilo-network-actor = { path = "../network-actor" }

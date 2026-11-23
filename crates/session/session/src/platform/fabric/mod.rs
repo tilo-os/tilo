@@ -4,10 +4,10 @@
 //! without that connection hands out none.
 //!
 //! Who a device is, the stamp a fact carries and the fresh ids that name an exchange are portable
-//! ([`tilo_network_actor::fabric`]); what the fabric converges is the desktop's until the settings schema it
+//! ([`tilo_fabric`]); what the fabric converges is the desktop's until the settings schema it
 //! merges with is portable too.
 
-pub use tilo_network_actor::fabric::{DeviceId, FabricStamp, nonzero};
+pub use tilo_fabric::{DeviceId, FabricStamp, nonzero};
 
 #[cfg(target_os = "linux")]
 mod linux;

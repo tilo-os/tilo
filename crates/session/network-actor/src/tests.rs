@@ -154,7 +154,7 @@ tilo_test_env::scenario! {
             }),
         };
         let encoded = postcard::to_allocvec(&wire).unwrap();
-        assert!(encoded.len() < crate::fabric::MAX_FABRIC_FRAME_BYTES);
+        assert!(encoded.len() < tilo_fabric::MAX_FABRIC_FRAME_BYTES);
         let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
         let PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
             transfer_id,
@@ -644,7 +644,7 @@ async fn personal_fabric_unknown_extension_preserves_following_streams() {
         .unwrap();
     assert!(matches!(event, InternalEvent::PersonalFabric {
         payload: PersonalFabricPayload::Presence(presence), ..
-    } if presence.as_ref() == &crate::fabric::DevicePresence::default()));
+    } if presence.as_ref() == &tilo_fabric::DevicePresence::default()));
     connection.close(0u32.into(), b"fixture complete");
     router.shutdown().await.unwrap();
     a.close().await;
@@ -1050,7 +1050,7 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
                     payload: PersonalFabricPayload::Presence(presence),
                     ..
                 } if user_public_key == root
-                    && presence.as_ref() == &crate::fabric::DevicePresence::default()
+                    && presence.as_ref() == &tilo_fabric::DevicePresence::default()
             ) {
                 break;
             }

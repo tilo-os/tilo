@@ -1,4 +1,5 @@
 use super::*;
+use tilo_fabric::FabricStamp;
 
 #[test]
 fn a_scroll_says_its_unit_and_only_a_finger_scroll_may_be_empty() {
@@ -129,106 +130,11 @@ fn media_handoff_and_media_actions_are_capability_and_locator_checked() {
 }
 
 #[test]
-fn window_views_are_bounded_distinct_and_sized() {
-    let source = id("viewer");
-    let target = id("host");
-    let envelope =
-        |views: Vec<WindowView>, decode: Vec<HardwareDecode>| PersonalFabricActionEnvelope {
-            request_id: [5; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::WindowViews { views, decode },
-        };
-    let view = |tab, width, height| WindowView { tab, width, height };
-    let ok = |views| {
-        envelope(views, Vec::new())
-            .validate_at(&source, &target, 10_000)
-            .is_ok()
-    };
-    let decodes = |decode| {
-        envelope(vec![view(7, 1280, 800)], decode)
-            .validate_at(&source, &target, 10_000)
-            .is_ok()
-    };
-    let hw = |codec: &str, max| HardwareDecode {
-        codec: codec.into(),
-        max,
-    };
-
-    assert!(ok(Vec::new()), "an empty list ends every stream");
-    assert!(ok(vec![
-        view(7, 1280, 800),
-        view(8, 1, MAX_WINDOW_VIEW_SIDE)
-    ]));
-    assert!(!ok(vec![view(0, 1280, 800)]), "a tab id is never zero");
-    assert!(!ok(vec![view(7, 0, 800)]));
-    assert!(!ok(vec![view(7, 1280, MAX_WINDOW_VIEW_SIDE + 1)]));
-    assert!(
-        !ok(vec![view(7, 1280, 800), view(7, 640, 480)]),
-        "one size per tab"
-    );
-    assert!(!ok((1..=u64::try_from(MAX_WINDOW_VIEWS).unwrap() + 1)
-        .map(|tab| view(tab, 100, 100))
-        .collect()));
-
-    // A board's decoder limit travels with the list.
-    assert!(decodes(vec![
-        hw("h264", Some((1920, 1088))),
-        hw("av1", None)
-    ]));
-    assert!(!decodes(vec![hw("mjpeg", None)]), "a codec streams use");
-    assert!(!decodes(vec![hw("h264", Some((0, 1088)))]));
-    assert!(
-        !decodes(vec![hw("h264", None), hw("h264", Some((1280, 720)))]),
-        "one limit per codec"
-    );
-}
-
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn clipboard_and_nearby_payloads_are_bounded_and_tamper_checked() {
-    fn clipboard_is_deduplicated_and_bounded() {
-        let mut history = ClipboardHistory::default();
-        for n in 0..=MAX_CLIPBOARD_ITEMS {
-            history
-                .push(
-                    ClipboardEntry::shareable(
-                        ClipboardPayload::Text(format!("item-{n}")),
-                        id("laptop"),
-                        n as u64,
-                        stamp("laptop", n as u64),
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-        }
-        assert_eq!(history.entries().count(), MAX_CLIPBOARD_ITEMS);
-    }
-
-    fn clipboard_hash_tampering_is_rejected() {
-        let mut entry = ClipboardEntry::shareable(
-            ClipboardPayload::Text("safe".into()),
-            id("phone"),
-            1,
-            stamp("phone", 1),
-        )
-        .unwrap();
-        entry.payload = ClipboardPayload::Text("changed".into());
-        assert_eq!(
-            entry.validate(&id("phone")),
-            Err(FabricError::ClipboardHashMismatch)
-        );
-        assert_eq!(
-            entry.validate(&id("laptop")),
-            Err(FabricError::ForeignAuthorship),
-            "another device's copy is not this one's to validate"
-        );
-    }
-
+fn nearby_transfer_actions_are_bounded() {
     fn nearby_transfer_actions_bind_nonzero_ids_and_bounded_manifests() {
         let source = id("source");
         let target = id("target");
@@ -273,110 +179,7 @@ fn clipboard_and_nearby_payloads_are_bounded_and_tamper_checked() {
         );
     }
 
-    fn nearby_drop_rejects_paths_tampering_and_oversize_payloads() {
-        let source = id("source");
-        let target = id("target");
-        for (name, bytes, hash) in [
-            ("../secret", b"ok".to_vec(), *blake3::hash(b"ok").as_bytes()),
-            ("note.txt", b"changed".to_vec(), [0; 32]),
-            ("note.txt", vec![1; MAX_NEARBY_DROP_BYTES + 1], [0; 32]),
-        ] {
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [1; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10,
-                action: PersonalFabricAction::NearbyDrop {
-                    file_name: name.into(),
-                    content_hash: hash,
-                    bytes,
-                },
-            };
-            assert_eq!(
-                envelope.validate_at(&source, &target, 10),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
-    clipboard_is_deduplicated_and_bounded();
-    clipboard_hash_tampering_is_rejected();
     nearby_transfer_actions_bind_nonzero_ids_and_bounded_manifests();
-    nearby_drop_rejects_paths_tampering_and_oversize_payloads();
-}
-
-#[test]
-fn wifi_credentials_are_sealed_and_typed() {
-    fn wifi_secrets_must_be_sealed() {
-        let credential = WifiCredential {
-            network_id: [1; 32],
-            ssid: "Home".into(),
-            security: os_actions::WifiSecurity::Wpa3,
-            sealed_secret: Vec::new(),
-            nonce: [2; 24],
-            stamp: stamp("phone", 1),
-        };
-        assert_eq!(
-            credential.validate(),
-            Err(FabricError::InvalidWifiCredential)
-        );
-    }
-
-    fn typed_wifi_security_decodes_the_legacy_string_postcard_shape() {
-        #[derive(Serialize)]
-        struct LegacyWifiCredential {
-            network_id: [u8; 32],
-            ssid: String,
-            security: String,
-            sealed_secret: Vec<u8>,
-            nonce: [u8; 24],
-            stamp: FabricStamp,
-        }
-
-        let legacy = LegacyWifiCredential {
-            network_id: [1; 32],
-            ssid: "Home".into(),
-            security: "wpa3".into(),
-            sealed_secret: vec![1, 2, 3],
-            nonce: [2; 24],
-            stamp: stamp("phone", 1),
-        };
-        let bytes = postcard::to_allocvec(&legacy).unwrap();
-        let decoded: WifiCredential = postcard::from_bytes(&bytes).unwrap();
-        assert_eq!(decoded.security, os_actions::WifiSecurity::Wpa3);
-        assert_eq!(postcard::to_allocvec(&decoded).unwrap(), bytes);
-    }
-
-    fn an_enterprise_entry_never_supplies_a_password() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-        let owner_text = hex::encode(key.verifying_key().to_bytes());
-        let owner = id(&owner_text);
-        let mut credential = crate::fabric::secrets::seal_wifi_credential(
-            "Corp",
-            os_actions::WifiSecurity::Wpa2,
-            "legacy-secret",
-            &owner,
-            [owner.clone()],
-            FabricStamp {
-                counter: 1,
-                device: owner.clone(),
-            },
-        )
-        .unwrap();
-        assert_eq!(credential.validate(), Ok(()));
-        // Version 1 allowed this string even though its secret lacked the EAP
-        // identity and CA policy needed to safely recreate the profile.
-        credential.security = os_actions::WifiSecurity::Enterprise;
-
-        assert_eq!(
-            crate::fabric::secrets::open_wifi_credential(&credential, &key),
-            Err(crate::fabric::secrets::WifiSecretError::InvalidCredential)
-        );
-    }
-
-    wifi_secrets_must_be_sealed();
-    typed_wifi_security_decodes_the_legacy_string_postcard_shape();
-    an_enterprise_entry_never_supplies_a_password();
 }
 
 #[test]
@@ -384,7 +187,7 @@ fn wifi_credentials_are_sealed_and_typed() {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn remote_input_and_gamepad_actions_require_exact_bound_leases() {
+fn remote_input_actions_require_exact_bound_leases() {
     fn remote_input_requires_a_short_lived_explicit_lease() {
         let lease = InputLease {
             controller: id("laptop"),
@@ -463,58 +266,9 @@ fn remote_input_and_gamepad_actions_require_exact_bound_leases() {
         }
     }
 
-    fn gamepad_actions_are_typed_exact_bound_and_nonzero() {
-        let source = id("source");
-        let target = id("target");
-        let envelope = |action| PersonalFabricActionEnvelope {
-            request_id: [8; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action,
-        };
-        assert!(
-            envelope(PersonalFabricAction::GamepadForwardEvent {
-                forwarding_id: [1; 16],
-                lease_nonce: [2; 16],
-                sequence: 1,
-                event: os_actions::ForwardedGamepadEvent::Button {
-                    button: os_actions::GamepadButton::South,
-                    pressed: true,
-                },
-            })
-            .validate_at(&source, &target, 10_001)
-            .is_ok()
-        );
-        for action in [
-            PersonalFabricAction::GamepadForwardGrant {
-                forwarding_id: [1; 16],
-                accepted: true,
-                lease_nonce: [0; 16],
-            },
-            PersonalFabricAction::GamepadForwardGrant {
-                forwarding_id: [1; 16],
-                accepted: false,
-                lease_nonce: [2; 16],
-            },
-            PersonalFabricAction::GamepadForwardEvent {
-                forwarding_id: [1; 16],
-                lease_nonce: [2; 16],
-                sequence: 2,
-                event: os_actions::ForwardedGamepadEvent::Hat { x: 2, y: 0 },
-            },
-        ] {
-            assert_eq!(
-                envelope(action).validate_at(&source, &target, 10_001),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
     remote_input_requires_a_short_lived_explicit_lease();
     input_lease_must_be_issued_by_the_target_to_its_controller();
     input_actions_reject_unbound_or_malformed_events();
-    gamepad_actions_are_typed_exact_bound_and_nonzero();
 }
 
 #[test]
@@ -554,7 +308,11 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
             Err(FabricError::InvalidAction)
         );
         assert_eq!(
-            envelope.validate_at(&source, &target, 10_000 + MAX_FABRIC_ACTION_AGE_MS + 1),
+            envelope.validate_at(
+                &source,
+                &target,
+                10_000 + tilo_fabric::MAX_FABRIC_ACTION_AGE_MS + 1
+            ),
             Err(FabricError::InvalidAction)
         );
     }
@@ -572,77 +330,21 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
         .unwrap();
         assert_eq!(input.first(), Some(&4));
         assert_eq!(bluetooth.first(), Some(&5));
-        let pairing =
-            postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPairingOffered {
-                request_id: [2; 16],
-                address: "AA:BB:CC:DD:EE:FF".into(),
-                authorization: [4; 16],
-            })
-            .unwrap();
-        assert_eq!(pairing.first(), Some(&10));
-        let nearby = postcard::to_allocvec(&PersonalFabricAction::NearbyDrop {
-            file_name: "note.txt".into(),
-            content_hash: *blake3::hash(b"hello").as_bytes(),
-            bytes: b"hello".to_vec(),
-        })
-        .unwrap();
-        assert_eq!(nearby.first(), Some(&12));
         let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
-            id: crate::fabric::notification::ContinuityNotificationId {
+            id: NotificationId {
                 epoch: [1; 16],
                 token: [2; 16],
             },
         })
         .unwrap();
-        assert_eq!(notification.first(), Some(&20));
-        for (action, index) in [
-            (
-                PersonalFabricAction::GamepadForwardRequest {
-                    forwarding_id: [3; 16],
-                    app_id: "so.tilo.game".into(),
-                    workspace_id: "workspace".into(),
-                    session_id: "session".into(),
-                    label: "Controller".into(),
-                },
-                23,
-            ),
-            (
-                PersonalFabricAction::GamepadForwardGrant {
-                    forwarding_id: [3; 16],
-                    accepted: true,
-                    lease_nonce: [4; 16],
-                },
-                24,
-            ),
-            (
-                PersonalFabricAction::GamepadForwardEvent {
-                    forwarding_id: [3; 16],
-                    lease_nonce: [4; 16],
-                    sequence: 1,
-                    event: os_actions::ForwardedGamepadEvent::Hat { x: 0, y: -1 },
-                },
-                25,
-            ),
-            (
-                PersonalFabricAction::GamepadForwardStop {
-                    forwarding_id: [3; 16],
-                    lease_nonce: [4; 16],
-                },
-                26,
-            ),
-        ] {
-            assert_eq!(
-                postcard::to_allocvec(&action).unwrap().first(),
-                Some(&index)
-            );
-        }
+        assert_eq!(notification.first(), Some(&16));
     }
 
     fn notification_actions_are_source_bound_bounded_and_fresh() {
         let source = id("source");
         let target = id("target");
-        let notification = crate::fabric::notification::ContinuityNotificationProjection {
-            id: crate::fabric::notification::ContinuityNotificationId {
+        let notification = ContinuityNotificationProjection {
+            id: NotificationId {
                 epoch: [1; 16],
                 token: [2; 16],
             },
@@ -670,7 +372,7 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
 
         let invalid = PersonalFabricActionEnvelope {
             action: PersonalFabricAction::NotificationInvoke {
-                id: crate::fabric::notification::ContinuityNotificationId {
+                id: NotificationId {
                     epoch: [1; 16],
                     token: [2; 16],
                 },
@@ -832,15 +534,6 @@ fn audio_and_bluetooth_wire_is_versioned_bounded_and_canonical() {
             envelope(PersonalFabricAction::BluetoothHandoffCommit {
                 request_id: [0; 16],
                 address: "AA:BB:CC:DD:EE:FF".into(),
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::BluetoothHandoffPairingOffered {
-                request_id: [5; 16],
-                address: "AA:BB:CC:DD:EE:FF".into(),
-                authorization: [0; 16],
             })
             .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)

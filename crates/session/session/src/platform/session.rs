@@ -49,7 +49,7 @@ pub use crate::run::{Backend, Reach};
 pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeShell;
 pub use crate::vpn::Vpn;
-pub use crate::wake::{WakeInterfaces, WakeIo};
+pub use crate::wake::WakeIo;
 pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
@@ -1702,7 +1702,7 @@ impl Session {
             file_picker,
             lock,
             keyboard,
-            owner_session: crate::owner_session::SessionFollow::default(),
+            owner_session: tilo_fabric::owner::SessionFollow::default(),
             display_confirm,
             notices: notices.clone(),
             moves: crate::window_move::Moves::new(

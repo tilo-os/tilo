@@ -18688,6 +18688,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-continuity"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "os-actions",
+ "postcard",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "thiserror 2.0.21",
+ "tilo-actions",
+ "tilo-clipboard",
+ "tilo-clock",
+ "tilo-fabric",
+ "tilo-lock",
+ "tilo-seal",
+ "tilo-test-env",
+ "tracing",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-control"
 version = "0.1.0"
 dependencies = [
@@ -19375,6 +19400,35 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-fabric"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "os-actions",
+ "p256 0.14.0",
+ "postcard",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "thiserror 2.0.21",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-fabric",
+ "tilo-identity",
+ "tilo-lock",
+ "tilo-seal",
+ "tilo-test-env",
+ "tilo-unlock-protocol",
+ "tilo-user-identity",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -20492,11 +20546,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-continuity",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-desktop-surface",
  "tilo-device-identity",
  "tilo-endpoint-reachability",
+ "tilo-fabric",
  "tilo-files",
  "tilo-identity",
  "tilo-lock",
@@ -22041,6 +22097,7 @@ dependencies = [
  "tilo-compositor",
  "tilo-connectivity-service",
  "tilo-content",
+ "tilo-continuity",
  "tilo-copy-lint",
  "tilo-crash-reports",
  "tilo-delivery-protocol",
@@ -22057,6 +22114,7 @@ dependencies = [
  "tilo-documents",
  "tilo-endpoint-reachability",
  "tilo-enrollment",
+ "tilo-fabric",
  "tilo-failure",
  "tilo-feedback",
  "tilo-files",
@@ -22406,6 +22464,7 @@ dependencies = [
  "rand_core 0.10.0",
  "runtime-collab",
  "serde_json",
+ "tilo-fabric",
  "tilo-lock",
  "tilo-media",
  "tilo-network-actor",
@@ -29162,6 +29221,7 @@ dependencies = [
  "tilo-content-blocker",
  "tilo-content-device",
  "tilo-content-types",
+ "tilo-continuity",
  "tilo-control",
  "tilo-copy-lint",
  "tilo-cpu-raster",
@@ -29194,6 +29254,7 @@ dependencies = [
  "tilo-environment",
  "tilo-esp-write",
  "tilo-extension",
+ "tilo-fabric",
  "tilo-face",
  "tilo-failure",
  "tilo-feedback",
