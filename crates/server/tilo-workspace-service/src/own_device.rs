@@ -39,6 +39,9 @@ const _: () = assert!(OPEN_WAIT.as_secs() > tilo_workspace_keys::founding_wait()
 pub struct Device<'a> {
     pub cert: &'a DeviceCert,
     pub signer: &'a Arc<dyn DeviceSigner>,
+    /// The device itself, when its service acts as it rather than under a key of its own: a
+    /// server, whose people's devices address the workspaces it keeps to its device key.
+    pub itself: Option<ServiceIdentity>,
 }
 
 /// Open the workspace service `device` keeps under `store`, on `endpoint`, its groups kept by
@@ -62,7 +65,10 @@ pub async fn open(
     governs: bool,
     configure: impl FnOnce(ServiceConfig) -> ServiceConfig,
 ) -> Result<WorkspaceService, ServiceError> {
-    let identity = ServiceIdentity::beside_device(&store, device.cert, &**device.signer).await?;
+    let identity = match device.itself {
+        Some(itself) => itself,
+        None => ServiceIdentity::beside_device(&store, device.cert, &**device.signer).await?,
+    };
     // A person's own device takes nobody else's work, and its member copies act as it; a
     // server's `configure` says otherwise.
     let config = configure(ServiceConfig {

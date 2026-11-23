@@ -366,22 +366,31 @@ impl Daemon {
             }
             None => (endpoint(&identity, port, member)?, None),
         };
+        let itself = keeping
+            .as_ref()
+            .map(|_| {
+                super::keep::Keeping::itself(
+                    &identity.key,
+                    &identity.cert,
+                    &identity.place.dir().join(OWN),
+                )
+            })
+            .transpose()?;
         let workspaces = open_workspaces(
             &identity,
             endpoint,
             Arc::clone(&brokers),
             key_sessions.as_ref(),
-            keeping.as_ref(),
+            keeping.as_ref().zip(itself.clone()),
         )?;
         // What a server keeps beyond its copies, on the workspace service it governs.
-        let kept = match (keeping, relay) {
-            (Some(keeping), Some(relay)) => {
+        let kept = match (keeping, relay, itself) {
+            (Some(keeping), Some(relay), Some(itself)) => {
                 stage("keeping what this server keeps");
                 Some(keeping.keep(super::keep::On {
                     dir: &identity.place.dir().join(OWN),
                     joined: identity.login.is_some(),
-                    key: &identity.key,
-                    cert: &identity.cert,
+                    identity: itself,
                     service: Arc::clone(workspaces.service()),
                     keys: workspaces.keys(),
                     endpoint: workspaces.endpoint(),
@@ -629,7 +638,7 @@ fn open_workspaces(
     endpoint: iroh::Endpoint,
     brokers: Arc<Mutex<BrokerChannels>>,
     key_sessions: Option<&Arc<crate::key_sessions::KeySessions>>,
-    keeping: Option<&super::keep::Keeping>,
+    keeping: Option<(&super::keep::Keeping, tilo_server::daemon::ServerIdentity)>,
 ) -> io::Result<Arc<ServiceWorkspaces>> {
     let device = tilo_identity::identity_store::DeviceIdentity::held(
         identity.cert.clone(),
@@ -642,8 +651,11 @@ fn open_workspaces(
         Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
     });
     let (dir, key) = (identity.place.dir().join(OWN), identity.key.clone());
-    let governs =
-        identity.login.is_none() || keeping.is_some_and(|keeping| keeping.governs(&identity.cert));
+    let governs = identity.login.is_none()
+        || keeping
+            .as_ref()
+            .is_some_and(|(keeping, _)| keeping.governs(&identity.cert));
+    let (keeping, itself) = keeping.unzip();
     let configure = keeping.map(|keeping| {
         Box::new(keeping.configuring())
             as Box<dyn FnOnce(ServiceConfig) -> ServiceConfig + Send + 'static>
@@ -658,6 +670,7 @@ fn open_workspaces(
             seal_checks: Arc::new(BrokerSealChecks(brokers)),
             apps,
             configure,
+            itself,
         })
         .await
     })

@@ -500,6 +500,8 @@ impl Server {
             tilo_workspace_service::own_device::Device {
                 cert: &identity.device_cert,
                 signer: &signer,
+                // A server's people's devices address the workspaces it keeps to its device key.
+                itself: Some(identity.clone()),
             },
             tilo_workspace_service::own_device::vault_key(&identity.device_signing_key),
             endpoint.clone(),

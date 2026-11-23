@@ -43,6 +43,7 @@ async fn own_service(
         own_device::Device {
             cert: &laptop.cert,
             signer: &signer,
+            itself: None,
         },
         device_endpoint(laptop).await,
         keys.groups(),

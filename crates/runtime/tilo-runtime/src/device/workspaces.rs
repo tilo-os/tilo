@@ -47,6 +47,8 @@ pub(crate) struct Opening<'a> {
     pub(crate) apps: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
     /// What the service keeps beyond a device's own, on a server.
     pub(crate) configure: Option<Box<dyn FnOnce(ServiceConfig) -> ServiceConfig + Send + 'a>>,
+    /// The device itself, when the service acts as it: on a server.
+    pub(crate) itself: Option<tilo_workspace_service::service::ServiceIdentity>,
 }
 
 /// Every workspace this computer takes part in, through the workspace service this device runs.
@@ -87,12 +89,14 @@ impl ServiceWorkspaces {
             seal_checks,
             apps,
             configure,
+            itself,
         } = opening;
         let own_device::Opened { service, keys } = own_device::open_in(
             dir,
             own_device::Device {
                 cert: &identity.device_cert,
                 signer: &identity.signer,
+                itself,
             },
             own_device::vault_key(key),
             endpoint.clone(),
@@ -768,6 +772,7 @@ impl ServiceWorkspaces {
             tilo_workspace_service::own_device::Device {
                 cert: &cert,
                 signer: &identity.signer,
+                itself: None,
             },
             endpoint.clone(),
             tilo_workspace_service::own_device::key_groups(
@@ -836,6 +841,7 @@ impl ServiceWorkspaces {
             apps: Some(Arc::clone(&sessions)
                 as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
             configure: None,
+            itself: None,
         })
         .await
         .unwrap();
@@ -864,6 +870,7 @@ impl ServiceWorkspaces {
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: None,
             configure: None,
+            itself: None,
         })
         .await
     }

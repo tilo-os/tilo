@@ -478,6 +478,7 @@ fn open_member_service(
             tilo_workspace_service::own_device::Device {
                 cert: &cert,
                 signer: &signer,
+                itself: None,
             },
             bound,
             groups,

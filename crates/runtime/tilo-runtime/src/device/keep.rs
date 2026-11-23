@@ -93,25 +93,18 @@ impl Keeping {
         }
     }
 
-    /// Keep on `service`, kept below `dir` as the device `key` its person certified with `cert`:
-    /// what it keeps, and the protocols the device's router answers for it.
+    /// The device `key` its person certified with `cert`, as its workspace service acts on a
+    /// server: as the device itself, which its people's devices address, with the revocations
+    /// it keeps below the device's directory `dir`.
     ///
     /// # Errors
-    /// The server's revocations cannot be read, or what it keeps does not start.
-    pub(crate) fn keep(self, on: On<'_>) -> io::Result<(Kept, Protocols)> {
-        let Self { mut cfg, runtime } = self;
-        let On {
-            dir,
-            joined,
-            key,
-            cert,
-            service,
-            keys,
-            endpoint,
-            relay,
-        } = on;
-        cfg.state_root = dir.to_path_buf();
-        let identity = tilo_server::daemon::with_persisted_revocations(
+    /// The server's revocations cannot be read.
+    pub(crate) fn itself(
+        key: &SigningKey,
+        cert: &DeviceCert,
+        dir: &Path,
+    ) -> io::Result<ServerIdentity> {
+        tilo_server::daemon::with_persisted_revocations(
             ServerIdentity {
                 user_public_key: cert.user_public_key,
                 device_signing_key: key.clone(),
@@ -120,7 +113,26 @@ impl Keeping {
             },
             dir,
         )
-        .map_err(|error| io::Error::other(format!("this server's revocations: {error:#}")))?;
+        .map_err(|error| io::Error::other(format!("this server's revocations: {error:#}")))
+    }
+
+    /// Keep on `on.service`, kept below `on.dir`: what the server keeps, and the protocols the
+    /// device's router answers for it.
+    ///
+    /// # Errors
+    /// What it keeps does not start.
+    pub(crate) fn keep(self, on: On<'_>) -> io::Result<(Kept, Protocols)> {
+        let Self { mut cfg, runtime } = self;
+        let On {
+            dir,
+            joined,
+            identity,
+            service,
+            keys,
+            endpoint,
+            relay,
+        } = on;
+        cfg.state_root = dir.to_path_buf();
         let (server, protocols) = runtime
             .block_on(Server::on_device(OnDevice {
                 cfg,
@@ -150,8 +162,8 @@ pub(crate) struct On<'a> {
     pub(crate) dir: &'a Path,
     /// Whether a ticket signed the device in.
     pub(crate) joined: bool,
-    pub(crate) key: &'a SigningKey,
-    pub(crate) cert: &'a DeviceCert,
+    /// The device, as [`Keeping::itself`] names it.
+    pub(crate) identity: ServerIdentity,
     pub(crate) service: Arc<WorkspaceService>,
     pub(crate) keys: tilo_workspace_keys::KeyProvider,
     /// The device's one endpoint, which [`Keeping::bind`] bound.
