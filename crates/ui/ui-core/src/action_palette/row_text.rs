@@ -55,25 +55,3 @@ pub(crate) fn found_by(row: &tilo_actions::ListedRow, resource: &str) -> Option<
         .join(" ");
     (!words.is_empty()).then_some(words)
 }
-
-/// Whether `action` only shows an item as picking its search hit does: the hit is the row for that, so
-/// the palette lists no second one.
-pub(crate) fn shows_a_hit(action: &tilo_actions::ActionSpec) -> bool {
-    action.operation_type.as_deref() == Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
-}
-
-/// Whether the palette may offer this action of `fa`'s resource to a person at all: listed for people
-/// ([`listed_for_people`](tilo_actions::listed_for_people)), available in the window's state now, and
-/// no second row for a search hit open.
-pub(crate) fn offers_a_person(fa: &tilo_actions::FlatAction<'_>) -> bool {
-    fa.action.contract.availability.is_available()
-        && fa.action.contract.offered_to_people()
-        && tilo_actions::listed_for_people(&fa.resource_kind, &fa.resource_label)
-        && !shows_a_hit(fa.action)
-}
-
-/// Whether the palette lists this action of `fa`'s resource as a row: what a row can take itself
-/// ([`a_row_a_person_can_take`](crate::search::system::a_row_a_person_can_take)).
-pub(crate) fn lists_a_row(fa: &tilo_actions::FlatAction<'_>) -> bool {
-    offers_a_person(fa) && fa.action.takes_a_row_answer()
-}

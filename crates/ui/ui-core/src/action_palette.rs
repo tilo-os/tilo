@@ -111,9 +111,16 @@ pub(crate) fn tile_rect(widget: &dyn Widget) -> Option<Rect> {
 mod confirm;
 use confirm::{ConfirmState, confirmation_evidence};
 
-#[path = "action_palette_ranking.rs"]
-mod ranking;
-use ranking::rank_and_group;
+/// The palette's hits ranked and grouped as every search ranks them, the actions after
+/// every other kind.
+fn rank_and_group(query: &str, mut rows: Vec<SearchResult>) -> Vec<crate::search::SearchGroup> {
+    crate::search::rank_results(query, &mut rows);
+    let (actions, mut held): (Vec<_>, Vec<_>) = crate::search::group_results(rows, PER_GROUP_CAP)
+        .into_iter()
+        .partition(|group| group.kind == ACTIONS_KIND);
+    held.extend(actions);
+    held
+}
 
 const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
@@ -126,9 +133,7 @@ const VIEW_OPEN_SUFFIX: &str = "#open";
 const PER_GROUP_CAP: usize = 12;
 
 mod row_text;
-pub(crate) use row_text::{
-    found_by, lists_a_row, merged_facets, offers_a_person, scope_token_label, without_token,
-};
+pub(crate) use row_text::{found_by, merged_facets, scope_token_label, without_token};
 const PROVIDER_HIT_BUDGET: usize = 32;
 
 /// Diagnostics for one bounded progressive-search step.
@@ -343,7 +348,7 @@ pub struct ActionPalette {
     base_index: HashMap<String, RowResolution>,
     /// Resolution key → the actions the palette may be asked for whether or not it lists them as rows:
     /// a control bound to one, an assistive activation and a search request name the action they want
-    /// the field to collect the arguments of (`offers_a_person`, [`Self::activate_address`]).
+    /// the field to collect the arguments of ([`tilo_actions::FlatAction::offered_to_a_person`], [`Self::activate_address`]).
     askable: HashMap<String, RowResolution>,
     action_rows: Vec<SearchResult>,
     provider_rows: Vec<SearchResult>,
@@ -2196,7 +2201,7 @@ impl ActionPalette {
             .into_iter()
             // Programmatic actions are for agents and scripts, never a row;
             // a scoped palette offers the actions of that part of the app.
-            .filter(|fa| offers_a_person(fa) && parsed.in_scope(fa.resource_id.as_str()))
+            .filter(|fa| fa.offered_to_a_person() && parsed.in_scope(fa.resource_id.as_str()))
             .collect();
         for fa in &flat {
             askable.insert(
@@ -2209,13 +2214,13 @@ impl ActionPalette {
         }
         let mut targets_of: HashMap<tilo_actions::ListedRow, std::collections::HashSet<&str>> =
             HashMap::new();
-        for fa in flat.iter().filter(|fa| lists_a_row(fa)) {
+        for fa in flat.iter().filter(|fa| fa.lists_a_row()) {
             targets_of
                 .entry(fa.row())
                 .or_default()
                 .insert(fa.key.as_str());
         }
-        for fa in flat.iter().filter(|fa| lists_a_row(fa)) {
+        for fa in flat.iter().filter(|fa| fa.lists_a_row()) {
             if !listed.insert(fa.key.clone()) {
                 continue;
             }
@@ -2248,7 +2253,7 @@ impl ActionPalette {
                 crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
             }) {
                 for fa in flatten(&[resource]) {
-                    if !offers_a_person(&fa) {
+                    if !fa.offered_to_a_person() {
                         continue;
                     }
                     // The same row as any other action: never the component
@@ -2270,7 +2275,7 @@ impl ActionPalette {
                     askable
                         .entry(key.clone())
                         .or_insert_with(|| RowResolution::Bound(target.clone()));
-                    if !lists_a_row(&fa) || !listed.insert(key.clone()) {
+                    if !fa.lists_a_row() || !listed.insert(key.clone()) {
                         continue;
                     }
                     let found = found_by(&row, &fa.resource_label);

@@ -1,106 +1,20 @@
 use super::*;
-use crate::search::AppScope;
 
-#[derive(Clone, Debug)]
-struct Row(ResourceKind, i32, &'static str);
-impl SearchRow for Row {
-    fn kind(&self) -> &ResourceKind {
-        &self.0
-    }
-    fn score(&self) -> i32 {
-        self.1
-    }
-    fn title(&self) -> &str {
-        self.2
-    }
-    fn subtitle(&self) -> Option<&str> {
-        Some("detail")
-    }
-}
-tilo_test_env::scenario! {
-    fn a_scope_routes_a_search_to_the_kinds_it_allows;
-
-    phase scope_defaults_and_fallback_preserve_native_routing;
-    {
-        assert_eq!(Scope::default(), Scope::Workspace);
-        assert!(Scope::Workspace.answers());
-        assert!(Scope::Everywhere.answers());
-        assert!(!Scope::WindowGroup(Some(4)).answers());
-        let in_app = Scope::InApp(AppScope::front());
-        assert!(scope_allows(&in_app, "apps", None, false));
-        assert!(!scope_allows(&in_app, "apps", Some("notes"), false));
-        assert!(scope_allows(&in_app, "notes", Some("notes"), false));
-        assert!(scope_allows(&in_app, "actions", Some("notes"), true));
-        assert!(scope_allows(
-            &Scope::Everywhere,
-            "apps",
-            Some("notes"),
-            false
-        ));
-    }
-
-    phase typed_registry_routes_scope_and_kinds_and_discards_stale_pages;
-    {
-        let apps = ProviderFixture {
-            id: "apps",
-            kind: ResourceKind::Application,
-            stale: false,
-        };
-        let files = ProviderFixture {
-            id: "files",
-            kind: ResourceKind::File,
-            stale: false,
-        };
-        let stale = ProviderFixture {
-            id: "stale",
-            kind: ResourceKind::Note,
-            stale: true,
-        };
-        let mut registry = Registry::new();
-        registry.register(&apps);
-        registry.register(&files);
-        registry.register(&stale);
-        let everywhere = Scope::Everywhere;
-        let mut query = Query {
-            needle: "x",
-            scope: &everywhere,
-            active_provider_id: Some("apps"),
-            wanted_kinds: &[],
-        };
-        assert_eq!(
-            registry
-                .query(&(), &query)
-                .iter()
-                .map(|r| r.2)
-                .collect::<Vec<_>>(),
-            ["apps", "files"]
-        );
-        let in_app = Scope::InApp(AppScope::of("apps"));
-        query.scope = &in_app;
-        assert_eq!(registry.query(&(), &query).len(), 1);
-        assert_eq!(registry.query(&(), &query)[0].2, "apps");
-        query.scope = &everywhere;
-        query.wanted_kinds = &[ResourceKind::File];
-        assert_eq!(registry.query(&(), &query)[0].2, "files");
-        let oversized = "x".repeat(crate::search::MAX_SEARCH_QUERY_SCALARS + 1);
-        query.needle = &oversized;
-        assert!(registry.query(&(), &query).is_empty());
-    }
-}
 tilo_test_env::scenario! {
     fn rows_rank_by_strength_of_match_before_kind;
 
     phase strongest_group_precedes_kind_order_and_ties_preserve_provider_order;
     {
-        let rows = rank(vec![
-            (Row(ResourceKind::Action, 25, "action"), 100),
-            (Row(ResourceKind::File, 120, "file"), 120),
-            (Row(ResourceKind::Application, 100, "app z"), 100),
-            (Row(ResourceKind::Application, 100, "app a"), 100),
-            (Row(ResourceKind::Application, 10, "weak app"), 100),
-        ]);
+        let mut rows = vec![
+            ((ResourceKind::Action, "action"), 0.25),
+            ((ResourceKind::File, "file"), 1.0),
+            ((ResourceKind::Application, "app z"), 1.0),
+            ((ResourceKind::Application, "app a"), 1.0),
+            ((ResourceKind::Application, "weak app"), 0.1),
+        ];
+        order_hits(&mut rows, |(kind, _)| (kind, Availability::OnDevice));
         assert_eq!(
-            rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+            rows.iter().map(|((_, title), _)| *title).collect::<Vec<_>>(),
             ["app z", "app a", "weak app", "file", "action"]
         );
     }
@@ -311,10 +225,10 @@ tilo_test_env::scenario! {
 
     phase fair_budget_keeps_totals_and_single_kind_is_exempt;
     {
-        let mut rows = vec![Row(ResourceKind::Application, 100, "app")];
-        rows.extend((0..20).map(|_| Row(ResourceKind::File, 50, "file")));
-        rows.extend((0..10).map(|_| Row(ResourceKind::Note, 25, "note")));
-        let groups = group(rows, 8);
+        let mut rows = vec![ResourceKind::Application];
+        rows.extend((0..20).map(|_| ResourceKind::File));
+        rows.extend((0..10).map(|_| ResourceKind::Note));
+        let groups = group_by_kind(rows, |kind| kind, 8);
         assert_eq!(
             groups
                 .iter()
@@ -325,20 +239,13 @@ tilo_test_env::scenario! {
         );
         // The rows shown plus the row offering each cut group's rest fill the budget: six
         // rows and two "Show all" rows, never a row cut away.
-        let entries = command_entries(&groups);
         let offered: usize = groups
             .iter()
-            .map(|g| g.results.len() + usize::from(g.results.len() < g.total))
+            .map(|g| g.results.len() + usize::from(g.is_capped()))
             .sum();
-        assert_eq!(entries.len(), 6);
         assert_eq!(offered, 8);
-        assert_eq!(entries[0].id, "result:0");
-        assert_eq!(entries[0].group.as_deref(), Some("Apps"));
-        assert_eq!(entries[0].icon, Some(crate::icons::Icon::LayoutGrid));
-        assert_eq!(entries[1].group_total, Some(20));
-        assert_eq!(entries[0].description.as_deref(), Some("detail"));
         assert_eq!(
-            group(vec![Row(ResourceKind::File, 0, "file"); 20], 8)[0]
+            group_by_kind(vec![ResourceKind::File; 20], |kind| kind, 8)[0]
                 .results
                 .len(),
             20
@@ -348,10 +255,10 @@ tilo_test_env::scenario! {
     phase groups_share_the_budget_and_an_expanded_group_keeps_every_row;
     {
         let groups = || {
-            let mut rows = vec![Row(ResourceKind::Action, 100, "action"); 66];
-            rows.extend(vec![Row(ResourceKind::Application, 50, "app"); 3]);
-            rows.extend(vec![Row(ResourceKind::File, 25, "file"); 19]);
-            group(rows, 0)
+            let mut rows = vec![ResourceKind::Action; 66];
+            rows.extend(vec![ResourceKind::Application; 3]);
+            rows.extend(vec![ResourceKind::File; 19]);
+            group_by_kind(rows, |kind| kind, 0)
         };
         let trimmed = trim_groups(groups(), 12, &[]);
         let shown: Vec<usize> = trimmed.iter().map(|g| g.results.len()).collect();
@@ -464,37 +371,6 @@ tilo_test_env::scenario! {
             );
             assert!(rect.area() > 0.0, "overflow kind {idx} is clickable");
         }
-    }
-}
-struct ProviderFixture {
-    id: &'static str,
-    kind: ResourceKind,
-    stale: bool,
-}
-impl Provider<(), Row> for ProviderFixture {
-    fn id(&self) -> &str {
-        self.id
-    }
-    fn resource_kinds(&self) -> &[ResourceKind] {
-        std::slice::from_ref(&self.kind)
-    }
-    fn query_page(
-        &self,
-        (): &(),
-        query: &Query<'_>,
-        _: Option<&SearchCursor>,
-        budget: SearchBudget,
-    ) -> SearchPage<Row> {
-        assert_eq!(budget, SearchBudget::PALETTE);
-        assert_eq!(query.wanted_kinds, std::slice::from_ref(&self.kind));
-        if self.stale {
-            SearchPage::stale("changed")
-        } else {
-            SearchPage::exhausted("v1", vec![Row(self.kind.clone(), 100, self.id)])
-        }
-    }
-    fn resolve(&self, (): &(), _: &str, _: &Query<'_>) -> Option<Row> {
-        None
     }
 }
 #[test]

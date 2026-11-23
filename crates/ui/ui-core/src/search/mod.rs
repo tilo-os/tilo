@@ -57,7 +57,7 @@ pub use provider::{
 };
 pub use query::{Facet, FacetFilter, FacetValue, SearchQuery};
 pub use rank::{FieldWeight, MatchTier, result_relevance};
-pub use registry::{FnProvider, SearchGroup, SearchRegistry};
+pub use registry::{FnProvider, SearchGroup, SearchRegistry, group_results, rank_results};
 pub use request::{
     APP_SEARCH_BUTTON_ID, Anchor, ScopeDecl, SearchOffer, SearchOpener, SearchRequest,
     is_search_address, open_search_binding, open_search_invocation, scope_contains, search_button,
