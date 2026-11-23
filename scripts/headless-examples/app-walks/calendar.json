@@ -242,13 +242,13 @@
           {
             "wait_for": {
               "shown": {
-                "prefix": "Title"
+                "prefix": "Event title"
               }
             }
           },
           {
             "click": {
-              "prefix": "Title"
+              "prefix": "Event title"
             }
           },
           {
@@ -378,7 +378,7 @@
         "tl": [
           {
             "click": {
-              "prefix": "Title"
+              "prefix": "Event title"
             }
           },
           {
@@ -444,9 +444,19 @@
         ],
         "tl": [
           {
-            "press_any": [
-              "Delete event"
+            "press": "More actions"
+          },
+          {
+            "must": [
+              {
+                "menuitem": "Delete event"
+              }
             ]
+          },
+          {
+            "press": {
+              "menuitem": "Delete event"
+            }
           },
           {
             "must_not": [
@@ -534,13 +544,13 @@
           {
             "wait_for": {
               "shown": {
-                "prefix": "Title"
+                "prefix": "Event title"
               }
             }
           },
           {
             "click": {
-              "prefix": "Title"
+              "prefix": "Event title"
             }
           },
           {
@@ -842,13 +852,13 @@
           {
             "wait_for": {
               "shown": {
-                "prefix": "Title"
+                "prefix": "Event title"
               }
             }
           },
           {
             "click": {
-              "prefix": "Title"
+              "prefix": "Event title"
             }
           },
           {
