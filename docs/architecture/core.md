@@ -267,7 +267,7 @@ device that is online gets its certificate: the Imager, running on a device of
 the person, issues the new device's certificate with the same functions and
 writes it into the image, so an image written today joins whenever it first
 boots. There is no second enrolment protocol. Planning a machine, taking a planned one in and listing
-the workspace's servers are the workspace's own actions (`tilo.workspace machines#…`), listed in
+the workspace's servers are actions the workspace's host serves, listed in
 every session like any other, so a person or an agent on any device can do them; the installer is
 only one caller of them. There is no site lookup. `/v1` REST is only an edge
 for callers outside Tilo.
