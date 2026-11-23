@@ -5840,9 +5840,22 @@ mod tests {
                         let node =
                             accessibility_for_id(ceremony(&mut view), id).expect("row semantics");
                         assert_eq!(node.role, ui::a11y::Role::ListItem);
+                        // The card's description is said once: as the row's description, or
+                        // after its title in its name, and never again among its values.
+                        let said = node
+                            .description
+                            .as_deref()
+                            .filter(|text| !text.is_empty())
+                            .or_else(|| {
+                                node.name
+                                    .as_deref()
+                                    .and_then(|name| name.split_once(", "))
+                                    .map(|(_, rest)| rest)
+                            })
+                            .unwrap_or_else(|| panic!("{id} announces its description"));
                         assert!(
-                            node.value.as_deref().is_some_and(|value| !value.is_empty()),
-                            "{id} announces its description"
+                            !node.value.as_deref().unwrap_or_default().contains(said),
+                            "{id} says its description once: {node:?}"
                         );
                     }
                 }
