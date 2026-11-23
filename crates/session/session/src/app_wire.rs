@@ -24,7 +24,6 @@ use tilo_actions::ApiError;
 use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
-use tilo_broker_core::steps::HostStepServices;
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
@@ -38,6 +37,7 @@ use tilo_workspace_service::apps::services::{
     ShortcutLibraryServices, SpeakerChange, SpeakerServices, WifiContinuityServices,
     WorkspaceMemberships,
 };
+use tilo_workspace_service::workspaces::providers::Providers;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::activity_provider::ActivityWire;
@@ -382,6 +382,9 @@ pub struct Hosted {
     /// The workspace's shortcuts as the broker saves and runs them, from this device's own
     /// workspace service; no session without a device identity keeps any.
     pub shortcuts: Option<std::sync::Arc<dyn ShortcutLibraryServices>>,
+    /// The workspace's events and its assistant's look-round, saved through those shortcuts:
+    /// what a person and their assistant set up, change and pause.
+    pub initiative: Option<tilo_workspace_service::agents::initiative::Initiative>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
@@ -1013,15 +1016,14 @@ impl tilo_workspace_service::apps::services::WorkspaceGrants for SessionGrants {
     }
 }
 
-/// The steps an agent session takes here: the programs its task writes, and the workspace's tools
-/// an agent in a process of its own calls.
+/// The steps an agent session takes here, registered: the programs its task writes, and the
+/// workspace's tools an agent in a process of its own calls.
 fn agent_session_steps(
     programs: std::sync::Arc<crate::task_programs::TaskPrograms>,
-) -> [std::sync::Arc<dyn HostStepServices>; 2] {
-    [
-        programs,
-        std::sync::Arc::new(crate::agent_tools::AgentToolSteps::default()),
-    ]
+    providers: &Providers,
+) {
+    programs.register(providers);
+    std::sync::Arc::new(crate::agent_tools::AgentToolSteps::default()).register(providers);
 }
 
 /// What the apps this session runs reach of it: the resources its services
@@ -1107,6 +1109,7 @@ fn broker_services(
         records,
         layout,
         shortcuts,
+        initiative,
         activity,
         agents,
         agent_sessions,
@@ -1186,6 +1189,48 @@ fn broker_services(
                 service.clone(),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
+    // The providers this session answers, each under the id a call names: the steps it takes
+    // itself, the services it reaches in the workspaces it keeps, and the ones a turn's agent or
+    // an agent session takes. The dispatch admits each call under the application the
+    // registration names.
+    let providers = Providers::default();
+    activity.register(&providers);
+    std::sync::Arc::new(device_tickets).register(&providers);
+    crate::machine_steps::MachineSteps::session(view.clone()).register(&providers);
+    crate::model_steps::ModelSteps::session(engine.clone()).register(&providers);
+    std::sync::Arc::new(crate::identity_admin::BrokerApi {
+        layout: layout_authority,
+        hosting: hosting.clone(),
+        engine: engine.clone(),
+    })
+    .register(&providers);
+    crate::server_account::ServerAccountApi::session().register(&providers);
+    std::sync::Arc::new(tilo_workspace_service::agents::assistant::Transforms::new(
+        service.clone(),
+        tilo_rt::app().handle().clone(),
+    ))
+    .register(&providers);
+    std::sync::Arc::new(tilo_workspace_service::agents::WebSearch::new(
+        tilo_rt::app().handle().clone(),
+    ))
+    .register(&providers);
+    std::sync::Arc::new(tilo_workspace_service::agents::triggered::Answers::new(
+        service.clone(),
+    ))
+    .register(&providers);
+    if let Some(programs) = task_programs {
+        agent_session_steps(programs, &providers);
+    }
+    if let Some(initiative) = &initiative {
+        initiative.events_served().register(&providers);
+        std::sync::Arc::new(initiative.clone()).register(&providers);
+    }
+    if let Some(actions) = session_actions {
+        actions.register(&providers);
+    }
+    if let Some(settings) = settings_steps {
+        settings.register(&providers);
+    }
     BrokerServices {
         // No approved-check runner is installed with this session: a check a
         // project's app asks for has nothing to run it.
@@ -1376,73 +1421,13 @@ fn broker_services(
         resources,
         // The person's shell connects to the device daemon's broker, which answers it.
         shell: BrokerService::unserved("the device daemon's broker answers the person's shell"),
-        // The steps only this session may take for the person: the
-        // workspace's activity the Activity app reads, their devices (a
-        // ticket for a new computer, the list, names and revocations),
-        // administering their identities, whose secret stays here, and their
-        // hosting account.
-        host_steps: BrokerService::served(
-            [
-                vec![
-                    activity as std::sync::Arc<dyn HostStepServices>,
-                    std::sync::Arc::new(device_tickets),
-                    // The machines the person planned to install: their plans
-                    // are entries in their Servers workspace, which this
-                    // session's own workspace service keeps.
-                    crate::machine_steps::MachineSteps::session(view.clone()),
-                    // The models each workspace's work runs on, which its holder keeps: this
-                    // device's own service for a workspace it holds.
-                    crate::model_steps::ModelSteps::session(engine.clone()),
-                    std::sync::Arc::new(crate::identity_admin::BrokerApi {
-                        layout: layout_authority,
-                    }),
-                    // The person's account with the host the session runs
-                    // on: what Settings and the overview of their Tilo show,
-                    // followed as the host's plans change.
-                    crate::server_account::ServerAccountApi::session(),
-                    // The agent's transforms a shortcut's AI step and an app ask for, answered
-                    // by this device's agent engine with the workspace's model.
-                    std::sync::Arc::new(
-                        tilo_workspace_service::agents::assistant::Transforms::new(
-                            service.clone(),
-                            tilo_rt::app().handle().clone(),
-                        ),
-                    ),
-                    // The public web a shortcut's step and an app read: the same search and
-                    // page read the workspace's agents look things up with.
-                    std::sync::Arc::new(tilo_workspace_service::agents::WebSearch::new(
-                        tilo_rt::app().handle().clone(),
-                    )),
-                    // The agents' answers their triggers invoke, taken by this device's agent
-                    // engine.
-                    std::sync::Arc::new(tilo_workspace_service::agents::triggered::Answers::new(
-                        service.clone(),
-                    )),
-                ],
-                // An agent's task writes its programs; this session's links runs them as the
-                // steps of the run the task is in. An agent whose turn is worked in its own
-                // process calls the workspace's tools here, as steps of its session too.
-                task_programs
-                    .into_iter()
-                    .flat_map(agent_session_steps)
-                    .collect(),
-                // The session's own actions, published where every other caller of the
-                // desktop reaches them: the layout, its undo, the windows and the
-                // notices, which a turn's agent arranges the screen with (shell.md §8.1).
-                session_actions
-                    .map(|actions| actions as std::sync::Arc<dyn HostStepServices>)
-                    .into_iter()
-                    .collect(),
-                // The person's settings, under the provider Settings' window names for every
-                // control it shows: the session keeps them, so its settings service runs each
-                // change, with the broker admitting it as any caller's first.
-                settings_steps
-                    .map(|settings| settings as std::sync::Arc<dyn HostStepServices>)
-                    .into_iter()
-                    .collect(),
-            ]
-            .concat(),
-        ),
+        // The providers this session answers: the steps only it may take for the person — the
+        // workspace's activity the Activity app reads, a ticket for a new computer, administering
+        // their identities and the devices trusted under them, the machines they planned, their
+        // workspace's models, their hosting account, a shortcut's transforms and the web, and the
+        // answers their triggers invoke — beside the ones a turn's agent and an agent session
+        // take, and the person's settings. Each was registered above under the id a call names.
+        providers: BrokerService::served(providers),
     }
 }
 
@@ -1658,6 +1643,7 @@ fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActio
         crate::mcp_server::SessionServices::new(tilo_service::LoopWake::default().handle(), "Pat");
     std::sync::Arc::new(crate::session_actions::SessionActions::new(
         std::sync::Arc::new(services),
+        None,
     ))
 }
 
@@ -1775,6 +1761,7 @@ mod tests {
                 Names::default(),
             )),
             shortcuts: None,
+            initiative: None,
             activity: crate::activity_provider::wire(requests()),
             agents: None,
             agent_sessions: None,
@@ -2289,18 +2276,23 @@ mod tests {
             services.published.is_some() && services.launcher.is_some(),
             "the resources an app reads and the launch it is admitted by"
         );
-        assert_eq!(
-            services.host_steps.len(),
-            8,
-            "the steps this session serves are the workspace's activity, a ticket for a new \
-             computer, identity administration, the person's hosting account, the machines they \
-             planned, its own actions, its agents' transforms and the web its shortcuts reach"
-        );
-        let providers: Vec<&str> = services
-            .host_steps
+        let registered = services
+            .providers
+            .as_ref()
+            .expect("this session registers its own providers")
+            .all();
+        let providers: Vec<&str> = registered
             .iter()
-            .map(|steps| steps.provider())
+            .map(|entry| entry.provider)
             .collect();
+        assert_eq!(
+            providers.len(),
+            10,
+            "the providers this session answers are the workspace's activity, a ticket for a new \
+             computer, identity administration, the person's hosting account, the machines they \
+             planned, its own actions, its agents' transforms, the web its shortcuts reach, the \
+             answers their triggers invoke and the workspace's models"
+        );
         for (provider, why) in [
             (
                 tilo_actions::remote::device_tickets::PROVIDER,

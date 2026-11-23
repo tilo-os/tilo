@@ -14,13 +14,20 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::Pending;
+use tilo_actions::remote::admitted::{offered, settled, top_level};
 use tilo_actions::remote::server_account::{self as wire, ServerAccount, ServerKind};
-use tilo_actions::{
-    ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind,
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, LiveRead,
+    LiveView, Outcome,
 };
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices, LiveView};
+use tilo_actions::{
+    ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, InvocationId,
+    OperationKind,
+};
+use tilo_broker_core::BrokerActor;
 use tilo_lock::MutexRecover as _;
 use tilo_server_account::ServerAccountSource;
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// Where the account is read from.
 enum Source {
@@ -74,6 +81,34 @@ impl ServerAccountApi {
             Source::Device(name) => ServerAccount::sells_nothing(name.clone(), ServerKind::Device),
         }
     }
+
+    /// Answer the account's read from now on, admitted by the grants of the app that shows it,
+    /// for the person at this device alone.
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            wire::PROVIDER,
+            settings_sections::APP_ID,
+            Reach::ThisDevice,
+            self,
+        );
+    }
+
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        person_only(caller)?;
+        if request.target.address.action != wire::ACCOUNT {
+            return Err("unknown hosting step".into());
+        }
+        Ok(Pending::ready(Ok(tilo_actions::ActionOutput {
+            value: Some(answer(&self.read())),
+            resources: Vec::new(),
+        })))
+    }
 }
 
 /// This device's name, as its host name gives it, said plainly without one.
@@ -102,9 +137,8 @@ fn descriptor() -> ActionDescriptor {
     }
 }
 
-fn person_only(request: &HostStepRequest<'_>) -> Result<(), String> {
-    request
-        .actor
+fn person_only(caller: &Caller) -> Result<(), String> {
+    BrokerActor::for_caller(caller)
         .direct_person()
         .map(|_| ())
         .ok_or_else(|| "only the person reads their hosting account".to_owned())
@@ -114,47 +148,66 @@ fn answer(account: &ServerAccount) -> serde_json::Value {
     serde_json::to_value(account).unwrap_or_default()
 }
 
-impl HostStepServices for ServerAccountApi {
-    fn provider(&self) -> &'static str {
-        wire::PROVIDER
+impl ActionProvider for ServerAccountApi {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
+        offered(
+            wire::PROVIDER,
+            settings_sections::APP_ID,
+            top_level(vec![descriptor()]),
+            &query,
+        )
     }
 
-    fn app_id(&self) -> &str {
-        settings_sections::APP_ID
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
     }
 
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
-        vec![descriptor()]
+    fn observe(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
     }
 
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        person_only(request)?;
-        if request.address.action != wire::ACCOUNT {
-            return Err("unknown hosting step".into());
-        }
-        Ok(Pending::ready(Ok(tilo_actions::ActionOutput {
-            value: Some(answer(&self.read())),
-            resources: Vec::new(),
-        })))
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 
-    fn watch(&self, request: &HostStepRequest<'_>) -> Result<LiveView, String> {
-        person_only(request)?;
-        if request.address.action != wire::ACCOUNT {
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(request.invocation, self.start(caller, &request, &admitted))
+    }
+
+    fn watch(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
+        person_only(caller)?;
+        if request.target.address.action != wire::ACCOUNT {
             return Err("this step has no live result".into());
         }
         let read = match &self.source {
             Source::Hosted(hosted) => {
                 let hosted = hosted.clone();
                 Box::new(move || {
-                    // The service is asked over its socket: off the broker's thread.
+                    // The service is asked over its socket: off the calling thread.
                     let (answer_with, answered) = tilo_actions::remote::pending();
                     let hosted = hosted.clone();
                     std::thread::spawn(move || {
                         answer_with.complete(Ok(answer(&hosted.read(tilo_clock::unix_now_ms()))));
                     });
                     answered
-                }) as Box<dyn FnMut() -> Pending<_> + Send>
+                }) as Box<dyn FnMut() -> Pending<LiveRead> + Send>
             }
             Source::Device(name) => {
                 let account = answer(&ServerAccount::sells_nothing(
@@ -164,9 +217,20 @@ impl HostStepServices for ServerAccountApi {
                 Box::new(move || Pending::ready(Ok(account.clone())))
             }
         };
+        let changes = self.changes.subscribe();
         Ok(LiveView {
             read,
-            changes: self.changes.subscribe(),
+            changes: Box::new(move || {
+                let mut receiver = changes.clone();
+                receiver.borrow_and_update();
+                let (woken, awaited) = tilo_actions::remote::pending();
+                drop(tilo_rt::app().spawn(async move {
+                    if receiver.changed().await.is_ok() {
+                        woken.complete(());
+                    }
+                }));
+                awaited
+            }),
         })
     }
 }

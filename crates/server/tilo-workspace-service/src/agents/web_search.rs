@@ -882,37 +882,41 @@ impl WebSearch {
 }
 
 #[cfg(feature = "apps")]
-impl tilo_broker_core::steps::HostStepServices for WebSearch {
-    fn provider(&self) -> &'static str {
-        PROVIDER
+impl WebSearch {
+    /// Register the web's two actions on this device: a shortcut's step and an app call them as
+    /// the person who asked.
+    pub fn register(
+        self: std::sync::Arc<Self>,
+        providers: &crate::workspaces::providers::Providers,
+    ) {
+        providers.provide(
+            PROVIDER,
+            APP_ID,
+            crate::workspaces::providers::Reach::ThisDevice,
+            self,
+        );
     }
 
-    fn app_id(&self) -> &str {
-        APP_ID
-    }
-
-    fn descriptors(&self) -> Vec<tilo_actions::api::ActionDescriptor> {
-        descriptors()
-    }
-
+    /// Start the action `request` calls for `caller`, once admitted: the search or the read runs
+    /// on this device's runtime and its answer comes back when the web gave one.
     fn start(
         &self,
-        request: &tilo_broker_core::steps::HostStepRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<tilo_broker_core::steps::HostStepOutcome>, String>
-    {
-        let call = match Call::action(
-            &request.address.resource,
-            &request.address.action,
-            request.argument,
-        ) {
+        caller: &tilo_actions::remote::Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+        _admitted: &tilo_actions::remote::Admitted,
+    ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::Outcome>, String> {
+        let address = &request.target.address;
+        let argument = request.argument.to_slot();
+        let call = match Call::action(&address.resource, &address.action, argument.as_deref()) {
             Ok(call) => call,
             // The code is the caller's to branch on, so it goes back as it was declared.
             Err(failure) => return Ok(tilo_actions::remote::Pending::ready(Err(failure))),
         };
+        let workspace = caller.workspace().unwrap_or_default();
         let content = self
             .content
             .clone()
-            .or_else(|| ui::content::session(request.workspace))
+            .or_else(|| ui::content::session(workspace))
             .unwrap_or_else(ui::content::ContentStore::memory);
         let web = self.web(content);
         let (done, answer) = tilo_actions::remote::pending();
@@ -927,6 +931,66 @@ impl tilo_broker_core::steps::HostStepServices for WebSearch {
             done.complete(outcome);
         });
         Ok(answer)
+    }
+}
+
+#[cfg(feature = "apps")]
+impl tilo_actions::remote::ActionProvider for WebSearch {
+    fn query(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+    > {
+        tilo_actions::remote::admitted::offered(
+            PROVIDER,
+            APP_ID,
+            tilo_actions::remote::admitted::top_level(descriptors()),
+            &query,
+        )
+    }
+
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        self.run(caller, request, tilo_actions::remote::Admitted::default())
+    }
+
+    fn run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        tilo_actions::remote::admitted::settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
+    }
+
+    fn observe(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::UnknownInvocation,
+        ))
     }
 }
 

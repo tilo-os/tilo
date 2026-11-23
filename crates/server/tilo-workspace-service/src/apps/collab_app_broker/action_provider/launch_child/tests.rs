@@ -5,7 +5,7 @@
 use super::super::*;
 use super::*;
 use crate::apps::collab_app_broker::InvocationOwner;
-use crate::apps::collab_app_broker::host_steps::signed_test_support::Fixture;
+use crate::apps::collab_app_broker::provided::signed_test_support::Fixture;
 use crate::apps::services::{LaunchableApplication, LauncherServices, ProcessServices};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

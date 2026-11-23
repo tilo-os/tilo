@@ -7,13 +7,62 @@ struct NativeFacadeHostSteps {
     started: Arc<Mutex<Vec<(String, tilo_actions::MemberId)>>>,
 }
 
-impl crate::apps::services::HostStepServices for NativeFacadeHostSteps {
-    fn provider(&self) -> &'static str {
-        self.provider
+impl tilo_actions::remote::ActionProvider for NativeFacadeHostSteps {
+    fn query(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+    > {
+        tilo_actions::remote::admitted::offered(
+            self.provider,
+            "so.tilo.settings",
+            tilo_actions::remote::admitted::top_level(self.descriptors()),
+            &query,
+        )
     }
-    fn app_id(&self) -> &'static str {
-        "so.tilo.settings"
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        self.run(caller, request, tilo_actions::remote::Admitted::default())
     }
+    fn run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        tilo_actions::remote::admitted::settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
+    }
+    fn observe(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationState> {
+        None
+    }
+    fn cancel(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::UnknownInvocation,
+        ))
+    }
+}
+
+impl NativeFacadeHostSteps {
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         let mut descriptor = directory_state("native-host-step-r1")
             .borrow()
@@ -26,14 +75,22 @@ impl crate::apps::services::HostStepServices for NativeFacadeHostSteps {
         descriptor.contract = tilo_actions::ActionContract::view();
         vec![descriptor]
     }
+
     fn start(
         &self,
-        request: &crate::apps::services::HostStepRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<crate::apps::services::HostStepOutcome>, String> {
-        self.started
-            .lock()
-            .unwrap()
-            .push((request.workspace.into(), request.actor.member().clone()));
+        caller: &tilo_actions::remote::Caller,
+        _request: &tilo_actions::remote::InvokeRequest,
+        _admitted: &tilo_actions::remote::Admitted,
+    ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::Outcome>, String> {
+        let workspace = caller
+            .workspace()
+            .ok_or("the step was asked in no workspace")?;
+        self.started.lock().unwrap().push((
+            workspace.into(),
+            tilo_broker_core::BrokerActor::for_caller(caller)
+                .member()
+                .clone(),
+        ));
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))
@@ -47,25 +104,25 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
             use tilo_actions::remote::identity_admin;
             let env = Environment::new();
             let started = Arc::new(Mutex::new(Vec::new()));
-            let step = |provider, resource, action| {
+            let providers = crate::workspaces::providers::Providers::default();
+            providers.provide(
+                identity_admin::PROVIDER,
+                "so.tilo.settings",
+                crate::workspaces::providers::Reach::ThisDevice,
                 Arc::new(NativeFacadeHostSteps {
-                    provider,
-                    resource,
-                    action,
+                    provider: identity_admin::PROVIDER,
+                    resource: identity_admin::RESOURCE,
+                    action: identity_admin::LIST,
                     started: started.clone(),
-                }) as Arc<dyn crate::apps::services::HostStepServices>
-            };
+                }) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+            );
             let rig = Rig::with_services(
                 &env,
                 ProcessServices {
                     local_person: Some(Arc::new(super::signed_worker::NativePerson(
                         env.authority.clone(),
                     ))),
-                    host_steps: vec![step(
-                        identity_admin::PROVIDER,
-                        identity_admin::RESOURCE,
-                        identity_admin::LIST,
-                    )],
+                    providers: Some(providers),
                     ..env.membership.services()
                 },
             )
@@ -142,7 +199,7 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use crate::apps::collab_app_broker::{
-                host_steps::is_local_host_caller, published_invocation::InvocationCaller,
+                provided::is_local_host_caller, published_invocation::InvocationCaller,
             };
             use tilo_actions::remote::Caller;
             let env = Environment::new();

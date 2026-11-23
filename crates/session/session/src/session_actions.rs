@@ -29,11 +29,16 @@
 
 use std::sync::Arc;
 
+use tilo_actions::remote::admitted::{offered, settled};
 use tilo_actions::remote::session_actions as wire;
-use tilo_actions::remote::{Pending, pending};
-use tilo_actions::{ActionDescriptor, ActionFailure};
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+    InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, pending,
+};
+use tilo_actions::{ActionDescriptor, ActionFailure, InvocationId};
+use tilo_broker_core::BrokerActor;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::platform::programs::{ProgramCaller, ProgramRequest, Programs};
 use crate::platform::steps::SessionSteps;
@@ -86,6 +91,12 @@ impl SessionActions {
     /// The rows offered now, as the last pass read them.
     pub(crate) fn offered(&self) -> Vec<tilo_actions::api::PlacedAction> {
         self.rows.read_recover().clone()
+    }
+
+    /// Answer the session's own actions from now on, offered to a turn's agent and admitted by
+    /// that turn: the layout, its undo, the windows and the notices.
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(wire::PROVIDER, wire::PROVIDER, Reach::Turns, self);
     }
 }
 
@@ -150,25 +161,8 @@ fn line_of(slot: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "a line takes its text: `line`".into())
 }
 
-impl HostStepServices for SessionActions {
-    fn provider(&self) -> &'static str {
-        wire::PROVIDER
-    }
-
-    fn app_id(&self) -> &'static str {
-        wire::PROVIDER
-    }
-
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
-        let mut described: Vec<ActionDescriptor> = self
-            .offered()
-            .into_iter()
-            .map(|placed| placed.action)
-            .collect();
-        described.push(line_descriptor());
-        described
-    }
-
+impl SessionActions {
+    /// Every step the session offers, as the row it stands in.
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
         let mut rows = self.offered();
         rows.push(tilo_actions::api::PlacedAction {
@@ -179,36 +173,41 @@ impl HostStepServices for SessionActions {
         rows
     }
 
-    /// A turn's step: decided by the turn that asked for it, exactly as an app's action the
-    /// same agent takes in it is, and answered for an agent working no turn and for one whose
-    /// grants refuse it with the same refusal the app action hears.
-    fn for_turns(&self) -> bool {
-        true
-    }
-
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        if request.address.resource == wire::PROGRAMS_RESOURCE
-            && request.address.action == wire::RUN_LINE
+    /// Carry out an invocation the device's dispatch admitted for `caller`: a turn's step,
+    /// decided by the turn that asked for it, exactly as an app's action the same agent takes in
+    /// it is, and answered for an agent working no turn and for one whose grants refuse it with
+    /// the same refusal the app action hears.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        if request.target.address.resource == wire::PROGRAMS_RESOURCE
+            && request.target.address.action == wire::RUN_LINE
         {
-            return self.start_line(request);
+            return self.start_line(caller, request, admitted);
         }
-        let argument = request.argument.map(str::to_owned);
+        let actor = BrokerActor::for_caller(caller);
+        let argument = request.argument.to_slot();
         let (done, asked) = pending();
         // The place the ask is in: an agent's turn is the conversation the person wrote in, and
         // a place it opens stands beside that conversation
         // (`docs/designs/app-language/one-app-model.md` §3). The person's own step stands beside
         // the place in front.
-        let beside = request
-            .actor
+        let beside = actor
             .turn()
             .map(|turn| tilo_session_core::layout::turn_key(&turn.conversation, &turn.message))
             .unwrap_or_default();
         self.steps.invoke_step(
-            request.actor.member().clone().into(),
-            request.address.clone(),
+            actor.member().clone().into(),
+            request.target.address.clone(),
             argument,
             beside,
-            request.group.cloned(),
+            request
+                .context
+                .as_ref()
+                .and_then(|context| context.group.clone()),
             done,
         );
         Ok(asked.map(|ran| {
@@ -225,30 +224,79 @@ impl HostStepServices for SessionActions {
     }
 }
 
+impl ActionProvider for SessionActions {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        offered(wire::PROVIDER, wire::PROVIDER, self.rows(), &query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
+    }
+}
+
 impl SessionActions {
     /// Run the person's own line: off the loop, in the session's program host, and as them.
     fn start_line(
         &self,
-        request: &HostStepRequest<'_>,
-    ) -> Result<Pending<HostStepOutcome>, String> {
-        let actor = request.actor;
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let actor = BrokerActor::for_caller(caller);
         if actor.is_agent() {
             return Err("a line runs as the person at this device, never as an agent".into());
         }
         let Some(person) = actor.member().person_id() else {
             return Err("a line runs as the person at this device".into());
         };
-        let program = line_of(request.argument)?;
+        let argument = request.argument.to_slot();
+        let program = line_of(argument.as_deref())?;
         let Some(programs) = &self.programs else {
             return Err("this desktop runs no tilolang programs".into());
         };
+        let workspace = caller
+            .workspace()
+            .ok_or("a line runs in no workspace of this device")?;
         programs.run(ProgramRequest {
-            workspace: request.workspace,
+            workspace,
             provider: None,
             caller: ProgramCaller::Person { person },
             group: request
-                .group
-                .cloned()
+                .context
+                .as_ref()
+                .and_then(|context| context.group.clone())
                 .unwrap_or_else(|| tilo_actions::WorkGroup {
                     id: wire::PROGRAMS_RESOURCE.to_owned(),
                     label: None,
@@ -261,7 +309,7 @@ impl SessionActions {
             program,
             confirm: false,
             this: None,
-            stop: Some(Arc::clone(&request.stop)),
+            stop: Some(Arc::clone(&admitted.stop)),
         })
     }
 }

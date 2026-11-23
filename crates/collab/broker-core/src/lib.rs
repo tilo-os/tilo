@@ -25,9 +25,7 @@ pub use published::{
     PublishedAction, PublishedInput, PublishedSurface, ValidSurface, validate_published_surface,
 };
 pub use route::CrdtRoute;
-pub use steps::{
-    ContinuationServices, HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView,
-};
+pub use steps::ContinuationServices;
 
 // Workspace records are decoded in automerge worker processes started from this test binary;
 // this serves them.

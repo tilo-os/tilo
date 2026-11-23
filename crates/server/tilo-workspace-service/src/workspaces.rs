@@ -1851,21 +1851,23 @@ impl Workspaces {
         self.inner.jobs.serve_linux(linux);
     }
 
-    /// Answer the requests on the device action service (`tilo-actions/1`) that name `provider`
-    /// with `answers`, the provider id a request's target names. The workspace a request asks in
-    /// admits the asking device to the action by its ordinary grants first, so `answers` sees
-    /// only admitted requests and decides no grant itself.
+    /// Answer the calls that name `provider` with `answers`: another device's over the device
+    /// action service (`tilo-actions/1`), admitted by the workspace's grants for that device under
+    /// the application `provider`, and this device's own through its dispatch, admitted by the
+    /// same grants ([`providers`]). `answers` decides no grant itself.
     pub fn provide(
         &self,
         provider: &'static str,
         answers: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
     ) {
-        self.inner.jobs.providers.provide(provider, answers);
+        self.inner
+            .jobs
+            .providers
+            .provide(provider, provider, providers::Reach::Devices, answers);
     }
 
-    /// The providers registered with [`Self::provide`], as this device's dispatch reaches them
-    /// for a call made on this device: the same registry, and the same admission, a call from
-    /// another device meets.
+    /// The providers registered on this device ([`Self::provide`]): the one registry this device's
+    /// dispatch and its action service reach them in.
     #[must_use]
     pub fn providers(&self) -> providers::Providers {
         self.inner.jobs.providers.clone()

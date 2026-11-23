@@ -308,18 +308,18 @@ impl Fixture {
         Self::with_launcher(None)
     }
     fn with_launcher(launcher: Option<Arc<dyn crate::apps::services::LauncherServices>>) -> Self {
-        Self::with_services(launcher, Vec::new())
+        Self::with_services(launcher, crate::workspaces::providers::Providers::default())
     }
-    /// The fixture with the host's own steps `host_steps` beside the apps.
+    /// The fixture with the providers `providers` registered on this device beside the apps.
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario, end to end, reads as one test"
     )]
     fn with_services(
         launcher: Option<Arc<dyn crate::apps::services::LauncherServices>>,
-        host_steps: Vec<Arc<dyn crate::apps::services::HostStepServices>>,
+        providers: crate::workspaces::providers::Providers,
     ) -> Self {
-        Self::with_origin(launcher, host_steps, None)
+        Self::with_origin(launcher, providers, None)
     }
     /// As [`Self::with_services`], with `resource_changes` the origin of the
     /// workspace's records.
@@ -329,10 +329,10 @@ impl Fixture {
     )]
     fn with_origin(
         launcher: Option<Arc<dyn crate::apps::services::LauncherServices>>,
-        host_steps: Vec<Arc<dyn crate::apps::services::HostStepServices>>,
+        providers: crate::workspaces::providers::Providers,
         resource_changes: Option<Arc<dyn crate::apps::services::DocumentChangeServices>>,
     ) -> Self {
-        Self::built(launcher, host_steps, resource_changes, true)
+        Self::built(launcher, providers, resource_changes, true)
     }
     /// The fixture, its signed device `foreign` to this host or one of its own.
     #[allow(
@@ -341,7 +341,7 @@ impl Fixture {
     )]
     fn built(
         launcher: Option<Arc<dyn crate::apps::services::LauncherServices>>,
-        host_steps: Vec<Arc<dyn crate::apps::services::HostStepServices>>,
+        providers: crate::workspaces::providers::Providers,
         resource_changes: Option<Arc<dyn crate::apps::services::DocumentChangeServices>>,
         foreign: bool,
     ) -> Self {
@@ -423,7 +423,7 @@ impl Fixture {
                 agents: Some(native.clone()),
                 agent_sessions: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
-                host_steps,
+                providers: Some(providers),
                 resource_changes,
                 ..Default::default()
             },
@@ -711,9 +711,9 @@ async fn answer_of(job: &super::InvocationJob) -> InvocationCompletion {
     }
 }
 
-use tilo_actions::remote::{ActionCallError, Caller, InvocationReceipt, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvocationReceipt, InvokeRequest, Pending};
 
-/// A host's own step that is a turn's (`for_turns`): the session's layout, out here.
+/// A step that is a turn's (registered for turns): the session's layout, out here.
 #[derive(Default)]
 struct TurnSteps {
     taken: Mutex<Vec<tilo_actions::MemberId>>,
@@ -722,16 +722,55 @@ struct TurnSteps {
     on_turns: Mutex<Vec<Option<tilo_action_policy::turn::Turn>>>,
 }
 
-impl crate::apps::services::HostStepServices for TurnSteps {
-    fn provider(&self) -> &'static str {
-        tilo_actions::remote::session_actions::PROVIDER
+impl tilo_actions::remote::ActionProvider for TurnSteps {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>>
+    {
+        tilo_actions::remote::admitted::offered(
+            tilo_actions::remote::session_actions::PROVIDER,
+            tilo_actions::remote::session_actions::PROVIDER,
+            tilo_actions::remote::admitted::top_level(self.descriptors()),
+            &query,
+        )
     }
-    fn app_id(&self) -> &'static str {
-        tilo_actions::remote::session_actions::PROVIDER
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> tilo_actions::remote::Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, tilo_actions::remote::Admitted::default())
     }
-    fn for_turns(&self) -> bool {
-        true
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> tilo_actions::remote::Pending<Result<InvocationReceipt, ActionCallError>> {
+        tilo_actions::remote::admitted::settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
     }
+    fn observe(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationState> {
+        None
+    }
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+}
+
+impl TurnSteps {
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
             did: None,
@@ -755,21 +794,29 @@ impl crate::apps::services::HostStepServices for TurnSteps {
             view: None,
         }]
     }
+
     fn start(
         &self,
-        request: &crate::apps::services::HostStepRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<crate::apps::services::HostStepOutcome>, String> {
-        self.taken
-            .lock()
-            .unwrap()
-            .push(request.actor.member().clone());
-        self.on_turns
-            .lock()
-            .unwrap()
-            .push(request.actor.turn().cloned());
-        Ok(tilo_actions::remote::Pending::ready(Ok(
-            tilo_actions::ActionOutput::default(),
-        )))
+        caller: &Caller,
+        _request: &InvokeRequest,
+        _admitted: &tilo_actions::remote::Admitted,
+    ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::Outcome>, String> {
+        let actor = tilo_broker_core::BrokerActor::for_caller(caller);
+        self.taken.lock().unwrap().push(actor.member().clone());
+        self.on_turns.lock().unwrap().push(actor.turn().cloned());
+        Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
+    }
+
+    /// `steps`, this device's turn steps provider.
+    fn providers(steps: Arc<Self>) -> crate::workspaces::providers::Providers {
+        let providers = crate::workspaces::providers::Providers::default();
+        providers.provide(
+            tilo_actions::remote::session_actions::PROVIDER,
+            tilo_actions::remote::session_actions::PROVIDER,
+            crate::workspaces::providers::Reach::Turns,
+            steps as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+        );
+        providers
     }
 }
 
@@ -781,7 +828,7 @@ async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() 
     tokio::task::LocalSet::new()
         .run_until(async {
             let steps = Arc::new(TurnSteps::default());
-            let f = Fixture::with_services(None, vec![steps.clone()]);
+            let f = Fixture::with_services(None, TurnSteps::providers(Arc::clone(&steps)));
             f.list_scribe();
             f.native.sessions.lock().unwrap().push((
                 SESSION.into(),

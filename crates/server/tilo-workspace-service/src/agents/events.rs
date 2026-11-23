@@ -35,7 +35,10 @@ use tilo_actions::contract::{
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::person_telling::Kind;
 use tilo_actions::remote::workspace_events::{self, Change, EventView, Events, Named, SetUp, Sort};
-use tilo_actions::remote::{Pending, pending};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, InvocationId,
+    InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, pending,
+};
 use tilo_actions::{
     ActionFailure, ActionKey, ActionOutput, ExecutionLocus, MemberId, OperationKind,
 };
@@ -45,11 +48,11 @@ use tilo_automation::{
     Binding, COUNT_ACTION, Condition, LIBRARY_RESOURCE, LIBRARY_RESOURCE_KIND, SHORTCUTS_APP_ID,
     Schedule, Selector, Shortcut, ShortcutChange, Step, StepKind, TriggerSpec,
 };
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 
 use crate::apps::services::{ShortcutLibraryRequest, ShortcutLibraryServices};
 use crate::apps::triggers::FIRING_INPUT;
 use crate::service::WorkspacesAt;
+use crate::workspaces::providers::{Providers, Reach};
 
 /// The most events one workspace keeps.
 pub const MAX_EVENTS: usize = 200;
@@ -1088,21 +1091,32 @@ pub(crate) fn argument_value(argument: Option<&str>) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
-impl HostStepServices for WorkspaceEvents {
-    fn provider(&self) -> &'static str {
-        workspace_events::PROVIDER
+impl WorkspaceEvents {
+    /// Register the workspace's events on this device, under the application their calls are
+    /// decided by: every change is a change to a saved shortcut.
+    pub fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            workspace_events::PROVIDER,
+            workspace_events::PROVIDER,
+            Reach::ThisDevice,
+            self,
+        );
     }
 
-    fn app_id(&self) -> &str {
-        workspace_events::PROVIDER
-    }
-
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
+    /// The actions the events offer, as the catalogue lists them.
+    fn rows(&self) -> Vec<ActionDescriptor> {
         offered().into_iter().map(descriptor).collect()
     }
 
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        let asker = Asker::of(request.actor)
+    /// Start `action` `request` calls, in `caller`'s workspace, once admitted.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let actor = tilo_broker_core::BrokerActor::for_caller(caller);
+        let asker = Asker::of(&actor)
             .ok_or("the events are a person's, or their assistant's, to change")?;
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| "this device is not running its workspaces")?;
@@ -1111,9 +1125,13 @@ impl HostStepServices for WorkspaceEvents {
             workspaces: self.workspaces.clone(),
             library: Arc::clone(&self.library),
         };
-        let workspace = request.workspace.to_owned();
-        let action = request.address.action.clone();
-        let argument = argument_value(request.argument);
+        let workspace = caller
+            .workspace()
+            .ok_or("the events were asked in no workspace of this device")?
+            .to_owned();
+        let action = request.target.address.action.clone();
+        let slot = request.argument.to_slot();
+        let argument = argument_value(slot.as_deref());
         runtime.spawn(async move {
             let answered = events
                 .answer(&workspace, &asker, &action, argument)
@@ -1125,6 +1143,49 @@ impl HostStepServices for WorkspaceEvents {
             done.complete(answered);
         });
         Ok(answer)
+    }
+}
+
+impl ActionProvider for WorkspaceEvents {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        tilo_actions::remote::admitted::offered(
+            workspace_events::PROVIDER,
+            workspace_events::PROVIDER,
+            tilo_actions::remote::admitted::top_level(self.rows()),
+            &query,
+        )
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        tilo_actions::remote::admitted::settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }
 

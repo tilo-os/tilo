@@ -1,4 +1,4 @@
-//! Host steps whose result stays current.
+//! Calls of registered providers whose result stays current.
 //!
 //! A live view ([`tilo_actions::ExecutionMode::Live`]) is admitted like any
 //! host step and then stays open: the broker reads it once, and again each
@@ -14,8 +14,7 @@ use std::sync::Arc;
 
 use super::host_action_admission::AdmittedHostAction;
 use super::{AppBrokerState, InvocationCaller, InvocationOwner};
-use crate::apps::services::LiveView;
-use tilo_actions::remote::Caller;
+use tilo_actions::remote::{Caller, LiveView};
 use tilo_actions::{ActionDescriptor, ActionFailure, InvocationUpdate};
 
 #[cfg(test)]
@@ -207,7 +206,8 @@ impl AppBrokerState {
             if let Err(error) = self.live_view_permitted(following) {
                 return End::Failed(failure("not_permitted", error.to_string()));
             }
-            changes.borrow_and_update();
+            // Armed before the read, so a change while it reads is not missed.
+            let changed = changes();
             let value = tokio::select! {
                 value = read() => value,
                 () = stop.notified() => return End::Cancelled,
@@ -241,7 +241,7 @@ impl AppBrokerState {
                 self.invocation_changed();
             }
             tokio::select! {
-                changed = changes.changed() => if changed.is_err() {
+                changed = changed => if changed.is_none() {
                     return End::Failed(failure("live_view_failed", "the view's provider stopped"));
                 },
                 () = stop.notified() => return End::Cancelled,

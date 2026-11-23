@@ -170,25 +170,67 @@ mod own_view_lookup_tests {
 #[cfg(test)]
 mod invitation_request_tests {
     use crate::apps::collab_app_broker::AppBrokerState;
-    use crate::apps::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use crate::workspaces::providers::{Providers, Reach};
     use std::sync::{Arc, Mutex};
+    use tilo_actions::InvocationId;
+    use tilo_actions::remote::admitted::{offered, settled, top_level};
     use tilo_actions::remote::session_actions;
-    use tilo_actions::remote::{ActionCallError, Caller, Pending, RemoteActionMessage, pending};
+    use tilo_actions::remote::{
+        ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+        InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, RemoteActionMessage,
+        pending,
+    };
 
     struct Shell {
         started: Mutex<Vec<String>>,
     }
 
-    impl HostStepServices for Shell {
-        fn provider(&self) -> &'static str {
-            session_actions::PROVIDER
+    impl ActionProvider for Shell {
+        fn query(
+            &self,
+            _caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            offered(
+                session_actions::PROVIDER,
+                session_actions::PROVIDER,
+                top_level(self.descriptors()),
+                &query,
+            )
         }
 
-        fn app_id(&self) -> &'static str {
-            session_actions::PROVIDER
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            self.run(caller, request, Admitted::default())
         }
 
+        fn run(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+            admitted: Admitted,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            settled(request.invocation, self.start(caller, &request, &admitted))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownInvocation))
+        }
+    }
+
+    impl Shell {
         fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
             vec![tilo_actions::ActionDescriptor {
                 did: None,
@@ -213,11 +255,16 @@ mod invitation_request_tests {
             }]
         }
 
-        fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+        fn start(
+            &self,
+            _caller: &Caller,
+            request: &InvokeRequest,
+            _admitted: &Admitted,
+        ) -> Result<Pending<Outcome>, String> {
             self.started
                 .lock()
                 .unwrap()
-                .push(request.address.action.clone());
+                .push(request.target.address.action.clone());
             let (answer, pending) = pending();
             answer.complete(Ok(tilo_actions::ActionOutput {
                 value: Some(serde_json::json!({
@@ -230,6 +277,18 @@ mod invitation_request_tests {
             }));
             Ok(pending)
         }
+    }
+
+    /// `shell` registered on this device as the session's provider.
+    fn providers(shell: Arc<Shell>) -> Providers {
+        let providers = Providers::default();
+        providers.provide(
+            session_actions::PROVIDER,
+            session_actions::PROVIDER,
+            Reach::ThisDevice,
+            shell as Arc<dyn ActionProvider + Send + Sync>,
+        );
+        providers
     }
 
     fn request(
@@ -337,7 +396,7 @@ mod invitation_request_tests {
             let (state, _bridge) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
                 crate::apps::services::ProcessServices {
-                    host_steps: vec![shell.clone()],
+                    providers: Some(providers(shell.clone())),
                     ..Default::default()
                 },
             );

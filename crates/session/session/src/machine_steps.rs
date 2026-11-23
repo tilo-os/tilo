@@ -16,12 +16,17 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_actions::remote::{InvokeArgument, Pending, machines};
+use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome, Pending, machines,
+};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionOutput, ActionState,
-    ExecutionLocus, InputSpec, OperationKind,
+    ExecutionLocus, InputSpec, InvocationId, OperationKind,
 };
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
+use tilo_broker_core::BrokerActor;
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::workspace_view::WorkspaceView;
 
@@ -41,12 +46,18 @@ impl MachineSteps {
         Arc::new(Self { view })
     }
 
+    /// Answer the machines' steps from now on, admitted by the grants of the installer's app,
+    /// for the person at this device alone.
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(machines::PROVIDER, APP_ID, Reach::ThisDevice, self);
+    }
+
     /// The arguments the step carries, as its descriptor's parameters take
     /// them.
-    fn arguments(request: &HostStepRequest<'_>) -> Result<Map<String, Value>, String> {
-        match InvokeArgument::from_slot(request.argument) {
+    fn arguments(argument: &InvokeArgument) -> Result<Map<String, Value>, String> {
+        match argument {
             InvokeArgument::None => Ok(Map::new()),
-            InvokeArgument::Json(object) => Ok(object),
+            InvokeArgument::Json(object) => Ok(object.clone()),
             InvokeArgument::Text(_) => Err("a machine step takes typed arguments".to_owned()),
         }
     }
@@ -110,7 +121,7 @@ fn descriptor(step: &str) -> ActionDescriptor {
 }
 
 /// What asking the service answered, as the step's outcome.
-fn outcome(asked: Result<Value, String>) -> HostStepOutcome {
+fn outcome(asked: Result<Value, String>) -> Outcome {
     asked
         .map(|value| ActionOutput {
             value: Some(value),
@@ -126,32 +137,76 @@ fn outcome(asked: Result<Value, String>) -> HostStepOutcome {
         })
 }
 
-impl HostStepServices for MachineSteps {
-    fn provider(&self) -> &'static str {
-        machines::PROVIDER
-    }
-
-    fn app_id(&self) -> &str {
-        APP_ID
-    }
-
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
-        machines::STEPS.into_iter().map(descriptor).collect()
-    }
-
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+impl MachineSteps {
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let actor = BrokerActor::for_caller(caller);
         let step = machines::STEPS
-            .into_iter()
+            .iter()
+            .copied()
             .find(|step| {
-                request.address.resource == machines::RESOURCE && request.address.action == *step
+                request.target.address.resource == machines::RESOURCE
+                    && request.target.address.action == *step
             })
             .ok_or("unknown machine step")?;
         // A disk's recovery key is the person's alone: the installer's window plans machines,
         // and neither it nor an agent reads what opens their disks.
-        if step == machines::RECOVERY_KEYS && (request.actor.is_app() || request.actor.is_agent()) {
+        if step == machines::RECOVERY_KEYS && (actor.is_app() || actor.is_agent()) {
             return Err("only you read your machines' recovery keys, on a device of yours".into());
         }
-        let arguments = Self::arguments(request)?;
+        let arguments = Self::arguments(&request.argument)?;
         Ok(self.ask(step, arguments)?.map(outcome))
+    }
+}
+
+impl ActionProvider for MachineSteps {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        offered(
+            machines::PROVIDER,
+            APP_ID,
+            top_level(machines::STEPS.into_iter().map(descriptor).collect()),
+            &query,
+        )
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
     }
 }

@@ -16,9 +16,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_actions::remote::Pending;
-use tilo_actions::{ActionArgs, ActionParam, ParamType};
+use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+    InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending,
+};
+use tilo_actions::{ActionArgs, ActionParam, ParamType, InvocationId};
+use tilo_broker_core::BrokerActor;
 use tilo_identity::store::IdentityProfile;
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// What a step answers: its JSON, or the sentence saying why it did not happen.
 pub(crate) type Answer = Result<serde_json::Value, String>;
@@ -327,7 +333,7 @@ pub(crate) fn bind_slot(
     ActionArgs::bind_json(params, &supplied).map_err(|error| error.to_string())
 }
 
-pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcome {
+pub(crate) fn outcome(answer: Answer) -> Outcome {
     answer
         .map(|value| tilo_actions::ActionOutput {
             value: Some(value),
@@ -350,37 +356,93 @@ pub(crate) struct BrokerApi {
     pub(crate) layout: Arc<crate::app_wire::LayoutAuthority>,
 }
 
-impl tilo_broker_core::steps::HostStepServices for BrokerApi {
-    fn provider(&self) -> &'static str {
-        tilo_actions::remote::identity_admin::PROVIDER
+impl BrokerApi {
+    /// Answer the person's identity steps from now on, admitted by the grants of Settings' app,
+    /// for the person at this device alone: the identity store stays here.
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            tilo_actions::remote::identity_admin::PROVIDER,
+            settings_sections::APP_ID,
+            Reach::ThisDevice,
+            self,
+        );
     }
 
-    fn app_id(&self) -> &str {
-        settings_sections::APP_ID
-    }
-
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-        STEPS.into_iter().map(descriptor).collect()
-    }
-
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
     fn start(
         &self,
-        request: &tilo_broker_core::steps::HostStepRequest<'_>,
-    ) -> Result<Pending<tilo_broker_core::steps::HostStepOutcome>, String> {
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
         // The identity store is that person's own: an agent or an app acting for nobody never
         // administers it through here.
-        let person = request
-            .actor
+        let actor = BrokerActor::for_caller(caller);
+        let person = actor
             .direct_person()
             .ok_or("only a person administers their identities")?;
         let step = STEPS
             .into_iter()
-            .find(|step| request.address.resource == RESOURCE && request.address.action == *step)
+            .find(|step| {
+                request.target.address.resource == RESOURCE
+                    && request.target.address.action == *step
+            })
             .ok_or("unknown identity step")?;
-        let args = bind_slot(params(step), request.argument)?;
-        authorize(&self.layout, request.workspace, person)?;
+        let argument = request.argument.to_slot();
+        let args = bind_slot(params(step), argument.as_deref())?;
+        let workspace = caller
+            .workspace()
+            .ok_or("the identities were asked in no workspace of this device")?;
+        authorize(&self.layout, workspace, person)?;
         let store = Store::from_env()?;
         Ok(Pending::ready(outcome(Ok(start(step, &args, &store)?))))
+    }
+}
+
+impl ActionProvider for BrokerApi {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        offered(
+            tilo_actions::remote::identity_admin::PROVIDER,
+            settings_sections::APP_ID,
+            top_level(STEPS.into_iter().map(descriptor).collect()),
+            &query,
+        )
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
     }
 }
 

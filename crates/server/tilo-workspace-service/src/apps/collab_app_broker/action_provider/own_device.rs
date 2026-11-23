@@ -24,7 +24,7 @@ pub(super) fn is_person_here(
     origin: Option<&super::super::published_invocation::InvocationCaller>,
 ) -> bool {
     caller.acting().is_person()
-        && super::super::host_steps::is_local_host_caller(caller, origin)
+        && super::super::provided::is_local_host_caller(caller, origin)
         && caller.acting_for_person().is_none()
         && !caller.is_foreign_device()
 }
@@ -287,11 +287,11 @@ mod tests {
                     ..Default::default()
                 };
                 let f = if foreign {
-                    super::super::super::host_steps::signed_test_support::Fixture::new_certified_foreign(
+                    super::super::super::provided::signed_test_support::Fixture::new_certified_foreign(
                         services,
                     )
                 } else {
-                    super::super::super::host_steps::signed_test_support::Fixture::new_certified(
+                    super::super::super::provided::signed_test_support::Fixture::new_certified(
                         services,
                     )
                 };
@@ -308,7 +308,7 @@ mod tests {
         phase certified_own_device_preserves_service_caller_and_signed_ownership;
         {
             let network = Arc::new(Network::default());
-            let f = super::super::super::host_steps::signed_test_support::Fixture::new_certified(
+            let f = super::super::super::provided::signed_test_support::Fixture::new_certified(
                 crate::apps::services::ProcessServices {
                     own_device: Some(network.clone()),
                     ..Default::default()
@@ -362,11 +362,11 @@ mod tests {
                         ..Default::default()
                     };
                     let mut f = if certified {
-                        super::super::super::host_steps::signed_test_support::Fixture::new_certified(
+                        super::super::super::provided::signed_test_support::Fixture::new_certified(
                             services,
                         )
                     } else {
-                        super::super::super::host_steps::signed_test_support::Fixture::new(services)
+                        super::super::super::provided::signed_test_support::Fixture::new(services)
                     };
                     f.caller = f.caller.clone().in_new_execution();
                     let asked = request(&invocation(SETTINGS));
@@ -434,7 +434,7 @@ mod tests {
         phase own_device_signs_before_send_and_preserves_uuid_through_completion;
         {
             let network = Arc::new(Network::default());
-            let f = super::super::super::host_steps::signed_test_support::Fixture::new(
+            let f = super::super::super::provided::signed_test_support::Fixture::new(
                 crate::apps::services::ProcessServices {
                     own_device: Some(network.clone()),
                     ..Default::default()
@@ -481,7 +481,7 @@ mod tests {
         {
             for dropped in [false, true] {
                 let network = Arc::new(Network::default());
-                let f = super::super::super::host_steps::signed_test_support::Fixture::new(
+                let f = super::super::super::provided::signed_test_support::Fixture::new(
                     crate::apps::services::ProcessServices {
                         own_device: Some(network.clone()),
                         ..Default::default()
@@ -521,7 +521,7 @@ mod tests {
         {
             for admission_failure in [false, true] {
                 let network = Arc::new(Network::default());
-                let f = super::super::super::host_steps::signed_test_support::Fixture::new(
+                let f = super::super::super::provided::signed_test_support::Fixture::new(
                     crate::apps::services::ProcessServices {
                         own_device: Some(network.clone()),
                         ..Default::default()
@@ -562,7 +562,7 @@ mod tests {
                 }),
                 ..Default::default()
             });
-            let f = super::super::super::host_steps::signed_test_support::Fixture::new(
+            let f = super::super::super::provided::signed_test_support::Fixture::new(
                 crate::apps::services::ProcessServices {
                     own_device: Some(network.clone()),
                     ..Default::default()
@@ -590,7 +590,7 @@ mod tests {
         {
             for revoked in [false, true] {
                 let network = Arc::new(Network::default());
-                let f = super::super::super::host_steps::signed_test_support::Fixture::new(
+                let f = super::super::super::provided::signed_test_support::Fixture::new(
                     crate::apps::services::ProcessServices {
                         own_device: Some(network.clone()),
                         ..Default::default()

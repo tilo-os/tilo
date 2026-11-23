@@ -26,7 +26,7 @@ tilo_test_env::scenario! {
 
     phase registered_services_recheck_original_certificate_after_signed_admission;
     {
-        use super::super::host_steps::signed_test_support::Fixture;
+        use super::super::provided::signed_test_support::Fixture;
         for kind in 0..3 {
             let governance = Arc::new(Governance::default());
             let keyboard = Arc::new(Keyboard::default());
@@ -316,7 +316,7 @@ tilo_test_env::scenario! {
 
     phase lost_governance_answer_has_signed_uncertain_terminal;
     {
-        use super::super::host_steps::signed_test_support::Fixture;
+        use super::super::provided::signed_test_support::Fixture;
         let f = Fixture::new_certified(ProcessServices {
             workspace_governance: Some(Arc::new(LostGovernance)),
             ..Default::default()

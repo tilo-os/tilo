@@ -54,7 +54,7 @@ impl AppBrokerState {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         };
         if caller.device_public_key().is_some()
-            || !super::host_steps::is_local_host_caller(caller, origin)
+            || !super::provided::is_local_host_caller(caller, origin)
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }

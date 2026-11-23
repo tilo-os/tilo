@@ -41,10 +41,12 @@ use tilo_actions::remote::workspace_initiative::{
     self, Accept, Decline, Look, LookEnded, LookRound, Proposal, Proposals, Propose, Settings,
     State, TurnOn,
 };
-use tilo_actions::remote::{ActionCallError, Caller, Pending, pending};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, InvocationId,
+    InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, pending,
+};
 use tilo_actions::{ActionFailure, ActionOutput, ExecutionLocus, OperationKind};
 use tilo_automation::{Schedule, TriggerSpec};
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_lock::MutexRecover as _;
 
 use super::assistant::{assistant_of, person_of};
@@ -53,6 +55,7 @@ use super::events::WorkspaceEvents;
 use crate::service::WorkspacesAt;
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{Interaction, Spender};
+use crate::workspaces::providers::{Providers, Reach};
 
 mod look;
 mod proposals;
@@ -1227,28 +1230,80 @@ fn descriptor(offered: Offered) -> ActionDescriptor {
     }
 }
 
-impl HostStepServices for Initiative {
-    fn provider(&self) -> &'static str {
-        workspace_initiative::PROVIDER
+impl ActionProvider for Initiative {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        tilo_actions::remote::admitted::offered(
+            workspace_initiative::PROVIDER,
+            workspace_initiative::PROVIDER,
+            tilo_actions::remote::admitted::top_level(descriptors()),
+            &query,
+        )
     }
 
-    fn app_id(&self) -> &str {
-        workspace_initiative::PROVIDER
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
     }
 
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
-        descriptors()
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        tilo_actions::remote::admitted::settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
     }
 
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        let events = super::events::Asker::of(request.actor)
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+}
+
+impl Initiative {
+    /// Register the look-round and what it proposes on this device, under the application their
+    /// calls are decided by.
+    pub fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            workspace_initiative::PROVIDER,
+            workspace_initiative::PROVIDER,
+            Reach::ThisDevice,
+            self,
+        );
+    }
+
+    /// Start `action` `request` calls, in `caller`'s workspace, once admitted.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let actor = tilo_broker_core::BrokerActor::for_caller(caller);
+        let events = super::events::Asker::of(&actor)
             .ok_or("the initiative is a person's, or their assistant's, to change")?;
         let person = person_of(&events.person)?;
-        let workspace_id = tilo_server_protocol::WorkspaceId::parse(request.workspace)
+        let workspace = caller
+            .workspace()
+            .ok_or("the initiative was asked in no workspace of this device")?;
+        let workspace_id = tilo_server_protocol::WorkspaceId::parse(workspace)
             .ok_or("the initiative was asked in no workspace of this device")?;
         let asked = Asked {
             workspace_id,
-            workspace: request.workspace.to_owned(),
+            workspace: workspace.to_owned(),
             person,
             role: if events.agent.is_some() {
                 Role::Assistant
@@ -1261,9 +1316,10 @@ impl HostStepServices for Initiative {
             .map_err(|_| "this device is not running its workspaces")?;
         let (done, answer) = pending();
         let initiative = self.clone();
-        let resource = request.address.resource.clone();
-        let action = request.address.action.clone();
-        let argument = super::events::argument_value(request.argument);
+        let resource = request.target.address.resource.clone();
+        let action = request.target.address.action.clone();
+        let slot = request.argument.to_slot();
+        let argument = super::events::argument_value(slot.as_deref());
         runtime.spawn(async move {
             let answered = initiative
                 .answering(&asked, &resource, &action, argument)

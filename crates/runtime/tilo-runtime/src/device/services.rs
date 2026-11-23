@@ -861,6 +861,9 @@ fn broker_services(
             parts.workspaces,
             parts.apps,
         ))),
+        // The providers registered on this device ([`Daemon::provide`]): a call made here reaches
+        // them through the same registry another device's call does.
+        providers: Some(parts.workspaces.copies().providers()),
         ..ProcessServices::default()
     })
 }

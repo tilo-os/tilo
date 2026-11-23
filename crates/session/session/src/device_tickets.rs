@@ -14,18 +14,23 @@
 use std::sync::{Arc, OnceLock};
 
 use futures_util::future::BoxFuture;
-use tilo_actions::remote::{InvokeArgument, Pending, device_tickets as wire};
-use tilo_actions::{
-    ActionContract, ActionDescriptor, ActionKind, ActionOutput, ExecutionLocus, OperationKind,
-    ResultSpec,
+use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome, Pending,
+    device_tickets as wire,
 };
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
+use tilo_actions::{
+    ActionContract, ActionDescriptor, ActionKind, ActionOutput, ExecutionLocus, InvocationId,
+    OperationKind, ResultSpec,
+};
 use tilo_device_identity::login::{Entry, Reached};
 use tilo_peer_state::actions::ActionService;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::device_tickets::{Issuer, PersonHost, Role, Root, TicketServer};
 use tilo_workspace_service::service::ServiceSlot;
 use tilo_workspace_service::workspaces::Workspaces;
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::device_actions::DeviceActions;
 use crate::hosted_workspaces::HostedWorkspaces;
@@ -308,27 +313,31 @@ fn refused(message: impl Into<String>) -> tilo_actions::ActionFailure {
     }
 }
 
-impl HostStepServices for DeviceTickets {
-    fn provider(&self) -> &'static str {
-        wire::PROVIDER
+impl DeviceTickets {
+    /// Answer the person's devices from now on (a ticket for a new computer, the list, names and
+    /// revocations), admitted by the grants of Settings' app, for the person at this device alone.
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(wire::PROVIDER, APP_ID, Reach::ThisDevice, self);
     }
 
-    fn app_id(&self) -> &str {
-        APP_ID
-    }
-
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
+    fn descriptors() -> Vec<ActionDescriptor> {
         ACTIONS.into_iter().map(descriptor).collect()
     }
 
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
         let action = ACTIONS
             .into_iter()
-            .find(|action| request.address.action == *action)
+            .find(|action| request.target.address.action == *action)
             .ok_or("no such device action")?;
-        let args = match InvokeArgument::from_slot(request.argument) {
+        let args = match &request.argument {
             InvokeArgument::None => serde_json::Value::Object(serde_json::Map::new()),
-            InvokeArgument::Json(args) => serde_json::Value::Object(args),
+            InvokeArgument::Json(args) => serde_json::Value::Object(args.clone()),
             InvokeArgument::Text(_) => {
                 return Err("a device action is asked with its arguments as an object".to_owned());
             }
@@ -336,8 +345,7 @@ impl HostStepServices for DeviceTickets {
         // What names and revokes the person's devices is theirs alone to ask: an agent or an app
         // acting for nobody never does it through here.
         if action == wire::RENAME || action == wire::REVOKE {
-            request
-                .actor
+            tilo_broker_core::BrokerActor::for_caller(caller)
                 .direct_person()
                 .ok_or("only you name or revoke your devices")?;
         }
@@ -380,6 +388,45 @@ impl HostStepServices for DeviceTickets {
     }
 }
 
+impl ActionProvider for DeviceTickets {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        offered(wire::PROVIDER, APP_ID, top_level(Self::descriptors()), &query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(request.invocation, self.start(caller, &request, &admitted))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,26 +451,29 @@ mod tests {
             .build()
             .unwrap();
         let _entered = runtime.enter();
-        let actor = tilo_broker_core::actor::BrokerActor::person(hex::encode([7; 32]));
-        // The plan arrives as the broker hands a host step its arguments: in their slot form.
+        let caller = Caller::local_person(hex::encode([7; 32]))
+            .in_workspace("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0");
+        // The plan arrives as the dispatch hands a provider its arguments: typed.
         let mut plan = serde_json::Map::new();
         plan.insert("plan".to_owned(), "6498fd08fe34f46d4165a5d9f3fe251c".into());
-        let argument = InvokeArgument::Json(plan).to_slot();
-        let request = HostStepRequest {
-            workspace: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
-            actor: &actor,
-            address: &wire::target(wire::ISSUE).address,
-            argument: argument.as_deref(),
-            provider: None,
-            group: None,
-            stop: std::sync::Arc::default(),
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            on_behalf_of: None,
+            target: wire::target(wire::ISSUE),
+            argument: InvokeArgument::Json(plan),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
         };
-        assert_eq!(
-            tickets.descriptors()[0].address,
-            wire::target(wire::ISSUE).address
-        );
-        assert_eq!(tickets.descriptors().len(), ACTIONS.len());
-        let asked = tickets.start(&request).unwrap();
+        let descriptors = DeviceTickets::descriptors();
+        assert_eq!(descriptors[0].address, wire::target(wire::ISSUE).address);
+        assert_eq!(descriptors.len(), ACTIONS.len());
+        let asked = tickets
+            .start(&caller, &request, &Admitted::default())
+            .unwrap();
         // The issue runs on the runtime's worker, which holds what it needs.
         drop(tickets);
         let answer = asked

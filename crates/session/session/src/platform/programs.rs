@@ -10,8 +10,7 @@
 use std::sync::Arc;
 
 use tilo_actions::WorkGroup;
-use tilo_actions::remote::Pending;
-use tilo_broker_core::steps::HostStepOutcome;
+use tilo_actions::remote::{Outcome, Pending};
 
 /// Who a program runs as.
 #[derive(Clone, Copy)]
@@ -56,5 +55,5 @@ pub struct ProgramRequest<'a> {
 pub trait Programs: Send + Sync {
     /// Run `request`'s program and answer what it said, off the caller's pass: the program
     /// waits on its host and on every call it makes.
-    fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<HostStepOutcome>, String>;
+    fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<Outcome>, String>;
 }

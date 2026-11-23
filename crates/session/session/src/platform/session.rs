@@ -2963,7 +2963,7 @@ impl Session {
         if actions.offer(rows)
             && let Some(broker) = self.app_wire.as_ref().and_then(AppWire::agent_broker)
         {
-            broker.host_steps_changed();
+            broker.providers_changed();
         }
     }
 
@@ -2977,7 +2977,7 @@ impl Session {
         if steps.offer(&self.shared.services.borrow())
             && let Some(broker) = self.app_wire.as_ref().and_then(AppWire::agent_broker)
         {
-            broker.host_steps_changed();
+            broker.providers_changed();
         }
     }
 

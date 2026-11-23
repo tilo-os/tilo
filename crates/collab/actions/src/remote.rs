@@ -36,6 +36,8 @@ pub use window_actions::{
     activation_requested, link_scheme, open_link_arguments,
 };
 
+pub mod admitted;
+pub use admitted::{Admitted, LiveRead, LiveView, Outcome};
 pub mod agent_tools;
 mod application;
 pub mod browser;
@@ -1383,6 +1385,43 @@ pub trait ActionProvider {
     fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
         let _ = app_id;
         Pending::ready(None)
+    }
+
+    /// The action at `address` as one invocation with `argument` (its slot form) is: `None` for the
+    /// action as this provider's catalogue describes it. A provider whose action is riskier for
+    /// some values than others (a setting that weakens the person's security) answers it as that
+    /// value makes it, so the dispatch asks the person first.
+    fn invocation(
+        &self,
+        address: &crate::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<crate::api::ActionDescriptor> {
+        let _ = (address, argument);
+        None
+    }
+
+    /// Carry out `request`, which this device's dispatch admitted for `caller`, with what the
+    /// dispatch knows of the call ([`Admitted`]). By default it is [`Self::invoke`]d.
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let _ = admitted;
+        self.invoke(caller, request)
+    }
+
+    /// Follow `request`, an admitted call of an action whose contract is
+    /// [`ExecutionMode::Live`](crate::ExecutionMode::Live): how to read its result as it is now,
+    /// and when that may have changed.
+    ///
+    /// # Errors
+    ///
+    /// The action has no live result here, or `caller` may not follow it.
+    fn watch(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
+        let _ = (caller, request);
+        Err("this action has no live result".into())
     }
 }
 

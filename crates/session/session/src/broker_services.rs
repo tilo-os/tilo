@@ -22,7 +22,7 @@ use tilo_broker_core::services::{
     LocalPersonServices, OwnDeviceActions, SearchIndexServices, WorkspaceGovernanceServices,
     WorkspaceNodeActions,
 };
-use tilo_broker_core::steps::{ContinuationServices, HostStepServices};
+use tilo_broker_core::steps::ContinuationServices;
 use tilo_workspace_keys::KeyProvider;
 use tilo_workspace_service::apps::services::{
     ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
@@ -124,7 +124,6 @@ broker_services! {
     workspace_governance: Arc<dyn WorkspaceGovernanceServices>,
     shortcut_library: Arc<dyn ShortcutLibraryServices>,
     keyboard_shortcuts: Arc<dyn KeyboardShortcutServices>,
-    host_steps: Vec<Arc<dyn HostStepServices>> => default,
     providers: tilo_workspace_service::workspaces::providers::Providers,
     continuations: Arc<dyn ContinuationServices>,
     search_index: Arc<dyn SearchIndexServices>,

@@ -1,16 +1,18 @@
 use super::super::AppBrokerState;
-use crate::apps::services::{
-    HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView,
-};
 use crate::apps::test_support::{
     Grantee, Grants as _, KindSet, TreePath, Workspace, WorkspaceId, WorkspaceTree,
     WorkspaceTreeHandle,
 };
+use crate::workspaces::providers::{Providers, Reach};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tilo_actions::InvocationId;
 use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::admitted::{offered, settled, top_level};
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, LiveRead, LiveView, Outcome,
+    Pending, RemoteActionTarget,
 };
 
 const PROVIDER: &str = "test.live";
@@ -45,15 +47,67 @@ impl Counter {
     }
 }
 
-impl HostStepServices for Counter {
-    fn provider(&self) -> &'static str {
-        PROVIDER
+impl ActionProvider for Counter {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        offered(PROVIDER, APP, top_level(self.descriptors()), &query)
     }
 
-    fn app_id(&self) -> &'static str {
-        APP
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
     }
 
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(request.invocation, self.start(caller, &request, &admitted))
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn watch(&self, _caller: &Caller, _request: &InvokeRequest) -> Result<LiveView, String> {
+        let value = Arc::clone(&self.value);
+        let reads = Arc::clone(&self.reads);
+        let receiver = self.changes.subscribe();
+        Ok(LiveView {
+            read: Box::new(move || {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Pending::ready(
+                    Ok(serde_json::json!({ "count": *value.lock().unwrap() })) as LiveRead
+                )
+            }),
+            changes: Box::new(move || {
+                let mut receiver = receiver.clone();
+                receiver.borrow_and_update();
+                let (changed, change) = tilo_actions::remote::pending();
+                drop(tilo_rt::app().spawn(async move {
+                    if receiver.changed().await.is_ok() {
+                        changed.complete(());
+                    }
+                }));
+                change
+            }),
+        })
+    }
+}
+
+impl Counter {
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
             did: None,
@@ -77,22 +131,13 @@ impl HostStepServices for Counter {
         }]
     }
 
-    fn start(&self, _: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+    fn start(
+        &self,
+        _caller: &Caller,
+        _request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
         Err("a live view is followed, not started".into())
-    }
-
-    fn watch(&self, _: &HostStepRequest<'_>) -> Result<LiveView, String> {
-        let value = Arc::clone(&self.value);
-        let reads = Arc::clone(&self.reads);
-        Ok(LiveView {
-            read: Box::new(move || {
-                reads.fetch_add(1, Ordering::SeqCst);
-                Pending::ready(
-                    Ok(serde_json::json!({ "count": *value.lock().unwrap() })) as LiveRead
-                )
-            }),
-            changes: self.changes.subscribe(),
-        })
     }
 }
 
@@ -108,10 +153,17 @@ fn broker(
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();
+    let providers = Providers::default();
+    providers.provide(
+        PROVIDER,
+        APP,
+        Reach::ThisDevice,
+        counter as Arc<dyn ActionProvider + Send + Sync>,
+    );
     let (state, _bridge_rx) = AppBrokerState::test_state(
         Some(tree.authority()),
         crate::apps::services::ProcessServices {
-            host_steps: vec![counter],
+            providers: Some(providers),
             ..Default::default()
         },
     );

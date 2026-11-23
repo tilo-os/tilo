@@ -119,9 +119,7 @@ pub trait ShortcutLibraryServices: Send + Sync {
     }
 }
 
-pub use tilo_broker_core::steps::{
-    ContinuationServices, HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView,
-};
+pub use tilo_broker_core::steps::ContinuationServices;
 
 /// What a workspace control session's calls answer.
 pub type ControlAnswer<'a, T> =
@@ -791,10 +789,8 @@ pub struct ProcessServices {
     pub shortcut_library: Option<Arc<dyn ShortcutLibraryServices>>,
     /// The device's keyboard shortcuts on the action api; without it they are not offered.
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
-    /// The steps the host runs itself, each under its own provider.
-    pub host_steps: Vec<Arc<dyn HostStepServices>>,
-    /// The providers this device's embedder registered ([`crate::workspaces::Workspaces::provide`]):
-    /// a call on this device reaches them as another device's does.
+    /// The providers registered on this device, the steps the host runs itself among them
+    /// ([`crate::workspaces::providers`]): each answers under its own provider id.
     pub providers: Option<crate::workspaces::providers::Providers>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     /// The session's persistent search index; without it apps' content is findable only while
@@ -888,7 +884,6 @@ impl ProcessServices {
         "workspace_governance",
         "shortcut_library",
         "keyboard_shortcuts",
-        "host_steps",
         "providers",
         "continuations",
         "search_index",

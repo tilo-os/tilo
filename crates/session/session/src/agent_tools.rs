@@ -8,13 +8,81 @@
 //! on its grants, asked of its person first where the workspace says so, and named in History as
 //! the session.
 
+use std::sync::Arc;
+
 use tilo_actions::remote::Pending;
+use tilo_actions::remote::admitted::{offered, settled, top_level};
 use tilo_actions::remote::agent_tools as wire;
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, Outcome,
+};
+use tilo_broker_core::BrokerActor;
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// The agent sessions' tools, as this session takes them.
 #[derive(Default)]
 pub(crate) struct AgentToolSteps(tilo_mcp::agent_tools::AgentTools);
+
+impl AgentToolSteps {
+    /// Take the agent sessions' tool calls from now on, admitted by the tools' app, taken only
+    /// inside an agent session and never listed: an agent's app asks for them, not its model.
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            wire::PROVIDER,
+            wire::APP,
+            Reach::AgentSessions { listed: false },
+            self,
+        );
+    }
+
+    /// Every tool this provider offers, described.
+    fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
+        vec![
+            descriptor(wire::LIST, "agent-tools-list", "agent-tools-list-detail"),
+            descriptor(wire::CALL, "agent-tools-call", "agent-tools-call-detail"),
+        ]
+    }
+
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let address = &request.target.address;
+        if address.resource != wire::RESOURCE {
+            return Err("unknown step of an agent's tools".into());
+        }
+        let actor = BrokerActor::for_caller(caller);
+        if !actor.is_agent() {
+            return Err("an agent's tools are its own".into());
+        }
+        let person = actor
+            .acting_for()
+            .ok_or("an agent's tools work for its person")?;
+        let session = actor
+            .session()
+            .ok_or("an agent calls its tools as a step of its session")?;
+        let provider = admitted
+            .through
+            .clone()
+            .ok_or("an agent calls its tools only through its session's API")?;
+        let workspace = caller
+            .workspace()
+            .ok_or("an agent's tools are called in its workspace")?;
+        let argument = request.argument.to_slot();
+        self.0.start(&tilo_mcp::agent_tools::Step {
+            workspace,
+            agent: actor.member().id(),
+            person,
+            session,
+            provider,
+            action: &address.action,
+            argument: argument.as_deref(),
+        })
+    }
+}
 
 /// Step `action`, described for the broker's catalogue.
 fn descriptor(action: &str, label: &str, detail: &str) -> tilo_actions::ActionDescriptor {
@@ -46,56 +114,50 @@ fn descriptor(action: &str, label: &str, detail: &str) -> tilo_actions::ActionDe
     }
 }
 
-impl HostStepServices for AgentToolSteps {
-    fn provider(&self) -> &'static str {
-        wire::PROVIDER
+impl ActionProvider for AgentToolSteps {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
+        offered(
+            wire::PROVIDER,
+            wire::APP,
+            top_level(Self::descriptors()),
+            &query,
+        )
     }
 
-    fn app_id(&self) -> &'static str {
-        wire::APP
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
     }
 
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-        vec![
-            descriptor(wire::LIST, "agent-tools-list", "agent-tools-list-detail"),
-            descriptor(wire::CALL, "agent-tools-call", "agent-tools-call-detail"),
-        ]
+    fn observe(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
     }
 
-    fn for_agent_sessions(&self) -> bool {
-        true
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 
-    fn listed(&self) -> bool {
-        false
-    }
-
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        if request.address.resource != wire::RESOURCE {
-            return Err("unknown step of an agent's tools".into());
-        }
-        let actor = request.actor;
-        if !actor.is_agent() {
-            return Err("an agent's tools are its own".into());
-        }
-        let person = actor
-            .acting_for()
-            .ok_or("an agent's tools work for its person")?;
-        let session = actor
-            .session()
-            .ok_or("an agent calls its tools as a step of its session")?;
-        let provider = request
-            .provider
-            .clone()
-            .ok_or("an agent calls its tools only through its session's API")?;
-        self.0.start(&tilo_mcp::agent_tools::Step {
-            workspace: request.workspace,
-            agent: actor.member().id(),
-            person,
-            session,
-            provider,
-            action: &request.address.action,
-            argument: request.argument,
-        })
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(request.invocation, self.start(caller, &request, &admitted))
     }
 }

@@ -272,7 +272,7 @@ mod approval;
 mod cancel_tests;
 mod foreign_ask;
 mod host_action_admission;
-mod host_steps;
+mod provided;
 mod invocation_update;
 mod launchable;
 mod live_views;

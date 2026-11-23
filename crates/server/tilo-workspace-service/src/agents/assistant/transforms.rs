@@ -12,10 +12,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tilo_action_policy::MemberId;
-use tilo_actions::ActionDescriptor;
-use tilo_actions::remote::{Pending, pending};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, InvocationId,
+    InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, pending,
+};
 use tilo_agent_session::transform::{self, Interaction, TransformModel};
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use ui::time::Duration;
@@ -24,6 +25,7 @@ use super::{assistant_of, person_of};
 use crate::service::ServiceSlot;
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::Spender;
+use crate::workspaces::providers::{Providers, Reach};
 
 /// The provider the transforms are answered under.
 pub const PROVIDER: &str = "tilo.agent.transforms";
@@ -97,27 +99,36 @@ impl Drop for Place {
     }
 }
 
-impl HostStepServices for Transforms {
-    fn provider(&self) -> &'static str {
-        PROVIDER
+impl Transforms {
+    /// Register the transforms on this device, answered under the agent's application: a
+    /// shortcut's `Ai` step and an app that wants a summary reach them as the person's own call.
+    pub fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            PROVIDER,
+            tilo_automation::AGENT_APP_ID,
+            Reach::ThisDevice,
+            self,
+        );
     }
 
-    fn app_id(&self) -> &str {
-        tilo_automation::AGENT_APP_ID
-    }
-
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
-        transform::descriptors()
-    }
-
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        if request.address.resource != transform::RESOURCE_ID {
+    /// Start one of `PROVIDER`'s actions on this device's workspaces for `caller`, once
+    /// admitted: the transform runs on a thread of its own and its answer comes back when the
+    /// model stopped.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let address = &request.target.address;
+        if address.resource != transform::RESOURCE_ID {
             return Err(format!(
                 "the agent publishes no resource `{}`",
-                request.address.resource
+                address.resource
             ));
         }
-        let Some(place) = self.running.begin(&request.actor.member) else {
+        let actor = tilo_broker_core::BrokerActor::for_caller(caller);
+        let Some(place) = self.running.begin(actor.member()) else {
             return Ok(Pending::ready(Err(Box::new(tilo_actions::ActionFailure {
                 code: transform::code::BUSY.to_owned(),
                 message: "this agent is already running as many transforms as it allows".to_owned(),
@@ -134,20 +145,23 @@ impl HostStepServices for Transforms {
         if workspaces.agent_keys().is_none() {
             return Err("this device runs no agents of its workspaces".into());
         }
-        let workspace = WorkspaceId::parse(request.workspace)
+        let asked_in = caller
+            .workspace()
             .ok_or("the transform was asked in no workspace of this device")?;
-        let content = ui::content::session(request.workspace)
-            .unwrap_or_else(ui::content::ContentStore::memory);
-        let call = transform::bind_wire(&request.address.action, request.argument, &content)
+        let workspace = WorkspaceId::parse(asked_in)
+            .ok_or("the transform was asked in no workspace of this device")?;
+        let content =
+            ui::content::session(asked_in).unwrap_or_else(ui::content::ContentStore::memory);
+        let argument = request.argument.to_slot();
+        let call = transform::bind_wire(&address.action, argument.as_deref(), &content)
             .map_err(|failure| failure.message)?;
-        let person = request
-            .actor
+        let person = actor
             .direct_person()
-            .or_else(|| request.actor.acting_for())
+            .or_else(|| actor.acting_for())
             .and_then(|person| person_of(person).ok());
         let runtime = self.runtime.clone();
         let (done, answer) = pending();
-        let stop = Arc::clone(&request.stop);
+        let stop = Arc::clone(&admitted.stop);
         std::thread::Builder::new()
             .name("agent-transform".into())
             .spawn(move || {
@@ -190,6 +204,49 @@ impl HostStepServices for Transforms {
             })
             .map_err(|error| format!("the transform could not start: {error}"))?;
         Ok(answer)
+    }
+}
+
+impl ActionProvider for Transforms {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        tilo_actions::remote::admitted::offered(
+            PROVIDER,
+            tilo_automation::AGENT_APP_ID,
+            tilo_actions::remote::admitted::top_level(transform::descriptors()),
+            &query,
+        )
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        tilo_actions::remote::admitted::settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }
 

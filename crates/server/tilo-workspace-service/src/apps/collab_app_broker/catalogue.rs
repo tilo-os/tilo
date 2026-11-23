@@ -2,6 +2,7 @@
     clippy::wildcard_imports,
     reason = "one part of the broker module: the shared state, its imports and the other parts reach this through the parent glob"
 )]
+use crate::workspaces::providers::Reach;
 use super::*;
 
 /// The catalogue one audience may see, each surface's actions shared by its
@@ -240,15 +241,25 @@ impl AppBrokerState {
         // it works in a session, and taken only there. A session step (for turns) is listed to
         // every caller the grants allow, as an app action is.
         let in_session = actor.session().is_some();
+        let asking = super::provided::caller_for(actor, cluster_id);
         let task_steps = self
             .services
-            .host_steps
-            .iter()
-            .filter(|steps| steps.listed())
-            .filter(|steps| steps.for_turns() || (in_session && steps.for_agent_sessions()))
-            .map(|steps| {
-                let actions = steps.descriptors().into_iter().collect::<Vec<_>>();
-                (steps.provider(), steps.app_id().to_owned(), actions)
+            .providers
+            .as_ref()
+            .map(crate::workspaces::providers::Providers::all)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|registered| match registered.reach {
+                Reach::Turns => true,
+                Reach::AgentSessions { listed } => listed && in_session,
+                Reach::Devices | Reach::ThisDevice => false,
+            })
+            .map(|registered| {
+                let actions = super::provided::rows_of(&registered, &asking)
+                    .into_iter()
+                    .filter_map(|row| row.action)
+                    .collect::<Vec<_>>();
+                (registered.provider, registered.app.to_owned(), actions)
             })
             .collect::<Vec<_>>();
         // One policy sample decides every row; serialization runs after the
@@ -375,10 +386,10 @@ impl AppBrokerState {
         self.surfaces_changed();
         self.catalogue_changed();
     }
-    /// The host's own steps changed what they offer (the session's
+    /// A registered provider changed what it offers (the session's
     /// layout gained a place, a window opened): every connection
     /// following the catalogue is handed it again.
-    pub fn host_steps_changed(&self) {
+    pub fn providers_changed(&self) {
         self.catalogue_changed();
     }
     pub(super) fn publish_action_catalogue(&self) {

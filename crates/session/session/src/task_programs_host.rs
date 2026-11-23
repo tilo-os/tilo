@@ -15,8 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tilo_actions::remote::task_programs as wire;
-use tilo_actions::remote::{ActionProvider, Pending};
-use tilo_broker_core::steps::HostStepOutcome;
+use tilo_actions::remote::{ActionProvider, Outcome, Pending};
 use tilo_lock::MutexRecover as _;
 
 use crate::platform::programs::{ProgramCaller, ProgramRequest, Programs};
@@ -501,7 +500,7 @@ impl ActionProvider for Current {
 }
 
 /// The session's program could not start or run at all.
-fn unavailable(message: String) -> HostStepOutcome {
+fn unavailable(message: String) -> Outcome {
     Err(Box::new(tilo_actions::ActionFailure {
         code: "task_program_unavailable".into(),
         message,
@@ -511,7 +510,7 @@ fn unavailable(message: String) -> HostStepOutcome {
 }
 
 /// The person stopped the line before it ended.
-fn stopped() -> HostStepOutcome {
+fn stopped() -> Outcome {
     Err(Box::new(tilo_actions::ActionFailure {
         code: "stopped".into(),
         message: "the person stopped this line".into(),
@@ -535,7 +534,7 @@ fn outcome(ran: tilo_mcp::TaskProgram) -> tilo_actions::ActionOutput {
 }
 
 impl Programs for TaskProgramHost {
-    fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+    fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<Outcome>, String> {
         let api = self.session_of(&request)?;
         let (program, confirm, this) = (request.program, request.confirm, request.this);
         let stop = request.stop;

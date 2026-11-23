@@ -17,16 +17,21 @@
 
 use std::sync::Arc;
 
+use tilo_actions::remote::admitted::{offered, settled, top_level};
 use tilo_actions::remote::workspace_activity as wire;
-use tilo_actions::remote::{Caller, Pending};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, LiveRead,
+    LiveView, Outcome, Pending,
+};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ExecutionLocus,
     IRREVERSIBLE_TAG, InputSpec, InvocationId, OperationKind, RiskLevel,
 };
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices, LiveView};
+use tilo_broker_core::BrokerActor;
 use tilo_desktop_surface::session::ActivityRequests;
 use tilo_session_core::desktop::activity::{is_read, refused_to_agent};
 use tilo_session_core::desktop::i18n::t;
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// The broker's API to the activity the shell's model serves.
 pub(crate) struct ActivityWire {
@@ -48,6 +53,12 @@ impl ActivityWire {
     pub(crate) fn changed(&self) {
         self.changes
             .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    /// Answer the activity's actions from now on, admitted by the grants of the app that shows
+    /// them, for the person at this device.
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(wire::PROVIDER, wire::APP_ID, Reach::ThisDevice, self);
     }
 }
 
@@ -77,18 +88,18 @@ fn arguments_of(
     serde_json::from_str(json).map_err(|error| error.to_string())
 }
 
-/// `request` 's caller, as the API knows it: an app reaches the activity as the person using it,
+/// `caller`'s member, as the API knows it: an app reaches the activity as the person using it,
 /// confined to the workspace it runs in.
-fn caller_of(request: &HostStepRequest<'_>) -> Caller {
-    let member = request.actor.member();
+fn caller_of(caller: &Caller, workspace: &str) -> Caller {
+    let member = BrokerActor::for_caller(caller);
     // A bot's installation id may carry a `:` of its own: it is software, so
     // it reaches the activity as itself, never through a person's id.
-    let caller = match member {
+    let caller = match member.member() {
         tilo_actions::policy::MemberId::Agent(agent) => Caller::local_agent(agent.as_str()),
         tilo_actions::policy::MemberId::Bot(bot) => Caller::local_bot(bot.as_str()),
         tilo_actions::policy::MemberId::Person(person) => Caller::local_person(person.clone()),
     };
-    caller.in_workspace(request.workspace)
+    caller.in_workspace(workspace)
 }
 
 /// Whether `action` overwrites what documents hold with an earlier state, so Undo cannot take it
@@ -149,15 +160,104 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
     }
 }
 
-impl HostStepServices for ActivityWire {
-    fn provider(&self) -> &'static str {
-        wire::PROVIDER
+impl ActionProvider for ActivityWire {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
+        offered(
+            wire::PROVIDER,
+            wire::APP_ID,
+            top_level(self.descriptors()),
+            &query,
+        )
     }
 
-    fn app_id(&self) -> &'static str {
-        wire::APP_ID
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
     }
 
+    fn observe(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(request.invocation, self.start(caller, &request, &admitted))
+    }
+
+    fn watch(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
+        let action = request.target.address.action.clone();
+        if !is_read(&action) {
+            return Err("this step has no live result".into());
+        }
+        let slot = request.argument.to_slot();
+        let arguments = arguments_of(slot.as_deref())?;
+        if BrokerActor::for_caller(caller).is_agent()
+            && let Some(refusal) = refused_to_agent(&action, &arguments)
+        {
+            return Err(refusal);
+        }
+        let workspace = caller
+            .workspace()
+            .ok_or("the activity is followed in no workspace")?;
+        let caller = caller_of(caller, workspace);
+        let invocation = InvocationId::new();
+        self.requests
+            .follow(&caller, invocation, &action, arguments)
+            .map_err(|error| format!("the activity is not followed: {error:?}"))?;
+        // The follow ends when the view is dropped, which is when the app stopped following it.
+        let followed = Followed {
+            requests: self.requests.clone(),
+            caller,
+            invocation,
+        };
+        let changes = self.changes.subscribe();
+        Ok(LiveView {
+            read: Box::new(move || {
+                let _followed = &followed;
+                let read = followed.requests.served(&followed.invocation);
+                let read: LiveRead = match read {
+                    // Not served yet: the shell reads it on its next pass.
+                    None => Ok(serde_json::json!({ "pending": true })),
+                    Some(Ok(value)) => Ok(value),
+                    Some(Err(message)) => Err(failure("activity_unreadable", message)),
+                };
+                Pending::ready(read)
+            }),
+            changes: Box::new(move || {
+                let mut receiver = changes.clone();
+                receiver.borrow_and_update();
+                let (woken, awaited) = tilo_actions::remote::pending();
+                drop(tilo_rt::app().spawn(async move {
+                    if receiver.changed().await.is_ok() {
+                        woken.complete(());
+                    }
+                }));
+                awaited
+            }),
+        })
+    }
+}
+
+impl ActivityWire {
     fn descriptors(&self) -> Vec<ActionDescriptor> {
         use OperationKind::{Document, View};
         [
@@ -189,10 +289,17 @@ impl HostStepServices for ActivityWire {
         .collect()
     }
 
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        let action = request.address.action.clone();
-        let arguments = arguments_of(request.argument)?;
-        if request.actor.is_agent()
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let action = request.target.address.action.clone();
+        let slot = request.argument.to_slot();
+        let arguments = arguments_of(slot.as_deref())?;
+        if BrokerActor::for_caller(caller).is_agent()
             && let Some(refusal) = refused_to_agent(&action, &arguments)
         {
             return Err(refusal);
@@ -202,44 +309,6 @@ impl HostStepServices for ActivityWire {
             ran.map(|()| tilo_actions::ActionOutput::default())
                 .map_err(|message| failure("activity_refused", message))
         }))
-    }
-
-    fn watch(&self, request: &HostStepRequest<'_>) -> Result<LiveView, String> {
-        let action = request.address.action.clone();
-        if !is_read(&action) {
-            return Err("this step has no live result".into());
-        }
-        let arguments = arguments_of(request.argument)?;
-        if request.actor.is_agent()
-            && let Some(refusal) = refused_to_agent(&action, &arguments)
-        {
-            return Err(refusal);
-        }
-        let caller = caller_of(request);
-        let invocation = InvocationId::new();
-        self.requests
-            .follow(&caller, invocation, &action, arguments)
-            .map_err(|error| format!("the activity is not followed: {error:?}"))?;
-        // The follow ends when the broker drops the view, which is when the app stopped following
-        // it.
-        let followed = Followed {
-            requests: self.requests.clone(),
-            caller,
-            invocation,
-        };
-        Ok(LiveView {
-            read: Box::new(move || {
-                let _followed = &followed;
-                let read = followed.requests.served(&followed.invocation);
-                Pending::ready(match read {
-                    // Not served yet: the shell reads it on its next pass.
-                    None => Ok(serde_json::json!({ "pending": true })),
-                    Some(Ok(value)) => Ok(value),
-                    Some(Err(message)) => Err(failure("activity_unreadable", message)),
-                })
-            }),
-            changes: self.changes.subscribe(),
-        })
     }
 }
 

@@ -12,6 +12,7 @@ use crate::agents::WebSearch;
 use crate::apps::collab_app_broker::AppBrokerState;
 use crate::apps::services::ProcessServices;
 use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+use crate::workspaces::providers::Providers;
 use std::sync::Arc;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -33,10 +34,12 @@ fn broker(web: WebSearch) -> (Arc<AppBrokerState>, String, String) {
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();
+    let providers = Providers::default();
+    Arc::new(web).register(&providers);
     let (state, _bridge_rx) = AppBrokerState::test_state(
         Some(tree.authority()),
         ProcessServices {
-            host_steps: vec![Arc::new(web)],
+            providers: Some(providers),
             ..Default::default()
         },
     );

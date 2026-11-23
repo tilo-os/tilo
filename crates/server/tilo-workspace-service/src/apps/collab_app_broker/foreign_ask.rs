@@ -105,13 +105,18 @@ impl AppBrokerState {
                 descriptor.action_label.clone(),
             )
         };
-        self.services
-            .host_steps
-            .iter()
-            .find(|services| services.provider() == target.provider)
-            .and_then(|services| {
-                services
+        self.registered(&target.provider)
+            .and_then(|registered| {
+                registered
+                    .answers
                     .invocation(&target.address, None)
+                    .or_else(|| {
+                        let asking = Caller::local_person(String::new());
+                        super::provided::rows_of(&registered, &asking)
+                            .into_iter()
+                            .filter_map(|row| row.action)
+                            .find(|action| action.address == target.address)
+                    })
                     .map(|descriptor| described(&descriptor))
             })
             .or_else(|| {

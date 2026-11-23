@@ -17,11 +17,16 @@
 
 use std::sync::Arc;
 
+use tilo_actions::remote::admitted::{offered, settled};
 use tilo_actions::remote::settings_resources as wire;
-use tilo_actions::remote::{ActionCallError, Pending, pending};
-use tilo_actions::{ActionDescriptor, ActionFailure, ActionSpec, ResourceSpec};
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, Outcome,
+    Pending, pending,
+};
+use tilo_actions::{ActionDescriptor, ActionFailure, ActionSpec, InvocationId, ResourceSpec};
+use tilo_broker_core::BrokerActor;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::platform::steps::SessionSteps;
 
@@ -84,6 +89,54 @@ impl SettingsSteps {
         tilo_actions::api::survey_placed(&self.resources.read_recover())
     }
 
+    /// Answer the settings' changes from now on, admitted by the grants of Settings' app, for
+    /// the person at this device alone.
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            wire::PROVIDER,
+            settings_sections::APP_ID,
+            Reach::ThisDevice,
+            self,
+        );
+    }
+
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let actor = BrokerActor::for_caller(caller);
+        let argument = request.argument.to_slot();
+        let (done, asked) = pending();
+        // The place the ask is in, as for the session's own steps: an agent's turn stands what a
+        // setting opens beside its conversation, the person's own step beside the place in front.
+        let beside = crate::mcp_server::service_steps::turn_beside(actor.turn());
+        self.steps.invoke_step(
+            actor.member().clone().into(),
+            request.target.address.clone(),
+            argument,
+            beside,
+            request
+                .context
+                .as_ref()
+                .and_then(|context| context.group.clone()),
+            done,
+        );
+        Ok(asked.map(|ran| match ran {
+            // The session carries an accepted step on with, answering it as it runs.
+            Ok(None) => Ok(tilo_actions::ActionOutput::default()),
+            Ok(Some(output)) => Ok(output),
+            Err(error) => Err(Box::new(ActionFailure {
+                code: error.code().to_owned(),
+                message: reason(&error),
+                details: None,
+                retryable: false,
+            })),
+        }))
+    }
+
     /// The published action at `address`, as one invocation with `argument` (its slot form) is:
     /// the kind and the risk the value it carries make it, so a change that weakens the person's
     /// security is admitted as that, and asks them first.
@@ -109,24 +162,18 @@ impl SettingsSteps {
     }
 }
 
-impl HostStepServices for SettingsSteps {
-    fn provider(&self) -> &'static str {
-        wire::PROVIDER
-    }
-
-    fn app_id(&self) -> &str {
-        settings_sections::APP_ID
-    }
-
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
-        self.offered()
-            .into_iter()
-            .map(|placed| placed.action)
-            .collect()
-    }
-
-    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        self.offered()
+impl ActionProvider for SettingsSteps {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
+        offered(
+            wire::PROVIDER,
+            settings_sections::APP_ID,
+            self.offered(),
+            &query,
+        )
     }
 
     fn invocation(
@@ -137,31 +184,33 @@ impl HostStepServices for SettingsSteps {
         self.invocation_as(address, argument)
     }
 
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        let argument = request.argument.map(str::to_owned);
-        let (done, asked) = pending();
-        // The place the ask is in, as for the session's own steps: an agent's turn stands what a
-        // setting opens beside its conversation, the person's own step beside the place in front.
-        let beside = crate::mcp_server::service_steps::turn_beside(request.actor.turn());
-        self.steps.invoke_step(
-            request.actor.member().clone().into(),
-            request.address.clone(),
-            argument,
-            beside,
-            request.group.cloned(),
-            done,
-        );
-        Ok(asked.map(|ran| match ran {
-            // The session carries an accepted step on with, answering it as it runs.
-            Ok(None) => Ok(tilo_actions::ActionOutput::default()),
-            Ok(Some(output)) => Ok(output),
-            Err(error) => Err(Box::new(ActionFailure {
-                code: error.code().to_owned(),
-                message: reason(&error),
-                details: None,
-                retryable: false,
-            })),
-        }))
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn observe(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(request.invocation, self.start(caller, &request, &admitted))
     }
 }
 

@@ -23,7 +23,7 @@
 //! workspace's policy
 //! decide them ([`AppActionServer`](crate::app_serving::AppActionServer)).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,20 +74,10 @@ pub(crate) struct DeviceWork {
     log: std::sync::Mutex<InvocationLog<InvocationState>>,
     /// The workspaces' governance, once they open: what a member device asks of it here.
     governance: std::sync::OnceLock<std::sync::Weak<super::actions::Shared>>,
-    /// The providers the embedder registered, by the provider id a request names.
-    provided: std::sync::RwLock<BTreeMap<&'static str, Provided>>,
-    /// Which registered provider took each invocation, so its observations and its
-    /// cancellation reach that provider.
-    taken: std::sync::Mutex<HashMap<InvocationId, &'static str>>,
+    /// The providers registered on this device: what another device's call naming one reaches.
+    pub(super) providers: super::providers::Providers,
     runtime: tokio::runtime::Handle,
 }
-
-/// A provider registered on the device action service.
-type Provided = Arc<dyn ActionProvider + Send + Sync>;
-
-/// How many invocations a registered provider took are remembered for routing their
-/// observations; the oldest are let go beyond it, and their provider is asked no more.
-const TAKEN_KEPT: usize = 4096;
 
 impl DeviceWork {
     /// Answer the workspaces' governance actions through `governance` from now on.
@@ -327,106 +317,9 @@ impl DeviceWork {
             turns: std::sync::OnceLock::new(),
             log: std::sync::Mutex::default(),
             governance: std::sync::OnceLock::new(),
-            provided: std::sync::RwLock::default(),
-            taken: std::sync::Mutex::default(),
+            providers: super::providers::Providers::default(),
             runtime: tokio::runtime::Handle::current(),
         })
-    }
-
-    /// Answer the requests that name `provider` with `answers` from now on.
-    pub(crate) fn provide(&self, provider: &'static str, answers: Provided) {
-        self.provided.write_recover().insert(provider, answers);
-    }
-
-    /// The registered provider `provider` names, when there is one.
-    fn provided(&self, provider: &str) -> Option<(&'static str, Provided)> {
-        self.provided
-            .read_recover()
-            .get_key_value(provider)
-            .map(|(name, answers)| (*name, Arc::clone(answers)))
-    }
-
-    /// The registered provider that took `id`, when one did.
-    fn taker(&self, id: &InvocationId) -> Option<Provided> {
-        let name = *self.taken.lock_recover().get(id)?;
-        self.provided(name).map(|(_, answers)| answers)
-    }
-
-    /// Hand `request` to the registered provider `answers` once the workspace the caller asks
-    /// in admits its device to the action: the ordinary grant check, decided here once so no
-    /// provider decides it again.
-    fn admitted(
-        self: &Arc<Self>,
-        caller: &Caller,
-        request: InvokeRequest,
-        (name, answers): (&'static str, Provided),
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let (Some(device), Some(workspace)) = (
-            caller.device_public_key().copied(),
-            caller.workspace().map(str::to_owned),
-        ) else {
-            return Pending::ready(Err(ActionCallError::NotPermitted));
-        };
-        let work = Arc::clone(self);
-        let caller = caller.clone();
-        let (completer, answer) = tilo_actions::remote::pending();
-        self.runtime.spawn(async move {
-            let address = &request.target.address;
-            if let Err(refused) = work
-                .permits(device, &workspace, name, &address.resource, &address.action)
-                .await
-            {
-                completer.complete(Err(refused));
-                return;
-            }
-            {
-                let mut taken = work.taken.lock_recover();
-                if taken.len() >= TAKEN_KEPT {
-                    taken.clear();
-                }
-                taken.insert(request.invocation, name);
-            }
-            let receipt = answers.invoke(&caller, request).await;
-            completer.complete(receipt.unwrap_or(Err(ActionCallError::Unanswered)));
-        });
-        answer
-    }
-
-    /// Whether `workspace`'s grants let `device` run `action` on `resource` of `provider` now;
-    /// the refusal its caller reads when they do not.
-    async fn permits(
-        &self,
-        device: [u8; 32],
-        workspace: &str,
-        provider: &str,
-        resource: &str,
-        action: &str,
-    ) -> Result<(), ActionCallError> {
-        let kept = self.workspaces.lock().await.get(workspace).cloned();
-        let Some(kept) = kept else {
-            return Err(ActionCallError::Refused {
-                reason: "this device does not keep that workspace".into(),
-            });
-        };
-        let permitted = kept.lock().await.peer().permits_app_action(
-            device,
-            provider,
-            resource,
-            action,
-            tilo_clock::wall(),
-        );
-        match permitted {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(ActionCallError::Refused {
-                reason: format!(
-                    "your grants in this workspace do not let this device run {resource}#{action} \
-                     of {provider}"
-                ),
-            }),
-            Err(error) => Err(ActionCallError::Refused {
-                reason: format!("this device is not admitted to the workspace: {error}"),
-            }),
-        }
     }
 
     /// Take `request`, a device's ask that this one take a turn of work
@@ -884,7 +777,7 @@ impl ActionProvider for Answers {
         governed(provider)
             || provider == HOST_ACTIONS_PROVIDER
             || provider == WORK_PROVIDER
-            || self.work.provided(provider).is_some()
+            || self.work.providers.serves(provider)
             || self.apps().is_some()
     }
 
@@ -893,19 +786,21 @@ impl ActionProvider for Answers {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        match query
+        if query
             .provider
             .as_deref()
-            .and_then(|name| self.work.provided(name))
+            .is_some_and(|name| self.work.providers.serves(name))
         {
-            Some((_, answers)) => answers.query(caller, query),
-            None => {
-                if let Some(served) = self.apps() {
-                    served.query(caller, query)
-                } else {
-                    Pending::ready(Err(not_served()))
-                }
-            }
+            return self
+                .work
+                .providers
+                .query(caller, query)
+                .expect("a provider that serves the call answers its query");
+        }
+        if let Some(served) = self.apps() {
+            served.query(caller, query)
+        } else {
+            Pending::ready(Err(not_served()))
         }
     }
 
@@ -923,8 +818,12 @@ impl ActionProvider for Answers {
         if request.target.provider == WORK_PROVIDER {
             return self.work.take(caller, &request);
         }
-        if let Some(provided) = self.work.provided(&request.target.provider) {
-            return self.work.admitted(caller, request, provided);
+        if self.work.providers.serves(&request.target.provider) {
+            return self
+                .work
+                .providers
+                .from_device(caller, request, &self.work.workspaces, &self.work.runtime)
+                .expect("a provider that serves the call takes it");
         }
         if let Some(served) = self.apps() {
             served.invoke(caller, request)
@@ -934,8 +833,8 @@ impl ActionProvider for Answers {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        if let Some(answers) = self.work.taker(id) {
-            return answers.observe(caller, id);
+        if let Some(answers) = self.work.providers.observe(caller, id) {
+            return answers;
         }
         let logged = self.work.log.lock_recover().get(caller, id).cloned();
         if logged.is_some() {
@@ -953,8 +852,8 @@ impl ActionProvider for Answers {
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        if let Some(answers) = self.work.taker(id) {
-            return answers.next_change(caller, id);
+        if let Some(change) = self.work.providers.next_change(caller, id) {
+            return change;
         }
         if self.work.log.lock_recover().get(caller, id).is_some() {
             let mut moved = self.work.moved.subscribe();
@@ -970,8 +869,8 @@ impl ActionProvider for Answers {
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        if let Some(answers) = self.work.taker(id) {
-            return answers.cancel(caller, id);
+        if let Some(cancelled) = self.work.providers.cancel(caller, id) {
+            return cancelled;
         }
         if self.work.linux_running.lock_recover().contains(id) {
             return match self.work.linux() {

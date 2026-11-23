@@ -6,15 +6,18 @@
 //! answer to that question can approval this one invocation.
 
 use crate::apps::collab_app_broker::AppBrokerState;
-use crate::apps::collab_app_broker::host_steps::signed_test_support::Fixture;
-use crate::apps::services::{HostStepOutcome, HostStepRequest, HostStepServices};
+use crate::apps::collab_app_broker::provided::signed_test_support::Fixture;
 use crate::apps::services::{OwnDeviceActions, OwnDeviceOutcome, ProcessServices};
+use crate::workspaces::providers::{Providers, Reach};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_actions::InvocationId;
+use tilo_actions::remote::admitted::{offered, settled, top_level};
 use tilo_actions::remote::identity_admin;
 use tilo_actions::remote::{
-    ActionCallError, Caller, Completer, Confirmation, ConfirmationQuestion, InvokeArgument,
-    InvokeRequest, Pending, pending,
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, Completer,
+    Confirmation, ConfirmationQuestion, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Outcome, Pending, pending,
 };
 
 /// The host's network, in its place: it records who was asked what, and
@@ -93,15 +96,47 @@ impl OwnDeviceActions for OwnDevices {
 #[derive(Default)]
 struct Steps;
 
-impl HostStepServices for Steps {
-    fn provider(&self) -> &'static str {
-        identity_admin::PROVIDER
+impl ActionProvider for Steps {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        offered(
+            identity_admin::PROVIDER,
+            "so.tilo.settings",
+            top_level(self.descriptors()),
+            &query,
+        )
     }
 
-    fn app_id(&self) -> &'static str {
-        "so.tilo.settings"
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
     }
 
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(request.invocation, self.start(caller, &request, &admitted))
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+}
+
+impl Steps {
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
             did: None,
@@ -131,9 +166,26 @@ impl HostStepServices for Steps {
         }]
     }
 
-    fn start(&self, _: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+    fn start(
+        &self,
+        _caller: &Caller,
+        _request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
         Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
     }
+}
+
+/// `steps` registered on this device as the identity store's provider.
+fn providers() -> Providers {
+    let providers = Providers::default();
+    providers.provide(
+        identity_admin::PROVIDER,
+        "so.tilo.settings",
+        Reach::ThisDevice,
+        Arc::new(Steps) as Arc<dyn ActionProvider + Send + Sync>,
+    );
+    providers
 }
 
 /// A request for a step this host publishes, which asks the person first.
@@ -154,7 +206,7 @@ fn request() -> InvokeRequest {
 
 fn services(own_device: Option<Arc<dyn OwnDeviceActions>>) -> ProcessServices {
     ProcessServices {
-        host_steps: vec![Arc::new(Steps) as Arc<dyn HostStepServices>],
+        providers: Some(providers()),
         own_device,
         ..ProcessServices::default()
     }

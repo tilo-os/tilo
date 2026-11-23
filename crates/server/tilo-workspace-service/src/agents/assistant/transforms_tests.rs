@@ -132,7 +132,7 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
     server.workspaces().answer_models_with(scripted.clone());
 
     // The broker names the workspace the service answers in, and its owner, and the device's
-    // own transforms answer its host steps.
+    // own transforms are registered on this device.
     let slot = ServiceSlot::default();
     slot.install(server.shared());
     let owner_hex = hex::encode(owner.user_public_key);
@@ -141,10 +141,12 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(ui_workspace);
     let tree = tree.shared();
+    let providers = crate::workspaces::providers::Providers::default();
+    Arc::new(Transforms::new(slot, runtime.handle().clone())).register(&providers);
     let state = AppBrokerState::test_state_only(
         Some(tree.authority()),
         ProcessServices {
-            host_steps: vec![Arc::new(Transforms::new(slot, runtime.handle().clone()))],
+            providers: Some(providers),
             ..tree.services()
         },
     );

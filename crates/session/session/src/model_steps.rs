@@ -15,13 +15,19 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_actions::remote::{InvokeArgument, Pending, person_models};
+use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome, Pending,
+    person_models,
+};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionOutput, ActionState,
-    ExecutionLocus, InputSpec, OperationKind,
+    ExecutionLocus, InputSpec, InvocationId, OperationKind,
 };
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
+use tilo_broker_core::BrokerActor;
 use tilo_desktop_model::WorkspaceId;
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::engine::Engine;
 
@@ -108,6 +114,17 @@ impl ModelSteps {
     pub(crate) fn session(engine: Option<Arc<Engine>>) -> Arc<Self> {
         Arc::new(Self { engine })
     }
+
+    /// Answer the workspace's model steps from now on, admitted by the grants of Settings' app,
+    /// for the person at this device alone.
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            person_models::PROVIDER,
+            settings_sections::APP_ID,
+            Reach::ThisDevice,
+            self,
+        );
+    }
 }
 
 /// The step `action`, described for the broker's catalogue.
@@ -138,16 +155,16 @@ fn descriptor((action, label, reads): (&str, &str, bool)) -> ActionDescriptor {
 }
 
 /// The arguments the step carries.
-fn arguments(request: &HostStepRequest<'_>) -> Result<Map<String, Value>, String> {
-    match InvokeArgument::from_slot(request.argument) {
+fn arguments(argument: &InvokeArgument) -> Result<Map<String, Value>, String> {
+    match argument {
         InvokeArgument::None => Ok(Map::new()),
-        InvokeArgument::Json(object) => Ok(object),
+        InvokeArgument::Json(object) => Ok(object.clone()),
         InvokeArgument::Text(_) => Err("a model step takes typed arguments".to_owned()),
     }
 }
 
 /// What the holder answered, as the step's outcome.
-fn outcome(asked: Result<Value, String>) -> HostStepOutcome {
+fn outcome(asked: Result<Value, String>) -> Outcome {
     asked
         .map(|value| ActionOutput {
             value: Some(value),
@@ -163,41 +180,38 @@ fn outcome(asked: Result<Value, String>) -> HostStepOutcome {
         })
 }
 
-impl HostStepServices for ModelSteps {
-    fn provider(&self) -> &'static str {
-        person_models::PROVIDER
-    }
-
-    fn app_id(&self) -> &str {
-        settings_sections::APP_ID
-    }
-
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
-        STEPS.into_iter().map(descriptor).collect()
-    }
-
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+impl ModelSteps {
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
         let (action, _, _) = STEPS
             .into_iter()
             .find(|(action, _, _)| {
-                request.address.resource == person_models::RESOURCE
-                    && request.address.action == *action
+                request.target.address.resource == person_models::RESOURCE
+                    && request.target.address.action == *action
             })
             .ok_or("unknown model step")?;
         // The holder answers this device as its person: an agent or an app acting for them
         // chooses no model here.
-        request
-            .actor
+        let actor = BrokerActor::for_caller(caller);
+        actor
             .direct_person()
             .ok_or("only you choose the models your workspace runs on")?;
-        let workspace = WorkspaceId::parse(request.workspace)
+        let workspace = caller
+            .workspace()
+            .ok_or("the models were asked in no workspace of this device")?;
+        let workspace = WorkspaceId::parse(workspace)
             .ok_or("the models were asked in no workspace of this device")?;
         let engine = self
             .engine
             .as_ref()
             .ok_or("this session keeps no workspace, so it reaches none's models")?
             .clone();
-        let arguments = arguments(request)?;
+        let arguments = arguments(&request.argument)?;
         let target = person_models::target(action);
         Ok(crate::landing::off_loop(async move {
             let asked = engine
@@ -206,5 +220,52 @@ impl HostStepServices for ModelSteps {
             asked.await
         })
         .map(outcome))
+    }
+}
+
+impl ActionProvider for ModelSteps {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        offered(
+            person_models::PROVIDER,
+            settings_sections::APP_ID,
+            top_level(STEPS.into_iter().map(descriptor).collect()),
+            &query,
+        )
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
     }
 }

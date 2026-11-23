@@ -1151,17 +1151,19 @@ impl AppBrokerState {
         let mut keymap = None;
         // Listing must retain the same local ownership as dispatch. A device key
         // alone does not establish that this is a local rather than remote api.
-        let host_steps = if super::host_steps::is_local_host_caller(caller, origin) {
-            // A step only this device's own processes ask for is taken, never offered.
-            self.services
-                .host_steps
-                .iter()
-                .filter(|steps| steps.listed())
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // A provider reaching this device alone is offered only to its own processes, and one
+        // only they ask for is taken, never offered.
+        let local = super::provided::is_local_host_caller(caller, origin);
+        let registered: Vec<_> = self
+            .services
+            .providers
+            .as_ref()
+            .map(crate::workspaces::providers::Providers::all)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|registered| registered.reach.listed())
+            .filter(|registered| registered.reach.devices() || local)
+            .collect();
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let first = rows.len();
             let workspace_id = workspace.id().to_string();
@@ -1252,20 +1254,24 @@ impl AppBrokerState {
                 });
             }
             if caller.workspace() == Some(workspace_id.as_str()) {
-                for steps in &host_steps {
-                    // The host's own services are publishers like an app's
-                    // window: listed whatever rows were asked for (a query
-                    // asking only who publishes builds none), so a caller
-                    // finds them by their app.
+                for registered in &registered {
+                    // A registered provider publishes like an app's window: listed whatever rows
+                    // were asked for (a query asking only who publishes builds none), so a caller
+                    // finds it by its app.
                     providers.push(CatalogueProvider {
-                        provider: steps.provider().to_owned(),
-                        app_id: steps.app_id().to_owned(),
+                        provider: registered.provider.to_owned(),
+                        app_id: registered.app.to_owned(),
                         workspace: workspace_id.clone(),
                         document_id: String::new(),
                         browsable: true,
                     });
-                    if scope.wants(steps.provider()) && scope.wants_app(steps.app_id()) {
-                        Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
+                    if scope.wants(registered.provider) && scope.wants_app(registered.app) {
+                        Self::registered_rows(
+                            (&workspace, &policy, now),
+                            registered,
+                            caller,
+                            &mut rows,
+                        );
                     }
                 }
             }
@@ -1451,39 +1457,39 @@ impl AppBrokerState {
     /// Mark each of `rows` whose action the workspace's grants let `actor` take
     /// only after asking: it asks for confirmation, which the person gives
     /// on their own device.
-    /// The rows of host steps `steps` that `actor` is offered in
+    /// The rows of the registered providers `registered` that `actor` is offered in
     /// `workspace` at `now`, appended to `rows`, each marked where it asks
     /// first.
-    fn host_step_rows(
+    fn registered_rows(
         (workspace, actor, now): (&Workspace, &BrokerActor, u64),
-        steps: &dyn crate::apps::services::HostStepServices,
+        registered: &crate::workspaces::providers::Registered,
+        caller: &Caller,
         rows: &mut Vec<CatalogueRow>,
     ) {
         let start = rows.len();
         rows.extend(
-            steps
-                .rows()
+            super::provided::rows_of(registered, caller)
                 .into_iter()
-                .filter(|placed| {
-                    Self::offered(
-                        workspace,
-                        actor,
-                        now,
-                        steps.app_id(),
-                        (
-                            &placed.action.resource_kind,
-                            &placed.action.address.resource,
-                            &placed.action.address.action,
-                        ),
-                        &placed.action.contract,
-                    )
+                .filter(|row| {
+                    row.action.as_ref().is_some_and(|action| {
+                        Self::offered(
+                            workspace,
+                            actor,
+                            now,
+                            registered.app,
+                            (
+                                &action.resource_kind,
+                                &action.address.resource,
+                                &action.address.action,
+                            ),
+                            &action.contract,
+                        )
+                    })
                 })
-                .map(|placed| {
-                    CatalogueRow::for_placed_action(
-                        steps.provider().to_owned(),
-                        steps.app_id(),
-                        placed,
-                    )
+                .map(|row| CatalogueRow {
+                    provider: registered.provider.to_owned(),
+                    app_id: registered.app.to_owned(),
+                    ..row
                 }),
         );
         if let Some(added) = rows.get_mut(start..) {
@@ -1874,10 +1880,10 @@ impl AppBrokerState {
         {
             return answer;
         }
-        if let Some(steps) =
-            super::host_steps::for_provider(&self.services, &request.target.provider)
-        {
-            return Pending::ready(self.invoke_host_step(caller, origin, steps.as_ref(), request));
+        // A provider registered on this device: the host's own steps, and what its embedder
+        // registered, which another device's call reaches through the same registry.
+        if let Some(registered) = self.registered(&request.target.provider) {
+            return Pending::ready(self.invoke_registered(caller, origin, &registered, request));
         }
         if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
             return Pending::ready(self.invoke_own_device(caller, origin, request));

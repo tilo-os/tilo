@@ -15,12 +15,17 @@
 //! answers where the change was made, with an ordinary write there. There is no record of
 //! asking and no queue beside the turn's own claim ([`crate::work::takes_turn`]).
 
+use std::sync::Arc;
+
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionDescriptor;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::contract::ActionContract;
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionParam, ParamType};
-use tilo_actions::remote::{Pending, pending};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, InvocationId,
+    InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, pending,
+};
 use tilo_actions::{ActionKey, ActionOutput, ExecutionLocus, InputSpec, OperationKind};
 use tilo_automation::dispatch::DocumentEvent;
 use tilo_automation::shortcut::Test;
@@ -28,9 +33,9 @@ use tilo_automation::{
     ActorFilter, Binding, ChangeFilter, EVENT_INPUT, Selector, Shortcut, Step, StepKind,
     TriggerSpec,
 };
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 
 use crate::service::ServiceSlot;
+use crate::workspaces::providers::{Providers, Reach};
 
 /// The provider the agents' answers are taken under in the daemon's dispatch.
 pub const PROVIDER: &str = "tilo.agents";
@@ -384,16 +389,20 @@ fn descriptor(agent: &str, name: &str) -> ActionDescriptor {
     }
 }
 
-impl HostStepServices for Answers {
-    fn provider(&self) -> &'static str {
-        PROVIDER
+impl Answers {
+    /// Register the agents' answers on this device, under the application their calls are
+    /// decided by: a trigger starts a turn by invoking one as the person it acts for.
+    pub fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            PROVIDER,
+            tilo_workspace_agent::OWNER,
+            Reach::ThisDevice,
+            self,
+        );
     }
 
-    fn app_id(&self) -> &str {
-        tilo_workspace_agent::OWNER
-    }
-
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
+    /// The answers of the agents this device answers for, as the catalogue offers them.
+    fn rows(&self) -> Vec<ActionDescriptor> {
         let Some(engine) = self
             .service
             .service()
@@ -408,19 +417,17 @@ impl HostStepServices for Answers {
             .collect()
     }
 
-    fn invocation(
+    /// Start `agent`'s answer to the change `request` carries for `caller`, once admitted.
+    fn start(
         &self,
-        address: &ActionAddress,
-        _argument: Option<&str>,
-    ) -> Option<ActionDescriptor> {
-        let agent = agent_of(&address.resource)?;
-        (address.action == ANSWER).then(|| descriptor(agent, agent))
-    }
-
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        let agent = agent_of(&request.address.resource)
-            .filter(|_| request.address.action == ANSWER)
-            .ok_or_else(|| format!("no agent answers `{}`", request.address.resource))?
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let address = &request.target.address;
+        let agent = agent_of(&address.resource)
+            .filter(|_| address.action == ANSWER)
+            .ok_or_else(|| format!("no agent answers `{}`", address.resource))?
             .to_owned();
         let engine = self
             .service
@@ -429,8 +436,9 @@ impl HostStepServices for Answers {
             .workspaces()
             .agent_keys()
             .ok_or("this device runs no agents of its workspaces")?;
-        let arguments = request
-            .argument
+        let argument = request.argument.to_slot();
+        let arguments = argument
+            .as_deref()
             .and_then(|text| text.strip_prefix(ARGUMENTS_JSON_PREFIX))
             .and_then(|json| serde_json::from_str::<Map<String, Value>>(json).ok())
             .ok_or("an answer takes the change that triggered it")?;
@@ -441,13 +449,16 @@ impl HostStepServices for Answers {
             .and_then(|event| {
                 serde_json::from_value(event).map_err(|_| "the change does not read as one")
             })?;
-        let saver = request
-            .actor
+        let actor = tilo_broker_core::BrokerActor::for_caller(caller);
+        let saver = actor
             .direct_person()
-            .or_else(|| request.actor.acting_for())
+            .or_else(|| actor.acting_for())
             .ok_or("an answer is started for a person")?
             .to_owned();
-        let started = engine.answer(request.workspace.to_owned(), agent, event, saver);
+        let workspace = caller
+            .workspace()
+            .ok_or("the answer was asked in no workspace of this device")?;
+        let started = engine.answer(workspace.to_owned(), agent, event, saver);
         let (done, outcome) = pending();
         started.then(move |started| {
             done.complete(match started {
@@ -465,5 +476,57 @@ impl HostStepServices for Answers {
             });
         });
         Ok(outcome)
+    }
+}
+
+impl ActionProvider for Answers {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        tilo_actions::remote::admitted::offered(
+            PROVIDER,
+            tilo_workspace_agent::OWNER,
+            tilo_actions::remote::admitted::top_level(self.rows()),
+            &query,
+        )
+    }
+
+    fn invocation(
+        &self,
+        address: &ActionAddress,
+        _argument: Option<&str>,
+    ) -> Option<ActionDescriptor> {
+        let agent = agent_of(&address.resource)?;
+        (address.action == ANSWER).then(|| descriptor(agent, agent))
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        tilo_actions::remote::admitted::settled(
+            request.invocation,
+            self.start(caller, &request, &admitted),
+        )
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }

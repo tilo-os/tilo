@@ -1,32 +1,26 @@
-//! Steps the host itself runs for the person at this device: pairing a
-//! nearby device, administering the person's identities and the devices
-//! trusted under them, and changing the person's settings.
+//! The providers registered on this device, as its dispatch runs a call of one made here: the
+//! steps the host runs itself (pairing a nearby device, administering the person's identities and
+//! the devices trusted under them, changing their settings) and every provider the device's
+//! embedder registered ([`crate::workspaces::providers`]).
 //!
-//! Each is answered under the host's own provider, offered only to a caller
-//! on this machine confined to a workspace, and admitted against that workspace's
-//! policy under the service's app id — the application whose controls reach
-//! the steps as the person using it. The API treats them alike; only the
-//! service that runs a step differs.
+//! Each is admitted against the workspace's policy under the application its registration names,
+//! asks the person first where its contract says so, and is journalled as the person's own call
+//! before the provider carries it out ([`ActionProvider::run`]). A provider that reaches this
+//! device alone is offered only to a caller on this machine confined to a workspace.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::AppBrokerState;
-use crate::apps::services::{HostStepOutcome, HostStepRequest, HostStepServices, ProcessServices};
+use crate::workspaces::providers::{Reach, Registered};
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
+    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, Outcome,
+    Pending, ReceiptStatus, Reservation,
 };
 
-/// The installed host-step service that answers under `provider`, if any.
-pub(super) fn for_provider(
-    services: &ProcessServices,
-    provider: &str,
-) -> Option<Arc<dyn HostStepServices>> {
-    services
-        .host_steps
-        .iter()
-        .find(|steps| steps.provider() == provider)
-        .cloned()
-}
+/// How long a provider that answered a call as running is left before it is looked at again,
+/// when it cannot say it changed.
+const FOLLOW_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Transport keys alone never grant access to a service on this device.
 /// The certified local socket retains its original admission, even when the
@@ -87,28 +81,183 @@ pub(super) fn is_local_host_caller(
             })
 }
 
+/// The descriptor of the action `request` calls, as `registered` offers it to `caller`: as its
+/// argument makes it, where the provider says, else as its catalogue describes it.
+fn descriptor_of(
+    registered: &Registered,
+    caller: &Caller,
+    request: &InvokeRequest,
+    argument: Option<&str>,
+) -> Option<tilo_actions::ActionDescriptor> {
+    let address = &request.target.address;
+    if let Some(descriptor) = registered.answers.invocation(address, argument) {
+        return Some(descriptor);
+    }
+    rows_of(registered, caller)
+        .into_iter()
+        .filter_map(|row| row.action)
+        .find(|action| &action.address == address)
+}
+
+/// What `registered` lists for `caller`, as it answers at once: a registered provider lists what
+/// it holds, never what it must first go and ask.
+pub(super) fn rows_of(
+    registered: &Registered,
+    caller: &Caller,
+) -> Vec<tilo_actions::remote::CatalogueRow> {
+    let mut rows = Vec::new();
+    let mut query = tilo_actions::remote::CatalogueQuery {
+        provider: Some(registered.provider.to_owned()),
+        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+        ..tilo_actions::remote::CatalogueQuery::default()
+    };
+    loop {
+        let mut listed = registered.answers.query(caller, query.clone());
+        let tilo_actions::remote::PendingPoll::Ready(Some(Ok(page))) = listed.poll_ready() else {
+            return rows;
+        };
+        rows.extend(page.rows);
+        if page.next_cursor.is_empty() || page.exhausted {
+            return rows;
+        }
+        query.cursor = page.next_cursor;
+        query.revision = Some(page.revision);
+    }
+}
+
+/// The caller `actor` is on this device in `workspace`, as a registered provider's listing reads
+/// it.
+pub(super) fn caller_for(actor: &tilo_broker_core::BrokerActor, workspace: &str) -> Caller {
+    let caller = match actor.member() {
+        tilo_actions::policy::MemberId::Agent(agent) => Caller::local_agent(agent.as_str()),
+        tilo_actions::policy::MemberId::Bot(bot) => Caller::local_bot(bot.as_str()),
+        tilo_actions::policy::MemberId::Person(person) => Caller::local_person(person.clone()),
+    };
+    caller.in_workspace(workspace)
+}
+
+/// The outcome of a call `answers` carried out for `caller`: what its receipt says, followed
+/// while it runs until it ends. A stopped call is cancelled at the provider.
+fn outcome_of(
+    answers: Arc<dyn ActionProvider + Send + Sync>,
+    caller: Caller,
+    invocation: tilo_actions::InvocationId,
+    receipt: Pending<Result<InvocationReceipt, ActionCallError>>,
+    stop: Arc<AtomicBool>,
+) -> Pending<Outcome> {
+    let (completer, outcome) = tilo_actions::remote::pending();
+    receipt.then(move |receipt| {
+        let status = match receipt {
+            None => return,
+            Some(Err(error)) => {
+                completer.complete(Err(Box::new(refusal(&error))));
+                return;
+            }
+            Some(Ok(receipt)) => receipt.status,
+        };
+        if let Some(ended) = ended(status) {
+            completer.complete(ended);
+            return;
+        }
+        let Ok(runtime) = tilo_rt::try_app() else {
+            completer.complete(Err(Box::new(failure(
+                "host_step_stopped",
+                "nothing follows the call here",
+            ))));
+            return;
+        };
+        drop(runtime.spawn(async move {
+            let mut cancelled = false;
+            loop {
+                if stop.load(Ordering::Acquire) && !cancelled {
+                    cancelled = true;
+                    drop(answers.cancel(&caller, &invocation).await);
+                }
+                let change = answers.next_change(&caller, &invocation);
+                match answers.observe(&caller, &invocation) {
+                    None => {
+                        completer.complete(Err(Box::new(failure(
+                            "host_step_stopped",
+                            "the call is no longer known where it ran",
+                        ))));
+                        return;
+                    }
+                    Some(state) if state.update.is_terminal() => {
+                        completer.complete(match state.update {
+                            tilo_actions::InvocationUpdate::Succeeded { output, .. } => Ok(output),
+                            tilo_actions::InvocationUpdate::Failed { error, .. } => {
+                                Err(Box::new(error))
+                            }
+                            other => Err(Box::new(failure(
+                                "cancelled",
+                                &format!("the call ended as {other:?}"),
+                            ))),
+                        });
+                        return;
+                    }
+                    Some(_) => {}
+                }
+                match change {
+                    Some(change) => drop(change.await),
+                    None => tilo_rt::sleep(FOLLOW_LOOK).await,
+                }
+            }
+        }));
+    });
+    outcome
+}
+
+/// How a receipt that is already final ended; `None` for one still running.
+fn ended(status: ReceiptStatus) -> Option<Outcome> {
+    match status {
+        ReceiptStatus::Accepted => None,
+        ReceiptStatus::Completed { output } => Some(Ok(output)),
+        ReceiptStatus::Failed { error } => Some(Err(Box::new(error))),
+        ReceiptStatus::Rejected { error } => Some(Err(Box::new(refusal(&error)))),
+        ReceiptStatus::Cancelled { message } => Some(Err(Box::new(failure(
+            "cancelled",
+            message.as_deref().unwrap_or("the call was cancelled"),
+        )))),
+    }
+}
+
+fn refusal(error: &ActionCallError) -> tilo_actions::ActionFailure {
+    failure("host_step_refused", &error.to_string())
+}
+
+fn failure(code: &str, message: &str) -> tilo_actions::ActionFailure {
+    tilo_actions::ActionFailure {
+        code: code.into(),
+        message: message.into(),
+        details: None,
+        retryable: true,
+    }
+}
+
 impl AppBrokerState {
-    /// Admit one host step (pairing a nearby device, administering the
-    /// person's identity) for `caller` and start it on the host.
+    /// The provider registered on this device under `provider`.
+    pub(super) fn registered(&self, provider: &str) -> Option<Registered> {
+        self.services.providers.as_ref()?.get(provider)
+    }
+
+    /// Admit one call of a provider registered on this device for `caller` and hand it to the
+    /// provider.
     ///
-    /// Host steps run on this machine, for the person at it: a remote device
-    /// is never offered them, and the caller must be confined to the workspace its
-    /// connection was admitted to, whose policy decides the step under the
-    /// service's app id. A step whose contract asks first needs the
-    /// person's own confirmation, or the answer they gave on their device.
-    /// The host then decides whether the actor may take it at all. The
-    /// invocation answers `Accepted` at once and records the outcome when
-    /// the host's step ends, which for a pairing approval may be minutes
-    /// later.
+    /// A provider that reaches this device alone is never offered a remote device, and the caller
+    /// must be confined to the workspace its connection was admitted to; whatever its reach, the
+    /// workspace's policy decides the call under the application its registration names. An
+    /// action whose contract asks first needs the person's own confirmation, or the answer they
+    /// gave on their device. The invocation answers `Accepted` at once and records the outcome
+    /// when the provider's call ends, which for a pairing approval may be minutes later.
     #[allow(
         clippy::too_many_lines,
-        reason = "one host step's admission, effect and answer in a single auditable sequence"
+        reason = "one call's admission, effect and answer in a single auditable sequence"
     )]
-    pub(super) fn invoke_host_step(
+    pub(super) fn invoke_registered(
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
-        steps: &dyn HostStepServices,
+        registered: &Registered,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionCallError> {
         let abandon = |error: ActionCallError| {
@@ -124,21 +273,22 @@ impl AppBrokerState {
                 .map(|job| self.receipt_for(request.invocation, job))
                 .ok_or(ActionCallError::UnknownInvocation);
         }
-        if !is_local_host_caller(caller, origin) {
+        if !registered.reach.devices() && !is_local_host_caller(caller, origin) {
             return Err(abandon(ActionCallError::UnknownAction));
         }
         let Some(workspace_id) = caller.workspace() else {
             return Err(abandon(ActionCallError::NotPermitted));
         };
-        let address = &request.target.address;
         let argument = request.argument.to_slot();
-        let Some(descriptor) = steps.invocation(address, argument.as_deref()) else {
+        let Some(descriptor) = descriptor_of(registered, caller, request, argument.as_deref())
+        else {
             return Err(abandon(ActionCallError::UnknownAction));
         };
+        let app_id = registered.app;
         let (workspace, policy, now) = self
             .current_framework_authority(caller, origin, workspace_id)
             .map_err(abandon)?;
-        // One answer covers both checks of this exact host invocation.
+        // One answer covers both checks of this exact invocation.
         let approved = self.consume_answer(
             request.confirmation.as_ref(),
             &self.approval_binding(policy.member(), workspace_id, request),
@@ -146,21 +296,20 @@ impl AppBrokerState {
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
         // session that still goes. A step of the session's own, or of an agent session's, is no
         // agent's outside one.
-        let session = self.agent_session_of(Some(caller), workspace_id);
+        let session = self.agent_session_of(Some(caller), origin, workspace_id);
         if let Some(Err(reason)) = &session {
             return Err(abandon(ActionCallError::Refused {
                 reason: reason.clone(),
             }));
         }
-        let session_step = steps.for_turns() || steps.for_agent_sessions();
-        if session_step && policy.is_agent() && session.is_none() {
+        if registered.reach.in_sessions() && policy.is_agent() && session.is_none() {
             return Err(abandon(ActionCallError::Refused {
                 reason: "a session step is an agent session's: this agent works in none".into(),
             }));
         }
         self.framework_policy(
             (&workspace, &policy, now),
-            (steps.app_id(), &descriptor),
+            (app_id, &descriptor),
             request.confirmation.as_ref(),
             approved,
             false,
@@ -181,7 +330,7 @@ impl AppBrokerState {
                 origin,
                 super::host_action_admission::HostActionAdmission {
                     workspace: workspace_id,
-                    app_id: steps.app_id(),
+                    app_id,
                     descriptor: &descriptor,
                     request,
                 },
@@ -191,9 +340,9 @@ impl AppBrokerState {
         if let Ok(mut log) = self.remote_invocations.lock() {
             log.complete(&request.invocation, id);
         }
-        // Signing and journalling may block. Resolve original ownership and the
-        // committed policy again for the effect, not the pre-admission actor.
-        let policy = self.framework_effect_ready(&admitted, || {
+        // Signing and journalling may block. Resolve original ownership and the committed policy
+        // again for the effect, not the pre-admission actor.
+        self.framework_effect_ready(&admitted, || {
             let (workspace, policy, now) =
                 self.current_framework_authority(caller, origin, workspace_id)?;
             if !Self::confirmed_as_asked(
@@ -207,15 +356,15 @@ impl AppBrokerState {
             }
             self.admit_answer(
                 (&workspace, &policy, now),
-                steps.app_id(),
+                app_id,
                 &descriptor,
                 (argument.as_deref(), request.confirmation.as_ref()),
                 approved,
             )?;
-            Ok(policy)
+            Ok(())
         })?;
         // What a step of an agent session does in turn goes through the session's own api.
-        let api = match (&session, origin) {
+        let through = match (&session, origin) {
             (Some(Ok(_)), Some(origin)) => {
                 self.agent_session_api(caller, origin.clone()).map(|api| {
                     Arc::new(api) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>
@@ -223,28 +372,16 @@ impl AppBrokerState {
             }
             _ => None,
         };
-        // A step whose contract declares it cancellable may be asked to stop while it runs: its
-        // caller's cancel sets this flag, and the step stops and answers as cancelled.
-        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // A call whose contract declares it cancellable may be asked to stop while it runs: its
+        // caller's cancel sets this flag, and the call stops and answers as cancelled.
+        let stop = Arc::new(AtomicBool::new(false));
         if descriptor.contract.execution.cancellable()
             && let Ok(mut stops) = self.host_step_stops.lock()
         {
-            stops.insert(id, Arc::clone(&stop_flag));
+            stops.insert(id, Arc::clone(&stop));
         }
-        let step = HostStepRequest {
-            workspace: workspace_id,
-            actor: &policy,
-            address,
-            argument: argument.as_deref(),
-            provider: api,
-            group: request
-                .context
-                .as_ref()
-                .and_then(|context| context.group.as_ref()),
-            stop: stop_flag.clone(),
-        };
         if descriptor.contract.is_live() {
-            let view = match steps.watch(&step) {
+            let view = match registered.answers.watch(caller, request) {
                 Ok(view) => view,
                 Err(reason) => {
                     self.complete_host_action(
@@ -258,7 +395,7 @@ impl AppBrokerState {
                 caller: caller.clone(),
                 origin: origin.cloned(),
                 workspace: workspace_id.to_owned(),
-                app_id: steps.app_id().to_owned(),
+                app_id: app_id.to_owned(),
                 descriptor,
                 approved,
             };
@@ -266,17 +403,22 @@ impl AppBrokerState {
                 .map_err(|reason| ActionCallError::Refused { reason })?;
             return Ok(self.receipt_for(request.invocation, id));
         }
-        let started = steps.start(&step);
-        match started {
-            Ok(started) => self.follow_admitted_host_step(admitted, started, stop_flag),
-            Err(reason) => {
-                self.complete_host_action(
-                    &admitted,
-                    host_step_failure(request.invocation, "host_step_refused", &reason),
-                )?;
-                return Err(ActionCallError::Refused { reason });
-            }
-        }
+        let receipt = registered.answers.run(
+            caller,
+            request.clone(),
+            Admitted {
+                through,
+                stop: Arc::clone(&stop),
+            },
+        );
+        let started = outcome_of(
+            Arc::clone(&registered.answers),
+            caller.clone(),
+            request.invocation,
+            receipt,
+            Arc::clone(&stop),
+        );
+        self.follow_admitted_host_step(admitted, started, stop);
         Ok(self.receipt_for(request.invocation, id))
     }
 
@@ -300,7 +442,7 @@ impl AppBrokerState {
     pub(super) fn follow_admitted_host_step(
         self: &Arc<Self>,
         admitted: super::host_action_admission::AdmittedHostAction,
-        started: Pending<HostStepOutcome>,
+        started: Pending<Outcome>,
         stop: Arc<std::sync::atomic::AtomicBool>,
     ) {
         let state = Arc::clone(self);
@@ -772,12 +914,15 @@ pub(crate) mod signed_test_support {
 mod identity_admin_tests {
     use super::super::AppBrokerState;
     use super::super::action_provider::RowScope;
-    use crate::apps::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::apps::test_support::{Grants as _, Workspace, WorkspaceId, WorkspaceTree};
+    use crate::workspaces::providers::{Providers, Reach};
     use std::sync::{Arc, Mutex};
+    use tilo_actions::InvocationId;
+    use tilo_actions::remote::admitted::{offered, settled, top_level};
     use tilo_actions::remote::{
-        ActionCallError, Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
-        RemoteActionMessage, identity_admin, pending,
+        ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+        Completer, Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
+        Outcome, Pending, RemoteActionMessage, identity_admin, pending,
     };
 
     /// The host's identity store, in its place: it records each step it was
@@ -785,8 +930,20 @@ mod identity_admin_tests {
     #[derive(Default)]
     struct Host {
         started: Mutex<Vec<(String, tilo_actions::MemberId, String)>>,
-        answers: Mutex<Vec<Completer<HostStepOutcome>>>,
+        answers: Mutex<Vec<Completer<Outcome>>>,
         admission_check: Mutex<Option<Box<dyn Fn() + Send>>>,
+    }
+
+    /// `host` registered on this device as the identity store's provider.
+    fn providers(host: Arc<Host>) -> Providers {
+        let providers = Providers::default();
+        providers.provide(
+            identity_admin::PROVIDER,
+            "so.tilo.settings",
+            Reach::ThisDevice,
+            host as Arc<dyn ActionProvider + Send + Sync>,
+        );
+        providers
     }
 
     fn contract(step: &str) -> tilo_actions::ActionContract {
@@ -801,15 +958,51 @@ mod identity_admin_tests {
         }
     }
 
-    impl HostStepServices for Host {
-        fn provider(&self) -> &'static str {
-            identity_admin::PROVIDER
+    impl ActionProvider for Host {
+        fn query(
+            &self,
+            _caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            offered(
+                identity_admin::PROVIDER,
+                "so.tilo.settings",
+                top_level(self.descriptors()),
+                &query,
+            )
         }
 
-        fn app_id(&self) -> &'static str {
-            "so.tilo.settings"
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            self.run(caller, request, Admitted::default())
         }
 
+        fn run(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+            admitted: Admitted,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            settled(request.invocation, self.start(caller, &request, &admitted))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownInvocation))
+        }
+    }
+
+    impl Host {
         fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
             identity_admin::STEPS
                 .into_iter()
@@ -834,14 +1027,24 @@ mod identity_admin_tests {
                 .collect()
         }
 
-        fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+        fn start(
+            &self,
+            caller: &Caller,
+            request: &InvokeRequest,
+            _admitted: &Admitted,
+        ) -> Result<Pending<Outcome>, String> {
             if let Some(check) = self.admission_check.lock().unwrap().as_ref() {
                 check();
             }
+            let workspace = caller
+                .workspace()
+                .ok_or("the step was asked in no workspace")?;
             self.started.lock().unwrap().push((
-                request.workspace.to_owned(),
-                request.actor.member().clone(),
-                request.address.action.clone(),
+                workspace.to_owned(),
+                tilo_broker_core::BrokerActor::for_caller(caller)
+                    .member()
+                    .clone(),
+                request.target.address.action.clone(),
             ));
             let (answer, pending) = pending();
             self.answers.lock().unwrap().push(answer);
@@ -859,7 +1062,7 @@ mod identity_admin_tests {
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
             crate::apps::services::ProcessServices {
-                host_steps: vec![host],
+                providers: Some(providers(host)),
                 ..Default::default()
             },
         );
@@ -903,7 +1106,7 @@ mod identity_admin_tests {
             let (state, _bridge_rx) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
                 crate::apps::services::ProcessServices {
-                    host_steps: vec![host.clone()],
+                    providers: Some(providers(host.clone())),
                     local_person: Some(Arc::new(NoDevice)),
                     ..Default::default()
                 },
@@ -971,7 +1174,7 @@ mod identity_admin_tests {
             for foreign in [false, true] {
                 let service = Arc::new(Host::default());
                 let services = crate::apps::services::ProcessServices {
-                    host_steps: vec![service.clone() as Arc<dyn HostStepServices>],
+                    providers: Some(providers(service.clone())),
                     ..Default::default()
                 };
                 let f = if foreign {
@@ -1044,7 +1247,7 @@ mod identity_admin_tests {
                 ] {
                     let host = Arc::new(Host::default());
                     let services = crate::apps::services::ProcessServices {
-                        host_steps: vec![host.clone()],
+                        providers: Some(providers(host.clone())),
                         ..Default::default()
                     };
                     let mut f = if certified {
@@ -1075,7 +1278,13 @@ mod identity_admin_tests {
                         let steps = host.clone();
                         let asked = &asked;
                         let worker = scope.spawn(move || {
-                            state.invoke_host_step(&caller, Some(&origin), steps.as_ref(), asked)
+                            let registered = crate::workspaces::providers::Registered {
+                                provider: identity_admin::PROVIDER,
+                                app: "so.tilo.settings",
+                                reach: Reach::ThisDevice,
+                                answers: steps as Arc<dyn ActionProvider + Send + Sync>,
+                            };
+                            state.invoke_registered(&caller, Some(&origin), &registered, asked)
                         });
                         blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                         // The journal writer holds a signed admission but has not
@@ -1158,7 +1367,7 @@ mod identity_admin_tests {
         {
             let host = Arc::new(Host::default());
             let f = super::signed_test_support::Fixture::new(crate::apps::services::ProcessServices {
-                host_steps: vec![host.clone()],
+                providers: Some(providers(host.clone())),
                 ..Default::default()
             });
             let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1198,7 +1407,7 @@ mod identity_admin_tests {
             for dropped in [false, true] {
                 let host = Arc::new(Host::default());
                 let f = super::signed_test_support::Fixture::new(crate::apps::services::ProcessServices {
-                    host_steps: vec![host.clone()],
+                    providers: Some(providers(host.clone())),
                     ..Default::default()
                 });
                 let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1242,7 +1451,7 @@ mod identity_admin_tests {
             for admission_failure in [false, true] {
                 let host = Arc::new(Host::default());
                 let f = super::signed_test_support::Fixture::new(crate::apps::services::ProcessServices {
-                    host_steps: vec![host.clone()],
+                    providers: Some(providers(host.clone())),
                     ..Default::default()
                 });
                 let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1276,7 +1485,7 @@ mod identity_admin_tests {
             for revoked in [false, true] {
                 let host = Arc::new(Host::default());
                 let f = super::signed_test_support::Fixture::new(crate::apps::services::ProcessServices {
-                    host_steps: vec![host.clone()],
+                    providers: Some(providers(host.clone())),
                     ..Default::default()
                 });
                 if revoked {
@@ -1433,15 +1642,18 @@ mod identity_admin_tests {
 #[cfg(test)]
 mod settings_documents_tests {
     use super::super::AppBrokerState;
-    use crate::apps::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::apps::test_support::{
         Grantee, Grants as _, KindSet, Workspace, WorkspaceId, WorkspaceTree,
     };
+    use crate::workspaces::providers::{Providers, Reach};
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
+    use tilo_actions::InvocationId;
+    use tilo_actions::remote::admitted::{offered, settled, top_level};
     use tilo_actions::remote::{
-        ActionCallError, Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
-        settings_resources,
+        ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+        Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome,
+        Pending, RemoteActionTarget, settings_resources,
     };
 
     const APP: &str = tilo_app_id::apps::SETTINGS;
@@ -1494,17 +1706,35 @@ mod settings_documents_tests {
         }
     }
 
-    impl HostStepServices for Host {
-        fn provider(&self) -> &'static str {
-            settings_resources::PROVIDER
+    impl ActionProvider for Host {
+        fn query(
+            &self,
+            _caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            offered(
+                settings_resources::PROVIDER,
+                APP,
+                top_level(self.descriptors()),
+                &query,
+            )
         }
 
-        fn app_id(&self) -> &'static str {
-            APP
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            self.run(caller, request, Admitted::default())
         }
 
-        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-            vec![self.descriptor(false)]
+        fn run(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+            admitted: Admitted,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            settled(request.invocation, self.start(caller, &request, &admitted))
         }
 
         fn invocation(
@@ -1520,22 +1750,53 @@ mod settings_documents_tests {
             Some(self.descriptor(weakens)).filter(|descriptor| &descriptor.address == address)
         }
 
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownInvocation))
+        }
+    }
+
+    impl Host {
+        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+            vec![self.descriptor(false)]
+        }
+
         fn start(
             &self,
-            request: &HostStepRequest<'_>,
-        ) -> Result<tilo_actions::remote::Pending<HostStepOutcome>, String> {
-            let json = request
-                .argument
+            _caller: &Caller,
+            request: &InvokeRequest,
+            _admitted: &Admitted,
+        ) -> Result<Pending<Outcome>, String> {
+            let started = request.argument.to_slot();
+            let json = started
+                .as_deref()
                 .and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
                 .ok_or("no edit")?;
             let arguments: serde_json::Value =
                 serde_json::from_str(json).map_err(|error| error.to_string())?;
             let minutes = arguments["edit"]["value"].as_u64().ok_or("no value")?;
             *self.minutes.lock().unwrap() = u32::try_from(minutes).map_err(|e| e.to_string())?;
-            Ok(tilo_actions::remote::Pending::ready(Ok(
-                tilo_actions::ActionOutput::default(),
-            )))
+            Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
         }
+    }
+
+    /// `host` registered on this device as the person's settings provider.
+    fn providers(host: Arc<Host>) -> Providers {
+        let providers = Providers::default();
+        providers.provide(
+            settings_resources::PROVIDER,
+            APP,
+            Reach::ThisDevice,
+            host as Arc<dyn ActionProvider + Send + Sync>,
+        );
+        providers
     }
 
     fn lock_after(minutes: u32, confirmation: Option<Confirmation>) -> InvokeRequest {
@@ -1593,7 +1854,7 @@ mod settings_documents_tests {
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
             crate::apps::services::ProcessServices {
-                host_steps: vec![host.clone()],
+                providers: Some(providers(host.clone())),
                 ..Default::default()
             },
         );

@@ -3,12 +3,17 @@
 //! stops the model call rather than leaving it to run, billed, to its end.
 
 use crate::apps::collab_app_broker::AppBrokerState;
-use crate::apps::services::{HostStepOutcome, HostStepRequest, HostStepServices, ProcessServices};
+use crate::apps::services::ProcessServices;
 use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+use crate::workspaces::providers::{Providers, Reach};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tilo_actions::InvocationId;
+use tilo_actions::remote::admitted::{offered, settled, top_level};
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome, Pending,
+    RemoteActionTarget,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ConfirmationPolicy,
@@ -24,15 +29,42 @@ const ACTION: &str = "summarise";
 /// A step that works until its caller cancels it, as a transform's model call does.
 struct Slow;
 
-impl HostStepServices for Slow {
-    fn provider(&self) -> &'static str {
-        PROVIDER
+impl ActionProvider for Slow {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        offered(PROVIDER, APP, top_level(self.descriptors()), &query)
     }
 
-    fn app_id(&self) -> &str {
-        APP
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
     }
 
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(request.invocation, self.start(caller, &request, &admitted))
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+}
+
+impl Slow {
     fn descriptors(&self) -> Vec<ActionDescriptor> {
         vec![ActionDescriptor {
             did: None,
@@ -64,8 +96,13 @@ impl HostStepServices for Slow {
         }]
     }
 
-    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        let stop = Arc::clone(&request.stop);
+    fn start(
+        &self,
+        _caller: &Caller,
+        _request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let stop = Arc::clone(&admitted.stop);
         let (done, answer) = tilo_actions::remote::pending();
         drop(std::thread::spawn(move || {
             while !stop.load(Ordering::Acquire) {
@@ -90,10 +127,17 @@ fn broker() -> (Arc<AppBrokerState>, String, String) {
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();
+    let providers = Providers::default();
+    providers.provide(
+        PROVIDER,
+        APP,
+        Reach::ThisDevice,
+        Arc::new(Slow) as Arc<dyn ActionProvider + Send + Sync>,
+    );
     let (state, _bridge_rx) = AppBrokerState::test_state(
         Some(tree.authority()),
         ProcessServices {
-            host_steps: vec![Arc::new(Slow)],
+            providers: Some(providers),
             ..Default::default()
         },
     );
