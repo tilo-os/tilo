@@ -23734,6 +23734,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wire-frame",
  "workspace-hack",
 ]
 
@@ -23853,6 +23854,7 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",
+ "wire-frame",
  "workspace-hack",
 ]
 
@@ -23890,6 +23892,7 @@ dependencies = [
  "tilolang-runtime",
  "tilolang-tilo",
  "tracing",
+ "wire-frame",
  "workspace-hack",
 ]
 

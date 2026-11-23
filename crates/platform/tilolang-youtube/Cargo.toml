@@ -8,6 +8,7 @@ description = "The YouTube origin of tilolang packages: keeps a package's youtub
 
 [dependencies]
 tilolang-tilo = { path = "../tilolang-tilo" }
+wire-frame = { path = "../../system/wire-frame" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # The action API an instance attaches to the connector over, and the descriptors the session hands
 # both (`runtime_portal::origin_connector`).

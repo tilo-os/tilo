@@ -40,6 +40,7 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The device's one store, which every resource of an app is kept in and read from.
 tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
 
 [dev-dependencies]
 # The system's mention notices, read from a workspace holding tilolang rich text.
