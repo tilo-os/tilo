@@ -19,6 +19,7 @@ pub use profiles::{
     same_scale,
 };
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", rename_all = "snake_case")]
 pub enum OutputTransform {
@@ -58,6 +59,7 @@ pub fn logical_extent(mode: (u32, u32), scale: f64, transform: OutputTransform) 
     }
 }
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct OutputMode {
@@ -358,6 +360,7 @@ pub fn process_start_ticks(pid: u32) -> Option<u64> {
 /// it, then changes it to `AwaitingConfirmation`. Only `ConfirmRequested`
 /// commits durable intent. A timeout or `RevertRequested` restores
 /// `previous`, including after Settings itself crashed.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", rename_all = "snake_case")]
 pub enum DisplayTransactionState {
@@ -374,7 +377,7 @@ pub enum DisplayTransactionState {
 crate::read_through_json_value!(DisplayTransactionState);
 
 #[cfg(feature = "model")]
-tilo_resource::json_model!(DisplayTransactionState);
+tilo_resource::json_model!(described: DisplayTransactionState);
 
 pub const DISPLAY_TRANSACTION_SECTION: &str = "display_transaction";
 
@@ -754,7 +757,7 @@ pub struct TabletConfig {
 crate::read_through_json_value!(TabletConfig);
 
 #[cfg(feature = "model")]
-tilo_resource::json_model!(TabletConfig);
+tilo_resource::json_model!(described: TabletConfig);
 
 impl TabletConfig {
     fn dials(&self, dial: PadDial) -> (&BTreeMap<u32, Vec<PadDialAction>>, u32) {
@@ -848,6 +851,7 @@ pub fn lenient_tablets<'de, D: serde::Deserializer<'de>>(
     Ok(tablets_from_value(&value))
 }
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "four independent per-output toggles serialised by field name; consumers in \
@@ -915,6 +919,7 @@ impl Default for OutputConfig {
 pub const DEFAULT_SDR_BRIGHTNESS_NITS: u16 = 203;
 pub const SDR_BRIGHTNESS_NITS_RANGE: std::ops::RangeInclusive<u16> = 80..=480;
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct DisplayConfig {
@@ -924,7 +929,7 @@ pub struct DisplayConfig {
 crate::read_through_json_value!(DisplayConfig);
 
 #[cfg(feature = "model")]
-tilo_resource::json_model!(DisplayConfig);
+tilo_resource::json_model!(described: DisplayConfig);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisplayConfigError {
@@ -2850,5 +2855,86 @@ mod tests {
             }
             assert!((clamp_scroll_speed(f64::NAN) - 1.0).abs() < f64::EPSILON);
         }
+    }
+
+    /// The display documents the settings file already holds, exactly as it
+    /// writes them, still read back: the types gained a published shape, not
+    /// another storage form.
+    #[test]
+    fn stored_display_documents_read_back_as_they_are_stored() {
+        let config = serde_json::json!({
+            "outputs": {
+                "eDP-1": {
+                    "enabled": true, "primary": true, "x": 0, "y": 0,
+                    "scale": 2.0, "transform": "normal",
+                    "mode": {"width": 2880, "height": 1800, "refresh_mhz": 60000},
+                    "mirror_of": null, "hdr": false, "sdr_brightness_nits": 203,
+                    "vrr": true, "color_profile": null,
+                },
+            },
+        });
+        let read: DisplayConfig = serde_json::from_value(config.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&read).unwrap(), config);
+
+        let set = serde_json::json!({"key": "abc", "members": {"eDP-1": "abc"}});
+        let read: DisplaySet = serde_json::from_value(set.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&read).unwrap(), set);
+
+        let state = serde_json::json!("awaiting_confirmation");
+        let read: DisplayTransactionState = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(read, DisplayTransactionState::AwaitingConfirmation);
+        assert_eq!(serde_json::to_value(read).unwrap(), state);
+
+        let tablet = serde_json::json!({
+            "output": "DP-1", "keep_aspect": true, "left_handed": false,
+            "pressure_curve": [0.0, 0.5, 0.5, 1.0],
+            "lower_button": "default", "upper_button": "default",
+            "third_button": "default", "eraser": "native",
+            "pad_buttons": {}, "pad_map_button": null,
+            "pad_rings": {}, "pad_strips": {},
+        });
+        let read: TabletConfig = serde_json::from_value(tablet.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&read).unwrap(), tablet);
+    }
+
+    /// Each display type publishes the record or enum its document is, so a
+    /// field of it is typed rather than "any".
+    #[cfg(feature = "model")]
+    #[test]
+    fn display_types_are_published_as_their_documents() {
+        use tilo_resource::{FieldType, Model, TypeSet};
+        fn named(ty: FieldType) -> String {
+            match ty {
+                FieldType::Named(name) => name,
+                other => panic!("a display type is published as a named type, not {other:?}"),
+            }
+        }
+        let mut types = TypeSet::new();
+        assert_eq!(
+            named(<DisplayConfig as Model>::field_type(&mut types)),
+            "DisplayConfig"
+        );
+        assert!(
+            types.get("OutputConfig").is_some(),
+            "the outputs' record is declared"
+        );
+        assert_eq!(
+            named(<DisplaySet as Model>::field_type(&mut types)),
+            "DisplaySet"
+        );
+        assert_eq!(
+            named(<DisplayTransactionState as Model>::field_type(&mut types)),
+            "DisplayTransactionState"
+        );
+        assert_eq!(
+            named(<TabletConfig as Model>::field_type(&mut types)),
+            "TabletConfig"
+        );
+        assert!(
+            types
+                .get("TabletConfig")
+                .is_some_and(|record| record.fields.iter().any(|field| field.name == "pad_rings")),
+            "a tablet publishes its buttons, rings and strips"
+        );
     }
 }

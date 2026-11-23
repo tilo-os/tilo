@@ -77,7 +77,7 @@ pub struct Placements {
 crate::read_through_json_value!(Placements);
 
 #[cfg(feature = "model")]
-tilo_resource::json_model!(Placements);
+tilo_resource::json_model!(described: Placements);
 
 impl Placements {
     pub fn from_value(value: &Value) -> Option<Self> {
@@ -933,6 +933,56 @@ mod publication_regressions {
         view.save_at(&path).unwrap();
         assert_eq!(PersonDisplays::load_at(&path), Some(view));
     }
+    /// The placement the settings file already holds, exactly as the file
+    /// writes it, still reads back: the type gained a published shape, not
+    /// another storage form.
+    #[test]
+    fn a_stored_placement_reads_back_as_it_is_stored() {
+        let stored = serde_json::json!({
+            "displays": [
+                {"device": "laptop", "output": "panel", "order": 1024,
+                 "placed": true, "x": 0, "y": 0, "rev": 7},
+                {"device": "pi", "output": "hdmi", "order": 2048,
+                 "placed": true, "x": 1440, "y": 0, "rev": 3},
+            ],
+        });
+        let document: Map<String, Value> = serde_json::json!({
+            "display_person": {"placement": stored.clone()},
+        })
+        .as_object()
+        .cloned()
+        .expect("a settings document is a map");
+        let read = Placements::from_document(&document);
+        assert_eq!(read.to_value(), stored);
+        assert_eq!(read.displays.len(), 2);
+        assert_eq!(
+            read.entry("laptop", "panel").map(|entry| entry.rev),
+            Some(7)
+        );
+    }
+
+    /// The published shape of a placement names the record it is and the
+    /// displays it holds, rather than leaving a field of it "any".
+    #[cfg(feature = "model")]
+    #[test]
+    fn a_placement_is_published_as_a_record_of_displays() {
+        use tilo_resource::{FieldType, Model, TypeSet};
+        let mut types = TypeSet::new();
+        let FieldType::Named(name) = <Placements as Model>::field_type(&mut types) else {
+            panic!("a placement is published as a named record");
+        };
+        assert_eq!(name, "Placements");
+        let record = types.get(&name).expect("the record is declared");
+        assert!(
+            record.fields.iter().any(|field| field.name == "displays"),
+            "the record holds its displays: {record:?}"
+        );
+        assert!(
+            !<Placements as Model>::value_schema().is_null(),
+            "its schema is the document it stores"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn matching_symlink_observations_are_replaced_under_the_owned_path() {

@@ -30,6 +30,7 @@ impl<'a> From<&'a OutputDescriptor> for AttachedOutput<'a> {
     }
 }
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct DisplaySet {
@@ -40,7 +41,7 @@ pub struct DisplaySet {
 crate::read_through_json_value!(DisplaySet);
 
 #[cfg(feature = "model")]
-tilo_resource::json_model!(DisplaySet);
+tilo_resource::json_model!(described: DisplaySet);
 
 impl DisplaySet {
     pub fn of<'a>(outputs: impl IntoIterator<Item = AttachedOutput<'a>>) -> Self {

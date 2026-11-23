@@ -1096,6 +1096,15 @@ macro_rules! __table_functions {
 #[macro_export]
 macro_rules! json_model {
     ($($ty:ty),* $(,)?) => {$(
+        $crate::json_model!(@stored $ty, plain);
+    )*};
+    // Types that also derive [`JsonSchema`](crate::JsonSchema): the record or
+    // enum a surface publishes for them is the JSON document they store, so a
+    // field of one is typed instead of "any". Storage stays one JSON string.
+    (described: $($ty:ty),* $(,)?) => {$(
+        $crate::json_model!(@stored $ty, described);
+    )*};
+    (@stored $ty:ty, $declared:ident) => {
         impl $crate::Settable for $ty {}
         impl $crate::Model for $ty {
             $crate::leaf_paths!();
@@ -1108,8 +1117,18 @@ macro_rules! json_model {
             fn missing() -> ::core::result::Result<Self, $crate::ModelError> {
                 ::core::result::Result::Ok(<Self as ::core::default::Default>::default())
             }
+            $crate::json_model!(@declared $declared, $ty);
         }
-    )*};
+    };
+    (@declared plain, $ty:ty) => {};
+    (@declared described, $ty:ty) => {
+        fn value_schema() -> $crate::__private::serde_json::Value {
+            <$ty as $crate::JsonSchema>::json_schema()
+        }
+        fn field_type(types: &mut $crate::TypeSet) -> $crate::FieldType {
+            <$ty as $crate::JsonSchema>::field_type(types)
+        }
+    };
 }
 
 /// Write `value` under `key` of the map `obj`, which holds `before`: the
