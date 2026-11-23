@@ -17,10 +17,25 @@ impl SessionLink {
     /// The session published `reading` of the resource `id`, of the type `ty` (`<app>#<Type>`):
     /// the shell's runtime reads it on its next frame, and the views composed over it run
     /// again. Whether it differs from the last.
+    ///
+    /// A reference the reading holds to an app whose package no host has served yet is a
+    /// package the place's view needs, and the session is asked for it ([`Self::wants_packages`]):
+    /// a linked task is a row of the tasks app's own, and the place says it waits for it rather
+    /// than drawing nothing until it comes. The library and the platform's own packages are
+    /// already here and are no ask ([`held_here`]).
     pub fn publish_reading(&self, id: &str, ty: &str, reading: serde_json::Value) -> bool {
         let fresh = (ty.to_owned(), reading);
         if self.readings.borrow().get(id) == Some(&fresh) {
             return false;
+        }
+        let wanted = {
+            let held = self.packages.borrow();
+            let mut wanted = BTreeMap::new();
+            wanted_links(&fresh.1, &held, &mut wanted);
+            wanted
+        };
+        if !wanted.is_empty() {
+            self.want_packages(wanted);
         }
         self.readings.borrow_mut().insert(id.to_owned(), fresh);
         self.readings_fresh.borrow_mut().insert(id.to_owned());
@@ -237,6 +252,37 @@ pub fn with_uses(
         }
     }
     out
+}
+
+/// Each app `reading` holds a link to (`$links`, each `{"ref": …, "ty": "<app>#<Type>"}`),
+/// added to `wanted` when no package here declares it: a place whose view draws the link (`a
+/// message made a task`) needs the linked app's package, so the place says it waits for that
+/// app rather than drawing nothing until it comes.
+fn wanted_links(
+    reading: &serde_json::Value,
+    held: &BTreeMap<String, std::sync::Arc<[u8]>>,
+    wanted: &mut BTreeMap<String, String>,
+) {
+    let Some(links) = reading
+        .get(tilolang_tilo::runtime::store::LINKS)
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    for link in links {
+        let Some(ty) = link.get("ty").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some((app, _)) = ty.split_once('#') else {
+            continue;
+        };
+        // The library and the platform's own packages are here without the session serving
+        // one, and are no ask.
+        if held.contains_key(app) || held_here(app) {
+            continue;
+        }
+        wanted.insert(app.to_owned(), ty.to_owned());
+    }
 }
 
 /// Whether the shell's runtime already holds what `app` is as a package, so a place's apps must
