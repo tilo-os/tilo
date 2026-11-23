@@ -117,14 +117,12 @@ pub use authority::DocumentKeysBasis;
 mod construction;
 mod durable;
 mod written_under;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use durable::DocumentParts;
 #[cfg(test)]
 pub(crate) use durable::Durable;
-pub(crate) use durable::DurableParts;
 #[cfg(test)]
 use durable::{BROUGHT_UP, brought_up};
 pub use durable::{DURABLE_VERSION, kept_before_own_removal};
+pub(crate) use durable::{DocumentParts, DurableParts};
 mod receiving;
 mod records;
 mod sealing;
