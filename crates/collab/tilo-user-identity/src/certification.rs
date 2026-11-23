@@ -254,6 +254,7 @@ impl CertificationPolicy {
     /// `requested` limited to what this policy allows.
     pub fn clamp(&self, requested: &DeviceCapabilities) -> DeviceCapabilities {
         DeviceCapabilities {
+            retired: crate::cert::RetiredFlags::default(),
             can_own_workspaces: requested.can_own_workspaces && self.ceiling.can_own_workspaces,
             can_admit_devices: requested.can_admit_devices && self.ceiling.can_admit_devices,
             // Foreign is a restriction: a request or ceiling that says so keeps it.

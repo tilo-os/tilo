@@ -172,6 +172,7 @@ fn kept_certificate() -> DeviceCert {
         device_public_key: [4; 32],
         device_label: "Framework 16".into(),
         capabilities: DeviceCapabilities {
+            retired: tilo_user_identity::RetiredFlags::default(),
             can_own_workspaces: true,
             can_admit_devices: false,
             foreign: false,
@@ -190,6 +191,7 @@ fn kept_certificate() -> DeviceCert {
             device_public_key: [6; 32],
             device_label: "the person's own device".into(),
             capabilities: DeviceCapabilities {
+                retired: tilo_user_identity::RetiredFlags::default(),
                 can_own_workspaces: true,
                 can_admit_devices: true,
                 foreign: false,

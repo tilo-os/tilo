@@ -247,6 +247,7 @@ mod tests {
             device_public_key: [key; 32],
             device_label: "Framework 16".into(),
             capabilities: DeviceCapabilities {
+                retired: tilo_user_identity::RetiredFlags::default(),
                 can_own_workspaces: false,
                 can_admit_devices: false,
                 foreign: false,

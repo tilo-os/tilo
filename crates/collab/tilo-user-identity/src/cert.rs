@@ -402,6 +402,30 @@ pub struct DeviceCapabilities {
     /// longer than that device's certificate. Revoking the device ends its
     /// service. It is part of the signed encoding.
     pub workspace_service: bool,
+
+    /// Grants a certificate signed before they were retired may carry, which mean nothing now
+    /// (see [`RetiredFlags`]). New certificates set none.
+    pub retired: RetiredFlags,
+}
+
+/// Two grants certificates carried until they were retired: serving the person always on, and
+/// reading every workspace of the person. Neither grants anything now. A certificate signed with
+/// one set keeps it, read and written exactly as signed: its signature covers those bytes, and
+/// people's devices still hold such certificates, which must keep loading. Nothing outside this
+/// module sets one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RetiredFlags {
+    act_as_host: bool,
+    read_all_workspaces: bool,
+}
+
+impl RetiredFlags {
+    /// Whether the certificate was signed with either retired grant: one that may carry nothing
+    /// else (an agent's grant, a stand-in, a workspace service) is refused with one.
+    #[must_use]
+    pub const fn any(self) -> bool {
+        self.act_as_host || self.read_all_workspaces
+    }
 }
 
 /// The v1 JSON shape plus the optional foreign marker, omitted when false so
@@ -429,6 +453,11 @@ struct CapabilitiesJson {
     browser_pages: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     workspace_service: bool,
+    /// Retired ([`RetiredFlags`]): read from certificates signed with them, written only when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    can_act_as_host: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    can_read_all_workspaces: bool,
 }
 
 impl Serialize for DeviceCapabilities {
@@ -444,6 +473,8 @@ impl Serialize for DeviceCapabilities {
                 server_key: self.server_key,
                 browser_pages: self.browser_pages,
                 workspace_service: self.workspace_service,
+                can_act_as_host: self.retired.act_as_host,
+                can_read_all_workspaces: self.retired.read_all_workspaces,
             }
             .serialize(serializer);
         }
@@ -462,12 +493,13 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
     // Positional binary formats (postcard) encode each bool as one byte;
     // a foreign device prefixes the four flags with the marker byte, and
     // anything more with the extended marker and its byte. The last two
-    // flags are always clear.
+    // flags are the retired ones, kept where every stored certificate has
+    // them.
     let flags = [
         capabilities.can_own_workspaces,
         capabilities.can_admit_devices,
-        false,
-        false,
+        capabilities.retired.act_as_host,
+        capabilities.retired.read_all_workspaces,
     ];
     let scope: Vec<u8> = match capabilities.agent {
         None => Vec::new(),
@@ -524,6 +556,10 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 server_key: json.server_key,
                 browser_pages: json.browser_pages,
                 workspace_service: json.workspace_service,
+                retired: RetiredFlags {
+                    act_as_host: json.can_act_as_host,
+                    read_all_workspaces: json.can_read_all_workspaces,
+                },
             });
         }
         let BinaryCapabilitiesOf(capabilities, issued) =
@@ -645,12 +681,6 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 &"a capability flag byte of 0 or 1",
             )),
         };
-        if flags[2] != 0 || flags[3] != 0 {
-            return Err(A::Error::invalid_value(
-                serde::de::Unexpected::Bytes(&flags[2..]),
-                &"two clear flags after the first two",
-            ));
-        }
         Ok(BinaryCapabilitiesOf(
             DeviceCapabilities {
                 can_own_workspaces: flag(flags[0])?,
@@ -662,6 +692,10 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 server_key: extended & EXTENDED_SERVER_KEY != 0,
                 browser_pages: extended & EXTENDED_BROWSER_PAGES != 0,
                 workspace_service: extended & EXTENDED_WORKSPACE_SERVICE != 0,
+                retired: RetiredFlags {
+                    act_as_host: flag(flags[2])?,
+                    read_all_workspaces: flag(flags[3])?,
+                },
             },
             extended & EXTENDED_ISSUED != 0,
         ))
@@ -683,6 +717,10 @@ impl DeviceCapabilities {
             server_key: false,
             browser_pages: false,
             workspace_service: false,
+            retired: RetiredFlags {
+                act_as_host: false,
+                read_all_workspaces: false,
+            },
         }
     }
 
@@ -763,7 +801,8 @@ impl DeviceCapabilities {
                 || self.foreign
                 || self.can_administer_devices
                 || self.stand_in
-                || self.workspace_service)
+                || self.workspace_service
+                || self.retired.any())
     }
 
     /// The capabilities of the workspace service of a device with `device`'s
@@ -1372,6 +1411,7 @@ fn check_minted(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
         Some(scope @ AgentScope::Workspace(_)) => {
             cert.capabilities
                 == DeviceCapabilities {
+                    retired: RetiredFlags::default(),
                     server_key: issuer.capabilities.server_key,
                     ..DeviceCapabilities::agent_grant(scope)
                         .with_browser_pages(cert.capabilities.browser_pages)
