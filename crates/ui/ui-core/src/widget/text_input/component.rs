@@ -71,6 +71,10 @@ pub struct TextInputProps {
     /// A caret on a surface rather than a field in a form: no well and no fill, only
     /// as wide as what it holds, growing as the words are typed. The canvas's caret.
     pub caret: bool,
+    /// A secret: the field masks what it holds, never speaks or shows it in a screenshot,
+    /// refuses Copy and Cut, and hands its value over only through the action it fires. For an
+    /// API key or a password, where the app never reads the value back.
+    pub secret: bool,
 }
 
 impl Default for TextInputProps {
@@ -94,6 +98,7 @@ impl Default for TextInputProps {
             begin: Event::None,
             blur: Event::None,
             caret: false,
+            secret: false,
         }
     }
 }
@@ -143,6 +148,7 @@ impl Described for TextInput {
             begin,
             blur,
             caret,
+            secret,
         } = props;
         let read_only = read_only || text.is_some();
         let change = changed_by.map(|by| {
@@ -197,6 +203,9 @@ impl Described for TextInput {
         if caret {
             input.set_caret(true);
         }
+        if secret {
+            input = input.with_secret(true);
+        }
         input
     }
 
@@ -222,6 +231,7 @@ impl Described for TextInput {
             begin,
             blur,
             caret,
+            secret,
         } = props;
         let read_only = read_only || text.is_some();
         if !self.follows(&value.state) {
@@ -257,6 +267,7 @@ impl Described for TextInput {
         });
         self.set_plain_chrome(title || text.is_some() || caret);
         self.set_caret(caret);
+        self.set_secret(secret);
         self.set_read_only(read_only);
         if let Some(text) = text
             && self.value() != text
@@ -323,6 +334,27 @@ mod tests {
             field.is_composing(),
             "what was being composed is still in the field"
         );
+    }
+
+    /// A field built as a secret masks what it holds, marks it protected, and keeps the value
+    /// out of the accessibility tree: a view gives its API-key field this prop.
+    #[test]
+    fn a_secret_field_is_masked_and_protected() {
+        let mut field = TextInput::from_props(
+            "key",
+            TextInputProps {
+                secret: true,
+                ..TextInputProps::default()
+            },
+        );
+        field.set_text("hunter2");
+        assert_eq!(field.display_text(), "•••••••", "the value is masked");
+        let node = Widget::accessibility(&field).expect("the field is described");
+        assert_eq!(
+            node.value, None,
+            "the value never reaches assistive technology"
+        );
+        assert!(node.state.protected, "the field is marked protected");
     }
 
     /// The width a caret field is laid out at, given a wide room.

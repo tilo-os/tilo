@@ -98,6 +98,8 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::devices::surface(),
         crate::speakers::surface(),
         crate::quick_settings::controls_surface(),
+        // This device's server settings, which its daemon changes (`device:server`).
+        tilo_runtime::device::server_settings::surface(),
     ]
 }
 

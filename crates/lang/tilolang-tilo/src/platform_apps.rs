@@ -96,6 +96,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("overlays", "Overlays", "desktop:overlays"),
     ("nearby_send", "NearbySend", "session:nearby-send"),
     ("devices", "Devices", "session:devices"),
+    ("server", "ServerSettings", "device:server"),
     ("speakers", "Speakers", "session:speakers"),
     ("printers", "Printers", "printers"),
     ("users", "Users", "users"),
@@ -141,6 +142,15 @@ const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
         "shortcuts_table",
         "ShortcutsTable",
         "settings:settings.shortcuts-table",
+    ),
+    // The providers the person set up and the keys this device keeps for them:
+    // a reading of the provider sections and this device's vault, and the
+    // actions that add, change, remove and key a provider
+    // (`agent-providers-surface.json`).
+    (
+        "agent_providers",
+        "AgentProviderSetup",
+        "settings:settings.agent-provider-setup",
     ),
     // Every other section the person's settings keep: each published as its record, with the
     // fields a view shows and the verbs that change it as its own actions.
@@ -249,6 +259,7 @@ const PUBLISHED: &[Published] = &[
             include_str!("../../../../apps/settings/surface.toml"),
             include_str!("../../../session/settings-service/agent-models-surface.json"),
             include_str!("../../../session/settings-service/shortcuts-surface.json"),
+            include_str!("../../../session/settings-service/agent-providers-surface.json"),
         ],
         described: false,
     },

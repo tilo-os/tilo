@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Service, Started, decode, offer, reading};
+pub use tilo_system_resources::device_settings::surface;
 use tilo_system_resources::device_settings::{
     ServerSettings, ServerSettingsAction, ServerSettingsReading, Services, Work, WorkFrom, WorkWhen,
 };
@@ -42,6 +43,10 @@ pub use tilo_system_resources::device_settings::SERVER;
 /// server configuration decides what its machine runs for the person's other
 /// devices, so it is not any app's to read or change.
 const SETTINGS_APP: &str = tilo_app_id::apps::SETTINGS;
+
+/// Settings as its tilolang package names it: the same app, whose window shows and changes
+/// these settings.
+const SETTINGS_PACKAGE: &str = "so.tilo.lang.settings";
 
 /// This device's server settings, read from its configuration.
 pub struct Served {
@@ -316,7 +321,7 @@ fn refused() -> String {
 /// window is the caller: the setting decides what the machine runs for the
 /// person's other devices.
 fn granted(caller: &Caller) -> bool {
-    caller.app_id == SETTINGS_APP
+    caller.app_id == SETTINGS_APP || caller.app_id == SETTINGS_PACKAGE
 }
 
 impl Published {

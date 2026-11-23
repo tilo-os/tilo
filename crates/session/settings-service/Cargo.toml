@@ -10,6 +10,9 @@ license.workspace = true
 # The providers the person set up, and the model agents answer with: the
 # reading and the choice this service publishes over both provider sections.
 agent-provider-config = { path = "../../integrations/provider-config", features = ["model"] }
+# The providers' keys, kept in this device's sealed vault: what a key is
+# written to and read from, never part of the settings document.
+accounts = { path = "../../integrations/accounts" }
 serde.workspace = true
 serde_json.workspace = true
 settings-sections = { path = "../../system/settings-sections" }

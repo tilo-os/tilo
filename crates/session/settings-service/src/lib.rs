@@ -22,6 +22,7 @@
 pub mod agent_models;
 pub mod effects;
 mod i18n;
+pub mod providers;
 pub mod shortcuts_table;
 
 use serde_json::{Map, Value};
@@ -147,6 +148,8 @@ pub struct SettingsService {
     /// The agent model choice the canvas reads and changes, over both
     /// provider sections.
     agent_models: agent_models::Served,
+    /// The providers the person set up, and what changes them.
+    providers: providers::Served,
 }
 
 impl Default for SettingsService {
@@ -168,6 +171,7 @@ impl SettingsService {
             seen: None,
             published: Vec::new(),
             agent_models: agent_models::Served::new(),
+            providers: providers::Served::new(),
         };
         service.published = service.build();
         service
@@ -196,6 +200,7 @@ impl SettingsService {
         let index = self.index(&resources);
         resources.push(index);
         resources.push(agent_models::Served::resource());
+        resources.push(providers::Served::resource());
         resources.push(self.shortcuts_table());
         resources
     }
@@ -503,6 +508,9 @@ impl Service for SettingsService {
         if resource == shortcuts_table::RESOURCE {
             return Some(self.shortcuts_stored());
         }
+        if resource == providers::RESOURCE {
+            return self.providers.read(resource);
+        }
         let kind = resource.strip_prefix(SECTION_PREFIX)?;
         self.stored(kind)
     }
@@ -527,6 +535,13 @@ impl Service for SettingsService {
             let done =
                 self.agent_models
                     .invoke(&self.published, resource, action, arguments, invoker);
+            self.published = self.build();
+            return done;
+        }
+        if resource == providers::RESOURCE {
+            let done = self
+                .providers
+                .invoke(&self.published, resource, action, arguments, invoker);
             self.published = self.build();
             return done;
         }
