@@ -195,7 +195,10 @@ case "$host" in
       "$appdir/usr/share/icons/hicolor/scalable/apps/tilo-imager.svg"
     chmod +x "$appdir/AppRun" "$appdir/usr/bin/tilo-imager" "$appdir/usr/bin/tilo-imager-bin"
     if command -v linuxdeploy >/dev/null 2>&1 && command -v appimagetool >/dev/null 2>&1; then
-      linuxdeploy --appdir "$appdir" >/dev/null
+      # Quiet unless it fails, when its own account of why is the only useful one.
+      linuxdeploy --appdir "$appdir" >"$out/linuxdeploy.log" 2>&1 \
+        || { cat "$out/linuxdeploy.log" >&2; exit 1; }
+      rm -f "$out/linuxdeploy.log"
       runtime_args=()
       if [ -n "${TILO_APPIMAGE_RUNTIME:-}" ]; then
         [ -f "$TILO_APPIMAGE_RUNTIME" ] \
@@ -206,7 +209,9 @@ case "$host" in
         exit 1
       fi
       ARCH="$package_arch" appimagetool "${runtime_args[@]}" \
-        "$appdir" "$out/$artifact_base.AppImage" >/dev/null
+        "$appdir" "$out/$artifact_base.AppImage" >"$out/appimagetool.log" 2>&1 \
+        || { cat "$out/appimagetool.log" >&2; exit 1; }
+      rm -f "$out/appimagetool.log"
       chmod +x "$out/$artifact_base.AppImage"
       write_digest "$out/$artifact_base.AppImage"
       sign_linux_artifact "$out/$artifact_base.AppImage"
