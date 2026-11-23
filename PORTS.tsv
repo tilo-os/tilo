@@ -440,3 +440,35 @@ issue_reads::a_trackers_view_is_laid_out_again_only_when_its_members_own_access_
 replicas::read_only_resource_views_filter_roles_and_never_join_the_document_api	ok	one-dispatch	a viewer's write is refused before the store (apps_tests, daemon-app-processes) and a non-member opens a shared page
 # tests outside agent-session removed with its decider
 tilo-server moderation::tests::a_member_reports_but_cannot_edit_the_report_or_decide_it	ok	one-dispatch	port: through the daemon's dispatch, a member reports but is refused decide-reports and a direct edit; a Moderator decides; a deny grant refuses it (needs apps running in the daemon)
+# bot abilities removed by the bots deletion (7dbacfbc0ed..172ae1b145f); each needs a trigger-started agent turn through the dispatch with the agent's key, plus a refusal
+bots: moderation (moderation agent judges reports, settles them as Moderator; workspace_bots/tests/moderation_settings.rs, collab/moderation agent/judge/anthropic tests, tilo-server moderation tests)	ok	hosting	hosting's push: report triggers an agent turn that decides as Moderator through the dispatch; a non-moderator agent is refused
+bots: agent lifecycle (a bot member is added, runs, is removed; tilo-peer-state bot_members_tests, action-policy tests/bots.rs, workspace-service tests/bots.rs, session membership_tests, desktop people tests)	ok	hosting	hosting's push: an agent member is added and removed through the dispatch; a removed agent's call is refused
+bots: renewal (a bot's access renewed as policy moves; delegates_tests, receipt_tests)	ok	hosting	hosting's push: an agent's grant change takes effect on its next call; a revoked grant refuses
+bots: mail (a bot reads and answers mail; workspace_bots/tests/messages.rs)	ok	hosting	hosting's push: a mail arrival triggers an agent turn that answers through the dispatch; an agent without the mail grant is refused
+bots: connectors (Discord bridge text and voice, workspace_bots/tests/sources.rs; apps/discord/worker tests bridge.rs, bridge_voice.rs)	ok	connector-triggers	connector events as a trigger source, outbox to the worker, connector secret in the vault: an event triggers an agent turn that posts back; an agent without the connector grant is refused
+bots: personas and public avatars (a bot's name and avatar shown to members; workspace_bots/tests.rs persona cases)	ok	architecture owner	agent persona and avatar as the agent member's own record; tests with it
+bots: program runner (programs run as ReplicaActor::Bot; runner tests)	ok	one-dispatch	a program runs through the dispatch acting for its installer: does what its grants allow; refused an action outside them; refused an effect
+# daemon gaps the ports are red at, and who closes them in this push
+gap 1: no tilolang app instances in the daemon's dispatch, app-path /v1 404 (port-apps, port-agents A)	-	one-dispatch	wire ad200d7bcc8's instances into the dispatch; fixture installs a tilolang app
+gap 2: no person_vault provider in the daemon dispatch (vault add, web call; port-agents E vault part)	-	one-dispatch	register person_vault through Daemon::provide
+gap 3: no workspace shells (open-terminal, terminal#run; port-agents E machine)	-	daemon-shells	TerminalService registered through copies().provide("terminal")
+gap 4: /v1 app routing misses host actions (workspace/mail-accounts)	-	one-dispatch	/v1 routes through the dispatch; mail-accounts port calls the dispatch
+gap 5: a workspace the host's service made is not admitted to the person's key	-	one-dispatch	admit at creation
+gap 6: fixture has no restart, second person, mail stand-in	-	daemon-host-fixture	fixture
+gap 7: device asking its person is macOS-only	-	asks-as-records	asked records
+gap B: the daemon's own agent invokes nothing (session provider tickets: None)	-	one-dispatch	agent tickets on the daemon's provider
+gap C: the daemon serves no presence (tilo_watch presence [])	-	one-dispatch	presence on the daemon
+gap D: no workspace agent roster on the daemon	-	one-dispatch	roster from the workspace's agent members
+gap F: member_own needs the Discord app, daemon has no workspace bots	-	app-features	Discord row of the bots inventory
+gap list: tilo.invocations#list had its only implementation in agent-session invocations.rs (898c8e18496)	-	one-dispatch	workspaces/invocations.rs in tilo-workspace-service; asks' waiting#list filters it
+tilo-server tests/linux_terminal.rs (deleted by daemon-shells af669dd3a7d): stream refused to another device; attach to a kept session; typed lines recorded on the session	ok	daemon-shells	tilo-runtime tests/terminal_streams.rs (aa1de2fa4dc)
+gap shells a: a workspace shared with other people runs no program on the daemon's machine (no VM): a refusal	-	daemon-shells	deliberate refusal, tested (shared_workspace.rs, aa1de2fa4dc)
+gap shells b: record:<app>:<record> on a member copy refused, not forwarded to the hosting device	-	daemon-shells	forward through the dispatch
+gap shells c: an agent's terminal run without the person's answer is refused; the conversation ask is the turn engine's	-	daemon-turns	turn engine asks
+gap shells d: MCP tilo_do terminal#run resolves through the app listing, not the record provider	-	daemon-shells	resolve to the registered provider
+gap shells e: no tilo.vault provider on the daemon (agent_machine keep())	-	one-dispatch	same as gap 2
+gap admission: registry providers admit by device; an agent's own scope (its grants, Ask as an asked record) must be the dispatch's one admission by caller	-	one-dispatch	one admission by caller for every provider; before landing
+gap G: no account surface on a device daemon (account/workspaces#create, keys#mint, delete-workspace by a server key, workspace plus key in one call per customer)	-	one-dispatch	serve account actions from the daemon's dispatch
+gap H: a key minted on a personal daemon acts as its person; it must act with its own scoped grant and be refused owner-only changes	-	one-dispatch	in the one admission; before landing
+turn and asking flows (126 + 14 + 7; hosted_agent_turns/questions/asks, hosted_turn_*, hosted_secret_use, api_asks/questions, packaged_model)	ok	daemon-turns	to port on start_turn (daemon-turns 910b2d083c2): wait on tl Chat replacing Rust Chat and on asked records
+gap H2: Here::enter admits any key as the person (an unknown root's key got 200 on /v1/workspaces/{ws}/resources)	-	one-dispatch	the caller comes from the key's certificate; unknown root refused; test
