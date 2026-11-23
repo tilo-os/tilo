@@ -118,10 +118,6 @@ fn is_person(caller: &Caller) -> bool {
     caller.acting().is_person() && caller.acting().app().is_none()
 }
 
-fn refused(reason: String) -> ActionCallError {
-    ActionCallError::Refused { reason }
-}
-
 impl Api {
     pub(super) fn new(woken: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
@@ -164,7 +160,7 @@ impl Api {
         if !is_person(caller)
             && let Some(refusal) = refused_to_agent(&action, &arguments)
         {
-            return Pending::ready(Err(refused(refusal)));
+            return Pending::ready(Err(ActionCallError::refused(refusal)));
         }
         if is_read(&action) {
             return Pending::ready(self.follow(caller, invocation, action, arguments));
