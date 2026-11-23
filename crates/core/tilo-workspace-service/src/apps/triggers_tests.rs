@@ -2993,3 +2993,239 @@ async fn mail_in_her_own_account_starts_her_event_and_the_workspace_mailbox_is_n
     assert!(handed.contains("For her alone."), "{handed}");
     host.shutdown().await;
 }
+
+/// A Moderator's chat watch fires once on a message a member posts, as the agent's one turn on
+/// it, and never on what the agent writes back: its own removal or reply is no message that
+/// fires again. The watch leaves out both the agent's own changes (`by`) and a copy of them
+/// carried back from elsewhere (`origin`), as the agent's own triggers do.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_agents_own_write() {
+    use crate::agents::triggered::{self, CHAT, MESSAGE, MODERATION, Where};
+    use tilo_action_policy::{Actor as Who, MemberId};
+    use tilo_resource_store::wire::Command;
+    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
+    let (key, cert) = governor();
+    let host = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = host.workspaces();
+    workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    workspaces.run_agents(Arc::new(ActsAsScout));
+    let workspace = workspaces.create("Moderation").await.unwrap().workspace;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    // The Moderator's one shortcut: the chat watch, not the agent's own triggers.
+    save_signed(
+        workspaces,
+        &workspace,
+        triggered::moderates("scout", "Scout"),
+        (&key, &cert),
+    )
+    .await;
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    let mut writes = workspaces.document_writes();
+
+    let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
+    let scout = Who::member(MemberId::agent("scout"));
+    // `put` writes the resource `id` of `kind` as `by`, as the app's write for an action that
+    // was delivered to it.
+    let put = async |kind: &str,
+                     id: &str,
+                     parent: Option<&str>,
+                     by: &Who,
+                     verb: &str,
+                     fields: Vec<(&str, String)>| {
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+        let stamp = Stamp {
+            verb: verb.into(),
+            invoker: Stamp::by(by),
+            invocation: invocation.0.to_string(),
+            at: jiff::Timestamp::now().to_string(),
+            ..Stamp::default()
+        };
+        let command = Command::Put {
+            kind: kind.into(),
+            id: id.into(),
+            resource: Resource {
+                readers: "*".into(),
+                parent: parent.map(str::to_owned),
+                order: None,
+                fields: fields
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), Cell::One(Value::Text(value))))
+                    .collect(),
+            },
+            stamp,
+        };
+        let caller = tilo_actions::remote::Caller::authenticated(
+            cert.user_public_key,
+            cert.device_public_key,
+        )
+        .in_workspace(&workspace);
+        let context =
+            crate::apps::services::ResourceRequestContext::authenticated(CHAT, &workspace, caller)
+                .serving(vec![(invocation, by.clone())]);
+        workspaces
+            .resource_command(&context, command)
+            .await
+            .unwrap();
+    };
+    // A member posts a message in the channel: what the watch fires on.
+    let post = async |id: &str, by: &Who| {
+        put(MESSAGE, id, Some("general"), by, "send", Vec::new()).await;
+    };
+    // A report filed against a message, on the workspace's moderation record.
+    let report = async |id: &str, by: &Who, reason: &str| {
+        put(
+            MODERATION,
+            id,
+            None,
+            by,
+            "report-message",
+            vec![("reason", reason.to_owned())],
+        )
+        .await;
+    };
+    // What the runner fires on the records written since it last looked.
+    let mut fired = async |runner: &mut Runner| {
+        let mut since = Vec::new();
+        while let Ok(write) = writes.try_recv() {
+            since.push(write);
+        }
+        let before = started.0.lock().unwrap().len();
+        runner.pass(since).await;
+        started.0.lock().unwrap()[before..].to_vec()
+    };
+
+    // A member posts: one firing, and the turn it names is the agent's answer there.
+    post("m-1", &person).await;
+    let firings = fired(&mut runner).await;
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    assert_eq!(
+        firings[0].trigger,
+        triggered::moderates("scout", "Scout").triggers[0],
+        "the watch's message trigger fired"
+    );
+    assert_eq!(firings[0].firer, hex::encode(cert.user_public_key));
+    let event: DocumentEvent =
+        serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
+    assert_eq!(
+        triggered::asker(&event),
+        Some(hex::encode(cert.user_public_key)),
+        "the turn answers whoever posted it"
+    );
+    let place = Where::of(&event).unwrap();
+    assert_eq!(
+        (
+            place.app.as_str(),
+            place.record.as_str(),
+            place.item.as_str()
+        ),
+        (CHAT, "general", "m-1"),
+        "the answer goes to the message, in its channel"
+    );
+    let turn = triggered::started_here(workspaces, "scout", &place);
+    assert!(
+        crate::work::takes_turn(workspaces, &workspace, &turn)
+            .await
+            .is_ok(),
+        "this device takes the agent's one turn"
+    );
+    crate::work::keep_done(workspaces, &workspace, &turn, json!({"answered": true}))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            crate::work::takes_turn(
+                workspaces,
+                &workspace,
+                &triggered::started_here(workspaces, "scout", &place)
+            )
+            .await,
+            Err(crate::work::NotTaken::Done(_))
+        ),
+        "a turn answered is taken by no device again"
+    );
+
+    // The agent writes the message again as its removal: its own change fires nothing.
+    post("m-1", &scout).await;
+    let now = fired(&mut runner).await;
+    assert!(
+        now.is_empty(),
+        "the agent's own write fires nothing: {now:?}"
+    );
+
+    // A message it writes itself, as its warning reply, fires nothing either.
+    post("m-2", &scout).await;
+    let now = fired(&mut runner).await;
+    assert!(now.is_empty(), "the agent's reply fires nothing: {now:?}");
+
+    // A report filed against a message is the watch's other place: one firing, answered on the
+    // moderation record, the same report the agent reads.
+    report("report-1", &person, "spam").await;
+    let firings = fired(&mut runner).await;
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    assert_eq!(
+        firings[0].trigger,
+        triggered::moderates("scout", "Scout").triggers[1],
+        "the watch's report trigger fired"
+    );
+    let event: DocumentEvent =
+        serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
+    let place = Where::of(&event).expect("a report is a place the agent answers");
+    assert_eq!(place.app, MODERATION, "answered on the record itself");
+    assert_eq!(
+        triggered::asker(&event),
+        Some(hex::encode(cert.user_public_key)),
+        "the turn answers whoever filed it"
+    );
+
+    // Turning the watch off is removing its shortcut: nothing fires any more.
+    workspaces
+        .commit_own_membership(
+            &workspace,
+            WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
+                tilo_automation::ShortcutChange::Delete(triggered::moderation_shortcut_id("scout")),
+            )),
+            None,
+        )
+        .await
+        .unwrap();
+    let started = Arc::new(Started::default());
+    let mut again = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    again.arm().await;
+    post("m-3", &person).await;
+    let mut since = Vec::new();
+    while let Ok(write) = writes.try_recv() {
+        since.push(write);
+    }
+    again.pass(since).await;
+    assert!(
+        started.0.lock().unwrap().is_empty(),
+        "a watch turned off fires nothing"
+    );
+    host.shutdown().await;
+}

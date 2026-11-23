@@ -86,6 +86,8 @@ mod going;
 mod instructions;
 mod learned;
 mod mail;
+#[cfg(test)]
+mod moderation_turn_tests;
 mod shares;
 mod steps;
 mod sub_agents;
