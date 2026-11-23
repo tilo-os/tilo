@@ -7458,7 +7458,6 @@ dependencies = [
  "tilo-test-env",
  "tilo-user-identity",
  "tilo-vello",
- "tilo-vello-encoding",
  "tilo-winit",
  "url",
  "uuid",
@@ -21913,6 +21912,7 @@ name = "tilo-system-service"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
+ "desktop-policy",
  "os-actions",
  "serde",
  "serde_json",
@@ -21922,6 +21922,7 @@ dependencies = [
  "tilo-deployment-status",
  "tilo-files",
  "tilo-location",
+ "tilo-ntfs-mount",
  "tilo-resource",
  "tilo-service",
  "tilo-system-resources",
