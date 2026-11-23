@@ -217,6 +217,9 @@ fn caption(
     bounds: Rect,
     caption: &str,
 ) {
+    if caption.is_empty() {
+        return;
+    }
     let style = theme.text(TextRole::Label);
     let shown = text.elide_to_width_style(caption, 320.0, &style);
     let (w, h) = text.measure_style(&shown, None, &style);
@@ -341,5 +344,44 @@ mod tests {
         ] {
             assert_eq!(pointing.describe(&part(name, kind)), called);
         }
+    }
+
+    /// An empty caption paints no pill above the lit part; a named caption does.
+    #[test]
+    fn an_empty_caption_paints_nothing() {
+        let mut text = super::TextRenderer::new();
+        let theme = super::Theme::dark();
+        let rect = vello::kurbo::Rect::new(40.0, 80.0, 140.0, 110.0);
+        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 400.0, 300.0);
+
+        let mut empty = vello::Scene::new();
+        super::caption(
+            &mut empty,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &theme,
+            rect,
+            bounds,
+            "",
+        );
+        assert!(
+            empty.encoding().draw_tags.is_empty(),
+            "an empty caption paints no pill"
+        );
+
+        let mut named = vello::Scene::new();
+        super::caption(
+            &mut named,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &theme,
+            rect,
+            bounds,
+            "Button",
+        );
+        assert!(
+            !named.encoding().draw_tags.is_empty(),
+            "a named caption paints a pill"
+        );
     }
 }
