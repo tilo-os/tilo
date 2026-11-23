@@ -3299,6 +3299,134 @@
       ]
     },
     {
+      "kind": "search",
+      "label": "Search",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "query",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "open",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "searching",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "expecting",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "groups",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SearchGroup"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "SearchGroup",
+          "doc": "A run of the open search's rows of one kind, under their kind's name: the groups the palette draws one after another.",
+          "fields": [
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "rows",
+              "type": {
+                "list": {
+                  "named": "SearchResult"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "SearchResult",
+          "doc": "One row the open search found: what it is called, what says what it is, and where choosing it names it.",
+          "fields": [
+            {
+              "name": "index",
+              "type": "int"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "subtitle",
+              "type": "text"
+            },
+            {
+              "name": "facts",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "launchpad",
+      "label": "Launchpad",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "cards",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "LaunchpadCard"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "LaunchpadCard",
+          "doc": "One welcome card: the verb it runs, what it is called, and the glyph its row shows.",
+          "fields": [
+            {
+              "name": "slug",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "overlays",
       "label": "Overlays",
       "version": 1,
@@ -3538,6 +3666,12 @@
               "named": "AboutSheet"
             }
           },
+          "readonly": true
+        },
+        {
+          "path": "strips_open",
+          "stored": "value",
+          "type": "bool",
           "readonly": true
         }
       ],

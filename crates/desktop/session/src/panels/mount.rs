@@ -44,6 +44,8 @@ pub(crate) struct KeyContext {
     pub(crate) sheets: crate::keys::SheetKeys,
     /// What stands over the shell, which Escape closes from the top.
     pub(crate) overlays: Overlays,
+    /// The desktop's handle where the shell draws its own launcher, whose rows the keys walk here.
+    pub(crate) launcher: Option<tilo_desktop_surface::DesktopHandle>,
 }
 
 /// The session's own resources and the keys it answers wherever the keyboard is: above every
@@ -71,6 +73,7 @@ pub(crate) fn mount_controls(
         controller_keys,
         sheets,
         overlays,
+        launcher,
     }: KeyContext,
 ) -> Controls {
     let commands = Rc::new(RefCell::new(Vec::new()));
@@ -97,7 +100,8 @@ pub(crate) fn mount_controls(
                 last: controller,
                 own: controller_keys,
             },
-        ),
+        )
+        .with_launcher(launcher),
         portal,
         Rc::clone(&commands),
     ))));

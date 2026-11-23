@@ -471,11 +471,13 @@ d-pvl6wwx6 = Leistenteil
 
 d-vidcax4k = Arbeitsbereichsmenü
     .w-workspaces = Arbeitsbereiche
+    .w-workspace-name = Name des Arbeitsbereichs
     .w-new-workspace = Neuer Arbeitsbereich
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
+    .w-rename = { $name } umbenennen
+    .w-delete = { $name } löschen
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
-    .w-history = Verlauf
 
 d-hac3p23j = Lautstärke
     .w-volume-muted = Lautstärke, stumm
@@ -603,14 +605,15 @@ d-dpqvjh2f = Launcher
     .w-search-apps-windows-actions-and-files = Suche Apps, Fenster, Aktionen und Dateien
     .w-windows = Fenster
     .w-recent-windows = Letzte Fenster
-    .w-nothing-here-matches = Nichts hier passt
-    .w-search-everywhere-for-it = Überall danach suchen
     .w-open-as-a-tab = Als Tab öffnen
-    .w-search-everywhere-for = Überall nach { $query } suchen
     .w-apps = Apps
     .w-all-apps = Alle Apps
-
-d-tst43bqy = Fensterzeile
+    .w-welcome = Willkommen
+    .w-the-shell = Die Shell
+    .w-overview = Übersicht
+    .w-workspaces = Arbeitsbereiche
+    .w-notifications = Benachrichtigungen
+    .w-open = Öffnen
 
 d-outvdzmi = Layouts
     .w-chromepreset = Rahmenvorgabe
@@ -968,11 +971,6 @@ d-nljxfsom-target = Ziel
 
 d-nljxfsom-at = Bei
 
-d-5giytccr = Erstes öffnen
-    .doc = Was Enter bei einer Anfrage tut: Die erste App, die der Text findet, öffnet sich, sodass „no“ und Enter Notizen öffnen; eine Anfrage, die keine App nennt, beantwortet die Suche überall, wie Enter es schon immer für das tat, was die eigenen Zeilen der Shell nicht enthalten.
-
-d-5giytccr-query = Anfrage
-
 d-u6kdedav = Anfrage zeigen
     .doc = Zeigt `found` im Platz `place`, solange er eine Anfrage zeigt: derselbe Platz, jetzt die gefundene Ressource (shell.md §8).
 
@@ -1048,8 +1046,6 @@ d-qxbh2c44 = Teilname
 d-y45hdphl = Name des Dock-Eintrags
     .w-launcher = Launcher
 
-d-7womqcp3 = App-Zeile
-
 d-6t5hb2z7 = Anfrageansicht
     .w-retry = Erneut versuchen
     .w-nothing-matched = Nichts passt zu { $text }
@@ -1106,12 +1102,6 @@ d-zlo3t3an = Aufnahmestatus
     .w-watching-2 = Sieht zu
 
 d-fcxy4mu5 = Shell-Ansicht
-
-d-iavyg4wt = Shell-Oberflächen
-    .w-the-shell = Die Shell
-    .w-overview = Übersicht
-    .w-workspaces = Arbeitsbereiche
-    .w-notifications = Benachrichtigungen
 
 d-54b5rqo4 = Zeilen der Shell
     .w-no-window-here-yet = Noch kein Fenster hier
@@ -1369,3 +1359,33 @@ d-tkt6f7u6 = Über-Fenster
 d-vv7k7lcl = Super-Tasten
 
 d-fhub73iw = Platzinhalt
+
+d-m2ye55z2 = Arbeitsbereich umbenennen
+d-m2ye55z2-key = Schlüssel
+d-m2ye55z2-name = Name
+
+d-pkrgpzz5 = Leiste umbenennen
+d-pkrgpzz5-key = Schlüssel
+d-pkrgpzz5-name = Name
+
+d-jjrvri4g = Launcher-Zeile wählen
+d-jjrvri4g-choice = Wahl
+d-jjrvri4g-current = Aktuell
+
+d-xxr3zm5d = Oberfläche öffnen
+d-xxr3zm5d-surface = Oberfläche
+
+d-dgcc5jwo = Launcher schließen
+
+d-jt4au2t2 = Leistenteil
+    .w-strip-name = Name der Leiste
+    .w-new-strip = Neue Leiste
+    .w-rename = { $name } umbenennen
+    .w-remove = { $name } entfernen
+    .w-move-left = { $name } nach links
+    .w-move-right = { $name } nach rechts
+
+d-qivd66vw = Leistenliste
+    .w-strips = Leisten
+    .w-new-strip = Neue Leiste
+    .w-done = Fertig

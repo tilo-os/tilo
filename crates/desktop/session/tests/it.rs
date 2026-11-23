@@ -253,6 +253,8 @@ mod shell;
 mod shell_a11y;
 #[path = "shell_displays.rs"]
 mod shell_displays;
+#[path = "shell_navigation.rs"]
+mod shell_navigation;
 #[path = "shell_platform.rs"]
 mod shell_platform;
 #[path = "shell_record_persists.rs"]

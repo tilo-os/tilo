@@ -24,6 +24,20 @@ pub struct AutocompleteProps {
     pub max_visible: Option<i64>,
     /// Whether it can be typed into now.
     pub enabled: bool,
+    /// It takes the keyboard as soon as it is in the window, once: a palette that opens to be typed
+    /// into.
+    pub autofocus: bool,
+    /// The rows stand open whenever there are any, instead of opening as the person types or walks
+    /// them: a palette whose empty field already lists everything.
+    pub open_list: bool,
+    /// Tab and Shift+Tab move the highlight to the next group's first row, instead of completing
+    /// the field to the highlighted row: a palette whose rows are grouped.
+    pub tab_groups: bool,
+    /// The rows narrow to what is typed. Off, the rows are shown as they are offered: a host that
+    /// already computed them for what is typed, or whose ranking is fuzzier than a substring.
+    pub filter: bool,
+    /// A line shown under the field while there are no rows ("Searching…", "Nothing matches").
+    pub status: Option<String>,
     /// The person took a suggestion, or the text they typed: carries what the field holds now.
     #[component(event(value = String))]
     pub accept: Event,
@@ -40,6 +54,11 @@ impl Default for AutocompleteProps {
             placeholder: None,
             max_visible: None,
             enabled: true,
+            autofocus: false,
+            open_list: false,
+            tab_groups: false,
+            filter: true,
+            status: None,
             accept: Event::None,
             cancel: Event::None,
         }
@@ -56,6 +75,8 @@ pub struct SuggestionProps {
     pub value: String,
     /// What its row says; the value unless said.
     pub label: Option<String>,
+    /// The row is the heading of the rows under it, never armed or chosen: a group's title.
+    pub header: bool,
     /// Dim text at its trailing end: a kind, a count.
     pub detail: Option<String>,
     /// A dim line under the label: a page's address under its title.
@@ -68,6 +89,12 @@ pub struct SuggestionProps {
 
 impl From<SuggestionProps> for Suggestion {
     fn from(props: SuggestionProps) -> Self {
+        if props.header {
+            let mut heading =
+                Suggestion::heading(props.label.clone().unwrap_or_else(|| props.value.clone()));
+            heading.value = props.value;
+            return heading;
+        }
         let mut suggestion = match props.label {
             Some(label) => Suggestion::labelled(props.value, label),
             None => Suggestion::new(props.value),
@@ -99,6 +126,11 @@ impl Described for Autocomplete {
             placeholder,
             max_visible,
             enabled,
+            autofocus,
+            open_list,
+            tab_groups,
+            filter,
+            status,
             accept,
             cancel: _,
         } = props;
@@ -113,7 +145,15 @@ impl Described for Autocomplete {
         if let Some(max_visible) = max_visible {
             field = field.with_max_visible(usize::try_from(max_visible.max(1)).unwrap_or(1));
         }
+        field.set_open_list(open_list);
+        field.set_tab_groups(tab_groups);
+        field.set_filter(filter);
+        field.set_status(status);
+        if autofocus {
+            field.request_focus();
+        }
         field.set_suggestions(suggestions.into_iter().map(Suggestion::from).collect());
+        field.open_if_listed();
         // Each edit of the field, typed or taken from a suggestion, is reported when the host
         // polls what the field holds.
         field.on_edit(edits, accept)
@@ -124,6 +164,10 @@ impl Described for Autocomplete {
         if text != self.text() {
             self.set_text(&text);
         }
+        self.set_open_list(props.open_list);
+        self.set_tab_groups(props.tab_groups);
+        self.set_filter(props.filter);
+        self.set_status(props.status);
         self.set_suggestions(
             props
                 .suggestions
@@ -131,6 +175,7 @@ impl Described for Autocomplete {
                 .map(Suggestion::from)
                 .collect(),
         );
+        self.open_if_listed();
         true
     }
 }

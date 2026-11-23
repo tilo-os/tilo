@@ -755,14 +755,26 @@ impl crate::Session {
 /// the window's behind it: what the person typed goes into the search, and the frame that key asks
 /// for is the one that publishes the palette's surface.
 pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Target {
+    keyboard_target_in(handle, overlays, false)
+}
+
+/// [`keyboard_target`] for a shell that draws its own screen: its own launcher takes the keys
+/// where the desktop's palette would, so Enter and the arrows reach the shell's view rather than a
+/// palette nothing draws.
+pub(crate) fn keyboard_target_in(
+    handle: &DesktopHandle,
+    overlays: &Overlays,
+    own_shell: bool,
+) -> Target {
     if let Some(over) = overlays.over() {
         Target::Surface(over)
-    } else if handle.search_open() {
+    } else if !own_shell && handle.search_open() {
         Target::Surface(Part::Search)
     } else {
         overlays.target()
     }
 }
+
 
 impl crate::Shared {
     /// Carry out what the bar, the launchpad and the session's roles asked of the chrome since the

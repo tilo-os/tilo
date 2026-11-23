@@ -433,3 +433,32 @@ fn every_builtin_kind_is_named_in_the_shells_language() {
     );
     crate::i18n::I18nManager::set_locale("en-US");
 }
+
+/// An action's own words, typed whole, lead a title that only begins with the query: the person
+/// said the phrase the action is known by, and a crowded list must keep it rather than cut it for
+/// the title that ties at the start of a name.
+#[test]
+fn an_action_known_by_a_phrase_typed_whole_outranks_a_title_begun_by_it() {
+    let keyword = action_ranks(
+        crate::search::MatchTier::Exact,
+        crate::search::FieldWeight::KEYWORD,
+    )
+    .expect("a keyword typed whole names the action");
+    let begun = action_ranks(
+        crate::search::MatchTier::Prefix,
+        crate::search::FieldWeight::TITLE,
+    )
+    .expect("a title begun names the action");
+    assert!(
+        keyword > begun,
+        "the action's phrase ({keyword}) leads a title begun ({begun})"
+    );
+    assert_eq!(
+        Some(keyword),
+        action_ranks(
+            crate::search::MatchTier::Exact,
+            crate::search::FieldWeight::TITLE,
+        ),
+        "the phrase ranks as the action's title typed whole"
+    );
+}

@@ -454,6 +454,19 @@ pub enum LayoutEffect {
         #[param("The query")]
         query: String,
     },
+    /// Remove an empty row (a strip of the bar's own list) from its workspace
+    /// A row that still holds a window, or a workspace's only row, refuses: the windows go first,
+    /// and every workspace keeps a place to work.
+    #[effect(
+        kind = "undoable",
+        audience = "agents",
+        label = "session-action-remove-row"
+    )]
+    DropRow {
+        /// The row, by its key
+        #[param("The row, by its key")]
+        row: String,
+    },
 }
 
 impl LayoutEffect {
@@ -637,6 +650,9 @@ impl LayoutEffect {
             },
             Self::Retry { query } => LayoutAction::RetryQuery {
                 place: key_of(query),
+            },
+            Self::DropRow { row } => LayoutAction::RemoveRow {
+                row: row.trim().parse().unwrap_or(0),
             },
         })
     }

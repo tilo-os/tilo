@@ -83,6 +83,33 @@
           "name": "enabled",
           "doc": "Whether it can be typed into now.",
           "type": "bool"
+        },
+        {
+          "name": "autofocus",
+          "doc": "It takes the keyboard as soon as it is in the window, once: a palette that opens to be typed into.",
+          "type": "bool"
+        },
+        {
+          "name": "open_list",
+          "doc": "The rows stand open whenever there are any, instead of opening as the person types or walks them: a palette whose empty field already lists everything.",
+          "type": "bool"
+        },
+        {
+          "name": "tab_groups",
+          "doc": "Tab and Shift+Tab move the highlight to the next group's first row, instead of completing the field to the highlighted row: a palette whose rows are grouped.",
+          "type": "bool"
+        },
+        {
+          "name": "filter",
+          "doc": "The rows narrow to what is typed. Off, the rows are shown as they are offered: a host that already computed them for what is typed, or whose ranking is fuzzier than a substring.",
+          "type": "bool"
+        },
+        {
+          "name": "status",
+          "doc": "A line shown under the field while there are no rows (\"Searching…\", \"Nothing matches\").",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "parts": [
@@ -7468,6 +7495,11 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "header",
+          "doc": "The row is the heading of the rows under it, never armed or chosen: a group's title.",
+          "type": "bool"
         },
         {
           "name": "detail",

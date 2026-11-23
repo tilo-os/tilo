@@ -245,6 +245,8 @@ session-invite = Invite
 session-agents = Agents
 session-styles = Styles
 session-folders = Folders
+session-search = Search
+session-launchpad = Welcome
 session-notifications-dismiss = Dismiss the notification
 session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre
@@ -522,6 +524,8 @@ session-action-open-beside = The resource whose place it stands beside, by its a
 session-action-show-match = Show a match of the search in this place
 session-action-show-match-resource = The resource the row names
 session-action-retry = Look for it again
+session-action-remove-row = Remove an empty strip from its workspace
+session-action-remove-row-row = The strip, by its resource
 
 ## Actions
 

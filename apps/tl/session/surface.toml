@@ -793,6 +793,15 @@ id = "redo"
 kind = "undoable"
 params = []
 
+[[resources.verbs]]
+id = "drop-row"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "row"
+required = true
+type = "text"
+
 [[resources]]
 id = "session-authoring"
 kind = "session.authoring"

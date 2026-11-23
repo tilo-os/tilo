@@ -52,7 +52,7 @@
           "must": [
             {
               "rust": "Open Settings",
-              "tl": "Settings, so.tilo.settings"
+              "tl": "Settings"
             }
           ]
         }

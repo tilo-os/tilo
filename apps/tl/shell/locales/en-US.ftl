@@ -537,6 +537,20 @@ d-qqg4smi5 = The menu by its window's name, but not the tasks and who is here
 d-7caakb5b = The least: the menu stands as the window's icon, and only what a phone keeps stays
     .doc = The least: the menu stands as the window's icon, and only what a phone keeps stays.
 
+d-m2ye55z2 = Rename workspace
+    .doc = Name the workspace `key` what the person typed: the workspace's own published `rename`, so the name reaches every device and every list of it.
+
+d-m2ye55z2-key = Key
+
+d-m2ye55z2-name = Name
+
+d-pkrgpzz5 = Rename strip
+    .doc = Name the strip `key` what the person typed: one arranging action of the session's, so a script and an agent rename as a press does.
+
+d-pkrgpzz5-key = Key
+
+d-pkrgpzz5-name = Name
+
 d-ukun4zmh = Asked on the canvas
     .doc = The person asked on the canvas: the hint the empty canvas says until then has been said (`Shell.canvas_asked`), and stays away from now on.
 
@@ -730,8 +744,20 @@ d-zek2dnmp = Cancel
 
 d-5giytccr = Open first
     .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the shell's own rows do not hold.
+d-jjrvri4g = Choose launcher row
+    .doc = What choosing the row the person reached does, read off the row's value: opening an application or a window here, running a row the search found, or one of the shell's own surfaces.
 
-d-5giytccr-query = Query
+d-jjrvri4g-choice = Choice
+
+d-jjrvri4g-current = Current
+
+d-xxr3zm5d = Open surface
+    .doc = Open the shell's surface `surface` (`overview`, `workspaces`, `centre`), as the bar's own controls do.
+
+d-xxr3zm5d-surface = Surface
+
+d-dgcc5jwo = Close launcher
+    .doc = Leave the launcher: the surface stack goes back to the shell at rest.
 
 d-7j7tzynq = Show as
     .doc = Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`).
@@ -895,6 +921,10 @@ d-y45hdphl = Dock item name
     .w-launcher = Launcher
 
 d-fcxy4mu5 = Shell view
+    .w-new-workspace = New workspace
+    .w-join-a-workspace = Join a workspace
+    .w-workspace-settings = Workspace settings
+    .w-overview = Overview
 
 d-72tgr4px = Clock
     .w-paused = Paused
@@ -907,10 +937,26 @@ d-pvl6wwx6 = Bar part
 
 d-vidcax4k = Workspace menu
     .w-workspaces = Workspaces
+    .w-workspace-name = Workspace name
     .w-new-workspace = New workspace
     .w-join-a-workspace = Join a workspace
+    .w-rename = Rename { $name }
+    .w-delete = Delete { $name }
     .w-workspace-settings = Workspace settings
     .w-overview = Overview
+
+d-jt4au2t2 = Strip part
+    .w-strip-name = Strip name
+    .w-new-strip = New strip
+    .w-rename = Rename { $name }
+    .w-remove = Remove { $name }
+    .w-move-left = Move { $name } left
+    .w-move-right = Move { $name } right
+
+d-qivd66vw = Strips list
+    .w-strips = Strips
+    .w-new-strip = New strip
+    .w-done = Done
     .w-history = History
 
 d-dgtjjxex = Person menu
@@ -1005,20 +1051,13 @@ d-dpqvjh2f = Launcher
     .w-all-apps = All apps
     .w-windows = Windows
     .w-recent-windows = Recent windows
-    .w-nothing-here-matches = Nothing here matches
-    .w-search-everywhere-for-it = Search everywhere for it
-    .w-open-as-a-tab = Open as a tab
-    .w-search-everywhere-for = Search everywhere for { $query }
-
-d-7womqcp3 = App row
-
-d-tst43bqy = Window row
-
-d-iavyg4wt = Shell surfaces
+    .w-welcome = Welcome
     .w-the-shell = The shell
     .w-overview = Overview
     .w-workspaces = Workspaces
     .w-notifications = Notifications
+    .w-open-as-a-tab = Open as a tab
+    .w-open = Open
 
 d-fniigjed = Viewing settings
     .w-shell = Shell
@@ -1138,6 +1177,8 @@ d-luuijvwf = Key hints launcher
     .w-up = Up
     .w-down = Down
     .w-choose = Choose
+    .w-tab = Tab
+    .w-next-group = Next group
     .w-enter = Enter
     .w-open = Open
     .w-esc = Esc
@@ -1389,6 +1430,10 @@ d-fhub73iw = Place body
 d-6t5hb2z7 = Query view
     .w-retry = Retry
     .w-nothing-matched = Nothing matched { $text }
+
+d-b5qgd2ou = Strip rail
+    .w-of = { $number } of { $len }
+    .w-new-strip = New strip
 
 d-pjkvdmwk = Show style settings~present
 

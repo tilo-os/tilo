@@ -93,6 +93,8 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::device_lists::agents_surface(),
         crate::device_lists::styles_surface(),
         crate::device_lists::folders_surface(),
+        crate::device_lists::search_surface(),
+        crate::device_lists::launchpad_surface(),
         crate::shell::state::overlays_surface(),
         tilo_workspace_service::apps::nearby_send::surface(),
         crate::devices::surface(),
@@ -1268,6 +1270,18 @@ impl ShellChrome {
         if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
             return Ok(None);
         }
+        // The strips list is the shell's own view under the shell: `show-strips` opens it and a
+        // strip chosen closes it, so nothing of the chrome's strip switcher draws.
+        if address.action == "show-strips" {
+            let open = !self.surfaces.strips.get();
+            self.surfaces.strips.set(open);
+            return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        // Any other action of the chrome's puts the strips list away, as a menu closes once
+        // something is chosen: showing a strip, stepping along them, switching workspace.
+        self.surfaces.strips.set(false);
         let here = |name: &str| self.surfaces.overlays.here().name() == name;
         let started = match address.action.as_str() {
             "overview" => {
@@ -1436,9 +1450,25 @@ fn opens(
 
 impl tilo_session_core::surfaces::Published for ShellChrome {
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
-        vec![tilo_session_core::desktop::verbs::chrome_resource(
+        let mut resources = vec![tilo_session_core::desktop::verbs::chrome_resource(
             &self.shortcuts.borrow(),
-        )]
+        )];
+        // The shell's own overview answers to what people call it: its words are the action's
+        // own search keywords, so the platform's search finds it by any of them.
+        for resource in &mut resources {
+            if resource.id.as_str() != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
+                continue;
+            }
+            for action in &mut resource.actions {
+                if action.id == "overview" {
+                    *action =
+                        action
+                            .clone()
+                            .with_keywords(["expose", "mission control", "all windows"]);
+                }
+            }
+        }
+        resources
     }
 
     fn invoke(
@@ -2143,6 +2173,7 @@ mod tests {
             handle,
             emoji: std::rc::Rc::new(std::cell::Cell::new(false)),
             about: std::rc::Rc::new(std::cell::Cell::new(false)),
+            strips: std::rc::Rc::new(std::cell::Cell::new(false)),
         }
     }
 

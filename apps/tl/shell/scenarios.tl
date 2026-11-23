@@ -1027,6 +1027,17 @@ scenario "the launcher, before typing" {
             ],
         ),
     )
+    stage(device.search, device.Search(groups: []))
+    stage(
+        device.launchpad,
+        device.Launchpad(
+            cards: [
+                device.LaunchpadCard(slug: "notes", label: "Open Notes", icon: "notebook"),
+                device.LaunchpadCard(slug: "invite", label: "Invite someone", icon: "user-plus"),
+                device.LaunchpadCard(slug: "activity", label: "Catch up", icon: "history"),
+            ],
+        ),
+    )
 }
 
 /// The launcher with "mai" typed: the apps and the windows that match.
@@ -1091,6 +1102,17 @@ scenario "the launcher, mail typed" {
             ],
         ),
     )
+    stage(device.search, device.Search(groups: []))
+    stage(
+        device.launchpad,
+        device.Launchpad(
+            cards: [
+                device.LaunchpadCard(slug: "notes", label: "Open Notes", icon: "notebook"),
+                device.LaunchpadCard(slug: "invite", label: "Invite someone", icon: "user-plus"),
+                device.LaunchpadCard(slug: "activity", label: "Catch up", icon: "history"),
+            ],
+        ),
+    )
 }
 
 /// A command palette query: an action, named the way people name it.
@@ -1118,6 +1140,39 @@ scenario "the launcher, an action typed" {
             ],
         ),
     )
+    stage(
+        device.search,
+        device.Search(
+            query: "focus",
+            open: true,
+            groups: [
+                device.SearchGroup(
+                    kind: "Actions",
+                    icon: "settings-2",
+                    rows: [
+                        device.SearchResult(
+                            index: 0,
+                            title: "Focus the window in front",
+                            subtitle: "Window",
+                        ),
+                    ],
+                ),
+                device.SearchGroup(
+                    kind: "Files",
+                    icon: "file",
+                    rows: [
+                        device.SearchResult(
+                            index: 1,
+                            title: "Launch notes.md",
+                            subtitle: "Studio / Notes",
+                            facts: ["Edited today"],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+    stage(device.launchpad, device.Launchpad(cards: []))
 }
 
 /// The notification centre with fifteen notices from apps and from agent tasks.
@@ -2007,6 +2062,28 @@ scenario "an empty strip" -> Layout {
     a_strip(a, row, "Empty", 667)
     let used = a_strip(a, row, "In use", 667)
     a_note_place(a, used, 0)
+    a
+}
+
+/// A strip made under a window: the first row holds a window and the row made after it holds
+/// nothing yet, as a shell does after "New strip".
+scenario "a strip made under a window" -> Layout {
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    let row = a_workspace(a, "Main")
+    let one = a_strip(a, row, "Files", 667)
+    a_foreign_place(a, one, 1, "Files")
+    let second = a.rows.insert(
+        LayoutRow(
+            key: "r-second",
+            workspace: "w-Main",
+            name: "Errands",
+            shell: "so.tilo.shell:strips",
+        ),
+    )
+    a_strip(a, second.key, "Empty", 667)
+    a.front = one
     a
 }
 

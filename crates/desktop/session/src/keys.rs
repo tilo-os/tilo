@@ -381,6 +381,13 @@ pub(crate) struct SessionKeys {
     overlays: Overlays,
     /// Alt+Tab's keys: the chord that opens the session's walk, and the keys it answers while it is up.
     switcher: WalkKeys,
+    /// The desktop handle of a shell that draws its own launcher, whose rows the keys walk here:
+    /// nothing draws the desktop's palette under such a shell, so its own view lists the rows and
+    /// the session answers Enter and the arrows over them.
+    launcher: Option<tilo_desktop_surface::DesktopHandle>,
+    /// The row the launcher's keys reached, and the query it was reached in: a new search starts
+    /// again from its first row.
+    launcher_at: RefCell<(String, Option<usize>)>,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press of their own replaces:
@@ -392,6 +399,17 @@ pub(crate) struct SessionKeys {
 }
 
 impl SessionKeys {
+    /// The shell's launcher, whose Enter and arrows this session answers over the rows the search
+    /// published: a shell that draws its own screen has no surface of the desktop's to hear them.
+    #[must_use]
+    pub(crate) fn with_launcher(
+        mut self,
+        launcher: Option<tilo_desktop_surface::DesktopHandle>,
+    ) -> Self {
+        self.launcher = launcher;
+        self
+    }
+
     pub(crate) fn new(
         shortcuts: Rc<RefCell<ShortcutConfig>>,
         presses: Presses,
@@ -416,6 +434,8 @@ impl SessionKeys {
             guide,
             switcher: WalkKeys::new(session.overlays.clone()),
             overlays: session.overlays,
+            launcher: None,
+            launcher_at: RefCell::new((String::new(), None)),
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
@@ -610,6 +630,53 @@ impl SessionKeys {
 
     /// How the session claims `press`, offered before the focused window or panel gets it.
     pub(crate) fn claim(&self, press: &Press, locked: bool, inhibited: bool) -> KeyClaim {
+        // A shell drawing its own launcher has no palette surface of the desktop's to hear the
+        // keys: the session walks the rows the search published and opens the one Enter reached,
+        // as the palette would.
+        if let Some(handle) = &self.launcher
+            && !locked
+            && handle.search_open()
+            && press.pressed
+            && !press.repeat
+            && !press.modifiers.ctrl
+            && !press.modifiers.alt
+            && !press.modifiers.logo
+        {
+            let (query, rows) = handle.search_rows();
+            let mut reached = self.launcher_at.borrow_mut();
+            if reached.0 != query {
+                *reached = (query, None);
+            }
+            let first_app = rows.iter().position(|row| row.kind == "Apps");
+            let chosen = match press.bare {
+                Key::Named(NamedKey::ArrowDown) => Some(match reached.1 {
+                    Some(at) => (at.saturating_add(1)).min(rows.len().saturating_sub(1)),
+                    None => 0,
+                }),
+                Key::Named(NamedKey::ArrowUp) => Some(match reached.1 {
+                    Some(at) => at.saturating_sub(1),
+                    None => rows.len().saturating_sub(1),
+                }),
+                Key::Named(NamedKey::Enter) => {
+                    let at = reached.1.or(first_app).unwrap_or(0);
+                    if !rows.is_empty() {
+                        handle.choose_search_row(at.min(rows.len().saturating_sub(1)), None);
+                        // The shell's launcher is its own surface over the shell: choosing a row
+                        // leaves it, as the palette leaves search.
+                        self.overlays.show(tilo_desktop::overlays::Overlay::Rest);
+                    }
+                    reached.1 = None;
+                    return KeyClaim::Take;
+                }
+                _ => None,
+            };
+            if let Some(at) = chosen
+                && !rows.is_empty()
+            {
+                reached.1 = Some(at);
+                return KeyClaim::Take;
+            }
+        }
         // A question over the shell is modal: what is pressed is its answer, and no chord of the
         // desktop's acts beneath it (the overview, a strip, search would open under the question
         // and could not be used). A chord under Super is held back rather than answering the

@@ -2,10 +2,12 @@
 /// what pressing them does, side by side, in the person's own keyboard legends. The shell never
 /// writes a chord as a string, so a German keyboard's legends and a Mac's Command key read
 /// right.
-/// The keys of the launcher: typing searches, the arrows walk, Enter opens, Esc closes.
+/// The keys of the launcher: typing searches, the arrows walk the rows, Tab and Shift+Tab walk
+/// the groups, Enter opens, Esc closes.
 view key_hints_launcher() {
     ui.KeyHints {
         ui.KeyHint(["Up", "Down"], "Choose")
+        ui.KeyHint(["Tab"], "Next group")
         ui.KeyHint(["Enter"], "Open")
         ui.KeyHint(["Esc"], "Close")
     }

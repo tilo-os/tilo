@@ -27,7 +27,7 @@ use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command
 /// What the device's lists are made from ([`DeviceLists::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ListsKey([(u64, u64, u64, bool); 5]);
+pub(crate) struct ListsKey([(u64, u64, u64, bool); 7]);
 
 /// The shell's windows, every workspace's: what the switcher, the dock and the launcher list.
 pub(crate) const WINDOWS_RESOURCE: &str = "session:windows";
@@ -39,6 +39,10 @@ pub(crate) const AGENTS_RESOURCE: &str = "session:agents";
 pub(crate) const STYLES_RESOURCE: &str = "session:styles";
 /// The workspaces' folders on this computer, and whether what is put in them reached the server.
 pub(crate) const FOLDERS_RESOURCE: &str = "session:folders";
+/// The shell's open search: what is typed and the rows it found, as the launcher shows them.
+pub(crate) const SEARCH_RESOURCE: &str = "session:search";
+/// The empty shell's welcome cards, as the launcher offers them.
+pub(crate) const LAUNCHPAD_RESOURCE: &str = "session:launchpad";
 
 /// The windows as a view of another language reads them (`device.windows`).
 #[must_use]
@@ -76,6 +80,163 @@ pub fn folders_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Folders, tilo_resource::NoEffect>(
         "folders", "Folders",
     )
+}
+
+/// The shell's search as a view of another language reads it (`device.search`): the launcher draws
+/// the rows the search found over everything the person can reach, grouped by kind and chosen
+/// through the shell's own `choose-search-row`.
+#[must_use]
+pub fn search_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Search, tilo_resource::NoEffect>("search", "Search")
+}
+
+/// The empty shell's welcome cards as a view of another language reads them (`device.launchpad`):
+/// what a new or empty workspace offers before the person opens anything, each card run through
+/// the shell's own `launchpad` verb.
+#[must_use]
+pub fn launchpad_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Launchpad, tilo_resource::NoEffect>(
+        "launchpad",
+        "Launchpad",
+    )
+}
+
+/// The empty shell's welcome cards this device offers, as the launcher lists them.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Launchpad {
+    /// The cards, in the order the launchpad shows them.
+    pub cards: Vec<LaunchpadCard>,
+}
+
+/// One welcome card: the verb it runs, what it is called, and the glyph its row shows.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct LaunchpadCard {
+    /// The verb's stable name, which `launchpad` takes as its `card`.
+    pub slug: String,
+    /// What the card is called, in the person's language.
+    pub label: String,
+    /// The glyph its row shows, by the platform icon's kebab-case name.
+    pub icon: String,
+}
+
+/// The glyph a welcome card shows: the app's own glyph where it opens one, and the shell's own for
+/// inviting someone and catching up.
+fn card_icon(card: tilo_desktop::launchpad::LaunchpadAction) -> String {
+    match card.app_target() {
+        Some((app, _)) => ui::icons::app_glyph(app, None).name().to_owned(),
+        None if card.slug() == "invite" => ui::icons::Icon::UserPlus.name().to_owned(),
+        None => ui::icons::Icon::History.name().to_owned(),
+    }
+}
+
+/// The shell's open search, as the launcher lists it: what is typed, whether it is still filling
+/// in, and the rows it found in the order the person sees them.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Search {
+    /// What the person typed, empty for the empty field.
+    pub query: String,
+    /// Whether a search is open; none of the rows belong to anything while it is not.
+    pub open: bool,
+    /// Whether the rows shown are not the search's answer yet.
+    pub searching: bool,
+    /// Whether a source is still out, so more rows may join the ones shown.
+    pub expecting: bool,
+    /// The rows the person sees, grouped under the kinds they are, in the order the search ranks
+    /// them.
+    pub groups: Vec<SearchGroup>,
+}
+
+/// A run of the open search's rows of one kind, under their kind's name: the groups the palette
+/// draws one after another.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct SearchGroup {
+    /// The group's name (`Apps`, `Files`), as the search names its kinds.
+    pub kind: String,
+    /// The glyph its rows show, by the platform icon's kebab-case name.
+    pub icon: String,
+    /// Its rows, in the search's order.
+    pub rows: Vec<SearchResult>,
+}
+
+/// One row the open search found: what it is called, what says what it is, and where choosing it
+/// names it.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct SearchResult {
+    /// Its place among all the rows, counting from zero: what choosing it names.
+    pub index: i64,
+    /// What the row is called.
+    pub title: String,
+    /// What says what it is under its name: where it lives, what it is.
+    #[serde(default)]
+    pub subtitle: String,
+    /// What it says about the thing beyond its name, as the source put it.
+    #[serde(default)]
+    pub facts: Vec<String>,
+}
+
+/// The glyph a search kind's rows show: its kind's own, as the palette draws it.
+fn kind_icon(kind: &str) -> String {
+    use ui::search::system::{ResourceKind, icon_for_kind};
+    let kind = match kind {
+        "Actions" => ResourceKind::Action,
+        "Apps" => ResourceKind::Application,
+        "Notes" => ResourceKind::Note,
+        "Records" => ResourceKind::Record,
+        "Files" => ResourceKind::File,
+        "Folders" => ResourceKind::Folder,
+        "Creators" => ResourceKind::Creator,
+        "Videos" => ResourceKind::Video,
+        "Playlists" => ResourceKind::Playlist,
+        "Tabs" => ResourceKind::Tab,
+        "Window groups" => ResourceKind::WindowGroup,
+        other => ResourceKind::Custom(other.to_owned()),
+    };
+    icon_for_kind(&kind).name().to_owned()
 }
 
 /// The workspaces' folders on this computer, by workspace.
@@ -369,6 +530,9 @@ pub(crate) struct Surfaces {
     pub(crate) emoji: Rc<std::cell::Cell<bool>>,
     /// Whether the About sheet stands over the windows, as the shell's own view draws it.
     pub(crate) about: Rc<std::cell::Cell<bool>>,
+    /// Whether the strips list stands: `show-strips` opens it and a strip chosen closes it, as the
+    /// strip switcher does, so a shell's own view of the strips opens by the same verb.
+    pub(crate) strips: Rc<std::cell::Cell<bool>>,
 }
 
 /// The name the shell's own view gives the emoji picker, in what stands over the windows.
@@ -611,6 +775,8 @@ pub(crate) struct DeviceLists {
     pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
     /// The workspaces' folders on this computer, as the files daemon last said each stands.
     pub(crate) folders: tilo_workspace_service::files::Folders,
+    /// The apps this device lists, whose generation says which welcome cards stand here.
+    pub(crate) lists_source: crate::lists::Lists,
     /// What the lists were last published from.
     pub(crate) lists: Option<ListsKey>,
 }
@@ -628,6 +794,7 @@ pub(crate) struct Shared {
     pub(crate) asks:
         Rc<std::cell::RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
     pub(crate) folders: tilo_workspace_service::files::Folders,
+    pub(crate) lists: crate::lists::Lists,
 }
 
 /// A factory making the session's shell, its styles read from the person's store as they move
@@ -646,6 +813,7 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         asks: Rc::clone(&shared.asks),
         styles: Rc::clone(&styles),
         folders: shared.folders.clone(),
+        lists_source: shared.lists.clone(),
         lists: None,
     }
 }
@@ -670,6 +838,8 @@ impl DeviceLists {
             (self.agent_sessions.revision(), 0, 0, false),
             (self.styles.borrow().revision, 0, 0, false),
             (self.folders.revision(), 0, 0, false),
+            (self.handle.search_revision(), 0, 0, false),
+            (self.lists_source.snapshot().0, 0, 0, false),
         ])
     }
 
@@ -693,7 +863,52 @@ impl DeviceLists {
             FOLDERS_RESOURCE => Some(reading(&Folders {
                 folders: self.folders.all().into_iter().map(Folder::from).collect(),
             })),
+            SEARCH_RESOURCE => Some(reading(&self.search())),
+            LAUNCHPAD_RESOURCE => Some(reading(&Launchpad {
+                cards: crate::host_actions::cards(&self.lists_source)
+                    .into_iter()
+                    .map(|card| LaunchpadCard {
+                        slug: card.slug().to_owned(),
+                        label: card.label(),
+                        icon: card_icon(card),
+                    })
+                    .collect(),
+            })),
             _ => None,
+        }
+    }
+
+    /// The shell's open search, as the launcher lists it: the rows the search found and what it
+    /// says about them.
+    fn search(&self) -> Search {
+        let open = self.handle.search_open();
+        let (query, rows) = self.handle.search_rows();
+        // The rows come ranked, kind by kind; a kind the ranking split (two availabilities) is
+        // listed once, its rows kept in the order they came.
+        let mut groups: Vec<SearchGroup> = Vec::new();
+        for (at, row) in rows.into_iter().enumerate() {
+            let index = i64::try_from(at).unwrap_or(i64::MAX);
+            let result = SearchResult {
+                index,
+                title: row.title,
+                subtitle: row.subtitle.unwrap_or_default(),
+                facts: row.facts,
+            };
+            match groups.iter_mut().find(|group| group.kind == row.kind) {
+                Some(group) => group.rows.push(result),
+                None => groups.push(SearchGroup {
+                    icon: kind_icon(&row.kind),
+                    kind: row.kind,
+                    rows: vec![result],
+                }),
+            }
+        }
+        Search {
+            query,
+            open,
+            searching: open && self.handle.search_searching(),
+            expecting: open && self.handle.search_expecting(),
+            groups,
         }
     }
 
@@ -1209,6 +1424,14 @@ pub(crate) struct StylesRoot;
 #[row(kind = "session", label = "Folders")]
 pub(crate) struct FoldersRoot;
 
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Search")]
+pub(crate) struct SearchRoot;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Launchpad")]
+pub(crate) struct LaunchpadRoot;
+
 impl Service for DeviceLists {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
@@ -1246,6 +1469,16 @@ impl Service for DeviceLists {
             tilo_resource::LiveRow::typed::<FoldersRoot>(
                 FOLDERS_RESOURCE,
                 crate::i18n::t("session-folders"),
+            )
+            .into_resource(),
+            tilo_resource::LiveRow::typed::<SearchRoot>(
+                SEARCH_RESOURCE,
+                crate::i18n::t("session-search"),
+            )
+            .into_resource(),
+            tilo_resource::LiveRow::typed::<LaunchpadRoot>(
+                LAUNCHPAD_RESOURCE,
+                crate::i18n::t("session-launchpad"),
             )
             .into_resource(),
         ]
@@ -1358,6 +1591,7 @@ mod tests {
             handle: DesktopHandle::new(Layout::default(), 1),
             emoji: Rc::new(std::cell::Cell::new(false)),
             about: Rc::new(std::cell::Cell::new(false)),
+            strips: Rc::new(std::cell::Cell::new(false)),
         }
     }
 

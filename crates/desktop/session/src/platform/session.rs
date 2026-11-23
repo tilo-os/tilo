@@ -619,6 +619,7 @@ impl Session {
             handle: handle.clone(),
             emoji: Rc::new(std::cell::Cell::new(false)),
             about: Rc::new(std::cell::Cell::new(false)),
+            strips: Rc::new(std::cell::Cell::new(false)),
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
@@ -972,6 +973,7 @@ impl Session {
             // The invite sheet is the session's own surface: the shell asks for it here.
             asks: Rc::clone(&asks),
             folders: folders.clone(),
+            lists: options.lists.clone(),
         });
         let shell_service = shell();
         let shell = crate::shell::Shell::mount(
@@ -1122,6 +1124,7 @@ impl Session {
                     modal: modal_sheets,
                 },
                 overlays: overlays.clone(),
+                launcher: options.shell.then(|| handle.clone()),
             },
         );
 

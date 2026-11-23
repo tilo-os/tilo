@@ -112,6 +112,13 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         if s.reporting {
             report_picker()
         }
+        // `show-strips` asks for the strips list, as the strip switcher does: it stands at the
+        // shell's leading edge while it is asked for, and choosing a strip closes it.
+        if device.overlays.strips_open {
+            stack(at: .leading, align: .center, padding: .related) {
+                strips_list()
+            }
+        }
     }
 }
 
@@ -134,7 +141,10 @@ template view style_shell(a: Layout, traditional: Bool, body: View) {
 view strips(a: Layout) {
     let lists = shell_lists(false, space.width_class == .expanded or space.width_class == .wide)
     style_shell(a, false) {
-        strips_view(a, lists, fill)
+        layers(fill) {
+            strips_view(a, lists, fill)
+            strip_rail(a)
+        }
     }
 }
 

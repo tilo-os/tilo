@@ -525,8 +525,10 @@ pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> 
 
 /// What a tier earns in an action's fields: the usual ranks, except that an action's
 /// keywords are the other words people use for it ("power off" for Shut down, "mkdir" for
-/// New folder), so a keyword typed whole ranks as the start of the action's title, as an
-/// app's other names rank as its name ([`application_ranks`]).
+/// New folder), so a keyword typed whole ranks as the action's title typed whole — the person
+/// said the phrase the action is known by, which no title that merely begins with the query can
+/// tie — and a keyword begun ranks as the start of the title, as an app's other names rank as its
+/// name ([`application_ranks`]).
 #[must_use]
 pub fn action_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
     // An action is found by a word of it begun, never by letters a longer word hides it
@@ -534,8 +536,16 @@ pub fn action_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Optio
     if tier == super::MatchTier::Contains {
         return None;
     }
-    if weight == super::FieldWeight::KEYWORD && tier == super::MatchTier::Exact {
-        return super::MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
+    if weight == super::FieldWeight::KEYWORD {
+        match tier {
+            super::MatchTier::Exact => {
+                return super::MatchTier::Exact.rank_in(super::FieldWeight::TITLE);
+            }
+            super::MatchTier::PrefixWord => {
+                return super::MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
+            }
+            _ => {}
+        }
     }
     tier.rank_in(weight)
 }

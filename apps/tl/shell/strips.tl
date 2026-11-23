@@ -662,3 +662,43 @@ fn strip_row(a: Layout, strip: Text) -> Text {
 fn strip_workspace(a: Layout, strip: Text) -> Text {
     a.strips.find(s -> s.key == strip)?.workspace ?? ""
 }
+
+/// Where the person is among the strips, and the way to the one beside: the shell's reading of
+/// its own strips, as the strip ribbon and rail report them. The strip shown stands numbered
+/// against the workspace's count, with the strip before it peeking at the leading edge — a press
+/// there goes to it — and "New strip" at the trailing edge, so the rail is both the place and
+/// the way to make another.
+view strip_rail(a: Layout) {
+    let workspace = shown_workspace(a)
+    if let held = workspace {
+        let rows = rows_of(a, held.key)
+        if let current = rows.find(r -> r.current) {
+            let at = rows.index_of(current) ?? 0
+            let number = at + 1
+            if let before = rows.at(at - 1) {
+                stack(at: .leading, fill, align: .center, padding: .tight) {
+                    ui.Card {
+                        ui.Button(before.name, icon: .chevron_left, role: .plain) {
+                            on press: session.show_strip(workspace: held.key, strip: before.key)
+                        }
+                    }
+                }
+            }
+            stack(at: .trailing, fill, align: .center, padding: .tight) {
+                ui.Card {
+                    stack(gap: .tight, align: .center) {
+                        ui.Text(
+                            "{number} of {rows.len()}",
+                            role: .caption,
+                            secondary: true,
+                            numeric: true,
+                        )
+                        ui.Button("New strip", icon: .plus, icon_only: true, role: .plain) {
+                            on press: session.new_strip()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

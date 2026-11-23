@@ -268,6 +268,10 @@ pub enum LayoutAction {
     /// a place checks what it takes on the canvas by it (`CanvasPlace::occupied`, canvas.md §1,
     /// §7). Appended last.
     Drawn { place: u64, height: i64 },
+    /// Remove the empty row `row` (a strip in a shell's bar) from its workspace, as the strip's own
+    /// menu does. A row that holds a window, or a workspace's only row, refuses: the windows go
+    /// first, and every workspace keeps a place to work. Appended last.
+    RemoveRow { row: u64 },
 }
 
 /// Where a place made on the layout now goes: the workspace in front, its row, and the ids the
@@ -1783,6 +1787,7 @@ fn change(
         } => size(tree, *place, clamp_side(*width), clamp_side(*height)),
         LayoutAction::Drawn { place, height } => drawn(tree, *place, clamp_side(*height)),
         LayoutAction::Close { place } => close(tree, *place),
+        LayoutAction::RemoveRow { row } => remove_row(tree, *row),
         LayoutAction::Activate { place } => activate(tree, *place),
         LayoutAction::Pin { place, pinned } => pin(tree, *place, *pinned),
         LayoutAction::Position { place, x, y } => {
@@ -1874,6 +1879,30 @@ fn close(tree: &mut Tree, place: u64) -> Result<bool, String> {
     } else {
         Err("that place is not in the layout".into())
     }
+}
+
+/// Remove the empty row `row` from its workspace, as a strip's own menu does. A row holding a
+/// window, or a workspace's only row, is refused. Whether the layout changed.
+fn remove_row(tree: &mut Tree, row: u64) -> Result<bool, String> {
+    let strip = tilo_desktop_model::StripId(row);
+    for workspace in &mut tree.workspaces {
+        let Some(at) = workspace.strips.iter().position(|held| held.id == strip) else {
+            continue;
+        };
+        if workspace
+            .strips
+            .get(at)
+            .is_some_and(|held| !held.window_groups.is_empty())
+        {
+            return Err("the row still holds a window".into());
+        }
+        if workspace.strips.len() <= 1 {
+            return Err("a workspace keeps its last row".into());
+        }
+        workspace.strips.remove(at);
+        return Ok(true);
+    }
+    Err("that row is not in the layout".into())
 }
 
 /// Bring the place `place` in front of the strip it stands in, as choosing its tab does. Whether
@@ -2365,6 +2394,7 @@ pub fn verb(action: &LayoutAction) -> &'static str {
         LayoutAction::Position { .. } => "position",
         LayoutAction::Size { .. } => "size",
         LayoutAction::Drawn { .. } => "drawn",
+        LayoutAction::RemoveRow { .. } => "drop-row",
         LayoutAction::Place { .. } | LayoutAction::PlaceFound { .. } => "place",
         LayoutAction::Open { .. } => "open",
         LayoutAction::Float { .. } => "float",

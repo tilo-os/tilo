@@ -619,6 +619,13 @@ pub struct Autocomplete {
     offered: Vec<Suggestion>,
     list: SuggestionList,
     open: bool,
+    /// Tab and Shift+Tab move between the list's groups instead of completing the field.
+    tab_groups: bool,
+    /// The rows stand open whenever there are any, instead of opening as the person types or walks
+    /// them.
+    open_list: bool,
+    /// The rows narrow to what is typed; off, they are offered as the host computed them.
+    filter: bool,
     rect: Rect,
     last_pointer: Point,
     outcome: AutocompleteOutcome,
@@ -640,6 +647,9 @@ impl Autocomplete {
             offered: Vec::new(),
             list: SuggestionList::new(),
             open: false,
+            tab_groups: false,
+            open_list: false,
+            filter: true,
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             outcome: AutocompleteOutcome::None,
@@ -722,6 +732,51 @@ impl Autocomplete {
 
     pub fn set_status(&mut self, status: Option<String>) {
         self.list.set_status(status);
+    }
+
+    /// Tab and Shift+Tab move the highlight to the next group's first row, instead of completing
+    /// the field to the highlighted row.
+    pub fn set_tab_groups(&mut self, tab_groups: bool) {
+        self.tab_groups = tab_groups;
+    }
+
+    /// The rows stand open whenever there are any: a palette whose empty field already lists what
+    /// it offers.
+    pub fn set_open_list(&mut self, open_list: bool) {
+        self.open_list = open_list;
+        self.open_if_listed();
+    }
+
+    /// Open the list while it should stand open and has rows to show, with its first row armed so
+    /// Enter opens what a person sees chosen.
+    pub fn open_if_listed(&mut self) {
+        if !self.open_list || self.list.rows().is_empty() {
+            return;
+        }
+        self.open = true;
+        let armed = self
+            .list
+            .highlight()
+            .and_then(|at| self.list.rows().get(at))
+            .is_some_and(Suggestion::is_pickable);
+        if !armed {
+            let first = self.list.rows().iter().position(Suggestion::is_pickable);
+            self.list.set_highlight(first);
+        }
+    }
+
+    /// The rows narrow to what is typed: off when the host already computed them for the typed
+    /// text, whose ranking is fuzzier than a substring.
+    pub fn set_filter(&mut self, filter: bool) {
+        if self.filter != filter {
+            self.filter = filter;
+            self.refilter();
+        }
+    }
+
+    /// Ask the window to give the field the keyboard: a palette opening to be typed into.
+    pub fn request_focus(&mut self) {
+        self.input.request_focus();
     }
 
     pub fn set_arriving(&mut self, clock: Option<crate::arriving::ArrivalClock>) {
@@ -846,17 +901,33 @@ impl Autocomplete {
             return;
         }
         let query = self.input.value().trim().to_lowercase();
-        let rows = if query.is_empty() {
+        let rows = if query.is_empty() || !self.filter {
             self.offered.clone()
         } else {
-            self.offered
-                .iter()
-                .filter(|suggestion| {
-                    suggestion.label.to_lowercase().contains(&query)
-                        || suggestion.value.to_lowercase().contains(&query)
-                })
-                .cloned()
-                .collect()
+            // A group's heading stays while at least one row under it matches, and goes with its
+            // last row: a heading over nothing reads as a group the person can open, and cannot.
+            let mut rows: Vec<Suggestion> = Vec::new();
+            let mut heading: Option<Suggestion> = None;
+            for suggestion in &self.offered {
+                match suggestion.role {
+                    RowRole::Header { .. } => heading = Some(suggestion.clone()),
+                    RowRole::Item => {
+                        if suggestion.label.to_lowercase().contains(&query)
+                            || suggestion.value.to_lowercase().contains(&query)
+                        {
+                            if let Some(heading) = heading.take() {
+                                rows.push(heading);
+                            }
+                            rows.push(suggestion.clone());
+                        }
+                    }
+                    RowRole::Notice => {
+                        heading = None;
+                        rows.push(suggestion.clone());
+                    }
+                }
+            }
+            rows
         };
         self.list.set_rows(rows);
     }
@@ -899,6 +970,41 @@ impl Autocomplete {
         }
         self.open = true;
         self.list.move_highlight(forward);
+    }
+
+    /// Put the highlight on the next (or previous) group's first row, wrapping round: what Tab and
+    /// Shift+Tab do in a palette whose rows stand under group headings.
+    fn step_group(&mut self, forward: bool) {
+        let rows = self.list.rows();
+        let starts: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(at, row)| {
+                row.is_pickable()
+                    && (*at == 0 || matches!(rows[at - 1].role, RowRole::Header { .. }))
+            })
+            .map(|(at, _)| at)
+            .collect();
+        if starts.is_empty() {
+            return;
+        }
+        let current = self.list.highlight();
+        let next = match current {
+            Some(current) if forward => starts
+                .iter()
+                .copied()
+                .find(|&start| start > current)
+                .unwrap_or(starts[0]),
+            Some(current) => starts
+                .iter()
+                .copied()
+                .rev()
+                .find(|&start| start < current)
+                .unwrap_or_else(|| starts[starts.len() - 1]),
+            None => starts[0],
+        };
+        self.open = true;
+        self.list.set_highlight(Some(next));
     }
 
     fn dropdown_rect(&self) -> Option<Rect> {
@@ -960,7 +1066,11 @@ impl Autocomplete {
                 }
             }
             Key::Named(NamedKey::Tab) if !self.list.rows().is_empty() => {
-                self.complete_to_highlight();
+                if self.tab_groups {
+                    self.step_group(!ctx.modifiers.state().shift_key());
+                } else {
+                    self.complete_to_highlight();
+                }
                 *ctx.handled = true;
             }
             Key::Named(NamedKey::Escape) => {
@@ -1219,6 +1329,16 @@ impl Widget for Autocomplete {
 
     fn is_focused(&self) -> bool {
         self.input.is_focused()
+    }
+
+    /// The field's own request for the keyboard, which a palette that opens to be typed into
+    /// makes: the request is the list's, and the node the app focuses is the list itself, not the
+    /// field inside it.
+    fn take_focus_request(&mut self) -> Option<String> {
+        self.input
+            .take_focus_request()
+            .map(|_| self.id.clone())
+            .filter(|id| !id.is_empty())
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {

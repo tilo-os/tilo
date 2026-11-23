@@ -250,6 +250,8 @@ session-invite = Einladen
 session-agents = Agenten
 session-styles = Stile
 session-folders = Ordner
+session-search = Suche
+session-launchpad = Willkommen
 session-notifications-dismiss = Die Benachrichtigung verwerfen
 session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren
@@ -527,6 +529,8 @@ session-action-open-beside = Die Ressource, neben deren Platz er steht, nach ihr
 session-action-show-match = Einen Treffer der Suche in diesem Platz zeigen
 session-action-show-match-resource = Die Ressource, die die Zeile nennt
 session-action-retry = Erneut danach suchen
+session-action-remove-row = Eine leere Leiste aus ihrem Arbeitsbereich entfernen
+session-action-remove-row-row = Die Leiste, über ihre Ressource
 
 ## Actions
 

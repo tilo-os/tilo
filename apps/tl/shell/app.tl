@@ -27,6 +27,28 @@ default view shell_settings for Shell
 view shell_view(a: Layout) {
     let chosen = style_of(viewing)
     layers {
+        // A secondary press on the shell, where nothing of it took the press, is the workspaces'
+        // own menu at the pointer: the same rows the bar's workspace button opens, so a person
+        // reaches their workspaces anywhere on the shell.
+        ui.ContextMenu {
+            for w in layout.workspaces {
+                ui.MenuItem(w.name, checked: w.current) {
+                    on choose: session.switch_workspace(workspace: w.key)
+                }
+            }
+            ui.MenuItem("New workspace", icon: .plus) {
+                on choose: session.new_workspace()
+            }
+            ui.MenuItem("Join a workspace", icon: .users) {
+                on choose: session.join_workspace()
+            }
+            ui.MenuItem("Workspace settings", icon: .settings) {
+                on choose: session.workspace_settings()
+            }
+            ui.MenuItem("Overview", icon: .layout_grid) {
+                on choose: session.overview()
+            }
+        }
         // The chosen style's own settings, over whatever the style drew: the system's one
         // settings place for a style, opened from the bar's style menu (`style_menu`,
         // `strips.tl`) and drawn here rather than by each style, so every style — the shipped
@@ -176,9 +198,7 @@ view bar_part(part: BarPart) {
     } else if part.kind == .app_menu {
         action_bar(layout, BarRoom.menus)
     } else if part.kind == .strip {
-        if front_strip_name() != "" {
-            ui.Button(front_strip_name(), icon: .chevron_right, role: .bar)
-        }
+        strip_part()
     } else if part.kind == .people {
         row(gap: .related, align: .center) {
             if not space.compact and not frames_style() {
@@ -262,33 +282,149 @@ view bar_part(part: BarPart) {
 /// phone with large text), it is the workspaces' icon, named for the workspace; a shell whose
 /// workspace the session has not published a name for still opens by the workspaces' name.
 view workspace_menu() {
+    state renaming: Text = ""
+    state renamed: Text = ""
     let name = if front_workspace_name() != "" { front_workspace_name() } else { "Workspaces" }
-    // On a phone the status cluster takes the name's room while a folder needs the person.
-    let icon_only = bar_is_narrow(space.width)
-        or space.compact and folders_need_person(device.folders.folders)
-    ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
-        for w in layout.workspaces {
-            if w.home != "" {
-                // Where the shell is a page, each workspace is a page of its own: the menu
-                // leads to it as the workspaces' own cards do (`workspaces.tl`).
-                ui.Link(w.home, label: w.name)
-            } else {
-                ui.MenuItem(w.name, checked: w.current) {
-                    on choose: session.switch_workspace(workspace: w.key)
+    let current = layout.workspaces.find(w -> w.current)
+    if renaming != "" {
+        ui.TextInput(
+            bind: renamed,
+            placeholder: layout.workspaces.find(w -> w.key == renaming)?.name ?? "Workspace name",
+            autofocus: true,
+        ) {
+            on submit: rename_workspace(renaming, renamed).then(set(renaming, ""))
+            on cancel: set(renaming, "")
+        }
+    } else {
+        // On a phone the status cluster takes the name's room while a folder needs the person.
+        let icon_only = bar_is_narrow(space.width)
+            or space.compact and folders_need_person(device.folders.folders)
+        ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
+            for w in layout.workspaces {
+                if w.home != "" {
+                    // Where the shell is a page, each workspace is a page of its own: the menu
+                    // leads to it as the workspaces' own cards do (`workspaces.tl`).
+                    ui.Link(w.home, label: w.name)
+                } else {
+                    ui.MenuItem(w.name, checked: w.current) {
+                        on choose: session.switch_workspace(workspace: w.key)
+                    }
+                }
+            }
+            ui.MenuItem("New workspace", icon: .plus) {
+                on choose: session.new_workspace()
+            }
+            ui.MenuItem("Join a workspace", icon: .users) {
+                on choose: session.join_workspace()
+            }
+            if let cur = current {
+                ui.MenuItem("Rename {cur.name}", icon: .pencil) {
+                    on choose: set(renaming, cur.key).then(set(renamed, ""))
+                }
+                ui.MenuItem("Delete {cur.name}", icon: .trash, destructive: true) {
+                    on choose: session.delete_workspace(workspace: cur.key)
+                }
+            }
+            ui.MenuItem("Workspace settings", icon: .settings) {
+                on choose: session.workspace_settings()
+            }
+            ui.MenuItem("Overview", icon: .layout_grid) {
+                on choose: session.overview()
+            }
+            // The workspace's history is the system's, drawn by the Activity app: the menu opens that
+            // window on this workspace, so what happened, who did it and what can be taken back stand
+            // where the person expects the system's own views.
+            ui.MenuItem("History", icon: .history) {
+                on choose: session.activity(workspace: front_workspace(), view: "explore")
+            }
+        }
+    }
+}
+
+/// Name the workspace `key` what the person typed: the workspace's own published `rename`, so the
+/// name reaches every device and every list of it. A blank name is nothing to do.
+action rename_workspace(key: Text, name: Text) {
+    if name.trim() != "" {
+        session.rename(workspace: key, name: name.trim())
+    }
+}
+
+/// The strip shown, at the bar's left end, as a menu of the workspace's strips under it: the one
+/// press that switches strip, a new one, and — for the strip in front — renaming it, removing it
+/// when it is empty, and moving it along the workspace. Every change is one of the session's
+/// arranging actions (`shell:layout`), so a press, a script and an agent make the same change.
+///
+/// Renaming types over the button where it stands, rather than in a sheet: the strip's name is
+/// what the person is looking at, and Enter keeps it.
+view strip_part() {
+    state renaming: Text = ""
+    state renamed: Text = ""
+    let workspace = front_workspace()
+    let strips = layout.rows.filter(r -> r.workspace == workspace)
+    let current = strips.find(r -> r.current)
+    if renaming != "" {
+        ui.TextInput(
+            bind: renamed,
+            placeholder: strips.find(r -> r.key == renaming)?.name ?? "Strip name",
+            autofocus: true,
+        ) {
+            on submit: rename_strip(renaming, renamed).then(set(renaming, ""))
+            on cancel: set(renaming, "")
+        }
+    } else if front_strip_name() != "" {
+        ui.MenuButton(front_strip_name(), icon: .chevron_right, role: .bar) {
+            for r in strips {
+                ui.MenuItem(r.name, checked: r.current, icon: .columns_2) {
+                    on choose: session.show_strip(workspace: workspace, strip: r.key)
+                }
+            }
+            ui.MenuItem("New strip", icon: .plus) {
+                on choose: session.new_strip()
+            }
+            if let cur = current {
+                ui.MenuItem("Rename {cur.name}", icon: .pencil) {
+                    on choose: set(renaming, cur.key).then(set(renamed, ""))
+                }
+                if strips.len() > 1 and strip_is_empty(cur.key) {
+                    ui.MenuItem("Remove {cur.name}", icon: .trash, destructive: true) {
+                        on choose: session.drop_row(row: cur.key)
+                    }
+                }
+                if let before = strips.previous(cur) {
+                    ui.MenuItem("Move {cur.name} left", icon: .arrow_left) {
+                        on choose: session.move_strip(strip: cur.key, before: before.key)
+                    }
+                }
+                if let at = strips.index_of(cur) {
+                    if let after = strips.at(at + 2) {
+                        ui.MenuItem("Move {cur.name} right", icon: .arrow_right) {
+                            on choose: session.move_strip(strip: cur.key, before: after.key)
+                        }
+                    }
                 }
             }
         }
-        ui.MenuItem("New workspace", icon: .plus) {
-            on choose: session.new_workspace()
-        }
-        ui.MenuItem("Join a workspace", icon: .users) {
-            on choose: session.join_workspace()
-        }
-        ui.MenuItem("Workspace settings", icon: .settings) {
-            on choose: session.workspace_settings()
-        }
-        ui.MenuItem("Overview", icon: .layout_grid) {
-            on choose: session.overview()
+    }
+}
+
+/// The strips list: every strip of the workspace in front, to switch to, and a new one. It stands
+/// at the shell's leading edge while `show-strips` asks for it, as the strip switcher does, and
+/// choosing a strip closes it; Done puts it away without switching.
+view strips_list() {
+    let workspace = front_workspace()
+    ui.Card(title: "Strips") {
+        stack(gap: .tight) {
+            for r in layout.rows.filter(r -> r.workspace == workspace) {
+                ui.ListRow(r.name, icon: .columns_2, selected: r.current) {
+                    on activate: session.show_strip(workspace: workspace, strip: r.key)
+                }
+            }
+            ui.Button("New strip", icon: .plus) {
+                on press: session.new_strip()
+            }
+            ui.Button("Done", role: .plain) {
+                on press: session.show_strip(workspace: workspace, strip: front_row_key())
+            }
         }
         // The workspace's history is the system's, drawn by the Activity app: the menu opens that
         // window on this workspace, so what happened, who did it and what can be taken back stand
@@ -296,6 +432,29 @@ view workspace_menu() {
         ui.MenuItem("History", icon: .history) {
             on choose: session.activity(workspace: front_workspace(), view: "explore")
         }
+    }
+}
+
+/// The key of the row in front of the workspace in front: what showing it again answers, and how
+/// the strips list puts itself away without switching away.
+fn front_row_key() -> Text {
+    let w = front_workspace()
+    return layout.rows.find(r -> r.workspace == w and r.current)?.key ?? ""
+}
+
+/// Whether the strip `row` holds no window: removing it takes nothing from the person, and the
+/// session refuses a strip that still does.
+fn strip_is_empty(row: Text) -> Bool {
+    return layout.strips
+        .filter(s -> s.row == row)
+        .all(s -> layout.places.filter(p -> p.strip == s.key).is_empty())
+}
+
+/// Name the strip `key` what the person typed: one arranging action of the session's, so a
+/// script and an agent rename as a press does. A blank name is nothing to do.
+action rename_strip(key: Text, name: Text) {
+    if name.trim() != "" {
+        session.rename(strip: key, name: name.trim())
     }
 }
 

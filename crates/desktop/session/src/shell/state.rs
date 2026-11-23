@@ -327,6 +327,8 @@ struct OverlaysSurface {
     peek: Option<Peek>,
     /// What this computer's About sheet says: its name, the Tilo it runs, and where to read more.
     about_sheet: Option<AboutSheet>,
+    /// Whether the strips list stands under the shell's bar.
+    strips_open: bool,
 }
 
 /// What a held Super reaches, as the shell's card shows it: the groups of keys, in reading order.
@@ -432,6 +434,7 @@ struct StackReading {
     emoji: bool,
     peek: Option<Peek>,
     about_sheet: Option<AboutSheet>,
+    strips_open: bool,
 }
 
 /// One open surface.
@@ -491,7 +494,7 @@ pub struct ShellService {
     surfaces: Surfaces,
     /// What the stack's reading was last published from: the shell's surface, whether the
     /// switcher's panel shows, and the stack's own revision.
-    seen: Option<(u64, Overlay, bool, u64, bool, u64)>,
+    seen: Option<(u64, Overlay, bool, u64, bool, u64, bool)>,
     /// The desktop's one shortcut table, so a menu row shows the chord a press doing the same thing
     /// would be, as the person binds it now.
     shortcuts: crate::panels::mount::Shortcuts,
@@ -552,7 +555,7 @@ impl ShellService {
     }
 
     /// What the stack's reading is made from beside the stack itself.
-    fn key(&self) -> (u64, Overlay, bool, u64, bool, u64) {
+    fn key(&self) -> (u64, Overlay, bool, u64, bool, u64, bool) {
         let shell = &self.surfaces.overlays;
         let views =
             u64::from(self.surfaces.emoji_open()) | (u64::from(self.surfaces.about_open()) << 1);
@@ -563,9 +566,9 @@ impl ShellService {
             self.handle.personal_ask_revision(),
             self.peek.is_up(),
             views,
+            self.surfaces.strips.get(),
         )
     }
-
     /// The tab of the window in front: the active group's, in the strip on the display the person
     /// works on.
     fn focused(&self) -> Option<TabId> {
@@ -756,7 +759,11 @@ impl Service for ShellService {
             WINDOW_MENU => Some(reading(&self.window_menu())),
             OVERLAYS => Some(reading(&self.stack())),
             FOCUS => {
-                let target = crate::chrome::keyboard_target(&self.handle, &self.surfaces.overlays);
+                let target = crate::chrome::keyboard_target_in(
+                    &self.handle,
+                    &self.surfaces.overlays,
+                    self.surfaces.shell,
+                );
                 Some(reading(&Focus {
                     target: target.as_str(),
                     surface: target.part().map(Part::as_str),
@@ -905,6 +912,7 @@ impl ShellService {
             emoji: self.surfaces.emoji_open(),
             peek: self.peek_card(),
             about_sheet: Some(self.about.clone()),
+            strips_open: self.surfaces.strips.get(),
         }
     }
 

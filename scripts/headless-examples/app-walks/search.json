@@ -77,7 +77,7 @@
           "must": [
             {
               "rust": "Terminal",
-              "tl": "Terminal, so.tilo.terminal"
+              "tl": "Terminal"
             }
           ]
         }
