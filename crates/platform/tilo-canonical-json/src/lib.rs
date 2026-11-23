@@ -6,8 +6,8 @@
 //! deterministic even when `serde_json`'s `preserve_order` feature is enabled.
 //!
 //! Callers that feed a hash function can stream bytes straight into the hasher
-//! with [`write_bytes`] or [`write_object_bytes`] without allocating a cloned
-//! [`Value`] tree or an intermediate buffer.
+//! with [`write_bytes`] or [`write_object_bytes`] through a fixed 8 KiB stack
+//! buffer without allocating a cloned [`Value`] tree or a heap output buffer.
 
 use std::fmt;
 
@@ -16,6 +16,12 @@ use serde_json::{Map, Value};
 /// Objects up to this size sort in place on the stack on every target instead
 /// of touching the heap.
 const SMALL_OBJECT_LEN: usize = 8;
+
+/// Fixed stack buffer size for [`write_bytes`] and [`write_object_bytes`].
+/// Keeping flushes at 8 KiB lets streaming hashers like BLAKE3 stay on their
+/// multi-chunk SIMD fast path without heap allocation.
+const STREAM_BUF_LEN: usize = 8_192;
+const _: () = assert!(STREAM_BUF_LEN.is_power_of_two());
 
 static EMPTY_VALUE: Value = Value::Null;
 
@@ -29,17 +35,19 @@ const CONTROL_ESCAPES: [&str; 32] = [
 
 /// Stream `value`'s canonical JSON bytes to `emit` in a single pass.
 pub fn write_bytes(value: &Value, mut emit: impl FnMut(&[u8])) {
-    let mut sink = FnSink(&mut emit);
+    let mut sink = FnSink::new(&mut emit);
     let mut scratch = Vec::new();
     write_value(&mut sink, value, &mut scratch);
+    sink.flush();
 }
 
 /// Stream a JSON object's canonical JSON bytes to `emit` in a single pass,
 /// without wrapping `object` in an owned [`Value::Object`].
 pub fn write_object_bytes(object: &Map<String, Value>, mut emit: impl FnMut(&[u8])) {
-    let mut sink = FnSink(&mut emit);
+    let mut sink = FnSink::new(&mut emit);
     let mut scratch = Vec::new();
     write_object(&mut sink, object, &mut scratch);
+    sink.flush();
 }
 
 /// Append `value`'s canonical JSON bytes directly onto `out`.
@@ -69,42 +77,151 @@ pub fn to_string(value: &Value) -> String {
 
 trait Sink {
     fn write_str(&mut self, chunk: &str);
+    fn write_ascii_byte(&mut self, byte: u8);
 }
 
-struct FnSink<'a, F>(&'a mut F);
+struct FnSink<'a> {
+    emit: &'a mut dyn FnMut(&[u8]),
+    buf: [u8; STREAM_BUF_LEN],
+    len: usize,
+}
 
-impl<F: FnMut(&[u8])> Sink for FnSink<'_, F> {
+impl<'a> FnSink<'a> {
+    fn new(emit: &'a mut dyn FnMut(&[u8])) -> Self {
+        Self {
+            emit,
+            buf: [0; STREAM_BUF_LEN],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    fn write_slice(&mut self, bytes: &[u8]) {
+        let available = STREAM_BUF_LEN.saturating_sub(self.len);
+        if bytes.len() <= available {
+            let end = self.len.saturating_add(bytes.len());
+            if let Some(dst) = self.buf.get_mut(self.len..end) {
+                dst.copy_from_slice(bytes);
+                self.len = end;
+            }
+            if self.len == STREAM_BUF_LEN {
+                self.flush();
+            }
+            return;
+        }
+        self.write_slice_slow(bytes);
+    }
+
+    #[cold]
+    fn write_slice_slow(&mut self, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let available = STREAM_BUF_LEN.saturating_sub(self.len);
+            if bytes.len() <= available {
+                let end = self.len.saturating_add(bytes.len());
+                if let Some(dst) = self.buf.get_mut(self.len..end) {
+                    dst.copy_from_slice(bytes);
+                    self.len = end;
+                }
+                if self.len == STREAM_BUF_LEN {
+                    self.flush();
+                }
+                return;
+            }
+            if self.len == 0 {
+                // Buffer is empty and input exceeds 8 KiB: emit full 8 KiB
+                // blocks straight to `emit` without copying through `self.buf`.
+                let full = bytes.len() & !STREAM_BUF_LEN.saturating_sub(1);
+                if let Some((head, tail)) = bytes.split_at_checked(full) {
+                    (self.emit)(head);
+                    bytes = tail;
+                } else {
+                    return;
+                }
+            } else if let Some((head, tail)) = bytes.split_at_checked(available) {
+                if let Some(dst) = self.buf.get_mut(self.len..) {
+                    dst.copy_from_slice(head);
+                    self.len = STREAM_BUF_LEN;
+                }
+                self.flush();
+                bytes = tail;
+            } else {
+                return;
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn flush(&mut self) {
+        if self.len > 0 {
+            if let Some(filled) = self.buf.get(..self.len) {
+                (self.emit)(filled);
+            }
+            self.len = 0;
+        }
+    }
+}
+
+impl Sink for FnSink<'_> {
+    #[inline]
     fn write_str(&mut self, chunk: &str) {
-        (self.0)(chunk.as_bytes());
+        self.write_slice(chunk.as_bytes());
+    }
+
+    #[inline]
+    fn write_ascii_byte(&mut self, byte: u8) {
+        if let Some(slot) = self.buf.get_mut(self.len) {
+            *slot = byte;
+            self.len = self.len.saturating_add(1);
+            if self.len == STREAM_BUF_LEN {
+                self.flush();
+            }
+        }
     }
 }
 
 struct VecSink<'a>(&'a mut Vec<u8>);
 
 impl Sink for VecSink<'_> {
+    #[inline]
     fn write_str(&mut self, chunk: &str) {
         self.0.extend_from_slice(chunk.as_bytes());
+    }
+
+    #[inline]
+    fn write_ascii_byte(&mut self, byte: u8) {
+        self.0.push(byte);
     }
 }
 
 struct StringSink<'a>(&'a mut String);
 
 impl Sink for StringSink<'_> {
+    #[inline]
     fn write_str(&mut self, chunk: &str) {
         self.0.push_str(chunk);
     }
+
+    #[inline]
+    fn write_ascii_byte(&mut self, byte: u8) {
+        self.0.push(char::from(byte));
+    }
 }
 
-struct SinkFmt<'a>(&'a mut dyn Sink);
+struct SinkFmt<'a, S: Sink>(&'a mut S);
 
-impl fmt::Write for SinkFmt<'_> {
+impl<S: Sink> fmt::Write for SinkFmt<'_, S> {
+    #[inline]
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.0.write_str(s);
         Ok(())
     }
 }
 
-fn write_value<'a>(sink: &mut dyn Sink, value: &'a Value, scratch: &mut Vec<(&'a str, &'a Value)>) {
+fn write_value<'a, S: Sink>(
+    sink: &mut S,
+    value: &'a Value,
+    scratch: &mut Vec<(&'a str, &'a Value)>,
+) {
     match value {
         Value::Null => sink.write_str("null"),
         Value::Bool(true) => sink.write_str("true"),
@@ -116,21 +233,21 @@ fn write_value<'a>(sink: &mut dyn Sink, value: &'a Value, scratch: &mut Vec<(&'a
         }
         Value::String(text) => write_escaped_str(sink, text),
         Value::Array(items) => {
-            sink.write_str("[");
+            sink.write_ascii_byte(b'[');
             for (position, item) in items.iter().enumerate() {
                 if position > 0 {
-                    sink.write_str(",");
+                    sink.write_ascii_byte(b',');
                 }
                 write_value(sink, item, scratch);
             }
-            sink.write_str("]");
+            sink.write_ascii_byte(b']');
         }
         Value::Object(object) => write_object(sink, object, scratch),
     }
 }
 
-fn write_object<'a>(
-    sink: &mut dyn Sink,
+fn write_object<'a, S: Sink>(
+    sink: &mut S,
     object: &'a Map<String, Value>,
     scratch: &mut Vec<(&'a str, &'a Value)>,
 ) {
@@ -139,16 +256,16 @@ fn write_object<'a>(
         return;
     }
     if object.len() == 1 || is_sorted_keys(object) {
-        sink.write_str("{");
+        sink.write_ascii_byte(b'{');
         for (position, (key, item)) in object.iter().enumerate() {
             if position > 0 {
-                sink.write_str(",");
+                sink.write_ascii_byte(b',');
             }
             write_escaped_str(sink, key);
-            sink.write_str(":");
+            sink.write_ascii_byte(b':');
             write_value(sink, item, scratch);
         }
-        sink.write_str("}");
+        sink.write_ascii_byte(b'}');
         return;
     }
     if object.len() <= SMALL_OBJECT_LEN {
@@ -162,16 +279,16 @@ fn write_object<'a>(
         }
         if let Some(entries) = stack.get_mut(..len) {
             insertion_sort_entries(entries);
-            sink.write_str("{");
+            sink.write_ascii_byte(b'{');
             for (position, &(key, item)) in entries.iter().enumerate() {
                 if position > 0 {
-                    sink.write_str(",");
+                    sink.write_ascii_byte(b',');
                 }
                 write_escaped_str(sink, key);
-                sink.write_str(":");
+                sink.write_ascii_byte(b':');
                 write_value(sink, item, scratch);
             }
-            sink.write_str("}");
+            sink.write_ascii_byte(b'}');
         }
         return;
     }
@@ -181,19 +298,19 @@ fn write_object<'a>(
     if let Some(entries) = scratch.get_mut(base..end) {
         sort_entries(entries);
     }
-    sink.write_str("{");
+    sink.write_ascii_byte(b'{');
     for index in base..end {
         let Some(&(key, item)) = scratch.get(index) else {
             break;
         };
         if index > base {
-            sink.write_str(",");
+            sink.write_ascii_byte(b',');
         }
         write_escaped_str(sink, key);
-        sink.write_str(":");
+        sink.write_ascii_byte(b':');
         write_value(sink, item, scratch);
     }
-    sink.write_str("}");
+    sink.write_ascii_byte(b'}');
     scratch.truncate(base);
 }
 
@@ -240,33 +357,81 @@ fn sort_entries(entries: &mut [(&str, &Value)]) {
     entries.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
 }
 
-fn write_escaped_str(sink: &mut dyn Sink, value: &str) {
-    sink.write_str("\"");
-    let mut start = 0usize;
-    for (index, byte) in value.bytes().enumerate() {
-        let escaped = match byte {
-            b'"' => "\\\"",
-            b'\\' => "\\\\",
-            0x00..=0x1f => CONTROL_ESCAPES
-                .get(usize::from(byte))
-                .copied()
-                .unwrap_or(""),
-            _ => continue,
-        };
-        if start < index
-            && let Some(run) = value.get(start..index)
+/// Returns a bitmask with bit `8 * k + 7` set for the first lane `k` (in
+/// little-endian byte order) containing a byte requiring JSON escaping
+/// (`0x00..=0x1f`, `b'"'`, or `b'\\'`), or `0` when all eight bytes pass
+/// through unchanged.
+#[inline]
+const fn escape_mask_word(word: u64) -> u64 {
+    const LO: u64 = 0x0101_0101_0101_0101;
+    const HI: u64 = 0x8080_8080_8080_8080;
+    const CTRL: u64 = 0x2020_2020_2020_2020;
+    const QUOTE: u64 = 0x2222_2222_2222_2222;
+    const BACKSLASH: u64 = 0x5c5c_5c5c_5c5c_5c5c;
+
+    let ctrl = word.wrapping_sub(CTRL) & !word;
+    let quote_xor = word ^ QUOTE;
+    let quote = quote_xor.wrapping_sub(LO) & !quote_xor;
+    let backslash_xor = word ^ BACKSLASH;
+    let backslash = backslash_xor.wrapping_sub(LO) & !backslash_xor;
+    (ctrl | quote | backslash) & HI
+}
+
+#[inline]
+fn find_escape(bytes: &[u8]) -> Option<usize> {
+    let mut offset = 0usize;
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        if let Ok(array) = <[u8; 8]>::try_from(chunk) {
+            let mask = escape_mask_word(u64::from_le_bytes(array));
+            if mask != 0 {
+                let lane = usize::try_from(mask.trailing_zeros() >> 3).unwrap_or(0);
+                return Some(offset.saturating_add(lane));
+            }
+        }
+        offset = offset.saturating_add(8);
+    }
+    for &byte in chunks.remainder() {
+        if byte < 0x20 || byte == b'"' || byte == b'\\' {
+            return Some(offset);
+        }
+        offset = offset.saturating_add(1);
+    }
+    None
+}
+
+fn write_escaped_str<S: Sink>(sink: &mut S, value: &str) {
+    sink.write_ascii_byte(b'"');
+    let mut rest = value;
+    while let Some(pos) = find_escape(rest.as_bytes()) {
+        if pos > 0
+            && let Some(run) = rest.get(..pos)
         {
             sink.write_str(run);
         }
+        let escaped = match rest.as_bytes().get(pos).copied() {
+            Some(b'"') => "\\\"",
+            Some(b'\\') => "\\\\",
+            Some(byte) => CONTROL_ESCAPES
+                .get(usize::from(byte))
+                .copied()
+                .unwrap_or(""),
+            None => break,
+        };
         sink.write_str(escaped);
-        start = index.saturating_add(1);
+        let next = pos.saturating_add(1);
+        match rest.get(next..) {
+            Some(tail) => rest = tail,
+            None => {
+                rest = "";
+                break;
+            }
+        }
     }
-    if let Some(tail) = value.get(start..)
-        && !tail.is_empty()
-    {
-        sink.write_str(tail);
+    if !rest.is_empty() {
+        sink.write_str(rest);
     }
-    sink.write_str("\"");
+    sink.write_ascii_byte(b'"');
 }
 
 #[cfg(test)]
@@ -516,5 +681,82 @@ mod tests {
                 .unwrap()
         ));
         assert_eq!(to_string(&single), r#"{"only":{"a":1,"b":2}}"#);
+    }
+
+    #[test]
+    fn streaming_sink_batches_8kib_chunks_across_boundaries() {
+        // 64 KiB of 80-byte newline-terminated lines, matching the Order 3 workload.
+        let line = format!("{}\n", "a".repeat(79));
+        let mut text = String::with_capacity(65_536);
+        for _ in 0..819 {
+            text.push_str(&line);
+        }
+        text.push_str(&"b".repeat(15));
+        text.push('\n');
+        assert_eq!(text.len(), 65_536);
+
+        let doc = serde_json::json!({ "text": text });
+        let expected = to_vec(&doc);
+        let mut streamed = Vec::with_capacity(expected.len());
+        let mut chunk_lens = Vec::new();
+        write_bytes(&doc, |chunk| {
+            assert!(
+                !chunk.is_empty(),
+                "buffered sink must never emit empty chunks"
+            );
+            chunk_lens.push(chunk.len());
+            streamed.extend_from_slice(chunk);
+        });
+        assert_eq!(streamed, expected);
+        assert!(chunk_lens.len() >= 8);
+        for &len in &chunk_lens[..chunk_lens.len() - 1] {
+            assert!(
+                len >= super::STREAM_BUF_LEN,
+                "non-final flush was {len} bytes, expected >= {}",
+                super::STREAM_BUF_LEN
+            );
+        }
+
+        // Exact 8 KiB boundary (8191, 8192, 8193) and a 20 KiB unescaped string
+        // crossing direct-emit and buffered-tail paths.
+        for target_total in [8_191usize, 8_192, 8_193, 20_480] {
+            let payload_len = target_total - 2; // surrounding quotes
+            let value = Value::String("x".repeat(payload_len));
+            let expected = to_vec(&value);
+            assert_eq!(expected.len(), target_total);
+            let mut out = Vec::with_capacity(target_total);
+            let mut sizes = Vec::new();
+            write_bytes(&value, |chunk| {
+                assert!(!chunk.is_empty());
+                sizes.push(chunk.len());
+                out.extend_from_slice(chunk);
+            });
+            assert_eq!(out, expected, "total {target_total}");
+            if target_total == 8_192 {
+                assert_eq!(sizes, vec![8_192]);
+            }
+        }
+    }
+
+    #[test]
+    fn swar_find_escape_matches_naive_scan_for_every_byte_and_lane() {
+        let needs_escape = |b: u8| b < 0x20 || b == b'"' || b == b'\\';
+        for len in 1..=16 {
+            for pos in 0..len {
+                for byte in 0u8..=0xff {
+                    let mut buf = vec![b'a'; len];
+                    buf[pos] = byte;
+                    let expected = needs_escape(byte).then_some(pos);
+                    assert_eq!(
+                        super::find_escape(&buf),
+                        expected,
+                        "len={len} pos={pos} byte=0x{byte:02x}"
+                    );
+                }
+            }
+        }
+        // High-bit bytes mixed with every safe ASCII byte never trigger false positives.
+        let all_safe: Vec<u8> = (0u8..=0xff).filter(|&b| !needs_escape(b)).collect();
+        assert_eq!(super::find_escape(&all_safe), None);
     }
 }
