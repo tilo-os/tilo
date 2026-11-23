@@ -400,6 +400,7 @@ capture-replay-save = Save
 capture-replay-stop = Stop
 capture-shot-title = Screenshot
 capture-shot-copy = Copy
+capture-shot-mark = Mark up
 capture-shot-open = Open
 capture-shot-reveal = Show in folder
 capture-shot-dismiss = Done

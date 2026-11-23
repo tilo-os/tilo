@@ -33,12 +33,14 @@ capture-failed-not-written-folder = es gibt keinen Ordner { $folder }
 capture-failed-not-written-other = das System ließ Tilo nicht in { $folder } schreiben
 capture-failed-not-copied = Ein Bildschirmfoto wurde gespeichert, aber nicht kopiert: { $why }
 capture-failed-not-read = Ein Bildschirmfoto wurde nicht kopiert: { $why }
+capture-failed-not-marked = Das Bildschirmfoto konnte nicht zum Markieren geöffnet werden: { $why }
 capture-failed-clip-not-saved = Ein Ausschnitt des gerade Geschehenen wurde nicht gespeichert: { $why }
 capture-failed-not-opened = { $path } konnte nicht geöffnet werden: { $why }
 
 ## Actions
 
 desktop-capture-studio = Aufnahmestudio
+so-tilo-capture-studio-annotate = Das letzte Bildschirmfoto markieren
 so-tilo-capture-studio-open = Das Aufnahmestudio öffnen
 so-tilo-capture-studio-pause-recording = Die Aufnahme pausieren
 so-tilo-capture-studio-record = Den Bildschirm aufnehmen

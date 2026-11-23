@@ -1,0 +1,84 @@
+{
+  "app": "capture",
+  "said": "Take a screenshot and mark it up",
+  "family": "capture",
+  "live": "rust",
+  "rust": {},
+  "steps": [
+    {
+      "id": "screenshot",
+      "said": "Take a screenshot from its action: the shot is kept, and its card offers to mark it up",
+      "ops": [
+        {
+          "act": [
+            "desktop.capture-studio",
+            "screenshot",
+            {
+              "source": "display"
+            }
+          ]
+        },
+        {
+          "must": {
+            "see": [
+              "Mark up"
+            ],
+            "within": 15
+          }
+        }
+      ]
+    },
+    {
+      "id": "annotate",
+      "said": "Mark it up: the editor's canvas and tools are there",
+      "ops": [
+        {
+          "act": [
+            "desktop.capture-studio",
+            "annotate"
+          ]
+        },
+        {
+          "must": {
+            "see": [
+              "Save copy",
+              "Pen"
+            ],
+            "within": 15
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "keep",
+      "said": "Draw a stroke as an action and keep it: the marked picture's receipt offers to send it",
+      "ops": [
+        {
+          "act": [
+            "desktop.capture-studio",
+            "annotate",
+            {
+              "shape": "pen",
+              "color": "#ff545c",
+              "width": 6,
+              "points": [
+                "40,40",
+                "400,40"
+              ],
+              "keep": true
+            }
+          ]
+        },
+        {
+          "must": {
+            "see": [
+              "Send…"
+            ],
+            "within": 15
+          }
+        }
+      ]
+    }
+  ]
+}

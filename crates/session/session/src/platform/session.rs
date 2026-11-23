@@ -1139,6 +1139,7 @@ impl Session {
             Rc::clone(&capture_io),
             capture_notes,
             &live_activities,
+            tilo_capture_studio::Studio::new(),
         );
 
         // The desktop's own chords win over every app's: the portal's

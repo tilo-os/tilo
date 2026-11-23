@@ -252,6 +252,16 @@ impl ScreenshotMarkup {
         &self.strokes
     }
 
+    /// Add `stroke` to what is marked up, as a drag with its tool makes it:
+    /// in the picture's own pixels, and part of what [`Self::flattened`]
+    /// keeps. A stroke the person did not draw (a shortcut's, an agent's)
+    /// is the same mark on the same canvas.
+    pub fn add_stroke(&mut self, stroke: MarkupStroke) {
+        self.strokes.push(stroke);
+        self.redo.clear();
+        self.dirty = true;
+    }
+
     pub fn take_commands(&mut self) -> Vec<ScreenshotMarkupCommand> {
         std::mem::take(&mut self.pending)
     }

@@ -34,8 +34,8 @@ use std::time::{Duration, Instant};
 
 use tilo_capture_studio::audio::{Availability, Track as AudioTrack};
 use tilo_capture_studio::{
-    Ask, Failed, Failure, Finished, Frame, Kept, REPLAY_FPS, Recording, Refusal, Scene, Selection,
-    Sent, Studio, Take, WriteCause,
+    Ask, Failed, Failure, Finished, Frame, Kept, MarkupImage, REPLAY_FPS, Recording, Refusal,
+    Scene, Selection, Sent, Studio, Take, WriteCause,
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
@@ -44,8 +44,8 @@ use tilo_portal::CaptureError;
 use tilo_session_core::surfaces::Surfaces;
 use ui::vello::kurbo::Rect;
 use ui::widget::{
-    AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, ScreenshotKept,
-    ScreenshotSendDevice, SourceMode,
+    AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, MarkupExport,
+    ScreenshotKept, ScreenshotSendDevice, SourceMode,
 };
 
 use crate::Options;
@@ -76,6 +76,9 @@ const SHOT_SHOWN: Duration = Duration::from_millis(5_500);
 /// because it asks the person to read why and choose what to do with the picture instead.
 const FAILED_SHOWN: Duration = Duration::from_millis(12_000);
 
+/// A screenshot being read back for the markup editor, and the worker's answer about it.
+type Marking = (PathBuf, crate::capture_io::PictureAnswer);
+
 /// The capture studio as the session runs it, and what it is doing.
 pub(crate) struct CaptureStudio {
     state: Studio,
@@ -91,6 +94,8 @@ pub(crate) struct CaptureStudio {
     copies: VecDeque<Receiver<Result<Vec<u8>, String>>>,
     /// The clips being cut from the replay buffer.
     clips: VecDeque<Receiver<Result<usize, String>>>,
+    /// The screenshots being read back for the markup editor, with the file each is read from.
+    marking: VecDeque<Marking>,
     /// The last screenshot, for its receipt and for opening it again.
     last: Option<Kept>,
     /// The session's transfer engine, when this session runs on a device fabric: who a screenshot
@@ -235,9 +240,9 @@ pub(crate) fn mount(
     io: Rc<CaptureIo>,
     notes: Receiver<Note>,
     board: &Arc<runtime_collab::LiveActivities>,
+    state: Studio,
 ) -> Option<CaptureStudio> {
     let who = (options.device.as_str(), options.person.as_str());
-    let state = Studio::new();
     match Sheet::mount(
         tilo_capture_studio::definition(),
         state,
@@ -259,6 +264,7 @@ pub(crate) fn mount(
                 shots: VecDeque::new(),
                 copies: VecDeque::new(),
                 clips: VecDeque::new(),
+                marking: VecDeque::new(),
                 last: None,
                 sends: Sends::new(
                     nearby.cloned(),
@@ -323,6 +329,7 @@ impl CaptureStudio {
         self.take_shots(compositor);
         self.take_copies(compositor);
         self.take_clips();
+        self.take_marking();
         for ask in self.state.link().take_asks() {
             self.answer(ask, compositor);
         }
@@ -674,6 +681,9 @@ impl CaptureStudio {
             }
             Ask::SendLastTo(id) => self.send_last_to(&id),
             Ask::SendLastToWorkspace => self.send_last_to_workspace(),
+            Ask::AnnotateLast => self.annotate_last(),
+            Ask::SaveMarkup(export) => self.save_marked(export),
+            Ask::CopyMarkup(export) => self.copy_marked(export),
         }
     }
 
@@ -719,6 +729,116 @@ impl CaptureStudio {
             return;
         };
         self.sent = self.sends.send_to_workspace(kept.path.clone());
+    }
+
+    /// Read the last screenshot back for the markup editor: the picture it
+    /// draws on is the file its receipt shows.
+    fn annotate_last(&mut self) {
+        let Some(kept) = &self.last else {
+            self.failed(Failure::NotMarked(
+                "there is no screenshot to mark up".to_owned(),
+            ));
+            return;
+        };
+        self.mark(kept.path.clone());
+    }
+
+    /// Read the screenshot at `path` back for the markup editor, where the
+    /// editor draws on it once the worker has it.
+    fn mark(&mut self, path: PathBuf) {
+        let read = self.io.read_picture(path.clone());
+        self.marking.push_back((path, read));
+    }
+
+    /// Hand the studio the picture read back for the markup editor, and put
+    /// the studio up over what it captures: the editor draws over the whole
+    /// display, as it did in the shell it came from.
+    fn take_marking(&mut self) {
+        loop {
+            let Some((_, answer)) = self.marking.front() else {
+                return;
+            };
+            let answered = match answer.try_recv() {
+                Ok(answered) => answered,
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => Err(NO_WORKER.to_owned()),
+            };
+            let Some((path, _)) = self.marking.pop_front() else {
+                return;
+            };
+            match answered {
+                Ok((width, height, rgba)) => {
+                    self.state.link().open_markup(MarkupImage {
+                        path,
+                        width,
+                        height,
+                        rgba: Arc::from(rgba),
+                    });
+                    if !self.presentation().is_open() {
+                        self.presentation().open(false);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "a screenshot was not read back to mark up");
+                    self.failed(Failure::NotMarked(error));
+                }
+            }
+        }
+    }
+
+    /// Keep the marked picture as a screenshot of its own: a file of its
+    /// own, and the receipt that sends or saves it into the workspace as any
+    /// other shot's does.
+    fn save_marked(&mut self, export: MarkupExport) {
+        let MarkupExport {
+            width,
+            height,
+            rgba,
+        } = export;
+        let Some(picture) = image::RgbaImage::from_raw(width, height, rgba.to_vec()) else {
+            self.failed(Failure::NotMarked(
+                "the marked picture was the wrong size".to_owned(),
+            ));
+            return;
+        };
+        let receipt = Receipt {
+            width,
+            height,
+            preview: preview_pixels(width, height, picture.as_raw()),
+            copy: false,
+            floating: !self.presentation().is_drawn(),
+            thumb: if self.presentation().is_drawn() {
+                String::new()
+            } else {
+                ui::held_images::hero(&picture, CARD_PICTURE)
+            },
+        };
+        let answer = self
+            .io
+            .write(Arc::new(picture), self.directory.clone(), false);
+        self.shots.push_back(Shot {
+            folder: self.directory.clone(),
+            picture: None,
+            receipt: Some(receipt),
+            reply: None,
+            answer,
+        });
+    }
+
+    /// Put the marked picture on the clipboard.
+    fn copy_marked(&mut self, export: MarkupExport) {
+        let MarkupExport {
+            width,
+            height,
+            rgba,
+        } = export;
+        let Some(picture) = image::RgbaImage::from_raw(width, height, rgba.to_vec()) else {
+            self.failed(Failure::NotMarked(
+                "the marked picture was the wrong size".to_owned(),
+            ));
+            return;
+        };
+        self.copies.push_back(self.io.encode(Arc::new(picture)));
     }
 
     fn start(&mut self, take: Take) {
@@ -1077,6 +1197,14 @@ impl CaptureStudio {
         match command {
             // The last shot's card: it acts on the shot it shows.
             "copy-shot" => self.answer(Ask::CopyLast, compositor),
+            "mark-shot" => {
+                let path = self.shown_shot.as_ref().map(|shot| shot.path.clone());
+                if let Some(path) = path {
+                    // The editor is what shows now; the card has done its work.
+                    self.shown_shot = None;
+                    self.mark(path);
+                }
+            }
             "open-shot" => {
                 let path = self.shown_shot.as_ref().map(|shot| shot.path.clone());
                 if let Some(path) = path {
@@ -1314,6 +1442,16 @@ impl CaptureStudio {
                         ControlKind::Primary,
                     )
                     .with_icon("copy"),
+                )
+                // The shot the person just took is one action from being
+                // marked up, as the bar's own receipt offers while it is up.
+                .with_control(
+                    Control::new(
+                        "mark-shot",
+                        crate::i18n::t("capture-shot-mark"),
+                        ControlKind::Secondary,
+                    )
+                    .with_icon("pencil"),
                 )
                 .with_control(
                     Control::new(
@@ -1597,15 +1735,19 @@ fn compose(mut shots: Vec<Screenshot>) -> Result<Frame, String> {
 
 /// The thumbnail a receipt shows of `frame` .
 fn preview(frame: &Frame) -> CapturePreview {
+    preview_pixels(frame.width, frame.height, &frame.rgba)
+}
+
+/// The thumbnail a receipt shows of a `width` x `height` picture in `rgba` .
+fn preview_pixels(width: u32, height: u32, rgba: &[u8]) -> CapturePreview {
     let (columns, rows) = PREVIEW;
     let mut pixels = Vec::with_capacity(usize::from(columns) * usize::from(rows));
     for row in 0..u32::from(rows) {
         for column in 0..u32::from(columns) {
-            let x = (column * frame.width / u32::from(columns)).min(frame.width.saturating_sub(1));
-            let y = (row * frame.height / u32::from(rows)).min(frame.height.saturating_sub(1));
-            let at = usize::try_from(((y * frame.width) + x) * 4).unwrap_or(0);
-            let pixel = frame
-                .rgba
+            let x = (column * width / u32::from(columns)).min(width.saturating_sub(1));
+            let y = (row * height / u32::from(rows)).min(height.saturating_sub(1));
+            let at = usize::try_from(((y * width) + x) * 4).unwrap_or(0);
+            let pixel = rgba
                 .get(at..at.saturating_add(4))
                 .unwrap_or(&[0, 0, 0, 255]);
             pixels.push([pixel[0], pixel[1], pixel[2], pixel[3]]);
@@ -1631,6 +1773,12 @@ mod tests {
     /// became of the recorder is said: the worker's own notes go nowhere, so a test says what a
     /// failing encoder says.
     fn studio(pictures: &Path) -> (CaptureStudio, Compositor, Sender<Note>) {
+        studio_with(pictures, Studio::new())
+    }
+
+    /// [`studio`] over `state`, which a studio app in the test is lent too: the
+    /// session's end and a surface run against the same conversation.
+    fn studio_with(pictures: &Path, state: Studio) -> (CaptureStudio, Compositor, Sender<Note>) {
         let options = Options {
             presentation: ui::headless::fixture_runner_inputs,
             pictures: Some(pictures.to_path_buf()),
@@ -1653,6 +1801,7 @@ mod tests {
             io,
             notes,
             &board,
+            state,
         )
         .expect("the studio mounts");
         drop(worker_notes);
@@ -1782,7 +1931,13 @@ mod tests {
             .collect();
         assert_eq!(
             controls,
-            ["copy-shot", "open-shot", "reveal-shot", "dismiss-shot"]
+            [
+                "copy-shot",
+                "mark-shot",
+                "open-shot",
+                "reveal-shot",
+                "dismiss-shot"
+            ]
         );
 
         // The person puts it away on the card.
@@ -1987,6 +2142,134 @@ mod tests {
         assert!(
             studio.board.activity(tilo_capture_studio::APP_ID).is_none(),
             "and nothing is shown any more"
+        );
+    }
+
+    /// The controls the studio's markup editor offers now, by their ids.
+    fn editor_controls(
+        app: &mut tilo_app::framework::testing::HeadlessApp<tilo_capture_studio::CaptureStudioApp>,
+    ) -> Vec<String> {
+        use ui::widget::Widget as _;
+        app.surface_mut::<tilo_capture_studio::StudioSurface>()
+            .test_rects()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// A screenshot taken, marked up with one stroke given as an action, and
+    /// kept: the picture the studio keeps is a file of its own, showing the
+    /// stroke where the action put it, and the studio hands it on as the
+    /// shot its receipt sends or saves as any other.
+    #[test]
+    fn a_stroke_an_action_draws_is_in_the_picture_the_studio_keeps() {
+        use tilo_app::framework::testing::HeadlessApp;
+        use tilo_capture_studio::{CaptureEffect, CaptureStudioApp};
+
+        let pictures = tempfile::tempdir().expect("a folder");
+        let state = Studio::new();
+        let (mut studio, mut compositor, _said) = studio_with(pictures.path(), state.clone());
+        let mut app = HeadlessApp::<CaptureStudioApp>::for_person_with_lent("person", state)
+            .expect("the studio app");
+        app.harness().resize((1280, 800)).expect("a window");
+
+        // A screenshot, through the action the palette and an agent take. The
+        // worker writes it off the pass: the session is served until it is
+        // kept.
+        app.effect(&CaptureEffect::Screenshot {
+            source: Some("display".to_owned()),
+            window: None,
+        })
+        .expect("the screenshot action");
+        app.settle();
+        tilo_test_env::wait_until("the shot is kept", || {
+            studio.serve(&mut compositor);
+            studio.last.is_some()
+        });
+        let kept = studio.last.clone().expect("the shot is kept");
+        let before = image::open(&kept.path)
+            .expect("the shot's file")
+            .into_rgba8();
+
+        // The editor opens on it: the studio has shown the shot the action
+        // marks up.
+        app.settle();
+        app.effect(&CaptureEffect::Annotate {
+            shape: None,
+            color: None,
+            width: None,
+            points: None,
+            keep: None,
+        })
+        .expect("the annotate action");
+        app.settle();
+        studio.serve(&mut compositor);
+        assert!(
+            !studio.marking.is_empty(),
+            "the shot is read back for the editor"
+        );
+        tilo_test_env::wait_until("the shot is read back to mark up", || {
+            studio.serve(&mut compositor);
+            studio.marking.is_empty()
+        });
+        app.settle();
+        let editor = editor_controls(&mut app);
+        assert!(
+            editor.iter().any(|id| id.starts_with("markup.")),
+            "the editor is up with its tools: {editor:?}"
+        );
+
+        // One stroke across the picture, kept at once, as the same action
+        // does for a shortcut or an agent.
+        app.effect(&CaptureEffect::Annotate {
+            shape: Some("pen".to_owned()),
+            color: Some("#ff0000".to_owned()),
+            width: Some(6.0),
+            points: Some(vec!["40,40".to_owned(), "400,40".to_owned()]),
+            keep: Some(true),
+        })
+        .expect("the stroke action");
+        app.settle();
+        tilo_test_env::wait_until("the marked picture is kept", || {
+            studio.serve(&mut compositor);
+            studio
+                .last
+                .as_ref()
+                .is_some_and(|marked| marked.path != kept.path)
+        });
+
+        // A file of its own, the shot the studio keeps and hands on.
+        let marked = studio.last.clone().expect("the marked picture is kept");
+        assert_ne!(marked.path, kept.path, "kept as a screenshot of its own");
+        assert!(marked.path.exists(), "its file is there");
+        assert_eq!(
+            studio
+                .state
+                .link()
+                .scene()
+                .kept
+                .as_ref()
+                .map(|kept| &kept.path),
+            Some(&marked.path),
+            "the receipt shows the marked picture, to send or save into the workspace"
+        );
+        let after = image::open(&marked.path)
+            .expect("the marked picture's file")
+            .into_rgba8();
+        assert_eq!(
+            after.dimensions(),
+            before.dimensions(),
+            "the marks go on the picture, not around it"
+        );
+        assert_ne!(
+            after.get_pixel(200, 40),
+            before.get_pixel(200, 40),
+            "the stroke is where the action drew it"
+        );
+        assert_eq!(
+            after.get_pixel(600, 300),
+            before.get_pixel(600, 300),
+            "and nowhere else"
         );
     }
 }

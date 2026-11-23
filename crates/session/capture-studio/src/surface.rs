@@ -4,6 +4,7 @@
 //! [`Ask`]s.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use tilo_sheets::{Phase, SheetState as _};
 use ui::framework::{EffectAnswer, EffectCx, Effected, ResourceSurface, SurfaceCx};
@@ -12,11 +13,11 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::vello::Scene as VelloScene;
-use ui::vello::kurbo::{Affine, Rect};
+use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CaptureStudio, EventCtx,
-    RecordingCommand, ReplayCommand, ScreenshotCommand, ScreenshotSendTarget, SourceMode,
-    SurfaceLevel, Widget,
+    MarkupStroke, MarkupTool, RecordingCommand, ReplayCommand, ScreenshotCommand, ScreenshotMarkup,
+    ScreenshotMarkupCommand, ScreenshotSendTarget, SourceMode, SurfaceLevel, TaffyTreeExt, Widget,
 };
 use ui::winit::event::WindowEvent;
 
@@ -28,6 +29,25 @@ use ui::widget::DrawChild;
 /// How long what became of a send stays up once it is known, the same as the
 /// receipt it belongs to.
 const SENT_SHOWN: ui::time::Duration = ui::time::Duration::from_millis(5_500);
+
+/// The markup editor, over the picture it marks up.
+struct Markup {
+    widget: ScreenshotMarkup,
+    /// The screenshot it marks up: keeping its marks writes another file, so
+    /// this tells the receipt the editor opened from the picture it keeps.
+    path: PathBuf,
+}
+
+impl Markup {
+    fn of(image: crate::link::MarkupImage, spawn_from: Option<Rect>) -> Self {
+        let widget = ScreenshotMarkup::new(image.rgba, image.width, image.height)
+            .with_spawn_from(spawn_from);
+        Self {
+            widget,
+            path: image.path,
+        }
+    }
+}
 
 /// The capture bar over the desktop, over the studio's state.
 #[allow(
@@ -59,6 +79,24 @@ pub struct StudioSurface {
     put_away: bool,
     /// What the studio says of that send, and since when.
     saying: Option<(String, ui::time::Instant)>,
+    /// The markup editor, while the last screenshot is being marked up.
+    markup: Option<Markup>,
+    /// The session is still reading the picture the editor draws on.
+    markup_wanted: bool,
+    /// Where the editor grows from: the receipt's thumbnail the person
+    /// pressed, or nothing for an action's.
+    markup_from: Option<Rect>,
+    /// The marks an action asked for before the picture was there to draw
+    /// them on.
+    pending_marks: Vec<MarkupStroke>,
+    /// The marked picture is to be kept once its marks are on.
+    keeping: bool,
+    /// The marked picture is on its way to its file: a second Save while
+    /// that runs asks for no second file.
+    saving: bool,
+    /// The editor came or went: the tree under the surface is to be built
+    /// again, so the editor's node is there (or gone).
+    markup_changed: bool,
     /// Where that was drawn, for tests to find it.
     chip: Rect,
     rect: Rect,
@@ -83,6 +121,13 @@ impl StudioSurface {
             sending: false,
             put_away: false,
             saying: None,
+            markup: None,
+            markup_wanted: false,
+            markup_from: None,
+            pending_marks: Vec::new(),
+            keeping: false,
+            saving: false,
+            markup_changed: false,
             chip: Rect::ZERO,
             rect: Rect::ZERO,
             dirty: true,
@@ -121,7 +166,10 @@ impl StudioSurface {
         match presentation.phase() {
             Phase::Open => {
                 self.opening != Some(presentation.openings())
-                    || (!self.widget.is_open() && !self.picked())
+                    || (!self.widget.is_open()
+                        && !self.picked()
+                        && self.markup.is_none()
+                        && !self.markup_wanted)
             }
             Phase::Leaving | Phase::Closed => self.widget.is_open(),
         }
@@ -143,6 +191,7 @@ impl StudioSurface {
             self.choose_how_it_opened();
             self.choose_what_is_asked();
         }
+        self.take_markup_picture();
         self.take_intents();
         self.stop_saying();
         self.dismiss();
@@ -270,6 +319,28 @@ impl StudioSurface {
             // The capture the person took did not come out: the bar says why
             // on the thing they touched, and stays up until it is read.
             self.saying = Some((i18n::failed(&failed.failure), ui::time::now()));
+            // The picture the editor was to draw on could not be read: the
+            // studio stays up to say why, rather than waiting for an editor
+            // nobody will see.
+            if self.markup.is_none() {
+                self.markup_wanted = false;
+            } else {
+                // The marked picture could not be kept: the marks are still
+                // the person's to keep again.
+                self.keeping = false;
+                self.saving = false;
+            }
+        }
+        // The picture the editor marks up was kept as a new screenshot: its
+        // receipt says what became of it, and the editor has done its work.
+        let kept_anew = self.markup.as_ref().is_some_and(|markup| {
+            scene
+                .kept
+                .as_ref()
+                .is_some_and(|kept| kept.path != markup.path)
+        });
+        if kept_anew {
+            self.close_markup();
         }
         self.scene = scene;
         self.dirty = true;
@@ -331,6 +402,128 @@ impl StudioSurface {
         }
     }
 
+    /// Show the picture the session read back for the markup editor, once:
+    /// the editor draws on it, with the marks an action queued for it.
+    fn take_markup_picture(&mut self) {
+        let Some(image) = self.studio.link().take_markup() else {
+            return;
+        };
+        self.markup = Some(Markup::of(image, self.markup_from.take()));
+        self.markup_wanted = false;
+        self.markup_changed = true;
+        // The editor is the studio now: the bar it came from stays down
+        // under it.
+        if !self.own {
+            self.widget.close();
+        }
+        let pending = std::mem::take(&mut self.pending_marks);
+        if let Some(markup) = self.markup.as_mut() {
+            for stroke in pending {
+                markup.widget.add_stroke(stroke);
+            }
+        }
+        self.keep_markup_when_asked();
+        self.dirty = true;
+    }
+
+    /// Take up the markup editor's own Save, Copy, Open and Cancel.
+    fn take_markup_commands(&mut self) {
+        let Some(markup) = self.markup.as_mut() else {
+            return;
+        };
+        let commands = markup.widget.take_commands();
+        for command in commands {
+            match command {
+                ScreenshotMarkupCommand::Save(export) => {
+                    self.keeping = true;
+                    self.save_markup(export);
+                }
+                ScreenshotMarkupCommand::Copy(export) => {
+                    self.studio.link().ask(Ask::CopyMarkup(export));
+                }
+                ScreenshotMarkupCommand::OpenExternal => {
+                    if let Some(kept) = &self.scene.kept {
+                        self.studio.link().ask(Ask::Open(kept.path.clone()));
+                    }
+                }
+                ScreenshotMarkupCommand::Cancel => self.close_markup(),
+            }
+        }
+    }
+
+    /// Keep the marked picture once it has its marks: the person pressed Save,
+    /// or an action asked for the picture to be kept now.
+    fn keep_markup_when_asked(&mut self) {
+        if !self.keeping {
+            return;
+        }
+        let Some(markup) = self.markup.as_mut() else {
+            return;
+        };
+        let export = markup.widget.flattened();
+        self.save_markup(export);
+    }
+
+    fn save_markup(&mut self, export: ui::widget::MarkupExport) {
+        if self.saving {
+            return;
+        }
+        self.saving = true;
+        self.studio.link().ask(Ask::SaveMarkup(export));
+        self.dirty = true;
+    }
+
+    /// Put the editor away: nothing of the marked picture is kept.
+    fn close_markup(&mut self) {
+        if self.markup.take().is_none() && !self.markup_wanted {
+            return;
+        }
+        self.markup_wanted = false;
+        self.markup_from = None;
+        self.pending_marks.clear();
+        self.keeping = false;
+        self.saving = false;
+        self.markup_changed = true;
+        self.dirty = true;
+    }
+
+    /// Mark the last screenshot up, as the action `effect` names: the editor
+    /// opens on it, and the stroke it gives is drawn on it as a drag with
+    /// that tool is.
+    fn annotate(&mut self, effect: CaptureEffect) -> EffectAnswer {
+        let CaptureEffect::Annotate {
+            shape,
+            color,
+            width,
+            points,
+            keep,
+        } = effect
+        else {
+            return Err("not an annotation".into());
+        };
+        if self.scene.kept.is_none() {
+            return Err("there is no screenshot to mark up: take one first".into());
+        }
+        if let Some(stroke) =
+            stroke_of(shape.as_deref(), color.as_deref(), width, points.as_deref())
+        {
+            match self.markup.as_mut() {
+                Some(markup) => markup.widget.add_stroke(stroke),
+                None => self.pending_marks.push(stroke),
+            }
+        }
+        if keep == Some(true) {
+            self.keeping = true;
+        }
+        if self.markup.is_none() && !self.markup_wanted {
+            self.markup_wanted = true;
+            self.studio.link().ask(Ask::AnnotateLast);
+        }
+        self.keep_markup_when_asked();
+        self.dirty = true;
+        Ok(Effected::done())
+    }
+
     fn ask(&mut self, intent: CaptureIntent) {
         let link = self.studio.link().clone();
         // Post-capture commands act on what was made; they never capture
@@ -339,9 +532,14 @@ impl StudioSurface {
             // What the receipt acts on: the screenshot it shows.
             let kept = self.scene.kept.as_ref().map(|kept| kept.path.clone());
             match command {
-                ScreenshotCommand::OpenLast
-                | ScreenshotCommand::MarkupLast
-                | ScreenshotCommand::PinLast => {
+                ScreenshotCommand::MarkupLast => {
+                    // The editor grows out of the thumbnail the person
+                    // pressed, where the receipt showed it.
+                    self.markup_from = intent.regions.first().copied();
+                    self.markup_wanted = true;
+                    link.ask(Ask::AnnotateLast);
+                }
+                ScreenshotCommand::OpenLast | ScreenshotCommand::PinLast => {
                     if let Some(path) = kept {
                         link.ask(Ask::Open(path));
                     }
@@ -419,6 +617,12 @@ impl StudioSurface {
     /// button, Escape), and say when nothing of it is drawn.
     fn dismiss(&mut self) {
         if self.own {
+            return;
+        }
+        // The editor is the studio while it is up, and the session is still
+        // reading its picture: the bar being down says nothing about the
+        // studio.
+        if self.markup.is_some() || self.markup_wanted {
             return;
         }
         // What the person put down stays down, whatever the bar was still
@@ -539,6 +743,68 @@ fn nothing_in_front(take: &Take) -> bool {
     take.source == SourceMode::Window && take.targets.is_empty()
 }
 
+/// The stroke an action names, in the picture's own pixels: its shape, ink,
+/// width and points. The tool's own colour and width stand where the action
+/// names none, as the toolbar would have them.
+fn stroke_of(
+    shape: Option<&str>,
+    color: Option<&str>,
+    width: Option<f32>,
+    points: Option<&[String]>,
+) -> Option<MarkupStroke> {
+    let tool = match shape?.trim().to_ascii_lowercase().as_str() {
+        "" | "pen" => MarkupTool::Pen,
+        "highlighter" => MarkupTool::Highlighter,
+        "arrow" => MarkupTool::Arrow,
+        "rectangle" => MarkupTool::Rectangle,
+        "redact" => MarkupTool::Redact,
+        _ => return None,
+    };
+    let points: Vec<Point> = points
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|point| point_of(point))
+        .collect();
+    if points.is_empty() {
+        return None;
+    }
+    let (width_px, alpha) = match tool {
+        MarkupTool::Highlighter => (18.0, 92),
+        MarkupTool::Redact => (0.0, 255),
+        MarkupTool::Pen | MarkupTool::Arrow | MarkupTool::Rectangle => (4.0, 255),
+    };
+    let mut ink = match tool {
+        // What a redaction covers with: the tool picks its own ink.
+        MarkupTool::Redact => [18, 18, 22, 255],
+        _ => color.and_then(ink_of).unwrap_or([244, 84, 92, 255]),
+    };
+    ink[3] = alpha;
+    Some(MarkupStroke {
+        tool,
+        color: ink,
+        width_px: width
+            .filter(|width| width.is_finite() && *width >= 0.0)
+            .unwrap_or(width_px),
+        points,
+    })
+}
+
+/// The ink an action names, as `#rrggbb`.
+fn ink_of(ink: &str) -> Option<[u8; 4]> {
+    let hex = ink.trim().strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |range: std::ops::Range<usize>| u8::from_str_radix(hex.get(range)?, 16).ok();
+    Some([byte(0..2)?, byte(2..4)?, byte(4..6)?, 255])
+}
+
+/// One of an action's points, as `x,y` in the picture's own pixels.
+fn point_of(point: &str) -> Option<Point> {
+    let (x, y) = point.split_once(',')?;
+    Some(Point::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
 /// The take an intent names.
 fn take(intent: &CaptureIntent) -> Take {
     Take {
@@ -562,8 +828,12 @@ impl Widget for StudioSurface {
     }
 
     /// The bar is drawn over what it captures: a page shows a picture of it, with its controls as
-    /// buttons where they stand.
+    /// buttons where they stand. The editor, while it is up, is what a page shows instead.
     fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        if let Some(markup) = &self.markup {
+            markup.widget.html(cx);
+            return;
+        }
         cx.element("div");
         cx.picture();
         if let Some(access) = self.accessibility() {
@@ -578,24 +848,37 @@ impl Widget for StudioSurface {
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
         // The bar covers the whole surface: it is an overlay over what it
-        // captures, not a row of it.
+        // captures, not a row of it. The markup editor stands over it the
+        // same way, while it is up.
+        let mut kids = Vec::with_capacity(2);
+        kids.push(self.widget.build_layout(taffy, theme, node_map));
+        let markup = self
+            .markup
+            .as_mut()
+            .map(|markup| markup.widget.build_layout(taffy, theme, node_map));
+        kids.extend(markup);
+        let only = match kids.as_slice() {
+            // Nothing but the bar: it is the surface's own node, as it always
+            // was.
+            [only] => Some(*only),
+            _ => None,
+        };
+        if let Some(only) = only {
+            node_map.insert(only, std::ptr::from_mut::<dyn Widget>(self));
+            return only;
+        }
         let style = ui::taffy::Style {
-            position: ui::taffy::Position::Absolute,
             size: ui::taffy::Size {
                 width: ui::taffy::Dimension::percent(1.0),
                 height: ui::taffy::Dimension::percent(1.0),
             },
             ..ui::taffy::Style::default()
         };
-        let node = taffy
-            .new_leaf(style)
-            .unwrap_or_else(|_| ui::taffy::NodeId::from(0_u64));
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &kids, node_map, self)
     }
 
     fn apply_layout(
@@ -605,10 +888,20 @@ impl Widget for StudioSurface {
         origin: ui::vello::kurbo::Point,
     ) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
-        // The bar draws in the surface's whole area, as it does in the
-        // shell it came from.
-        self.widget.set_overlay_rect(self.rect);
-        self.widget.apply_layout(taffy, node, origin);
+        let inner = ui::vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
+        let kids = taffy.children(node).unwrap_or_default();
+        if self.markup.is_some() {
+            if let Some(&bar) = kids.first() {
+                self.widget.apply_layout(taffy, bar, inner);
+            }
+            if let (Some(markup), Some(&node)) = (self.markup.as_mut(), kids.get(1)) {
+                self.widget.set_overlay_rect(self.rect);
+                markup.widget.apply_layout(taffy, node, inner);
+            }
+        } else {
+            self.widget.set_overlay_rect(self.rect);
+            self.widget.apply_layout(taffy, node, origin);
+        }
     }
 
     fn get_rect(&self) -> Rect {
@@ -639,23 +932,46 @@ impl Widget for StudioSurface {
         presence: &PresenceCtx,
     ) {
         self.catch_up();
-        self.widget
-            .draw_child(scene, transform, text_renderer, theme, presence);
+        match self.markup.as_mut() {
+            // The editor is the whole studio while it is up: what it marks up
+            // is the picture, not the bar that kept it.
+            Some(markup) => {
+                markup
+                    .widget
+                    .draw_child(scene, transform, text_renderer, theme, presence);
+            }
+            None => self
+                .widget
+                .draw_child(scene, transform, text_renderer, theme, presence),
+        }
+        self.take_markup_commands();
         self.take_intents();
         self.chip = match &self.saying {
-            Some((said, _)) => said_chip(scene, transform, text_renderer, theme, self.rect, said),
-            None => Rect::ZERO,
+            Some((said, _)) if self.markup.is_none() => {
+                said_chip(scene, transform, text_renderer, theme, self.rect, said)
+            }
+            _ => Rect::ZERO,
         };
         // What this frame drew is what the link and the session said of it.
         self.dirty = false;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        self.widget.handle_event(event, ctx);
+        match self.markup.as_mut() {
+            Some(markup) => markup.widget.handle_event(event, ctx),
+            None => self.widget.handle_event(event, ctx),
+        }
+        self.take_markup_commands();
         self.take_intents();
     }
 
     fn needs_redraw(&self) -> bool {
+        if let Some(markup) = &self.markup {
+            return self.dirty
+                || self.behind()
+                || markup.widget.needs_redraw()
+                || markup.widget.needs_animation_frame();
+        }
         self.dirty
             || self.behind()
             || (self.shown_open()
@@ -663,6 +979,9 @@ impl Widget for StudioSurface {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        if let Some(markup) = &self.markup {
+            return markup.widget.needs_animation_frame();
+        }
         // With the bar down nothing of it is drawn: it runs for its actions
         // and the scene, not to animate what nobody sees.
         self.shown_open() && self.widget.needs_animation_frame()
@@ -673,17 +992,68 @@ impl Widget for StudioSurface {
             (false, Some((_, since))) => since.checked_add(SENT_SHOWN),
             _ => None,
         };
-        match (self.widget.next_wake_deadline(), said) {
-            (Some(bar), Some(said)) => Some(bar.min(said)),
-            (bar, said) => bar.or(said),
+        let shown = match &self.markup {
+            Some(markup) => markup.widget.next_wake_deadline(),
+            None => self.widget.next_wake_deadline(),
+        };
+        match (shown, said) {
+            (Some(shown), Some(said)) => Some(shown.min(said)),
+            (shown, said) => shown.or(said),
         }
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.widget.wants_pointer_capture()
+        match &self.markup {
+            Some(markup) => markup.widget.wants_pointer_capture(),
+            None => self.widget.wants_pointer_capture(),
+        }
+    }
+
+    fn cursor_shape(
+        &self,
+        point: ui::vello::kurbo::Point,
+    ) -> Option<ui::winit::window::CursorIcon> {
+        match &self.markup {
+            Some(markup) => markup.widget.cursor_shape(point),
+            None => self.widget.cursor_shape(point),
+        }
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        match &self.markup {
+            Some(markup) => markup.widget.collect_damage(regions),
+            None => self.widget.collect_damage(regions),
+        }
+    }
+
+    /// The editor appearing or going changes the tree under the surface:
+    /// its node comes or goes with it.
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut dirty = std::mem::take(&mut self.markup_changed);
+        for child in self.children_mut() {
+            dirty |= child.take_structure_dirty();
+        }
+        dirty
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        match &self.markup {
+            Some(markup) => vec![&markup.widget as &dyn Widget],
+            None => Vec::new(),
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match &mut self.markup {
+            Some(markup) => vec![&mut markup.widget as &mut (dyn Widget + '_)],
+            None => Vec::new(),
+        }
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if let Some(markup) = &self.markup {
+            return markup.widget.accessibility();
+        }
         let said = self.saying.as_ref().map(|(said, _)| {
             ui::a11y::AccessNode::new(ui::a11y::Role::Label)
                 .with_name(said.clone())
@@ -706,15 +1076,24 @@ impl Widget for StudioSurface {
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
-        let pressed = self
-            .widget
-            .perform_semantic_action(target, action, state, path);
+        let pressed = match self.markup.as_mut() {
+            Some(markup) => markup
+                .widget
+                .perform_semantic_action(target, action, state, path),
+            None => self
+                .widget
+                .perform_semantic_action(target, action, state, path),
+        };
+        self.take_markup_commands();
         self.take_intents();
         pressed
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {
-        let mut rects = self.widget.test_rects();
+        let mut rects = match &self.markup {
+            Some(markup) => markup.widget.test_rects(),
+            None => self.widget.test_rects(),
+        };
         if self.chip.area() > 0.0 {
             rects.push(("capture.send-status".to_owned(), self.chip));
         }
@@ -775,6 +1154,7 @@ impl ResourceSurface<Capture, CaptureEffect> for StudioSurface {
                     self.studio.presentation().open(false);
                 }
             }
+            effect @ CaptureEffect::Annotate { .. } => return self.annotate(effect),
         }
         self.dirty = true;
         Ok(Effected::done())

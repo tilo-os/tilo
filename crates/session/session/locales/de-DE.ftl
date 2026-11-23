@@ -405,6 +405,7 @@ capture-replay-save = Speichern
 capture-replay-stop = Beenden
 capture-shot-title = Bildschirmfoto
 capture-shot-copy = Kopieren
+capture-shot-mark = Markieren
 capture-shot-open = Öffnen
 capture-shot-reveal = Im Ordner zeigen
 capture-shot-dismiss = Fertig
