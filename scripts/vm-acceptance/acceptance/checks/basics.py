@@ -221,9 +221,14 @@ def hotplug(ctx, res):
     expect(d1 is not None, "the new window is on an output")
     monitor = next((d.get("monitor", "") for d in st["workspace_tree"]["outputs"]["displays"]
                     if d["id"] == d1), "")
-    name = monitor.removeprefix("connector:")
-    if not name or name == monitor:
-        raise Unobservable(f"display {d1} names no DRM connector (monitor={monitor!r})")
+    # The partition names a display by its monitor (an EDID identity, or the connector for a
+    # sink without one); the connector that can be forced is what the compositor published
+    # for that monitor.
+    by_monitor = core.connectors_by_monitor(core.display_snapshot(ctx))
+    name = by_monitor.get(monitor)
+    if not name:
+        raise Unobservable(f"display {d1} names monitor {monitor!r}, which the compositor's "
+                           f"published displays do not name ({sorted(by_monitor)})")
     found = ctx.vm.root_exec(f"ls -d /sys/class/drm/card*-{name} 2>/dev/null").split()
     if len(found) != 1:
         raise Unobservable(f"connector {name} of display {d1} is not one DRM connector: {found}")

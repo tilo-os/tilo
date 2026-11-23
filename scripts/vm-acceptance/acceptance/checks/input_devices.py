@@ -492,8 +492,7 @@ def wake_from_sleep(ctx, res):
                 raise CheckFailed(f"no shell ran in the new Terminal within {core.TERMINAL_SHELL_S} s")
             ctx.vm.input("type", "i=0; while :; do i=$((i+1)); echo wake-$i; sleep 0.2; done")
             ctx.vm.key("Return")
-            displays = ctx.state()["workspace_tree"]["outputs"]["displays"]
-            connectors = [d.get("monitor", "").removeprefix("connector:") for d in displays]
+            connectors = core.lit_connectors(core.display_snapshot(ctx))
             kms = Kms(ctx, connectors)
             before = kms.scanning_out()
             res.metrics["kms_before"] = before

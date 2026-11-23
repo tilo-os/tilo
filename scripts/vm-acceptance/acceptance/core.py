@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import traceback
@@ -601,6 +602,53 @@ def display_rects(state: dict) -> dict:
             for d in state["workspace_tree"]["outputs"]["displays"]}
 
 
+# What the compositor publishes of its outputs for Settings and tools:
+# `$XDG_RUNTIME_DIR/tilo/display-state.json` (settings_store::hardware::
+# DisplayHardwareSnapshot; `tilo-vmd display-apply` lays a VM's monitors out through it).
+DISPLAY_SNAPSHOT = "tilo/display-state.json"
+
+
+def display_snapshot(ctx) -> dict:
+    """The displays the account's compositor published: each output with its connector,
+    label and monitor identity, and the layout of the ones lit."""
+    uid = ctx.vm.account_uid()
+    path = f"/run/user/{uid}/{DISPLAY_SNAPSHOT}"
+    text = ctx.vm.root_exec(f"cat {path} 2>/dev/null; true")
+    if not text.strip():
+        raise Unobservable(f"the compositor published no displays at {path}")
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise Unobservable(f"{path} is not the compositor's snapshot: {e}") from e
+
+
+def monitor_key(identity: dict | None) -> str | None:
+    """An output's monitor as the display partition keys it: its EDID identity, else None
+    for a sink that names none (the partition then uses the connector name). The same
+    `make model serial` the compositor builds (crates/session/compositor/src/output.rs
+    `monitor_of`)."""
+    if not isinstance(identity, dict):
+        return None
+    return f"{identity.get('make', '')} {identity.get('model', '')} {identity.get('serial', '')}".strip()
+
+
+def connectors_by_monitor(snapshot: dict) -> dict[str, str]:
+    """Each monitor the displays partition can name -> the DRM connector it is on."""
+    out = {}
+    for output in snapshot.get("outputs") or []:
+        descriptor = output.get("descriptor") or {}
+        connector = descriptor.get("connector")
+        if not connector:
+            continue
+        out[monitor_key(descriptor.get("monitor")) or connector] = connector
+    return out
+
+
+def lit_connectors(snapshot: dict) -> list[str]:
+    """The connectors of the outputs that are lit, in the compositor's order."""
+    return [row["connector"] for row in snapshot.get("layout") or [] if row.get("connector")]
+
+
 def target_map(targets: list[dict]) -> dict:
     return {t["name"]: tuple(t["rect"]) for t in targets}
 
@@ -1118,8 +1166,9 @@ for d in /proc/[0-9]*; do
   [ "$comm" = tilo-launcher ] && \
     app=$(tr '\0' '\n' 2>/dev/null < $d/cmdline | awk 'p {print; exit} $0 == "--app-id" {p = 1}')
   set -- $st
-  printf 'P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d#/proc/}" "$1" "$2" "$comm" \
-    "$3" "$4" "$5" "$6" "$7" "${app:--}" "$cg"
+  exe=$(readlink $d/exe 2>/dev/null) || exe=$(tr '\0' '\n' 2>/dev/null < $d/cmdline | head -1)
+  printf 'P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d#/proc/}" "$1" "$2" "$comm" \
+    "$3" "$4" "$5" "$6" "$7" "${app:--}" "$cg" "${exe:-?}"
   [ -z "$cg" ] || cgs="$cgs$cg
 "
 done
@@ -1173,18 +1222,20 @@ def parse_processes(text: str) -> dict:
     Each process carries `app`: the `--app-id` of the nearest `tilo-launcher` at or above it,
     so an app is its launcher's whole process tree, whatever its processes are called; or,
     for a program the session started through a launcher that was not captured in the tree,
-    the app its cgroup's scope names (`app_of_cgroup`). Each
+    the app its cgroup's scope names (`app_of_cgroup`), and `exe`: the executable it runs,
+    which tells the compositor from the login wrapper that starts it under the same name. Each
     cgroup carries `charged_at`: itself, or the nearest ancestor with a memory controller,
     where its memory is charged (None: nowhere the dump could read)."""
     procs, cgroups, kib, zones, tmpfs, greeter, page = {}, {}, {}, {}, [], None, None
     for line in text.splitlines():
         f = line.split("\t")
-        if f[0] == "P" and len(f) == 12 and f[1].isdigit():
+        if f[0] == "P" and len(f) == 13 and f[1].isdigit():
             procs[int(f[1])] = {"pid": int(f[1]), "ppid": int(f[2]), "uid": int(f[3]), "comm": f[4],
                                 "rss_mb": _mb(f[5], 1024), "anon_rss_mb": _mb(f[6], 1024),
                                 "file_rss_mb": _mb(f[7], 1024), "shmem_rss_mb": _mb(f[8], 1024),
                                 "swap_mb": _mb(f[9], 1024),
-                                "launches": None if f[10] == "-" else f[10], "cgroup": f[11]}
+                                "launches": None if f[10] == "-" else f[10], "cgroup": f[11],
+                                "exe": f[12]}
         elif f[0] == "C" and len(f) == 4 + len(CGROUP_STAT):
             cgroups[f[1]] = {"charged_at": None if f[2] == "-" else f[2], "memory_mb": _mb(f[3], 1),
                              **{f"{k}_mb": _mb(v, 1) for k, v in zip(CGROUP_STAT, f[4:])}}

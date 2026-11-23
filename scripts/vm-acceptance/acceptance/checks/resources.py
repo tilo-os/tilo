@@ -20,9 +20,11 @@ from ..vm import VmError, wait_until
 AREA = "resources"
 
 # One sh script, so ssh latency never lands inside the measured window. Per process:
-# its CPU ticks, its main thread's context switches, its parent and its start time.
-# Per thread of every process, one awk per process (a few dozen forks per snapshot,
-# not one per thread): the thread's name, CPU ticks and context switches.
+# its CPU ticks, its main thread's context switches, its parent, its start time and the
+# executable it runs (the login wrapper starts the compositor from bash under the same
+# process name, so the name alone names two processes). Per thread of every process, one
+# awk per process (a few dozen forks per snapshot, not one per thread): the thread's name,
+# CPU ticks and context switches.
 SAMPLE = r"""
 uid=__UID__; hz=$(getconf CLK_TCK)
 threads() {
@@ -52,7 +54,8 @@ snap() {
     comm=$(tr " " _ < $d/comm 2>/dev/null)
     set -- $(echo "$s" | sed 's/^.*) //')
     cs=$(awk '/^voluntary_ctxt_switches|^nonvoluntary_ctxt_switches/ {n+=$2} END {print n+0}' $d/status 2>/dev/null)
-    echo "P ${d#/proc/} $comm $(( ${12} + ${13} )) $cs $2 ${20}"
+    exe=$(readlink $d/exe 2>/dev/null) || exe=$(tr '\0' '\n' < $d/cmdline 2>/dev/null | head -1)
+    echo "P ${d#/proc/} $comm $(( ${12} + ${13} )) $cs $2 ${20} ${exe:-?}"
     threads "${d#/proc/}"
   done
   awk '/^cpu / {t=0; for (i=2;i<=NF;i++) t+=$i; print "T", t, $5}' /proc/stat
@@ -62,8 +65,9 @@ echo "@@0"; snap; sleep __SECS__; echo "@@1"; snap; echo "HZ $hz"
 
 
 def _parse_sample(text: str) -> dict:
-    """`SAMPLE` output -> both snapshots: per process {pid: {comm, ticks, cs, ppid, start}},
-    per thread {(pid, tid): (comm, ticks, cs)}, the guest's CPU totals and uptime, and HZ."""
+    """`SAMPLE` output -> both snapshots: per process {pid: {comm, ticks, cs, ppid, start,
+    exe}}, per thread {(pid, tid): (comm, ticks, cs)}, the guest's CPU totals and uptime,
+    and HZ."""
     out = {"procs": [{}, {}], "threads": [{}, {}], "totals": [None, None],
            "uptime": [None, None], "hz": 100}
     cur = None
@@ -79,7 +83,8 @@ def _parse_sample(text: str) -> dict:
             out["procs"][cur][int(f[1])] = {
                 "comm": f[2], "ticks": int(f[3]), "cs": int(f[4]),
                 "ppid": int(f[5]) if len(f) > 5 else None,
-                "start": int(f[6]) if len(f) > 6 else None}
+                "start": int(f[6]) if len(f) > 6 else None,
+                "exe": f[7] if len(f) > 7 else None}
         elif f[0] == "H" and len(f) == 6:
             out["threads"][cur][(int(f[1]), int(f[2]))] = (f[3], int(f[4]), int(f[5]))
         elif f[0] == "T" and len(f) == 3:
@@ -89,25 +94,35 @@ def _parse_sample(text: str) -> dict:
     return out
 
 
+# The compositor is the process running this binary. The login wrapper
+# (os/usr/libexec/tilo-session) runs bash under the same process name and starts the
+# compositor, so the name alone names two processes and the wrapper is the one with no
+# other above it.
+COMPOSITOR_BIN = "/usr/bin/tilo-session"
+
+
 def compositor_pid(procs: dict) -> int | None:
-    """The compositor among the account user's processes: the `tilo-session` with no other
-    above it.
+    """The compositor among the account user's processes: the process running
+    `COMPOSITOR_BIN` (the login wrapper runs bash under the same process name).
 
     A process started by the compositor from its own binary (the shell's public
     shader-seed renderer, `--shader-seed-render`) has the compositor as an ancestor; the
     busiest one could be such a child. Two roots would be two compositors, and which of
     them is the idle desktop cannot be said."""
-    def has_shell_ancestor(pid):
+    def is_compositor(pid):
+        return procs[pid].get("exe") == COMPOSITOR_BIN
+
+    def has_compositor_ancestor(pid):
         seen = {pid}
         pid = procs[pid]["ppid"]
         while pid in procs and pid not in seen:
-            if procs[pid]["comm"] == "tilo-session":
+            if is_compositor(pid):
                 return True
             seen.add(pid)
             pid = procs[pid]["ppid"]
         return False
 
-    roots = sorted(pid for pid, p in procs.items() if p["comm"] == "tilo-session" and not has_shell_ancestor(pid))
+    roots = sorted(pid for pid in procs if is_compositor(pid) and not has_compositor_ancestor(pid))
     if len(roots) > 1:
         raise core.Unobservable(f"{len(roots)} compositor processes of the account user (pids {roots})")
     return roots[0] if roots else None
@@ -773,7 +788,7 @@ def _budget_problems(m, budgets, prefix, software=False):
     frames stay guarded, and a rasteriser that runs with no frame painted fails."""
     problems = []
     if m["shell_cpu_pct"] is None:
-        raise core.Unobservable("no `tilo-session` process of the account user found")
+        raise core.Unobservable(f"no process running {COMPOSITOR_BIN} of the account user found")
     raster = (m["shell_gpu_driver_cpu_pct"] or 0.0) if software else 0.0
     own = round(m["shell_cpu_pct"] - raster, 2)
     if own > budgets[f"{prefix}_shell_cpu_pct"]:
@@ -1472,14 +1487,16 @@ while [ $i -lt 1500 ]; do
   i=$((i + 1)); t=$(now)
   [ -n "$um" ] || { systemctl is-active -q "user@$uid.service" && um=$t; }
   [ -n "$sess" ] || { pgrep -u "$uid" -f '^/bin/bash /usr/libexec/tilo-session' >/dev/null && sess=$t; }
-  [ -n "$shell" ] || { pgrep -u "$uid" -x tilo-session >/dev/null && shell=$t; }
-  [ -n "$frame" ] || frame=$(sed -n 's/^FRAME-LIFECYCLE serial=1 event=render-retired .* monotonic_us=\([0-9]*\).*/\1/p' "$log" 2>/dev/null | head -1)
+  # The wrapper starts the compositor from bash under the same process name; the
+  # executable tells the compositor apart.
+  [ -n "$shell" ] || { for p in $(pgrep -u "$uid" -x tilo-session); do
+      [ "$(readlink /proc/$p/exe)" = /usr/bin/tilo-session ] && shell=$t; done; }
+  [ -n "$frame" ] || frame=$(sed -n 's/^FRAME-LIFECYCLE serial=[0-9]* event=render-retired .* monotonic_us=\([0-9]*\).*/\1/p' "$log" 2>/dev/null | head -1)
   if [ -z "$usable" ] && [ -S "$ctl" ] && timeout 3 tilo-control --socket "$ctl" state-dump >/dev/null 2>&1; then usable=$(now); fi
-  [ -n "$um" ] && [ -n "$sess" ] && [ -n "$shell" ] && [ -n "$usable" ] \
-    && grep -q '^FRAME-LIFECYCLE serial=1 ' "$log" 2>/dev/null && break
+  [ -n "$um" ] && [ -n "$sess" ] && [ -n "$shell" ] && [ -n "$frame" ] && [ -n "$usable" ] && break
   sleep 0.02
 done
-grep -m1 '^FRAME-LIFECYCLE serial=1 ' "$log" 2>/dev/null
+grep -m1 '^FRAME-LIFECYCLE serial=[0-9]* event=render-retired ' "$log" 2>/dev/null
 echo "SIGNIN t0=$t0 user_manager=$um session=$sess shell=$shell first_frame_us=$frame usable=$usable"
 cut -c1-300 /tmp/acc-signin.out
 """
