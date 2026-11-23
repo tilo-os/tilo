@@ -49,10 +49,9 @@ vello.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 serial_test.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [features]
-# The demo project's stand-in media resolution; the app turns it on with its own.
-samples = []
 # Decode and waveform support for the preview and the filmstrip.
 decode = ["media/decode"]
 # GStreamer encode and mux support.

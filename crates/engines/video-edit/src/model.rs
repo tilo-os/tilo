@@ -3,7 +3,7 @@
 //! `#[derive(Model)]` stores the project in the resource field by field, with media, tracks,
 //! clips and markers keyed by their own ids, so members' edits merge per field. The
 //! editing math (split, trim, move, ripple) lives here behind unit tests; the verbs
-//! ([`crate::resource`]) run it.
+//! (the app's actions) run it.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{self, Id, Identified, Keyed, Model, Ordered};
@@ -3367,8 +3367,8 @@ mod tests {
             {
                 assert_eq!(Speed::new(0.0, false).rate(), MIN_SPEED);
                 assert_eq!(Speed::new(1e9, false).rate(), MAX_SPEED);
-                assert_eq!(Speed::new(2.0, false).label(), "2×");
-                assert_eq!(Speed::new(0.5, true).label(), "0.50× reverse");
+                assert_eq!(Speed::new(2.0, false).shown(), ("2".to_owned(), false));
+                assert_eq!(Speed::new(0.5, true).shown(), ("0.50".to_owned(), true));
                 assert!(Speed::default().is_normal());
                 assert_eq!(Speed::new(2.0, true).signed(), -2.0);
             }

@@ -4,7 +4,7 @@
 //! The mixing is pure — a project and a [`PcmSource`] in, an interleaved block
 //! out — so per-clip volume, the fade envelope, track mute and solo, pan and
 //! summing overlapping clips are testable without a decoder. It mirrors
-//! [`crate::preview::plan_layers`]: a muted track contributes nothing, a soloed
+//! [`video_picture::preview::plan_layers`]: a muted track contributes nothing, a soloed
 //! one silences its unsoloed siblings.
 
 use std::cmp::Ordering;
@@ -892,33 +892,6 @@ mod tests {
         }
     }
 
-    /// A file in the repository, so this test cannot pass by looking at nothing.
-    #[cfg(feature = "decode")]
-    fn sample(name: &str) -> std::path::PathBuf {
-        let p = crate::media::bundled_sample_media()
-            .join("media")
-            .join(name);
-        assert!(p.exists(), "the bundled fixture {name} is missing");
-        p
-    }
-
-    #[test]
-    #[cfg(feature = "decode")]
-    #[serial_test::serial(video_editor_gst)]
-    fn a_source_that_carries_audio_decodes_to_real_samples() {
-        if !media_stack::media_stack() {
-            return;
-        }
-        let source = crate::media::engine_source(&sample("Ambient_Pad.wav"));
-        let pcm = super::decode_pcm(&source).expect("the fixture has an audio stream");
-        assert!(
-            pcm.len() > super::SAMPLE_RATE as usize / 4,
-            "a real read, not a handful of frames: {} samples",
-            pcm.len(),
-        );
-        assert!(super::peak(&pcm) > 0.01, "and it is not silence");
-    }
-
     struct RampSource {
         len: usize,
     }
@@ -1383,7 +1356,7 @@ mod tests {
 
     fn eventually(mut cond: impl FnMut() -> bool) -> bool {
         let deadline = tilo_test_env::hang_deadline();
-        while tilo_clock::time::now() < deadline {
+        while std::time::Instant::now() < deadline {
             if cond() {
                 return true;
             }

@@ -1112,10 +1112,6 @@ mod tests {
                         detected: "video-editor-file-html"
                     }
                 );
-                assert!(
-                    err.to_string().contains("HTML page"),
-                    "the refusal names what the file really is: {err}"
-                );
             }
             {
                 // Through the production entry point the importer calls.

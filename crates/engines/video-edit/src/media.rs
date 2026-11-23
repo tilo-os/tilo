@@ -64,29 +64,6 @@ impl MediaSource {
     }
 }
 
-#[cfg(feature = "samples")]
-static SAMPLE_MEDIA: Mutex<Option<PathBuf>> = Mutex::new(None);
-
-#[cfg(feature = "samples")]
-pub fn bundled_sample_media() -> PathBuf {
-    Path::new(env!("OUT_DIR")).join("sample-media")
-}
-
-/// Resolve relative media under `dir` before anywhere else, so a capture of the
-/// demo project finds its bundled stand-ins with no workspace mount. `None`
-/// stops it.
-#[cfg(feature = "samples")]
-pub fn serve_sample_media(dir: Option<PathBuf>) {
-    if let Ok(mut slot) = SAMPLE_MEDIA.lock() {
-        *slot = dir;
-    }
-}
-
-#[cfg(feature = "samples")]
-fn sample_media() -> Option<PathBuf> {
-    SAMPLE_MEDIA.lock().ok().and_then(|s| s.clone())
-}
-
 /// Where sources imported by content (`tilo.content:<reference>`) are read from:
 /// a directory holding each by its address, which the render helper points at its
 /// job directory. A content path resolves nowhere else.
@@ -139,17 +116,6 @@ pub fn resolve(path: &str) -> MediaSource {
             abs_path,
             hydration,
         };
-    }
-    // 1. A capture's sample media.
-    #[cfg(feature = "samples")]
-    if let Some(dir) = sample_media() {
-        let candidate = dir.join(path);
-        if candidate.exists() {
-            return MediaSource {
-                abs_path: candidate,
-                hydration: Hydration::Local,
-            };
-        }
     }
     // The mount is the shared meaning; the working directory is this machine's.
     let mounted = Path::new(WORKSPACE_ROOT).join(path);
@@ -208,34 +174,13 @@ mod tests {
         {
             assert_eq!(workspace_path("Drone.mov"), "media/Drone.mov");
         }
-        // Both cases live in one test: the sample media is process-wide.
+        // A path that cannot exist resolves projected: the reference is
+        // valid, the bytes are not hydrated.
         {
-            serve_sample_media(None);
-            // A path that cannot exist resolves projected: the reference is
-            // valid, the bytes are not hydrated.
             let src = resolve("media/definitely-not-here-42.mov");
             assert_eq!(src.hydration, Hydration::Projected);
             assert!(!src.is_decodable());
             assert!(src.abs_path.starts_with(WORKSPACE_ROOT));
-
-            // With the override pointing at a directory holding the file, it
-            // resolves local.
-            let dir = std::env::temp_dir();
-            let name = format!("tilo-ve-boundary-{}.bin", std::process::id());
-            let f = dir.join(&name);
-            std::fs::write(&f, b"x").unwrap();
-            serve_sample_media(Some(dir));
-            let local = resolve(&name);
-            assert_eq!(local.hydration, Hydration::Local);
-            assert!(local.is_decodable());
-            assert_eq!(local.abs_path, f);
-            serve_sample_media(None);
-            std::fs::remove_file(&f).ok();
-        }
-        // With nothing of that name in the working directory, the reference is
-        // a workspace one: projected, not fabricated.
-        {
-            serve_sample_media(None);
             let away = resolve(&format!("tilo-ve-nowhere-{}/take1.mp4", std::process::id()));
             assert_eq!(away.hydration, Hydration::Projected, "{away:?}");
             assert!(away.abs_path.starts_with(WORKSPACE_ROOT), "{away:?}");
