@@ -28,7 +28,6 @@ struct Enrolled {
     owner: NativeWorkspaceOwner,
     workspace: WorkspaceId,
     now: SystemTime,
-    replay: NeighbourMsg,
 }
 
 /// Enroll through the file store and admit the governor's history.
@@ -47,12 +46,7 @@ fn enrolled_with(
     let enrollment = crate::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
     let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
-    let replay = messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message, NeighbourMsg::AppDocument { .. }))
-        .expect("fixture has signed app state")
-        .clone();
+    // What the workspace holds reaches this device as the answer's replay.
     for message in messages.into_iter().skip(1) {
         owner
             .receive(
@@ -69,7 +63,6 @@ fn enrolled_with(
         owner,
         workspace,
         now,
-        replay,
     }
 }
 
@@ -100,30 +93,8 @@ fn workspace_json(path: &std::path::Path, workspace: WorkspaceId) -> serde_json:
     serde_json::from_slice(&std::fs::read(workspace_file(path, workspace)).unwrap()).unwrap()
 }
 
-/// Every file under `root`, looking into its directories.
-fn files_under(root: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(root).unwrap().flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            files.extend(files_under(&path));
-        } else {
-            files.push((path.clone(), std::fs::read(&path).unwrap()));
-        }
-    }
-    files
-}
-
 fn member() -> SigningKey {
     SigningKey::from_bytes(&[63; 32])
-}
-
-fn edit(
-    owner: &NativeWorkspaceOwner,
-    workspace: WorkspaceId,
-    now: SystemTime,
-) -> collab_types::SignedOp {
-    edit_with(owner, workspace, now, "written while joined")
 }
 
 fn edit_with(

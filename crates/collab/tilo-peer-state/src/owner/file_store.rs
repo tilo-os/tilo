@@ -126,45 +126,6 @@ pub(crate) fn document_files(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, std
     Ok(files)
 }
 
-/// Change the one workspace the record at `path` holds as `change` changes
-/// its fields, behind its owner's back, where the record keeps what its
-/// publications change: an entry appended to the workspace's journal, as
-/// the store appends one.
-#[cfg(test)]
-pub(crate) fn change_stored(path: &Path, change: impl FnOnce(&mut serde_json::Value)) {
-    let parts = parts_of(path);
-    let index: StoredIndex =
-        serde_json::from_slice(&std::fs::read(index_of(&parts)).unwrap()).unwrap();
-    let [(workspace, revision)] = index.held.into_iter().collect::<Vec<_>>()[..] else {
-        panic!("one workspace held");
-    };
-    let snapshot = std::fs::read(part_of(&parts, workspace, revision)).unwrap();
-    let log_path = log_of(&parts, workspace, revision);
-    let log = std::fs::read(&log_path).unwrap_or_default();
-    let stored: StoredWorkspace = serde_json::from_slice(&snapshot).unwrap();
-    let (stored, last) = journal::replay(stored, &log).unwrap();
-    let written = journal::first_of(&stored).unwrap();
-    let mut fields = serde_json::to_value(&stored).unwrap();
-    change(&mut fields);
-    let mut changed: StoredWorkspace = serde_json::from_value(fields).unwrap();
-    changed.peer = stored.peer;
-    let (entry, _) = journal::next(
-        &written,
-        &changed,
-        last.unwrap_or(index.revision).saturating_add(1),
-    )
-    .unwrap();
-    std::io::Write::write_all(
-        &mut std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .unwrap(),
-        &entry,
-    )
-    .unwrap();
-}
-
 /// The file one workspace's record is in, as written at `revision`.
 fn part_of(parts: &Path, workspace: WorkspaceId, revision: u64) -> PathBuf {
     parts.join(format!("{workspace}.{revision}.json"))

@@ -477,24 +477,6 @@ impl StatePeer {
 }
 
 #[cfg(test)]
-impl StatePeer {
-    /// Drop `author`'s floor on `record` of `app`, as a record kept before a withdrawn write's
-    /// floor stopped at the writes a compaction folded.
-    pub(crate) fn forget_floor(&mut self, app: &str, record: &str, author: [u8; 32]) {
-        let route = Route {
-            app: app.into(),
-            record: record.into(),
-        };
-        if let Some(document) = self.core.documents.get_mut(&route) {
-            document
-                .channel
-                .last_seq_per_author
-                .remove(&collab_types::Ed25519PublicKey::from_bytes(author));
-        }
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::NeighbourMsg;
