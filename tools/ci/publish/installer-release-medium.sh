@@ -13,7 +13,7 @@
 #   disk.qcow2, disk.qcow2.sha256, disk.qcow2.hardware.json, source.json
 #                                    the medium, the media provenance the disk step wrote,
 #                                    and the image it was made from
-#   tilo-installer-linux-ARCH.img.zst and .sha256, catalog-ARCH.json
+#   tilo-installer-linux-ARCH.img.zst and .sha256, catalog-ARCH.json and .sha256
 #                                    the release payload the Imager downloads and writes,
 #                                    with the catalog entry that names its bytes
 #   bundle/, internal-catalog-ARCH.json
@@ -92,6 +92,7 @@ else
     || die "the catalog names other bytes than the payload it ships"
   [[ $(jq -er '.image_sha256' "$out/$catalog") =~ ^[0-9a-f]{64}$ ]] \
     || die "the catalog names no image"
+  (cd "$out" && sha256sum "$catalog") > "$out/$catalog.sha256"
 
   started=$SECONDS
   bundle_work="$(mktemp -d "${TMPDIR:-/var/tmp}/tilo-internal-bundle.XXXXXX")"

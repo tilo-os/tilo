@@ -476,7 +476,7 @@ Full Tilo without a USB stick (design spec
 `docs/architecture/usb-free-install.md` §3) downloads a
 schema-2 internal installer bundle: a manifest plus two raw component images
 the Imager writes to staging partitions on the internal disk. Each architecture's
-`installer-release-medium-{arch}` t check derives it from the live disk that has
+`medium/imager-{arch}` t check derives it from the live disk that has
 just been built and checksummed:
 
 1. **Test** (`export` or `publish`): installs `btrfs-progs`/`dosfstools`/
@@ -512,7 +512,7 @@ just been built and checksummed:
    `tilo-target-policy-<ARCH>.tar` it names. The archive contains only
    `tilo-target.efi` and one `predictions/generation-<N>.json` with its
    `.uki.sig`, all signed by the release authority whose public key is embedded
-   in the shipped Imager. t's `installer-target-policy-{arch}` check, dispatched
+   in the shipped Imager. t's `target-policy/imager-{arch}` check, dispatched
    with `published_os_image` naming the verified multi-architecture release
    index, resolves the exact child of that index, requires that child's
    `org.opencontainers.image.revision` label to equal the release's source
