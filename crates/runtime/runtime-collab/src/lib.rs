@@ -1021,44 +1021,10 @@ pub(crate) fn checked_observation(
 /// feature is enabled).
 #[must_use]
 pub fn admission_request_digest(value: &serde_json::Value) -> [u8; 32] {
-    fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
-        match value {
-            serde_json::Value::Object(fields) => {
-                let mut members: Vec<_> = fields.iter().collect();
-                #[cfg(target_arch = "wasm32")]
-                tilo_sort::CompactSort::compact_sort_by(members.as_mut_slice(), |left, right| {
-                    left.0.cmp(right.0)
-                });
-                #[cfg(not(target_arch = "wasm32"))]
-                members.sort_unstable_by(|left, right| left.0.cmp(right.0));
-                out.push(b'{');
-                for (position, (name, member)) in members.into_iter().enumerate() {
-                    if position > 0 {
-                        out.push(b',');
-                    }
-                    canonical(&serde_json::Value::String(name.clone()), out);
-                    out.push(b':');
-                    canonical(member, out);
-                }
-                out.push(b'}');
-            }
-            serde_json::Value::Array(items) => {
-                out.push(b'[');
-                for (position, item) in items.iter().enumerate() {
-                    if position > 0 {
-                        out.push(b',');
-                    }
-                    canonical(item, out);
-                }
-                out.push(b']');
-            }
-            scalar => out.extend_from_slice(scalar.to_string().as_bytes()),
-        }
-    }
-    let mut encoded = Vec::new();
-    canonical(value, &mut encoded);
     let mut request = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
-    request.update(&encoded);
+    tilo_canonical_json::write_bytes(value, |chunk| {
+        request.update(chunk);
+    });
     *request.finalize().as_bytes()
 }
 

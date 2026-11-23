@@ -14539,6 +14539,7 @@ dependencies = [
  "serde_json",
  "settings-store",
  "tilo-actions",
+ "tilo-canonical-json",
  "tilo-content",
  "tilo-lock",
  "tilo-sort",
