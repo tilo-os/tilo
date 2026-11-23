@@ -220,6 +220,7 @@ impl Workspaces {
                 let setting: SetReasoning = argument(request, "a thinking level to keep")?;
                 answer(&set_reasoning(&root, &setting))
             }
+            person_models::LINK_THIS_COMPUTER => answer(&self.link_from_this_computer(&here)),
             _ => return Err(ActionCallError::UnknownAction),
         };
         if changed.is_ok() {
@@ -230,6 +231,23 @@ impl Workspaces {
 }
 
 impl Workspaces {
+    /// [`person_models::LINK_THIS_COMPUTER`] in `workspace`: this computer's Agent models choice,
+    /// read from its own settings, made the workspace's.
+    fn link_from_this_computer(&self, workspace: &str) -> Result<ModelProviders, String> {
+        if !self.inner.models.on_a_computer() {
+            return Err(
+                "Only a computer of yours links its own models; this workspace is kept elsewhere"
+                    .into(),
+            );
+        }
+        self.link_this_computer(
+            workspace,
+            &ProviderConfig::load(),
+            super::this_computer::Linking::Chosen,
+        )?;
+        Ok(providers(&self.workspace_root(workspace)))
+    }
+
     /// One turn of the workspace's model, for a window that has no model
     /// service of its own (a page): the model the workspace chose for a
     /// request, asked with the key its vault keeps for its provider, as every

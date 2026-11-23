@@ -240,9 +240,12 @@ impl ModelRefusal {
                     _ => "model-key-refused",
                 }
             }
-            // A provider's failure is already a sentence safe to show: it
-            // never carries a credential or the provider's own text.
-            Self::Provider(error) => return error.message.clone(),
+            Self::Provider(error) => match provider_failure(error.kind) {
+                Some(key) => key,
+                // Any other failure is already a sentence safe to show: it
+                // never carries a credential or the provider's own text.
+                None => return error.message.clone(),
+            },
         };
         crate::i18n::message(language, key, &args)
     }
@@ -251,6 +254,13 @@ impl ModelRefusal {
     /// same words, under the kind that says what the person does next.
     #[must_use]
     pub fn model_error(&self) -> ModelError {
+        self.model_error_in(None)
+    }
+
+    /// [`Self::model_error`] with its words in `language` (a BCP 47 tag),
+    /// for a caller that knows whom it answers.
+    #[must_use]
+    pub fn model_error_in(&self, language: Option<&str>) -> ModelError {
         let kind = match self {
             Self::NoModelLinked { .. } | Self::ChoiceUnusable { .. } => ErrorKind::NoProvider,
             Self::NoKey { .. } | Self::SignedOut { .. } => ErrorKind::Authentication,
@@ -259,15 +269,33 @@ impl ModelRefusal {
             | Self::DayLimitReached { .. } => ErrorKind::PermissionDenied,
             Self::CannotTake { .. } => ErrorKind::InvalidRequest,
             Self::SettingsUnreadable => ErrorKind::Unavailable,
+            Self::Provider(error) if provider_failure(error.kind).is_none() => {
+                return error.clone();
+            }
             // The provider's own kind, with the words that name it.
-            Self::KeyRefused { error, .. } => error.kind,
-            Self::Provider(error) => return error.clone(),
+            Self::KeyRefused { error, .. } | Self::Provider(error) => error.kind,
         };
         ModelError {
             kind,
-            message: self.words(None),
+            message: self.words(language),
         }
     }
+}
+
+/// The catalogue message for a provider's failure of `kind` that the person
+/// reads as what happened in their terms; `None` for a kind whose own
+/// sentence is shown.
+const fn provider_failure(kind: ErrorKind) -> Option<&'static str> {
+    Some(match kind {
+        ErrorKind::TimedOut => "model-timed-out",
+        ErrorKind::Cancelled => "model-cancelled",
+        ErrorKind::Truncated => "model-truncated",
+        ErrorKind::Refused => "model-refused",
+        ErrorKind::ContextLimit => "model-context-limit",
+        ErrorKind::RateLimited => "model-rate-limited",
+        ErrorKind::Unsupported => "model-unsupported",
+        _ => return None,
+    })
 }
 
 /// `micros` millionths of the currency, as a person reads an amount: `$5`,
@@ -435,6 +463,9 @@ pub(super) struct Models {
     /// The sign-ins people are in the middle of.
     pub(super) sign_ins: super::person_models::SignIns,
     private_addresses: AtomicBool,
+    /// Whether this service runs on a person's own computer, whose Agent models pane links its
+    /// choice into the workspaces it keeps ([`Workspaces::on_a_computer`]).
+    on_a_computer: AtomicBool,
     /// What each person's agents spent today.
     spend: spend::Log,
     /// The runtime a caller that cannot wait asynchronously is answered on
@@ -447,6 +478,11 @@ impl Models {
     /// ([`Workspaces::call_private_model_addresses`]).
     pub(super) fn private_addresses(&self) -> bool {
         self.private_addresses.load(Ordering::Acquire)
+    }
+
+    /// Whether this service runs on a person's own computer ([`Workspaces::on_a_computer`]).
+    pub(super) fn on_a_computer(&self) -> bool {
+        self.on_a_computer.load(Ordering::Acquire)
     }
 
     /// Where this server connects for its people's mail: the public
@@ -471,6 +507,7 @@ impl Models {
             openai: std::sync::RwLock::default(),
             sign_ins: super::person_models::SignIns::default(),
             private_addresses: AtomicBool::new(false),
+            on_a_computer: AtomicBool::new(false),
             spend: spend::Log::default(),
             runtime: tokio::runtime::Handle::try_current().ok(),
         }
@@ -567,6 +604,15 @@ impl Workspaces {
             .models
             .private_addresses
             .store(allowed, Ordering::Release);
+    }
+
+    /// Say this service runs on a person's own computer: the model its Agent models pane chose
+    /// is linked into the workspaces it keeps ([`super::this_computer`]).
+    pub fn on_a_computer(&self) {
+        self.inner
+            .models
+            .on_a_computer
+            .store(true, Ordering::Release);
     }
 
     /// Answer people's model calls through `provider` in place of the

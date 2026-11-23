@@ -122,6 +122,9 @@ mod chat_group;
 #[path = "workspace_actions/chat_restart.rs"]
 mod chat_restart;
 #[cfg(test)]
+#[path = "workspace_actions/computer_models.rs"]
+mod computer_models;
+#[cfg(test)]
 #[path = "workspace_actions/delete_workspace.rs"]
 mod delete_workspace;
 #[cfg(test)]

@@ -50,6 +50,12 @@ pub trait Host {
 
     /// Whether `person` looks after `workspace`'s agents: makes, bounds and retires them.
     fn manages(&self, workspace: &Workspace, person: &UserId) -> bool;
+
+    /// The models `workspace` keeps for its agents where this host reads them: the providers
+    /// its agents answer on and the default they use. Empty where it reads none, as a page.
+    fn models(&self, _workspace: &Workspace) -> agent_provider_config::ProviderConfig {
+        agent_provider_config::ProviderConfig::default()
+    }
 }
 
 /// A computer's copy of its workspaces: their records, decided by the grants the workspace's
@@ -77,6 +83,17 @@ impl Host for crate::engine_records::EngineRecords {
     fn manages(&self, workspace: &Workspace, person: &UserId) -> bool {
         use tilo_desktop::authority::WorkspaceAuthority as _;
         workspace.may_administer(person)
+    }
+
+    /// The models this computer's workspace service keeps for `workspace`: the ones its agents
+    /// here answer on, and where this computer's Agent models pane links its choice.
+    fn models(&self, workspace: &Workspace) -> agent_provider_config::ProviderConfig {
+        self.service_root().map_or_else(Default::default, |root| {
+            tilo_workspace_service::workspaces::this_computer::workspace_models_at(
+                &root,
+                &workspace.id().to_string(),
+            )
+        })
     }
 }
 
@@ -183,7 +200,8 @@ impl Agents {
         let may = May {
             manage: self.host.manages(workspace, person),
         };
-        let mut pane = Self::pane_of(workspace, &record, (names, apps), may, review);
+        let config = self.host.models(workspace);
+        let mut pane = Self::pane_of(workspace, &record, (names, apps, &config), may, review);
         pane.moderation = moderation.then(|| moderation_row(workspace, may));
         pane
     }
@@ -218,13 +236,16 @@ impl Agents {
     fn pane_of(
         workspace: &Workspace,
         record: &WorkspaceResource<Record>,
-        (names, apps): (&PeopleNames, &dyn domain::AppDirectory),
+        (names, apps, config): (
+            &PeopleNames,
+            &dyn domain::AppDirectory,
+            &agent_provider_config::ProviderConfig,
+        ),
         may: May,
         review: Option<&str>,
     ) -> sheet::Agents {
         let state = record.get();
         let manage = may.manage;
-        let config = agent_provider_config::ProviderConfig::load();
         let agents: Vec<sheet::Agent> = state
             .made_by_people()
             .map(|agent| sheet::Agent {
@@ -232,7 +253,7 @@ impl Agents {
                 name: agent.name.clone(),
                 status: added_by(names, workspace, record, &agent.acts_for),
                 spend: spend_line(agent),
-                model: model_line(&config, &agent.id.0, agent.model.as_deref()),
+                model: model_line(config, &agent.id.0, agent.model.as_deref()),
             })
             .collect();
         let count = agents.len();
@@ -243,7 +264,7 @@ impl Agents {
                     workspace,
                     apps,
                     names,
-                    config: &config,
+                    config,
                 },
                 agent,
                 may,
@@ -269,7 +290,7 @@ impl Agents {
             model: t("workspace-settings-agent-model"),
             model_default: t("workspace-settings-agent-model-default-choice"),
             // A page keeps no models of its own: nothing to choose.
-            models: agent_access::agent_models(&config, "")
+            models: agent_access::agent_models(config, "")
                 .filter(|_| !ON_A_PAGE)
                 .map(|models| {
                     models
@@ -939,8 +960,8 @@ fn added_by(
     )
 }
 
-/// The model `agent` plans with, as its row reads it: the one the workspace chose, or that none
-/// is chosen yet.
+/// The model `agent` plans with, as its row reads it: the one chosen for it, else the
+/// workspace's default, or that none is chosen yet.
 fn model_line(
     config: &agent_provider_config::ProviderConfig,
     agent: &str,
@@ -948,7 +969,12 @@ fn model_line(
 ) -> String {
     let offered = agent_access::agent_models(config, agent);
     let label = chosen.map_or_else(
-        || t("workspace-settings-agent-model-none"),
+        || {
+            offered
+                .as_ref()
+                .and_then(|offered| offered.default.clone())
+                .unwrap_or_else(|| t("workspace-settings-agent-model-none"))
+        },
         |model| model_label(offered.as_ref(), model),
     );
     t_args(

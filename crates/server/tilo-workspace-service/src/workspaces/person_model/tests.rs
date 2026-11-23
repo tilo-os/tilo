@@ -95,11 +95,11 @@ async fn nothing_linked_is_refused_and_asks_no_provider() {
     assert_eq!(refused.code(), "no-model-linked");
     assert_eq!(
         refused.words(None),
-        "No model is linked for this kind of work. Link one in Settings."
+        "No model is linked for this kind of work. Choose one in Settings, under Agent models."
     );
     assert_eq!(
         refused.words(Some("de-AT")),
-        "Für diese Art von Arbeit ist kein Modell verknüpft. Verknüpfe eines in den Einstellungen."
+        "Für diese Art von Arbeit ist kein Modell verknüpft. Wähle eines in den Einstellungen unter Agentenmodelle."
     );
     assert_eq!(refused.model_error().kind, ErrorKind::NoProvider);
 
@@ -474,7 +474,7 @@ async fn a_providers_failure_is_the_refusal_and_a_refused_key_names_its_provider
         of_the_key
             .iter()
             .map(|(kind, ..)| *kind)
-            .chain([ErrorKind::RateLimited])
+            .chain([ErrorKind::Unavailable])
             .map(|kind| Reply::failing(ModelError::new(kind))),
     ));
     workspaces
@@ -504,9 +504,38 @@ async fn a_providers_failure_is_the_refusal_and_a_refused_key_names_its_provider
     assert_eq!(refused.code(), "provider");
     assert_eq!(
         refused,
-        ModelRefusal::Provider(ModelError::new(ErrorKind::RateLimited))
+        ModelRefusal::Provider(ModelError::new(ErrorKind::Unavailable))
     );
-    assert_eq!(refused.words(None), "Provider rate limit reached");
+    assert_eq!(refused.words(None), "Model service unavailable");
+}
+
+/// A provider that ran out of time, was stopped, cut its answer off, declined, ran out of room,
+/// was busy or could not do what was asked is said in the person's words and language, never as
+/// the gateway's diagnostic.
+#[test]
+fn each_failure_of_a_provider_reads_in_the_persons_language() {
+    for kind in [
+        ErrorKind::TimedOut,
+        ErrorKind::Cancelled,
+        ErrorKind::Truncated,
+        ErrorKind::Refused,
+        ErrorKind::ContextLimit,
+        ErrorKind::RateLimited,
+        ErrorKind::Unsupported,
+    ] {
+        let diagnostic = ModelError::new(kind);
+        let refused = ModelRefusal::Provider(diagnostic.clone());
+        let (english, german) = (refused.words(None), refused.words(Some("de-DE")));
+        assert_ne!(
+            english, diagnostic.message,
+            "{kind:?} has a sentence of its own"
+        );
+        assert_ne!(german, english, "{kind:?} reads in German");
+        assert!(!german.starts_with("model-"), "{kind:?}: {german}");
+        let error = refused.model_error_in(Some("de-DE"));
+        assert_eq!(error.kind, kind, "the failure keeps its kind");
+        assert_eq!(error.message, german);
+    }
 }
 
 /// A host that was given nothing to speak to providers with answers no

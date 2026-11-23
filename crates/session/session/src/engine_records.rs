@@ -320,6 +320,12 @@ impl EngineRecords {
     }
 
     /// The records of `workspace` , opened as `author` .
+    /// Where this device's own workspace service keeps its workspaces, once the session holds
+    /// its engine.
+    pub(crate) fn service_root(&self) -> Option<std::path::PathBuf> {
+        self.0.engine.borrow().as_ref()?.service_root()
+    }
+
     pub(crate) fn in_workspace(&self, workspace: &str, author: MemberId) -> WorkspaceResources {
         let inner = Rc::clone(&self.0);
         let workspace = workspace.to_owned();
