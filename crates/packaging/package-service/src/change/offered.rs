@@ -1,17 +1,18 @@
-//! `tilo-install update` from a registry: the store client resolves the package as `app update`
+//! An update from a registry: the store client resolves the package as `app update`
 //! does, and the download is held to the signed offer.
 
 use std::fmt::Write as _;
 
 use package_store::InstalledPackage;
 
-use super::{Error, TrustFlags};
+use package_service_client::wire::Trust;
+use package_store::installer::Error;
 
 /// A package a configured registry offers, downloaded, with what `check` must then hold it to.
 pub(super) struct Offered {
     pub(super) staged: app_cli::install::StagedPackage,
     pub(super) source: String,
-    pub(super) trust: TrustFlags,
+    pub(super) trust: Trust,
     pub(super) payload: Option<app_registry::HttpBlobs>,
 }
 
@@ -24,7 +25,7 @@ pub(super) struct Offered {
 pub(super) fn fetch_from_registries(
     entry: &InstalledPackage,
     version_req: Option<&str>,
-    trust: &TrustFlags,
+    trust: &Trust,
 ) -> Result<Offered, Error> {
     let package_id = entry.id.as_str();
     let fetch_error = |detail: String| Error::Fetch {
@@ -77,7 +78,7 @@ pub(super) fn fetch_from_registries(
         ))),
         _ => Ok(Some(offered.to_string())),
     };
-    let trust = TrustFlags {
+    let trust = Trust {
         require_package_root: pinned(
             "--require-package-root",
             trust.require_package_root.as_ref(),

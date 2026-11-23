@@ -1,14 +1,16 @@
 //! Fetching a package the machine does not have yet: find it in the catalogue, download the `.tapp`
-//! to a staging file, hand the path to `tilo-install`.
+//! to a staging file, and hand it to the package service's install action ([`commit`]).
 //!
-//! Trust is decided there, not here: `tilo-install` recomputes the package id and checks the publisher
-//! signature fail-closed before extracting. Nothing here passes `--allow-self-signed`: an install
-//! started by typing a name into search is the last place to relax a signature check.
+//! Trust is decided there, not here: the installer recomputes the package id and checks the
+//! publisher signature fail-closed before extracting. Nothing here allows a self-signed package: an
+//! install started by typing a name into search is the last place to relax a signature check.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+use package_service_client::wire::{ChangeReport, Replacement, Trust, Uploaded};
 
 use crate::CatalogueApp;
 
@@ -46,11 +48,8 @@ pub enum InstallError {
     Download {
         detail: String,
     },
-    InstallerMissing {
-        detail: String,
-    },
+    /// The package service did not install it: its refusal, or why it could not be reached.
     Refused {
-        code: i32,
         detail: String,
     },
     Integrity {
@@ -75,15 +74,12 @@ impl InstallError {
             }
             InstallError::NoStagingDir => "there is nowhere writable to download it to".to_string(),
             InstallError::Download { detail } => format!("the download failed: {detail}"),
-            InstallError::InstallerMissing { detail } => {
-                format!("tilo-install could not be run: {detail}")
-            }
-            InstallError::Refused { code, detail } => {
+            InstallError::Refused { detail } => {
                 let trimmed = detail.trim();
                 if trimmed.is_empty() {
-                    format!("tilo-install refused it (exit {code})")
+                    "it was not installed".to_owned()
                 } else {
-                    format!("tilo-install refused it: {trimmed}")
+                    format!("it was not installed: {trimmed}")
                 }
             }
             InstallError::Integrity { detail } => {
@@ -191,34 +187,71 @@ fn installed_install_bin() -> String {
     }
 }
 
-/// The exact `tilo-install` invocation [`install`] runs. Split out so a
-/// test can assert on argv without a network or launching the installer — in
-/// particular, that --allow-self-signed is not in it.
-pub fn install_argv(
+/// The change [`install`] asks the package service for. Split out so a test can assert on it
+/// without a network or a service: in particular, that it never allows a self-signed package.
+#[must_use]
+pub fn install_change(
     staged_tapp: &Path,
     publisher_pubkey_hex: &str,
     tapp_root_hash_hex: &str,
     payload_from: Option<&str>,
-) -> Vec<String> {
-    let mut argv = vec![
-        "install".to_string(),
-        staged_tapp.display().to_string(),
-        // Replace an older copy of the same id rather than failing — opening
-        // an app the user asked for shouldn't stall on a stale install of it.
-        "--force".to_string(),
-        // A valid tapp from another publisher is not the package the
-        // signed registry entry vouched for.
-        "--require-publisher".to_string(),
-        publisher_pubkey_hex.to_string(),
-        "--require-package-root".to_string(),
-        tapp_root_hash_hex.to_string(),
-    ];
-    if let Some(url) = payload_from {
-        // A thin package's payload comes from the registry that offered it;
-        // every blob is still checked against the signed collection.
-        argv.extend(["--payload-from".to_string(), url.to_string()]);
+) -> package_service_client::wire::Change {
+    package_service_client::wire::Change::Install {
+        file: Uploaded {
+            source: staged_tapp.display().to_string(),
+        },
+        // A valid tapp from another publisher is not the package the signed registry entry
+        // vouched for.
+        trust: Trust {
+            require_package_root: Some(tapp_root_hash_hex.to_owned()),
+            require_publisher: Some(publisher_pubkey_hex.to_owned()),
+            ..Trust::default()
+        },
+        pinned: false,
+        // Replace an older copy of the same id rather than failing: opening an app the person
+        // asked for shouldn't stall on a stale install of it.
+        replacement: Replacement::Replace,
+        ignore_missing_runtime: false,
+        dry_run: false,
+        // A thin package's payload comes from the registry that offered it; every blob is still
+        // checked against the signed collection.
+        payload_from: payload_from.map(str::to_owned),
     }
-    argv
+}
+
+/// Makes a change to the package store, with the file it names.
+pub type Commit = dyn Fn(package_service_client::wire::Change, &Path) -> Result<ChangeReport, String>
+    + Send
+    + Sync;
+
+static IN_PROCESS: Mutex<Option<Arc<Commit>>> = Mutex::new(None);
+
+/// Make every change this process asks for with `commit`, in this process. Only the package
+/// service calls this: it runs this library for its own catalogue and language-pack actions, and
+/// its `commit` is its change action. Everyone else's changes go to that action
+/// ([`package_service_client::person::change`]).
+pub fn commit_in_process(commit: Arc<Commit>) {
+    *IN_PROCESS.lock().unwrap_or_else(PoisonError::into_inner) = Some(commit);
+}
+
+/// Make `change`, which names the staged `file`: in this process when it is the package service,
+/// else through the service's action.
+///
+/// # Errors
+///
+/// The service's refusal, or why it could not be reached.
+pub fn commit(
+    change: package_service_client::wire::Change,
+    file: &Path,
+) -> Result<ChangeReport, String> {
+    let in_process = IN_PROCESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    match in_process {
+        Some(commit) => commit(change, file),
+        None => package_service_client::person::change(change, Some(file)),
+    }
 }
 
 /// The base URL of the registry that offered `app`, which also serves the
@@ -689,31 +722,37 @@ enum Change {
     Rollback,
 }
 
-fn run_installer_with_progress(
-    command: Command,
+/// [`commit`] `change`, reporting that the install is under way once a second until it answers.
+fn commit_with_progress(
+    change: package_service_client::wire::Change,
+    file: &Path,
     downloaded: u64,
     on_progress: &mut dyn FnMut(DownloadProgress),
-) -> Result<bounded_command::Output, bounded_command::Error> {
-    let mut running =
-        bounded_command::spawn_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
-    let started = Instant::now();
-    let mut last_heartbeat = Instant::now();
-    loop {
-        if let Some(result) = running.try_wait() {
-            return result;
+) -> Result<ChangeReport, String> {
+    std::thread::scope(|scope| {
+        let (answered, answer) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = answered.send(commit(change, file));
+        });
+        let started = Instant::now();
+        loop {
+            match answer.recv_timeout(Duration::from_secs(1)) {
+                Ok(answer) => return answer,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    on_progress(DownloadProgress {
+                        received: downloaded,
+                        total: Some(downloaded),
+                        phase: InstallPhase::Installing {
+                            elapsed: started.elapsed(),
+                        },
+                    });
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("the install stopped without an answer".to_owned());
+                }
+            }
         }
-        if last_heartbeat.elapsed() >= Duration::from_secs(1) {
-            on_progress(DownloadProgress {
-                received: downloaded,
-                total: Some(downloaded),
-                phase: InstallPhase::Installing {
-                    elapsed: started.elapsed(),
-                },
-            });
-            last_heartbeat = Instant::now();
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    })
 }
 
 fn install_or_update_app_reporting(
@@ -928,7 +967,7 @@ pub fn update_staged_reporting(
     install_staged(app, staged, on_progress, Change::Update)
 }
 
-/// Hand a staged package to `tilo-install`, which verifies it again and
+/// Hand a staged package to the package service's install action, which verifies it again and
 /// installs, updates or rolls back to it.
 fn install_staged(
     app: &CatalogueApp,
@@ -936,36 +975,35 @@ fn install_staged(
     on_progress: &mut dyn FnMut(DownloadProgress),
     change: Change,
 ) -> Result<(), InstallError> {
-    let dest = staged.file.path();
+    let dest = staged.file.path().to_path_buf();
     let downloaded = staged.bytes;
-    install_required_runtimes(app, dest, on_progress)?;
+    install_required_runtimes(app, &dest, on_progress)?;
     let payload_from = payload_source(app);
-    let mut command = Command::new(tilo_install_bin());
-    if change == Change::Install {
-        command.args(install_argv(
-            dest,
+    let request = if change == Change::Install {
+        install_change(
+            &dest,
             &app.publisher_pubkey_hex,
             &app.tapp_root_hash_hex,
             payload_from.as_deref(),
-        ));
+        )
     } else {
-        command.args([
-            "update".to_string(),
-            app.package_id.clone(),
-            "--from".to_string(),
-            dest.display().to_string(),
-            "--require-publisher".to_string(),
-            app.publisher_pubkey_hex.clone(),
-            "--require-package-root".to_string(),
-            app.tapp_root_hash_hex.clone(),
-        ]);
-        if let Some(url) = &payload_from {
-            command.args(["--payload-from", url.as_str()]);
+        package_service_client::wire::Change::Update {
+            app: Some(app.package_id.clone()),
+            file: Some(Uploaded {
+                source: dest.display().to_string(),
+            }),
+            version: None,
+            allow_downgrade: change == Change::Rollback,
+            dry_run: false,
+            trust: Trust {
+                require_package_root: Some(app.tapp_root_hash_hex.clone()),
+                require_publisher: Some(app.publisher_pubkey_hex.clone()),
+                ..Trust::default()
+            },
+            ignore_missing_runtime: false,
+            payload_from,
         }
-        if change == Change::Rollback {
-            command.arg("--allow-downgrade");
-        }
-    }
+    };
     on_progress(DownloadProgress {
         received: downloaded,
         total: Some(downloaded),
@@ -973,26 +1011,11 @@ fn install_staged(
             elapsed: Duration::ZERO,
         },
     });
-    let output = run_installer_with_progress(command, downloaded, on_progress);
+    let answer = commit_with_progress(request, &dest, downloaded, on_progress);
     drop(staged);
-
-    match output {
-        Err(e) => Err(InstallError::InstallerMissing {
-            detail: e.to_string(),
-        }),
-        Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => {
-            let mut detail = String::new();
-            detail.push_str(&String::from_utf8_lossy(&out.stderr));
-            if detail.trim().is_empty() {
-                detail.push_str(&String::from_utf8_lossy(&out.stdout));
-            }
-            Err(InstallError::Refused {
-                code: out.status.code().unwrap_or(1),
-                detail: installer_complaint(&detail),
-            })
-        }
-    }
+    answer.map(drop).map_err(|detail| InstallError::Refused {
+        detail: installer_complaint(&detail),
+    })
 }
 
 /// Make the runtime build `runtime` that `app` needs available: installed
@@ -1102,20 +1125,14 @@ const DETAIL_MAX_CHARS: usize = 110;
 /// The installer's actual complaint, reduced to one readable line.
 ///
 /// Only the **last** non-empty line survives (the lines above are
-/// context the card has no room for); a leading `tilo-install:` is
-/// stripped (the caller already says who refused it); anything still
-/// over [`DETAIL_MAX_CHARS`] is elided rather than cut off mid-word.
+/// context the card has no room for); anything over [`DETAIL_MAX_CHARS`]
+/// is elided rather than cut off mid-word.
 fn installer_complaint(text: &str) -> String {
     let Some(line) = text.lines().map(str::trim).rfind(|l| !l.is_empty()) else {
         return String::new();
     };
-    let line = line
-        .strip_prefix("tilo-install:")
-        .unwrap_or(line)
-        .trim()
-        .to_string();
     if line.chars().count() <= DETAIL_MAX_CHARS {
-        return line;
+        return line.to_owned();
     }
     let kept: String = line.chars().take(DETAIL_MAX_CHARS).collect();
     format!("{}…", kept.trim_end())
@@ -1324,38 +1341,49 @@ mod tests {
             {
                 let publisher = "ab".repeat(32);
                 let root = "cd".repeat(32);
-                let argv = install_argv(
+                let change = install_change(
                     Path::new("/tmp/staged.tapp"),
                     &publisher,
                     &root,
                     Some("https://registry.example"),
                 );
-                assert_eq!(argv[0], "install");
-                assert_eq!(argv[1], "/tmp/staged.tapp");
+                let package_service_client::wire::Change::Install {
+                    file,
+                    trust,
+                    replacement,
+                    payload_from,
+                    dry_run,
+                    ..
+                } = change
+                else {
+                    panic!("an install asks for an install: {change:?}");
+                };
+                assert_eq!(file.source, "/tmp/staged.tapp");
                 assert!(
-                    !argv.iter().any(|a| a == "--allow-self-signed"),
+                    !trust.allow_self_signed,
                     "an install started from a search box must not opt out of \
-                 the publisher signature check: {argv:?}"
+                     the publisher signature check: {trust:?}"
                 );
-                assert!(
-                    argv.windows(2)
-                        .any(|pair| pair[0] == "--require-package-root" && pair[1] == root),
-                    "the installer must pin the signed registry package root: {argv:?}"
+                assert_eq!(
+                    trust.require_package_root.as_deref(),
+                    Some(root.as_str()),
+                    "the installer must pin the signed registry package root"
                 );
-                assert!(
-                    argv.windows(2)
-                        .any(|pair| pair[0] == "--require-publisher" && pair[1] == publisher),
-                    "the installer must pin the signed registry publisher: {argv:?}"
+                assert_eq!(
+                    trust.require_publisher.as_deref(),
+                    Some(publisher.as_str()),
+                    "the installer must pin the signed registry publisher"
                 );
-                assert!(
-                    !argv.iter().any(|a| a.starts_with("--require-attestor")),
-                    "attestor policy is the user's to set, not this path's: {argv:?}"
+                assert_eq!(
+                    trust.require_attestor, None,
+                    "attestor policy is the person's to set, not this path's"
                 );
-                assert!(
-                    argv.windows(2).any(
-                        |pair| pair[0] == "--payload-from" && pair[1] == "https://registry.example"
-                    ),
-                    "a thin package's payload comes from the offering registry: {argv:?}"
+                assert_eq!(replacement, Replacement::Replace);
+                assert!(!dry_run);
+                assert_eq!(
+                    payload_from.as_deref(),
+                    Some("https://registry.example"),
+                    "a thin package's payload comes from the offering registry"
                 );
             }
         }
@@ -1364,7 +1392,6 @@ mod tests {
         {
             assert!(
                 InstallError::Refused {
-                    code: 2,
                     detail: "publisher signature did not verify".into()
                 }
                 .user_message()
@@ -1379,17 +1406,12 @@ mod tests {
             }
             {
                 let msg = InstallError::Refused {
-                    code: 1,
-                    detail: installer_complaint("tilo-install: tapp parse: unexpected EOF during skip"),
+                    detail: installer_complaint("reading header\ntapp parse: unexpected EOF during skip"),
                 }
                 .user_message();
                 assert_eq!(
                     msg,
-                    "tilo-install refused it: tapp parse: unexpected EOF during skip"
-                );
-                assert!(
-                    !msg.contains("tilo-install: "),
-                    "the sentence must not name the installer twice: {msg:?}"
+                    "it was not installed: tapp parse: unexpected EOF during skip"
                 );
             }
             {

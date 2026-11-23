@@ -287,6 +287,171 @@ pub enum Action {
     InstallLanguagePack {
         locale: String,
     },
+    /// Append `chunk` to this connection's upload: the bytes of a file a
+    /// [`Change`] names next, sent ahead of it because the service cannot
+    /// open the caller's files (it has a private `/tmp`, and other mounts).
+    /// Each change that takes a file consumes the upload.
+    Upload {
+        chunk: Vec<u8>,
+    },
+    /// Change the package store the person runs, as `tilo-install` and `app`
+    /// do. `store` is the store the caller means; the service refuses when it
+    /// writes another, so a shell pointed elsewhere never writes this one by
+    /// mistake. Only the person's terminal ([`PERSON`]) may call it.
+    Change {
+        store: String,
+        change: Change,
+    },
+}
+
+/// The handoff `app_id` of the person at their own terminal: `app` and `tilo-install`, outside any
+/// app sandbox. An app never reaches the socket itself (the launcher hands it a connection and
+/// writes its id), so a caller that names itself this is the account's own.
+pub const PERSON: &str = "person";
+
+/// How much of an upload one [`Action::Upload`] carries, well inside [`FRAMING`].
+pub const UPLOAD_CHUNK: u64 = 16 << 20;
+
+/// The largest file one change takes: a runtime package with its whole payload.
+pub const MAX_UPLOAD_BYTES: u64 = 2 << 30;
+
+/// A file the caller uploaded on this connection ([`Action::Upload`]), and the name it knows the
+/// file by, which the store records as where the package came from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Uploaded {
+    pub source: String,
+}
+
+/// The trust a change holds a package to, as `tilo-install`'s flags state it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trust {
+    pub require_package_root: Option<String>,
+    pub require_publisher: Option<String>,
+    pub require_attestor: Option<String>,
+    pub allow_self_signed: bool,
+}
+
+/// What an install does when a package of the same id is installed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Replacement {
+    #[default]
+    Refuse,
+    Replace,
+    /// Replace, but keep a version the person rolled back to.
+    PreserveHeld,
+}
+
+/// What an uninstall does with the app's saved data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SavedData {
+    Delete,
+    Keep,
+    /// Not decided: a dry run says the person would be asked; a real
+    /// uninstall keeps it.
+    Ask,
+}
+
+/// The changes the person makes to their package store. Each is one action, with the service's
+/// permissions and its record of who changed what.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Change {
+    /// Install the uploaded `.tapp`.
+    Install {
+        file: Uploaded,
+        trust: Trust,
+        pinned: bool,
+        replacement: Replacement,
+        ignore_missing_runtime: bool,
+        dry_run: bool,
+        /// Registry to fetch payload blobs the package does not carry from.
+        payload_from: Option<String>,
+    },
+    /// Swap in a newer version of `app` (of every installed package without
+    /// one), from the uploaded file or the configured registries.
+    Update {
+        app: Option<String>,
+        file: Option<Uploaded>,
+        /// A semver requirement for the registries' offer.
+        version: Option<String>,
+        allow_downgrade: bool,
+        dry_run: bool,
+        trust: Trust,
+        ignore_missing_runtime: bool,
+        payload_from: Option<String>,
+    },
+    /// Remove the person's copy of `app`: payload, registry row and PATH shims.
+    Uninstall {
+        app: String,
+        saved_data: SavedData,
+        dry_run: bool,
+    },
+    SetPinned {
+        app: String,
+        pinned: bool,
+    },
+    /// Record that the person opened `app` from their terminal: what was
+    /// used last is evicted last.
+    Opened {
+        app: String,
+    },
+    /// Reclaim what nothing needs: apps past the size cap, orphaned trees,
+    /// runtime builds no package runs on.
+    Collect {
+        dry_run: bool,
+        grace_secs: u64,
+        max_store_bytes: u64,
+    },
+    /// Add the uploaded environment image.
+    AddImage {
+        file: Uploaded,
+        publisher: Option<String>,
+        payload_from: Option<String>,
+    },
+    RemoveImage {
+        id: WireId,
+    },
+    /// Make the tree of image `id` present, fetching it from `registry` when
+    /// no store holds it; answers its path.
+    FetchImage {
+        id: WireId,
+        registry: String,
+    },
+    /// Build a runtime bundle from `from` (the host root when `None`) and
+    /// install it, signed with the uploaded identity when there is one.
+    InstallRuntime {
+        version: String,
+        from: Option<String>,
+        arch: Option<String>,
+        identity: Option<Uploaded>,
+        force: bool,
+    },
+    RemoveRuntime {
+        version: String,
+    },
+    PinRuntime {
+        version: String,
+        pinned: bool,
+    },
+    AddAttestor {
+        id: String,
+        pubkey: String,
+        scope: String,
+    },
+    RemoveAttestor {
+        id: String,
+    },
+    Revoke {
+        pubkey: String,
+        reason: String,
+    },
+}
+
+/// What a change did, in the words the terminal shows: `lines` on standard output, `warnings` on
+/// standard error.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeReport {
+    pub lines: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -324,12 +489,14 @@ pub enum Answer {
         remotes: String,
     },
     Catalogue(Catalogue),
-    /// A [`crate::local_package::LocalReview`] as JSON: the manifest it
+    /// A [`crate::LocalReview`] as JSON: the manifest it
     /// carries skips absent fields, which postcard cannot read back.
     Review(String),
     Installed(WireId),
     /// The language packs the repositories offer. Settings only.
     Languages(Vec<OfferedLanguage>),
+    /// What an [`Action::Change`] did.
+    Report(ChangeReport),
 }
 
 /// Where a call in flight reports progress, before its answer. The service

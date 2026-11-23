@@ -25,12 +25,15 @@ fn the_collection_after_an_install_keeps_the_app_it_installed() {
     let (large, _) = common::build_tapp_for("so.tilo.just-installed", 96);
     let installed = install_tapp(&store, &large, Pinning::Tried, None).unwrap();
 
-    package_service::service::collect_after_change(
-        &store,
-        &catalog,
-        60 * 1024,
-        &[installed.id.as_str()],
-    );
+    package_service::change::collect_after_change(
+        &package_service::change::Target {
+            store: &store,
+            catalog: &catalog,
+            max_store_bytes: 60 * 1024,
+        },
+        vec![installed.id],
+    )
+    .unwrap();
 
     let registry = store.registry().unwrap();
     assert!(

@@ -20,6 +20,8 @@ mod install_entries_agree;
 mod install_resolves_round_trip;
 #[path = "language_packs.rs"]
 mod language_packs;
+#[path = "person_changes.rs"]
+mod person_changes;
 #[path = "pin_unpin_changes_state.rs"]
 mod pin_unpin_changes_state;
 #[path = "socket_activation.rs"]

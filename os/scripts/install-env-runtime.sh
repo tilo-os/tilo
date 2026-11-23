@@ -15,8 +15,9 @@
 #                and tools from the same publisher are trusted too
 #   INSTALL_BIN  tilo-install
 #
-# The runtime goes through `tilo-install image add`, the path every image
-# takes: its signature, its publisher and its tree are checked exactly as on a
+# The runtime goes through `tilo-install image add`, the change every image
+# takes (made in this process for the store being built, `--offline-store`):
+# its signature, its publisher and its tree are checked exactly as on a
 # device. A SOURCE without a runtime for this architecture (a build with no
 # runtime published yet, ENV_RUNTIME_REF=scratch) is reported and skipped
 # unless TILO_REQUIRE_ENV_RUNTIME=1; environments then fetch the runtime from
@@ -51,7 +52,7 @@ expected=$(cat "$source_dir/env-runtime-$arch.id")
 [[ $expected =~ ^tapp:[0-9a-f]{64}$ ]] || die "env-runtime-$arch.id is not a package id"
 
 mkdir -p "$store" "$data_dir"
-added=$(TILO_APPS_DATA_DIR="$store" "$install_bin" image add "$tapp" --publisher "$publisher")
+added=$(TILO_APPS_DATA_DIR="$store" "$install_bin" --offline-store "$store" image add "$tapp" --publisher "$publisher")
 read -r id kind _ <<<"$added"
 [ "$id" = "$expected" ] || die "installed $id, but the image publishes $expected"
 [ "$kind" = env-runtime ] || die "$tapp is a $kind package"

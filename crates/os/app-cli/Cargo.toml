@@ -26,7 +26,6 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-formats = { path = "../../sdk/tilo-formats" }
-bounded-command = { path = "../../platform/bounded-command" }
 # The person's interface language, for the catalogue's localized names: the
 # same one answer every surface resolves its language from.
 settings-store = { path = "../../system/settings-store" }
@@ -61,6 +60,9 @@ tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 # for its files, and the registry serves only the payload blobs it needs.
 runtime-bundle = { path = "../../packaging/runtime-bundle" }
 app-registry = { path = "../../packaging/app-registry" }
+# Every change to the package store is the package service's action: `app`
+# calls it, and the service, which runs this library too, makes it in-process.
+package-service-client = { path = "../../packaging/package-service-client" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

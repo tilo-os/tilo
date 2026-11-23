@@ -4,9 +4,9 @@
 //! The rule is the app host's: a valid signature from a publisher this
 //! person trusts installs; a valid signature from a self-signed or unknown
 //! publisher asks once, naming the publisher as unverified. With no terminal
-//! to ask on, that is refused unless `--yes` is given. `tilo-install` stays
-//! the one verifier: its `check` says who signed the file, and the install
-//! it then runs verifies the same bytes again.
+//! to ask on, that is refused unless `--yes` is given. The installer stays
+//! the one verifier: `tilo-install check` says who signed the file, and the
+//! package service's install action verifies the same bytes again.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ use std::process::{Command, ExitCode};
 
 use app_cli::install::{DownloadProgress, staging_dir, tilo_install_bin};
 use clap::Args;
+use package_service_client::wire::{self, Replacement, Trust, Uploaded};
 
 /// How a package file is accepted; shared by `install` and `update --from`.
 #[derive(Debug, Args, Clone, Default)]
@@ -52,10 +53,8 @@ impl FileTrust {
         .find_map(|(given, flag)| given.then_some(flag))
     }
 
-    /// The `tilo-install` flags these options are; `accepted` adds
-    /// `--allow-self-signed` once the person has accepted an unverified
-    /// publisher.
-    fn installer_args(&self, accepted: bool) -> Vec<String> {
+    /// The `tilo-install check` flags these options are.
+    fn check_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         for (flag, value) in [
             ("--require-publisher", &self.require_publisher),
@@ -66,9 +65,6 @@ impl FileTrust {
                 args.push(flag.to_owned());
                 args.push(value.clone());
             }
-        }
-        if accepted {
-            args.push("--allow-self-signed".to_owned());
         }
         args
     }
@@ -145,7 +141,7 @@ fn check(path: &Path, trust: &FileTrust) -> Result<Verdict, String> {
     let output = Command::new(tilo_install_bin())
         .arg("check")
         .arg(path)
-        .args(trust.installer_args(false))
+        .args(trust.check_args())
         .output()
         .map_err(|error| format!("could not run tilo-install: {error}"))?;
     if !output.status.success() {
@@ -242,17 +238,38 @@ fn prepare(
 }
 
 fn run_installer(path: &Path, change: &Change<'_>, trust: &FileTrust, accepted: bool) -> ExitCode {
-    let mut command = Command::new(tilo_install_bin());
-    match change {
-        Change::Install => {
-            // Replace an older copy of the same id, as installing from a
-            // repository does.
-            command.arg("install").arg(path).arg("--force");
-        }
-        Change::Update(id) => {
-            command.args(["update", id, "--from"]).arg(path);
-        }
-    }
-    command.args(trust.installer_args(accepted));
-    crate::store_verbs::exit_code(command.status())
+    let file = Some(Uploaded {
+        source: path.display().to_string(),
+    });
+    let trust = Trust {
+        require_package_root: trust.require_package_root.clone(),
+        require_publisher: trust.require_publisher.clone(),
+        require_attestor: trust.require_attestor.clone(),
+        allow_self_signed: accepted,
+    };
+    let change = match change {
+        Change::Install => wire::Change::Install {
+            file: Uploaded {
+                source: path.display().to_string(),
+            },
+            trust,
+            pinned: false,
+            // Replace an older copy of the same id, as installing from a repository does.
+            replacement: Replacement::Replace,
+            ignore_missing_runtime: false,
+            dry_run: false,
+            payload_from: None,
+        },
+        Change::Update(id) => wire::Change::Update {
+            app: Some((*id).to_owned()),
+            file,
+            version: None,
+            allow_downgrade: false,
+            dry_run: false,
+            trust,
+            ignore_missing_runtime: false,
+            payload_from: None,
+        },
+    };
+    crate::store_verbs::change(change, Some(path))
 }

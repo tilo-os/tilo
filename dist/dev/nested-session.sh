@@ -512,6 +512,8 @@ mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
 # os/scripts/pack-apps.sh installs a device's, so the launcher treats them as
 # the image's own. The person's store keeps what they install themselves.
 in_system_store() { env -u TILO_APPS_SYSTEM_DIR TILO_APPS_DATA_DIR="$system_store" "$@"; }
+# The session is not running yet, so no package service is either: like an
+# image build, every change below names the store it writes (`--offline-store`).
 installed=$(in_system_store "$bin/tilo-install" list 2>/dev/null || true)
 user_installed=$(env -u TILO_APPS_SYSTEM_DIR "$bin/tilo-install" list 2>/dev/null || true)
 # The selected apps' catalog entries, read before the loop: a failing filter
@@ -525,7 +527,7 @@ while IFS=$'\t' read -r name binary id version manifest; do
     # A copy an earlier session installed into the person's store would start instead of the
     # image's. Removed with the system store in view, so the runtime the image's apps name stays.
     if grep -q "^$id " <<<"$user_installed"; then
-        "$bin/tilo-install" uninstall "$id" --keep-state >/dev/null
+        "$bin/tilo-install" --offline-store "$TILO_APPS_DATA_DIR" uninstall "$id" --keep-state >/dev/null
     fi
     built=$thin/$binary
     [[ -x $built ]] || die "missing app binary $built"
@@ -556,7 +558,7 @@ while IFS=$'\t' read -r name binary id version manifest; do
     # --force replaces the package of the same version; app data stays. The
     # main runtime is installed above; an optional one (Browser's Chromium
     # engine) is offered for download by the app itself.
-    in_system_store "$bin/tilo-install" install "$tapp" --allow-self-signed --force \
+    in_system_store "$bin/tilo-install" --offline-store "$system_store" install "$tapp" --allow-self-signed --force \
         --ignore-missing-runtime >/dev/null
     printf '%s\n' "$digest" > "$stamps/$name"
     rm -rf "$work"
@@ -564,7 +566,7 @@ done <<<"$catalog"
 for tapp in "${install_tapps[@]}"; do
     [[ -f $tapp ]] || die "no package $tapp"
     say "installing $(basename "$tapp")"
-    "$bin/tilo-install" install "$tapp" --allow-self-signed --force >/dev/null
+    "$bin/tilo-install" --offline-store "$TILO_APPS_DATA_DIR" install "$tapp" --allow-self-signed --force >/dev/null
 done
 
 # The Browser's Chromium engine, signed with the session's key as the engine

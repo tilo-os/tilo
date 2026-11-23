@@ -8,15 +8,19 @@ PartOf=tilo-graphical-session.target
 # applications or batch work (see os/etc/systemd/user/session.slice.d).
 Slice=session.slice
 Type=notify
-# The package store is the one the launcher, the shell and tilo-install
-# read and write; the daemon keeps no store of its own. Packages the daemon
-# once kept in its own state directory move into it at startup.
+# The package store is the one the launcher and the shell read; this daemon is
+# the only thing that writes it at runtime (tilo-install and `app` ask it), so
+# every change has its caller's permission and a history line. Packages the
+# daemon once kept in its own state directory move into it at startup.
 ExecStartPre=+/usr/bin/mkdir -p %h/.local/share/tilo-apps
 # mkdir -p preserves existing runtime root permissions; only a new root is private.
 ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.local/share/tilo-runtime
-# Only canonical package/runtime roots, broker state and account Flatpak state are writable.
-# Repository configuration and the rest of this person's home remain read-only.
-ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak
+# Only canonical package/runtime roots, broker state, account Flatpak state, the
+# device's attestor and revocation lists (%h/.config/tilo) and the host search
+# registration an install writes are writable. Repository configuration and the
+# rest of this person's home remain read-only.
+ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak %h/.config/tilo
+ExecStartPre=+/usr/bin/mkdir -p %h/.local/share/applications %h/.local/share/krunner/dbusplugins %h/.local/share/dbus-1/services %h/.local/share/tilo/export/share %h/.config/environment.d
 ExecStart=/usr/libexec/tilo-package-service --socket %t/tilo/services/package-service.sock --store %h/.local/share/tilo-apps
 Restart=on-failure
 RestartSec=1
@@ -41,4 +45,4 @@ StateDirectory=tilo-package-service
 StateDirectoryMode=0700
 # Verified downloads are disposable broker state, never writes to the read-only home.
 Environment=TILO_STORE_CACHE_DIR=%S/tilo-package-service/cache
-ReadWritePaths=%S/tilo-package-service %h/.local/share/tilo-apps %h/.local/share/tilo-runtime %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak
+ReadWritePaths=%S/tilo-package-service %h/.local/share/tilo-apps %h/.local/share/tilo-runtime %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak %h/.config/tilo %h/.local/share/applications %h/.local/share/krunner/dbusplugins %h/.local/share/dbus-1/services %h/.local/share/tilo/export/share %h/.config/environment.d

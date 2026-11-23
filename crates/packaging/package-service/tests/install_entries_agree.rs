@@ -1,13 +1,13 @@
 //! A package installed through the package service's install action and the same package
-//! installed by an image build's in-process entry end up as the same store: one installer behind
-//! both.
+//! installed by an image build's in-process entry (`tilo-install --offline-store`) end up as the
+//! same store: one change behind both.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use package_service::language_pack::LanguagePackInstalls;
-use package_store::installer::{self, Candidate, Request, Trust};
+use package_service::wire::{Change, Replacement, Trust, Uploaded};
 use package_store::{Catalog, InstalledPackage, PackageStore};
 use tilo_app_package::trust::TrustFile as _;
 
@@ -101,23 +101,37 @@ fn the_install_action_and_the_image_build_entry_write_the_same_store() {
     let image = home.root().join("image/tilo-apps");
     let tapp = home.root().join("local.tapp");
     std::fs::write(&tapp, &full).unwrap();
-    let report = installer::install(
-        &PackageStore::at(&image),
-        &Catalog::at(&image, None),
-        &Candidate::file(&tapp),
-        &Request {
+    let report = package_service::change::apply(
+        &package_service::change::Target {
+            store: &PackageStore::at(&image),
+            catalog: &Catalog::at(&image, None),
+            max_store_bytes: package_store::DEFAULT_MAX_STORE_BYTES,
+        },
+        Change::Install {
+            file: Uploaded {
+                source: tapp.display().to_string(),
+            },
             trust: Trust {
                 require_package_root: Some(review.root.clone()),
-                require_attestor: Some(review.attestor.clone()),
+                require_attestor: Some(review.attestor),
                 ..Trust::default()
             },
-            ..Request::default()
+            pinned: false,
+            replacement: Replacement::Refuse,
+            ignore_missing_runtime: false,
+            dry_run: false,
+            payload_from: None,
         },
-        None,
+        Some(&tapp),
     )
     .unwrap();
-    assert_eq!(report.outcome, installer::Outcome::Installed);
-    assert_eq!(report.selected.unwrap().root, review.root);
+    assert!(
+        report
+            .lines
+            .iter()
+            .any(|line| line.contains("so.tilo.unlisted-local")),
+        "{report:?}"
+    );
 
     let (action_rows, action_files) = stored(&device);
     let (build_rows, build_files) = stored(&image);

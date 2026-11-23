@@ -388,7 +388,7 @@ install_tapp() {
         TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
         TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
-        "$bin/tilo-install" install "$tapp" --allow-self-signed "$@" \
+        "$bin/tilo-install" --offline-store "$store" install "$tapp" --allow-self-signed "$@" \
         >/dev/null
 }
 if ((${#apps[@]})); then

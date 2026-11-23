@@ -71,6 +71,28 @@ pub fn total_bytes(states: &[WorkspaceState]) -> u64 {
     states.iter().map(|s| s.bytes).sum()
 }
 
+/// The saved data `states` lists, as an uninstall's plan and its question show it.
+#[must_use]
+pub fn summary(states: &[WorkspaceState]) -> Vec<String> {
+    if states.is_empty() {
+        return vec!["  saved data: none".to_owned()];
+    }
+    let mut lines = vec![format!(
+        "  saved data: {} workspace(s), {} total",
+        states.len(),
+        human_bytes(total_bytes(states))
+    )];
+    lines.extend(states.iter().map(|saved| {
+        format!(
+            "              {:<24} {:>10}  {} file(s)",
+            saved.workspace,
+            human_bytes(saved.bytes),
+            saved.files
+        )
+    }));
+    lines
+}
+
 /// `1.4 MB`, for a prompt.
 #[must_use]
 pub fn human_bytes(bytes: u64) -> String {

@@ -345,6 +345,7 @@ members = [
     "crates/packaging/app-fleet",
     "crates/os/app-cli",
     "crates/packaging/package-service",
+    "crates/packaging/package-service-client",
     "crates/packaging/app-registry",
     "crates/vm/oci-images",
     "crates/packaging/cli-shim",

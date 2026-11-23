@@ -1,7 +1,7 @@
 //! The image's apps are installed packages like any other: listed, updated into the user's store,
 //! rolled back, and returned to the image's version through the same `tilo-install`.
 //!
-//! The image's store is built as the image build builds it (`TILO_APPS_DATA_DIR`) and read as the
+//! The image's store is built as the image build builds it (`--offline-store`) and read as the
 //! system store of a session (`TILO_APPS_SYSTEM_DIR`).
 
 use std::path::PathBuf;
@@ -128,12 +128,13 @@ impl Machine {
 
     fn image_build(&self, args: &[&str]) -> (bool, String) {
         let mut c = self.command();
-        c.env("TILO_APPS_DATA_DIR", self.image_store());
+        c.arg("--offline-store").arg(self.image_store());
         Self::run(c, args)
     }
 
     fn session(&self, args: &[&str]) -> (bool, String) {
         let mut c = self.command();
+        crate::support::offline(&mut c, &self.data());
         c.env("TILO_APPS_SYSTEM_DIR", self.image_store()).env(
             "TILO_APPS_SYSTEM_PAYLOAD_DIR",
             self.root.path().join("usr/lib/tilo-apps"),

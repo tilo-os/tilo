@@ -858,3 +858,89 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// While the device runs, `tilo-install` only asks: its changes are the package service's actions,
+/// and with no service to ask it says so instead of writing the store itself.
+#[test]
+fn changes_go_through_the_package_service() {
+    use std::process::{Command, Stdio};
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    let env = Env::new();
+    let v1 = env.tapp("1.0.0", b"version one", None);
+    let runtime = env.home.path().join("runtime");
+    let socket = runtime.join("tilo/services/package-service.sock");
+    // No `systemctl` to start a service with either.
+    let empty = env.home.path().join("no-programs");
+    std::fs::create_dir_all(&empty).unwrap();
+    let ask = |args: &[&str]| {
+        let mut command = Command::new(crate::support::install_bin());
+        command
+            .env_clear()
+            .env("PATH", &empty)
+            .env("HOME", env.home.path())
+            .env("XDG_CONFIG_HOME", env.home.path().join("config"))
+            .env("XDG_DATA_HOME", env.xdg_data())
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .args(args);
+        crate::support::run(command)
+    };
+
+    let (ok, out, err) = ask(&["install", v1.to_str().unwrap()]);
+    assert!(!ok, "{out}");
+    assert!(
+        err.contains("no package service answers") && err.contains("--offline-store"),
+        "{err}"
+    );
+    assert!(!env.tilo_apps().join("registry.toml").exists());
+
+    let mut service = Command::new(tilo_test_env::sibling_binary(
+        "package-service",
+        "tilo-package-service",
+    ));
+    service
+        .env_clear()
+        .env("HOME", env.home.path())
+        .env("XDG_CONFIG_HOME", env.home.path().join("config"))
+        .env("XDG_DATA_HOME", env.xdg_data())
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .arg("--socket")
+        .arg(&socket)
+        .stdout(Stdio::null());
+    let mut service = service.spawn_locked().unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        assert!(
+            service.try_wait().unwrap().is_none(),
+            "the package service stopped"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the package service never listened"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let (ok, out, err) = ask(&["install", v1.to_str().unwrap()]);
+    assert!(ok, "install failed: {out}{err}");
+    assert!(out.contains("installed: so.tilo.lifecycle 1.0.0"), "{out}");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"version one"
+    );
+    let (ok, out, err) = ask(&["pin", "so.tilo.lifecycle"]);
+    assert!(ok, "pin failed: {out}{err}");
+    assert!(
+        env.registry_toml().contains("pinned = true"),
+        "{}",
+        env.registry_toml()
+    );
+    assert!(ask(&["unpin", "so.tilo.lifecycle"]).0);
+    let (ok, out, err) = ask(&["uninstall", "so.tilo.lifecycle", "--keep-state"]);
+    assert!(ok, "uninstall failed: {out}{err}");
+    assert!(out.contains("uninstalled: so.tilo.lifecycle"), "{out}");
+    assert!(!env.registry_toml().contains("so.tilo.lifecycle"));
+
+    let _ = service.kill();
+    let _ = service.wait();
+}

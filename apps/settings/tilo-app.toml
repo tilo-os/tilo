@@ -96,7 +96,7 @@ models = "optional@36"
 model-gateway = "optional@36"
 # The person's languages: which language packs the repositories offer, and
 # installing the one chosen. The host answers Settings that and nothing else.
-package-service = "optional@6"
+package-service = "optional@7"
 # Adding an account signs in to its servers, and Settings' sandbox has no network: the
 # session makes exactly those connections for Settings, and only for Settings.
 accounts = "optional@1"

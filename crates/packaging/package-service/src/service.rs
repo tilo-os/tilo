@@ -3,42 +3,37 @@
 //! content-store sessions, materialisation) runs through `tokio::task::spawn_blocking` so the
 //! connection stays responsive.
 
-use std::{io::Write as _, rc::Rc, sync::Arc};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::{io::Write as _, rc::Rc};
 
 use crate::client::Refusal;
 use crate::install::{InstallExpectation, install_verified_tapp};
 use crate::language_pack::{LanguagePackInstalls, SETTINGS_APP_ID};
 use crate::wire::{
-    Action, Answer, Catalogue, Expected, FlatpakVerb, Operation, PackageEntry, RemoteVerb,
-    Resource, Sink, WirePinning,
+    Action, Answer, Catalogue, Expected, FlatpakVerb, Operation, PERSON, PackageEntry, RemoteVerb,
+    Resource, SavedData, Sink, WirePinning,
 };
 use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
 use tilo_app_id::apps::STORE as STORE_APP_ID;
 use tilo_app_package::id::PackageId;
 
-/// What runs after every install, update and uninstall, and at every start of the
-/// daemon (a new image or a swapped userspace changes the system store without any install
-/// running): the store's size cap, payload trees and staging nothing names, and runtime builds no
-/// installed app runs any more. A tree a launch holds stays, and so do the apps `keep` names.
-pub fn collect_after_change(
+/// Collect after a change the service made, keeping `keep`; best effort, as the change is already
+/// committed.
+fn collect_after_change(
     store: &PackageStore,
     catalog: &Catalog,
     max_store_bytes: u64,
     keep: &[&str],
 ) {
-    let runtimes = match runtime_bundle::gc::BundleRoot::from_env() {
-        Ok(runtimes) => runtimes,
-        Err(error) => {
-            tracing::warn!(%error, "no runtime bundle root; applying the size cap only");
-            if let Err(error) = store.sweep_keeping(max_store_bytes, keep) {
-                tracing::warn!(%error, "post-change sweep failed");
-            }
-            return;
-        }
+    let target = crate::change::Target {
+        store,
+        catalog,
+        max_store_bytes,
     };
-    let request = package_store::gc::Request::after_change(max_store_bytes)
-        .keeping(keep.iter().map(|id| (*id).to_owned()));
-    match package_store::gc::collect(store, catalog, &runtimes, request) {
+    match crate::change::collect_after_change(
+        &target,
+        keep.iter().map(|id| (*id).to_owned()).collect(),
+    ) {
         Ok(report) => tracing::debug!(
             freed_bytes = report.freed_bytes(),
             evicted = report.evicted.len(),
@@ -57,6 +52,8 @@ pub struct PackageServiceServer {
     app_id: String,
     /// The person's language packs, shared by every connection.
     language_packs: Arc<LanguagePackInstalls>,
+    /// The file this connection is uploading for the change it names next.
+    upload: Arc<Mutex<Option<tempfile::NamedTempFile>>>,
 }
 
 impl PackageServiceServer {
@@ -71,12 +68,27 @@ impl PackageServiceServer {
         app_id: String,
         language_packs: Arc<LanguagePackInstalls>,
     ) -> Self {
+        // The catalogue and language-pack actions run `app`'s library, whose installs are this
+        // service's change action: made here, not sent back to the service.
+        let (commit_store, commit_catalog) = (Arc::clone(&store), Arc::clone(&catalog));
+        app_cli::install::commit_in_process(Arc::new(move |change, file| {
+            crate::change::apply(
+                &crate::change::Target {
+                    store: &commit_store,
+                    catalog: &commit_catalog,
+                    max_store_bytes,
+                },
+                change,
+                Some(file),
+            )
+        }));
         Self {
             store,
             catalog,
             max_store_bytes,
             app_id,
             language_packs,
+            upload: Arc::default(),
         }
     }
 
@@ -936,12 +948,64 @@ impl PackageServiceServer {
     async fn invoke(&self, action: Action, progress: &Sink) -> Result<Answer, Error> {
         let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
         let max_bytes = self.max_store_bytes;
-        if matches!(action, Action::InstallLanguagePack { .. }) {
-            self.authorized(SETTINGS_APP_ID, "does not choose the person's languages")?;
-        } else {
-            self.authorized(STORE_APP_ID, "does not manage packages")?;
+        match action {
+            Action::InstallLanguagePack { .. } => {
+                self.authorized(SETTINGS_APP_ID, "does not choose the person's languages")?;
+            }
+            // The person's own changes to their store: a terminal's, never an app's.
+            Action::Upload { .. } | Action::Change { .. } => {
+                self.authorized(PERSON, "may not change the package store from an app")?;
+            }
+            _ => self.authorized(STORE_APP_ID, "does not manage packages")?,
         }
         match action {
+            Action::Upload { chunk } => {
+                let upload = Arc::clone(&self.upload);
+                blocking(move || append_upload(&upload, &chunk)).await?;
+                Ok(Answer::Done)
+            }
+            Action::Change {
+                store: named,
+                change,
+            } => {
+                let upload = self
+                    .upload
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                let caller = self.app_id.clone();
+                let summary = format!("{change:?}");
+                let answer = blocking(move || {
+                    let root = store.layout().root();
+                    if !same_store(root, std::path::Path::new(&named)) {
+                        return Err(Error::failed(format!(
+                            "the package service writes {}, but this shell names {named}: \
+                             write that store with `tilo-install --offline-store {named}`, or \
+                             start a package service for it",
+                            root.display()
+                        )));
+                    }
+                    crate::change::apply(
+                        &crate::change::Target {
+                            store: &store,
+                            catalog: &catalog,
+                            max_store_bytes: max_bytes,
+                        },
+                        change,
+                        upload.as_ref().map(tempfile::NamedTempFile::path),
+                    )
+                    .map_err(Error::failed)
+                })
+                .await;
+                // Who changed what, in the journal the device keeps.
+                match &answer {
+                    Ok(_) => tracing::info!(%caller, change = %summary, "package store changed"),
+                    Err(error) => {
+                        tracing::info!(%caller, change = %summary, %error, "package store change refused");
+                    }
+                }
+                Ok(Answer::Report(answer?))
+            }
             Action::InstallLanguagePack { locale } => {
                 self.install_language_pack(locale, progress).await
             }
@@ -958,7 +1022,20 @@ impl PackageServiceServer {
                 let id = PackageId::from_bytes(id);
                 blocking(move || {
                     let package = find_user(&catalog, id)?;
-                    store.remove(&package.id, false).map_err(failed)?;
+                    // The person's saved data stays: the Store removes the app, not their work.
+                    crate::change::uninstall(
+                        &crate::change::Target {
+                            store: &store,
+                            catalog: &catalog,
+                            max_store_bytes: max_bytes,
+                        },
+                        &package.id,
+                        SavedData::Keep,
+                        false,
+                        false,
+                        &mut crate::change::Logged,
+                    )
+                    .map_err(failed)?;
                     collect_after_change(&store, &catalog, max_bytes, &[]);
                     Ok(())
                 })
@@ -1125,6 +1202,41 @@ impl PackageServiceServer {
                 Ok(Answer::Text(status))
             }
         }
+    }
+}
+
+/// Append `chunk` to the connection's upload, starting it when there is none.
+fn append_upload(
+    upload: &Mutex<Option<tempfile::NamedTempFile>>,
+    chunk: &[u8],
+) -> Result<(), Error> {
+    let failed = |e: std::io::Error| Error::failed(format!("upload: {e}"));
+    let mut held = upload.lock().unwrap_or_else(PoisonError::into_inner);
+    let file = match held.take() {
+        Some(file) => file,
+        None => tempfile::NamedTempFile::new().map_err(failed)?,
+    };
+    let size = file.as_file().metadata().map_err(failed)?.len();
+    if size.saturating_add(chunk.len() as u64) > crate::wire::MAX_UPLOAD_BYTES {
+        // The upload goes with its file, dropped here.
+        drop(held);
+        return Err(Error::failed(format!(
+            "upload: a package may be at most {} bytes",
+            crate::wire::MAX_UPLOAD_BYTES
+        )));
+    }
+    let mut file = file;
+    file.write_all(chunk).map_err(failed)?;
+    *held = Some(file);
+    drop(held);
+    Ok(())
+}
+
+/// Whether `a` and `b` name one store: the same directory, or the same path before it exists.
+fn same_store(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 

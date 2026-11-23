@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
 
-use crate::install::InstallExpectation;
+use crate::InstallExpectation;
 use crate::wire::{
     Action, Answer, Catalogue, Event, Expected, FlatpakVerb, OfferedLanguage, Operation,
     RemoteVerb, Resource, WirePinning,
@@ -393,12 +393,12 @@ impl BlockingClient {
         self.wait(Operation::Read(resource))
     }
 
-    fn invoke(&self, action: Action) -> Result<Answer, String> {
+    pub(crate) fn invoke(&self, action: Action) -> Result<Answer, String> {
         self.wait(Operation::Invoke(action))
     }
 
     /// Review immutable file bytes using the service's current trusted attestors.
-    pub fn review_local(&self, bytes: &[u8]) -> Result<crate::local_package::LocalReview, String> {
+    pub fn review_local(&self, bytes: &[u8]) -> Result<crate::LocalReview, String> {
         match self.read(Resource::LocalReview {
             tapp_bytes: bytes.to_vec(),
         })? {
@@ -411,7 +411,7 @@ impl BlockingClient {
     pub fn install_local(
         &self,
         bytes: &[u8],
-        review: &crate::local_package::LocalReview,
+        review: &crate::LocalReview,
     ) -> Result<PackageId, String> {
         installed(self.invoke(Action::InstallLocal {
             tapp_bytes: bytes.to_vec(),

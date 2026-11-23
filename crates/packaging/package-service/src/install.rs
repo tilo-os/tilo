@@ -7,7 +7,6 @@
 use package_store::{Admission, BlobFetcher, InstalledPackage, PackageStore, Pinning, StoreError};
 #[cfg(feature = "service")]
 use thiserror::Error;
-use tilo_app_package::PackageId;
 #[cfg(feature = "service")]
 use tilo_app_package::{PackageMeta, Verification};
 
@@ -20,17 +19,7 @@ pub enum InstallError {
     Store(#[from] StoreError),
 }
 
-/// The registry-authenticated identity downloaded bytes must match, supplied by the privileged
-/// Store capability: an archive may describe itself, but it may not choose the identity the user
-/// approved in the catalogue.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InstallExpectation {
-    pub package_root: PackageId,
-    pub publisher: [u8; 32],
-    pub app_id: String,
-    pub version: String,
-    pub size_bytes: u64,
-}
+pub use package_service_client::InstallExpectation;
 
 #[cfg(feature = "service")]
 fn admission(pinning: Pinning, source: &str) -> Admission {

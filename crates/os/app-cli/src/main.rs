@@ -1,7 +1,7 @@
 //! `app` — install, update, remove, and discover Tilo apps.
 
 use std::io::{IsTerminal, Write};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -262,10 +262,10 @@ fn main() -> ExitCode {
             }
         }
         Cmd::Remove { app } => remove(&app),
-        Cmd::Pin { app } => store_verbs::on_installed("pin", &app),
-        Cmd::Unpin { app } => store_verbs::on_installed("unpin", &app),
+        Cmd::Pin { app } => store_verbs::pin(&app, true),
+        Cmd::Unpin { app } => store_verbs::pin(&app, false),
         Cmd::Verify { app } => store_verbs::verify(app.as_deref()),
-        Cmd::Inspect { app } => store_verbs::on_installed("inspect", &app),
+        Cmd::Inspect { app } => store_verbs::read_installed("inspect", &app),
         Cmd::Running { json } => store_verbs::running(json),
         Cmd::Gc { dry_run } => store_verbs::gc(dry_run),
         Cmd::Trust { cmd } => store_verbs::trust(cmd),
@@ -939,21 +939,21 @@ fn rollback_to_image(id: &str, to: Option<&str>) -> Option<ExitCode> {
             }
         }
     }
-    let status = Command::new(app_cli::install::tilo_install_bin())
-        .args(["uninstall", id, "--keep-state"])
-        .stdout(std::process::Stdio::null())
-        .status();
-    Some(match status {
-        Ok(status) if status.success() => {
+    let removed = package_service_client::person::change(
+        package_service_client::wire::Change::Uninstall {
+            app: id.to_owned(),
+            saved_data: package_service_client::wire::SavedData::Keep,
+            dry_run: false,
+        },
+        None,
+    );
+    Some(match removed {
+        Ok(_) => {
             println!("rolled back {id} {installed} -> {image} (the system image's)");
             ExitCode::SUCCESS
         }
-        Ok(_) => {
-            eprintln!("app: could not remove the updated copy of '{id}'");
-            ExitCode::FAILURE
-        }
         Err(error) => {
-            eprintln!("app: could not run tilo-install: {error}");
+            eprintln!("app: could not remove the updated copy of '{id}': {error}");
             ExitCode::FAILURE
         }
     })
@@ -1156,7 +1156,14 @@ fn remove(query: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    store_verbs::installer(["uninstall", &id, "--keep-state"])
+    store_verbs::change(
+        package_service_client::wire::Change::Uninstall {
+            app: id,
+            saved_data: package_service_client::wire::SavedData::Keep,
+            dry_run: false,
+        },
+        None,
+    )
 }
 
 fn report_unreachable(items: &[app_cli::UnreachableRegistry]) {

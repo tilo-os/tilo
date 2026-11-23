@@ -8,7 +8,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_app_package::trust::{RevocationList, RevokedKey, TrustFile};
 
 use crate::registry_to_installed::{
-    author_tapp_version, scoped_env, test_publisher, tilo_install_bin,
+    PackageService, author_tapp_version, scoped_env, test_publisher, tilo_install_bin,
 };
 
 const ID: &str = "so.tilo.package-file-e2e";
@@ -47,13 +47,14 @@ fn a_package_file_installs_by_the_package_service_rule() {
         std::fs::create_dir_all(dir).unwrap();
     }
     let installer = tilo_install_bin();
-    let _env = scoped_env(&[
+    let mut env = scoped_env(&[
         ("TILO_STORE_CONFIG_DIR", &config),
         ("TILO_STORE_CACHE_DIR", &cache),
         ("TILO_APPS_DATA_DIR", &apps),
         ("XDG_CONFIG_HOME", &xdg_config),
         ("TILO_INSTALL_BIN", &installer),
     ]);
+    let _service = PackageService::start(&mut env, &apps, None);
     let first = write_tapp(home.path(), "1.4.0");
     let second = write_tapp(home.path(), "1.5.0");
     let publisher = hex::encode(test_publisher().public_key_bytes());

@@ -16,7 +16,7 @@ path = "src/main.rs"
 # Honour the developer-only environment overrides (`package_store::dev_env`)
 # in a release build: the session's system store and publisher list, by which
 # a developer session installs its own builds. Shipped images never enable it.
-dev-overrides = ["package-store/dev-overrides"]
+dev-overrides = ["package-store/dev-overrides", "package-service/dev-overrides"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -26,23 +26,17 @@ tilo-app-package = { path = "../tilo-app-package" }
 # launcher, the shell and the app host.
 package-store = { path = "../package-store", features = ["store"] }
 runtime-bundle = { path = "../runtime-bundle" }
+# Every change is the package service's action: sent to the person's service while the
+# device runs, made in this process for the store an image build names.
+package-service = { path = "../package-service" }
+package-service-client = { path = "../package-service-client" }
 clap.workspace = true
 hex.workspace = true
 serde_json.workspace = true
-semver.workspace = true
-# Payload blobs a thin package does not carry, from a registry server.
-app-registry = { path = "../app-registry" }
-# `update` resolves a newer version through the store client's registries
-# and catalogue: the same path `app update` takes.
-app-cli = { path = "../../os/app-cli" }
-
-# Registers the runtime's GNOME Shell and KRunner search providers.
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-tilo-os-search = { path = "../../integrations/os-search" }
 
 [dev-dependencies]
 getrandom.workspace = true

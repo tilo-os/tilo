@@ -32,6 +32,63 @@ pub(crate) fn tilo_install_bin() -> PathBuf {
     tilo_test_env::sibling_binary("install", "tilo-install")
 }
 
+/// The person's package service, writing `apps` and reached where `app` reaches it (a runtime
+/// directory this sets in `env`): every change `app` makes is the service's action. Stopped on
+/// drop.
+pub(crate) struct PackageService {
+    process: std::process::Child,
+    _runtime: tempfile::TempDir,
+}
+
+impl PackageService {
+    /// Start it once `env` holds everything else the device's changes read; `runtime` is the
+    /// runtime directory a test already chose, if it did.
+    pub(crate) fn start(
+        env: &mut tilo_test_env::ScopedEnv,
+        apps: &Path,
+        runtime: Option<&Path>,
+    ) -> Self {
+        let own = tempfile::tempdir().unwrap();
+        env.set("XDG_RUNTIME_DIR", runtime.unwrap_or_else(|| own.path()));
+        let socket = package_service_client::default_socket_path().unwrap();
+        let mut process = std::process::Command::new(tilo_test_env::sibling_binary(
+            "package-service",
+            "tilo-package-service",
+        ))
+        .arg("--socket")
+        .arg(&socket)
+        .arg("--store")
+        .arg(apps)
+        .stdout(std::process::Stdio::null())
+        .spawn_locked()
+        .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+            assert!(
+                process.try_wait().unwrap().is_none(),
+                "the package service stopped before it listened"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the package service never listened at {}",
+                socket.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Self {
+            process,
+            _runtime: own,
+        }
+    }
+}
+
+impl Drop for PackageService {
+    fn drop(&mut self) {
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
+}
+
 /// Author a signed .tapp for `package_id`, declaring a GUI entrypoint so the desktop would treat it as launchable.
 fn author_tapp(package_id: &str, identity: &SigningIdentity) -> Vec<u8> {
     author_tapp_version(package_id, "1.4.0", identity)
@@ -298,6 +355,7 @@ pub(crate) fn registry_config(name: &str, base_url: &str, owner: &SigningKey) ->
     reason = "the cache and app-data directories only need to outlive the device"
 )]
 pub(crate) struct Device {
+    _service: PackageService,
     pub config: tempfile::TempDir,
     pub cache: tempfile::TempDir,
     pub apps: tempfile::TempDir,
@@ -330,6 +388,17 @@ impl Device {
             env.set(key, value);
         }
         Self {
+            _service: PackageService::start(
+                &mut env,
+                extra
+                    .iter()
+                    .find(|(key, _)| *key == "TILO_APPS_DATA_DIR")
+                    .map_or_else(|| apps.path(), |(_, dir)| *dir),
+                extra
+                    .iter()
+                    .find(|(key, _)| *key == "XDG_RUNTIME_DIR")
+                    .map(|(_, dir)| *dir),
+            ),
             config,
             cache,
             apps,
