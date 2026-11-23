@@ -2095,9 +2095,20 @@ fn a_layout_is_read_again_for_a_write_of_it_not_for_a_write_elsewhere() {
         );
         (layouts, shown, heard)
     };
-    let workspaces = service.workspaces();
-    let (following, shown, heard) =
-        session(Some(Box::new(move || Some(workspaces.document_writes()))));
+    // The daemon tells the session each write it took, as the service here tells its own.
+    let (told, _) = tokio::sync::broadcast::channel(64);
+    let mut taken = service.workspaces().document_writes();
+    let telling = told.clone();
+    std::thread::spawn(move || {
+        while let Ok(write) = taken.blocking_recv() {
+            let _ = telling.send(runtime_collab::wire::shell::DocumentWritten {
+                workspace: write.workspace,
+                app: write.app,
+                record: write.record,
+            });
+        }
+    });
+    let (following, shown, heard) = session(Some(Box::new(move || Some(told.subscribe()))));
     let (blind, blind_shown, _) = session(None);
 
     engine.arrivals().landed();
