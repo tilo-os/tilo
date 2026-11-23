@@ -135,7 +135,9 @@ def sdk_closure(meta: dict) -> set[str]:
 
 # Patched crates whose crates.io original a published crate builds on
 # unchanged. Every patch in the closure must be listed here or be a
-# blocker; the reason says why the original suffices.
+# blocker; the reason says why the original suffices. wgpu is not one:
+# tilo-vello compiles its shaders with `Device::create_compute_pipeline_async`,
+# which only the patched wgpu has, so it waits for a published fork.
 UPSTREAM_SUFFICES = {
     "accesskit": "dependency trim (zbus's async-io backend follows a feature); same API",
     "accesskit_atspi_common": "dependency trim; the crates.io release, patched only to stay one copy",
@@ -149,8 +151,6 @@ UPSTREAM_SUFFICES = {
     "libspa-sys": "Fedora 44 PipeWire header fix; only the optional `pipewire` feature builds it",
     "rustls-native-certs": "Tilo OS's single trust bundle; the original's discovery is right elsewhere",
     "wayland-backend": "a compositor (server) fix; SDK apps are Wayland clients",
-    "wgpu": "a lost device is reported from `poll` instead of panicking; an app on the "
-    "release panics on a GPU reset as before",
     "wgpu-hal": "Metal presentation observer (only the optional `presentation-feedback` "
     "feature uses it), the Windows DX12 shader cache and a Vulkan device-loss switch only tests "
     "set; SDK apps use none of them. It also compiles Metal shaders without fast math; on the "
