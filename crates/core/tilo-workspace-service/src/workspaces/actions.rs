@@ -1955,7 +1955,8 @@ impl Workspaces {
         clippy::too_many_lines,
         reason = "one request answered by the provider it names: each provider has its own \
                   dispatch"
-    )]    async fn invoke(
+    )]
+    async fn invoke(
         &self,
         workspace_id: Option<WorkspaceId>,
         caller: &Caller,
@@ -4324,8 +4325,8 @@ mod surface_tests {
     use serde_json::{Value, json};
     use tilo_actions::ParamType;
     use tilo_actions::remote::{
-        WORKSPACE_GOVERNANCE_PUBLISHED, WORKSPACE_INVITATIONS, WORKSPACE_MEMBER, WORKSPACE_MEMBERS,
-        WORKSPACE_WAITING,
+        WORKSPACE_AGENTS, WORKSPACE_GOVERNANCE_PUBLISHED, WORKSPACE_INVITATIONS, WORKSPACE_MEMBER,
+        WORKSPACE_MEMBERS, WORKSPACE_WAITING,
     };
 
     use super::{VERBS, Verb};
@@ -4363,6 +4364,9 @@ mod surface_tests {
             .map(|(kind, label)| {
                 let verbs: Vec<Value> = WORKSPACE_GOVERNANCE_PUBLISHED
                     .iter()
+                    // The workspace's agents are the record's own actions, published on
+                    // `workspace/agents` by the record's grants: no verb of this surface.
+                    .filter(|(_, child, _)| *child != Some(WORKSPACE_AGENTS))
                     .filter(|(_, child, _)| resource_of(*child) == *kind)
                     .map(|(operation, _, action)| {
                         let verb = VERBS

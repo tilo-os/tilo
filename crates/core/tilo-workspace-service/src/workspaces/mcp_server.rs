@@ -115,11 +115,6 @@ impl McpServer {
         }
     }
 
-    /// Whether `device` runs an agent of the person's: a device that does keeps no server.
-    pub(crate) fn is_agent(&self, device: &[u8; 32]) -> bool {
-        self.agents.lock_recover().contains_key(device)
-    }
-
     /// End the open sessions named `session` of the agent `grant` names.
     /// Whether one was open.
     pub(crate) fn stop(&self, grant: &str, session: &str) -> bool {
