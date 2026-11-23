@@ -166,6 +166,10 @@ impl KeyFile {
 /// none (the process holding it is not in the workspace), each call answers
 /// why, as `not_in_workspace`.
 ///
+/// Every call is answered as the key, so an account signed in as a person is served only when
+/// that key is their own: on a computer several people sign in to, one person never acts as the
+/// person the daemon's key belongs to.
+///
 /// The kernel's account of the connection's peer is the whole of the
 /// admission: its account must be one admitted, and it must live in this
 /// login's own user and mount namespaces, as a session's other sockets require
@@ -188,18 +192,23 @@ where
         let admitted = stream
             .peer_cred()
             .ok()
-            .filter(|credentials| admission.admit(credentials.uid()).served())
-            .and_then(|credentials| credentials.pid())
-            .and_then(|pid| u32::try_from(pid).ok())
-            .is_some_and(shares_security_namespaces);
-        if !admitted {
+            .filter(|credentials| {
+                credentials
+                    .pid()
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .is_some_and(shares_security_namespaces)
+            })
+            .map(|credentials| admission.admit(credentials.uid()))
+            .filter(|admitted| admitted.served());
+        let Some(admitted) = admitted else {
             tracing::warn!("API: a connection from another account or a sandbox is refused");
             continue;
-        }
+        };
         let current = Arc::clone(&current);
         tokio::spawn(async move {
             match current().await {
-                Ok(direct) => direct.serve_one(stream).await,
+                Ok(direct) if direct.answers(admitted) => direct.serve_one(stream).await,
+                Ok(_) => refuse_connection(stream, crate::daemon::admission::NOT_SIGNED_IN).await,
                 Err(why) => refuse_connection(stream, &why).await,
             }
         });
@@ -250,6 +259,8 @@ fn shares_security_namespaces(pid: u32) -> bool {
 pub struct Direct {
     server: Arc<Server>,
     authorization: String,
+    /// The person, by their root key, whose key every call is answered as.
+    person: [u8; 32],
 }
 
 impl Direct {
@@ -365,7 +376,19 @@ impl Direct {
         Ok(Self {
             server,
             authorization: format!("Bearer {token}"),
+            person: key.person_root(),
         })
+    }
+
+    /// Whether a connection `admitted` so may act as this key: the device itself, or the person
+    /// whose key it is, and no other person.
+    fn answers(&self, admitted: crate::daemon::admission::Admitted) -> bool {
+        use crate::daemon::admission::Admitted;
+        match admitted {
+            Admitted::Device => true,
+            Admitted::Person(person) => person == self.person,
+            Admitted::Stranger => false,
+        }
     }
 
     /// Serve the API on `listener` until it closes, every request as this
@@ -597,6 +620,52 @@ mod tests {
                 )),
             })
         }
+    }
+
+    /// On a computer several people sign in to, the daemon's API answers every call as its own
+    /// key, so only the device itself and the person that key belongs to are served by it:
+    /// another person signed in on the same computer, and an account nobody signed in, are not.
+    #[test]
+    fn only_the_device_and_its_own_person_act_as_its_key() {
+        use crate::daemon::admission::Admitted;
+        let (ada, _) = UserIdentity::generate("Ada", 1);
+        let (bo, _) = UserIdentity::generate("Bo", 1);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let now = tilo_clock::unix_now_ns();
+        let mut cert = DeviceCert {
+            user_public_key: ada.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "the family computer".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: now.saturating_sub(60_000_000_000),
+            expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &ada).unwrap();
+        let direct = Direct::here(
+            std::sync::Arc::new(Desktop::default()),
+            key,
+            cert,
+            "the family computer",
+        )
+        .unwrap();
+        assert!(
+            direct.answers(Admitted::Device),
+            "the device itself is refused"
+        );
+        assert!(
+            direct.answers(Admitted::Person(ada.verifying_key().to_bytes())),
+            "the key's own person is refused"
+        );
+        assert!(
+            !direct.answers(Admitted::Person(bo.verifying_key().to_bytes())),
+            "another person signed in on this computer acts as Ada"
+        );
+        assert!(
+            !direct.answers(Admitted::Stranger),
+            "an account nobody signed in is served"
+        );
     }
 
     /// A program on this computer reaches the desktop's API at its socket, as the desktop's own
