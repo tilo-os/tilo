@@ -46,7 +46,7 @@ use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::{Config, Instance, LaterBuilds, Mode, Platform, Publication};
+use tilolang_tilo::instance::{Config, Instance, LaterBuilds, Locale, Mode, Platform, Publication};
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::{Caller, Moved, Planner, Publications, publish_package};
 use tilolang_tilo::resources::ResourceStore;
@@ -64,12 +64,6 @@ use crate::presence::Presence;
 thread_local! {
     /// The caller of the invocation being built on this thread, as the broker delivered it.
     static CALLER: RefCell<Option<Caller>> = const { RefCell::new(None) };
-}
-
-/// The person's date and time now: the device's clock, which is the one their window reads, so a
-/// day an instance writes and a day their window heads a row by are the same day.
-fn local_now() -> jiff::Zoned {
-    tilo_clock::local::now()
 }
 
 /// What one instance is: the app, the workspace, the window and who is at it, as the session named
@@ -510,6 +504,40 @@ struct HostPlatform {
     no_chooser: String,
 }
 
+/// One `tilolang-process` hosts multiple windows of different apps on a single thread — some
+/// shipping the person's language, some English-only — and receives region formats over the
+/// session API rather than reading toolkit thread-locals (this crate depends on `tilo-ui` for
+/// presence decoding and agent task sessions, not on `tilo-app-window`). Each window therefore
+/// keeps its own [`Phrases`] and reads the session-pushed [`Formats`] cell.
+///
+/// `words_revision` moves when the session pushes a language change (`Hosted::speak`) or a
+/// package or later build adds catalogues (`Phrases::add_package`). Nothing in `tilolang-process`
+/// reads on-disk language packs: its chrome and toolkit catalogues are compiled into the binary
+/// and change only with a new build.
+impl Locale for HostPlatform {
+    fn add_words(&self, _window: bool, catalogues: &[(String, String)]) {
+        // The window's language was already chosen in `Phrases::for_window` from the package's
+        // shipped locales and the session's `Spec::language`.
+        self.phrases.add_package(catalogues);
+    }
+
+    fn words_revision(&self) -> u64 {
+        self.phrases.revision()
+    }
+
+    fn language(&self) -> String {
+        self.phrases.language()
+    }
+
+    fn formats(&self) -> tilo_formats::RegionFormats {
+        self.formats.get()
+    }
+
+    fn format_words(&self) -> &dyn tilo_formats::Words {
+        &*self.phrases
+    }
+}
+
 impl Platform for HostPlatform {
     /// The latest later build when there is one that loads, else the package the instance was
     /// started with.
@@ -542,83 +570,20 @@ impl Platform for HostPlatform {
         }
     }
 
+    fn locale(&self) -> Option<&dyn Locale> {
+        Some(self)
+    }
+
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
         self.phrases.say(id, args)
     }
 
-    fn language(&self) -> String {
-        self.phrases.language()
-    }
-
-    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
-        let _ = window;
-        self.phrases.add_package(catalogues);
-    }
-
     fn now(&self) -> String {
-        format!("{:.0}", local_now().timestamp())
+        tilolang_tilo::instance::wall_now()
     }
 
-    /// The zone the person's clock stands in, which their day begins in: the device's, as their
-    /// window's dates read it, so a day an action writes is the day their window shows it under.
-    fn zone(&self) -> i64 {
-        i64::from(local_now().offset().seconds())
-    }
-
-    /// The person's zone by name, so a day begins and a repeating item keeps its hour across a
-    /// change of clocks, as their window's dates do.
-    fn zone_name(&self) -> Option<String> {
-        tilo_clock::local_zone_name()
-    }
-
-    /// The day the person's region starts its week on, as they chose it in Settings: the same
-    /// first day their window's dates start a week on.
-    fn week_start(&self) -> i64 {
-        i64::from(
-            self.formats
-                .get()
-                .first_day
-                .weekday()
-                .to_monday_zero_offset(),
-        )
-    }
-
-    /// The clock the person reads: the one they chose in Settings, which the session handed the
-    /// host, so a time an app writes (`a.fetched.clock()`) reads as the same clock its window shows.
-    fn clock(&self, hour: u32, minute: u32) -> String {
-        self.formats
-            .get()
-            .time
-            .format_hm(hour, minute, &*self.phrases)
-    }
-
-    /// A day or a time of day in a sentence, in the person's styles and their language: the zone
-    /// its times read in is the one this host's clock answers in, so a sentence and a view agree.
-    fn shown(&self, kind: &str, value: &str) -> String {
-        let now = local_now();
-        tilo_formats::shown(
-            kind,
-            value,
-            self.formats.get(),
-            now.date(),
-            now.datetime(),
-            i64::from(now.offset().seconds()),
-            &*self.phrases,
-        )
-    }
-
-    /// A day or a time of day named in a sentence (`"{d}"`), in the person's styles and language:
-    /// a day as `Jun 29`, or `Jun 29, 2025` another year, a moment as `Jun 29, 6:00 PM`.
-    fn sentence(&self, kind: &str, value: &str) -> String {
-        let now = local_now();
-        tilo_formats::sentence(
-            kind,
-            value,
-            self.formats.get(),
-            now.date(),
-            i64::from(now.offset().seconds()),
-            &*self.phrases,
-        )
+    fn moment(&self) -> tilolang_tilo::instance::Zoned {
+        tilolang_tilo::instance::wall_moment()
     }
 
     fn web(

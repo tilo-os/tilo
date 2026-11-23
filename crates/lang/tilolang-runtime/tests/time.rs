@@ -723,4 +723,53 @@ view span_label(span: Duration) {
             }
         }
     }
+
+    /// Typed dates and times read the person's language first and fall back to English when that
+    /// reading names neither a day nor a time; where both languages read the text, the person's
+    /// language wins.
+    #[test]
+    fn typed_dates_read_the_persons_language_first_and_then_english() {
+        struct GermanWords;
+        impl tilolang_runtime::Words for GermanWords {
+            fn add(&self, _catalogues: &[(String, String)]) {}
+            fn add_used(&self, _catalogues: &[(String, String)]) {}
+            fn word(&self, _key: &str, _args: &[(String, String)], source: &str) -> String {
+                source.to_owned()
+            }
+            fn language(&self) -> String {
+                "de".to_owned()
+            }
+        }
+
+        // Thursday 2026-10-29 08:00 local in Europe/Berlin (CET, UTC+1), before 09:00.
+        let berlin = Sheet::at("2026-10-29T07:00:00Z", 3600, Some("Europe/Berlin"), 0);
+        berlin.rt.set_words(std::rc::Rc::new(GermanWords));
+        for phrase in [
+            "Freitag",
+            "friday",
+            "tomorrow 9am",
+            "Montag friday",
+            "sometime",
+        ] {
+            berlin.call(
+                "read",
+                vec![Value::resource(&berlin.board), Value::text(phrase)],
+            );
+        }
+        assert_eq!(
+            berlin.view("read_back"),
+            [
+                // German weekday read in German.
+                "2026-10-29T23:00:00Z 2026-10-30 0",
+                // English weekday read through the English fallback.
+                "2026-10-29T23:00:00Z 2026-10-30 0",
+                // App-supplied English phrase (`mail` snooze/send_later): tomorrow 09:00 CET = 08:00Z.
+                "2026-10-30T08:00:00Z 2026-10-30 0",
+                // Both languages read the text: German `Montag` wins over English `friday`.
+                "2026-11-01T23:00:00Z 2026-11-02 0",
+                // Unknown words still parse as nothing.
+                "1970-01-01T00:00:00Z 1970-01-01 0",
+            ]
+        );
+    }
 }

@@ -17,6 +17,143 @@ use crate::runtime::Words;
 
 use super::Publication;
 
+pub use jiff::Zoned;
+
+/// The device or page's current wall clock as ISO-8601 UTC text: the shared [`Platform::now`]
+/// reading for every live host (one clock read, no zone lookup).
+#[must_use]
+pub fn wall_now() -> String {
+    format!("{:.0}", tilo_clock::local::now_instant())
+}
+
+/// The device or page's current local moment: the shared [`Platform::moment`] reading for every
+/// live host (one clock read, one zone lookup, no text built or parsed).
+#[must_use]
+pub fn wall_moment() -> Zoned {
+    tilo_clock::local::now()
+}
+
+/// Parse `now` (ISO-8601 UTC text from [`Platform::now`]), falling back to the wall clock when a
+/// synthetic test string is not a valid timestamp.
+fn parse_now(now: &str) -> jiff::Timestamp {
+    match now.parse() {
+        Ok(timestamp) => timestamp,
+        Err(error) => {
+            tracing::warn!(
+                now,
+                %error,
+                "Platform::now returned an unparseable timestamp; falling back to local wall clock"
+            );
+            tilo_clock::local::now_instant()
+        }
+    }
+}
+
+/// How the stored `value` of a day, moment or duration (`kind` is `date`, `time` or `duration`)
+/// reads as a brief fact (`Today`, `Oct 29`, `2:05 PM`), computed against `moment` in `formats`
+/// and `words`. Shared by [`Platform::shown`] and non-window hosts such as agent task sessions.
+#[must_use]
+pub fn shown_at(
+    kind: &str,
+    value: &str,
+    moment: &Zoned,
+    formats: tilo_formats::RegionFormats,
+    words: &dyn tilo_formats::Words,
+) -> String {
+    tilo_formats::shown(
+        kind,
+        value,
+        formats,
+        moment.date(),
+        moment.datetime(),
+        i64::from(moment.offset().seconds()),
+        words,
+    )
+}
+
+/// How the stored `value` of a day or moment (`kind` is `date` or `time`) reads in an
+/// interpolated sentence (`"{d}"`), computed against `moment` in `formats` and `words`. Shared
+/// by [`Platform::sentence`] and non-window hosts such as agent task sessions.
+#[must_use]
+pub fn sentence_at(
+    kind: &str,
+    value: &str,
+    moment: &Zoned,
+    formats: tilo_formats::RegionFormats,
+    words: &dyn tilo_formats::Words,
+) -> String {
+    tilo_formats::sentence(
+        kind,
+        value,
+        formats,
+        moment.date(),
+        i64::from(moment.offset().seconds()),
+        words,
+    )
+}
+
+/// Where a platform's catalogues, person language and region formats live: every live host
+/// supplies one ([`Platform::locale`]), so catalogue intake, revisions, language, zones, week
+/// starts, dates and clocks are implemented once on [`Platform`] instead of retyped — and
+/// drifting — on each host.
+///
+/// Every method is required so a live host cannot silently omit one and fall back to raw dates,
+/// Monday-only weeks, English-only date parsing or a frozen revision.
+pub trait Locale {
+    /// Take in a package's catalogues (`(locale, Fluent text)`). `window` is true for the package
+    /// the window shows and false for a package it uses.
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]);
+
+    /// Moves when the active display language or catalogues change, so published labels and nouns
+    /// are published again.
+    fn words_revision(&self) -> u64;
+
+    /// The language the person reads and types in (`de`, `en`), even when the window's own
+    /// package only ships another language.
+    fn language(&self) -> String;
+
+    /// The person's region formats (date style, 12/24-hour clock, first day of the week).
+    fn formats(&self) -> tilo_formats::RegionFormats;
+
+    /// The localized date and clock words (`day-today`, `format-month-short`, …) for
+    /// [`tilo_formats`].
+    fn format_words(&self) -> &dyn tilo_formats::Words;
+}
+
+/// A [`Locale`] backed by functions over thread- or process-global state (such as the toolkit's
+/// `I18nManager` and region formats). Hosts that share those globals construct one once as a
+/// `static` and override only fields that genuinely differ for them.
+#[derive(Clone, Copy)]
+pub struct GlobalLocale {
+    pub add_words: fn(bool, &[(String, String)]),
+    pub words_revision: fn() -> u64,
+    pub language: fn() -> String,
+    pub formats: fn() -> tilo_formats::RegionFormats,
+    pub format_words: fn() -> &'static dyn tilo_formats::Words,
+}
+
+impl Locale for GlobalLocale {
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        (self.add_words)(window, catalogues);
+    }
+
+    fn words_revision(&self) -> u64 {
+        (self.words_revision)()
+    }
+
+    fn language(&self) -> String {
+        (self.language)()
+    }
+
+    fn formats(&self) -> tilo_formats::RegionFormats {
+        (self.formats)()
+    }
+
+    fn format_words(&self) -> &dyn tilo_formats::Words {
+        (self.format_words)()
+    }
+}
+
 /// What an instance asks of whatever runs it.
 pub trait Platform {
     /// Load what a window of the package runs into `host`: the installed package, or the latest
@@ -35,6 +172,14 @@ pub trait Platform {
         let _ = (app, bundle);
     }
 
+    /// The person's catalogues, language and region formats for this host. Every live host
+    /// supplies `Some(...)`, implementing `add_words`, `words_revision`, `language`, `zone`,
+    /// `zone_name`, `week_start`, `shown`, `sentence` and `clock` through one shared path. Only
+    /// headless test stubs that pin a synthetic UTC clock leave this `None`.
+    fn locale(&self) -> Option<&dyn Locale> {
+        None
+    }
+
     /// The platform's phrase `id` with `args`, in the person's language: what the standard
     /// library's frames say.
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String;
@@ -45,58 +190,99 @@ pub trait Platform {
     /// that language and never choose it. A platform without catalogues of its own shows the
     /// source words.
     fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
-        let _ = (window, catalogues);
+        if let Some(locale) = self.locale() {
+            locale.add_words(window, catalogues);
+        }
     }
 
     /// What the words resolve at now: it moves when the person's language, or a catalogue of
     /// theirs, does, so a package's published labels and nouns are published again in it.
     fn words_revision(&self) -> u64 {
-        0
+        self.locale().map_or(0, Locale::words_revision)
     }
 
-    /// The time now, as `now` reads it: ISO-8601 UTC text.
+    /// The time now, as `now` reads it: ISO-8601 UTC text. Live hosts delegate to [`wall_now`].
     fn now(&self) -> String;
+
+    /// The current moment in the person's local zone, used by [`Self::zone`], [`Self::shown`]
+    /// and [`Self::sentence`].
+    ///
+    /// Live hosts override this with [`wall_moment`] so each call makes one clock read and one
+    /// zone lookup without building or parsing text. The default parses [`Self::now`] once in the
+    /// thread's or device's local zone, so test and benchmark platforms that pin `now()` stay
+    /// consistent and warn at most once per call if `now()` is not ISO-8601.
+    fn moment(&self) -> Zoned {
+        tilo_clock::local::at(parse_now(&self.now()))
+    }
 
     /// The language the person reads and types in (`de`, `en`): what a date or a time typed in
     /// an entry is said in. Empty when the platform names none, which reads as English.
     fn language(&self) -> String {
-        String::new()
+        self.locale().map_or_else(String::new, Locale::language)
     }
 
-    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
-    /// 9am" in. UTC unless the platform knows the person's.
+    /// How many seconds the person's clock is ahead of UTC at [`Self::moment`]: the zone `dated`
+    /// reads "tomorrow 9am" in. UTC unless the platform knows the person's.
     fn zone(&self) -> i64 {
-        0
+        if self.locale().is_some() {
+            i64::from(self.moment().offset().seconds())
+        } else {
+            0
+        }
     }
 
     /// The person's zone as its IANA name (`Europe/Berlin`): the zone a repeating item keeps its
     /// wall time of day in across a change of clocks, and the one a day begins in. Nothing
     /// unless the platform knows it, which leaves the offset above as the whole answer.
     fn zone_name(&self) -> Option<String> {
-        None
+        self.locale().and_then(|_| {
+            tilo_clock::local::Zone::here()
+                .name()
+                .or_else(tilo_clock::local_zone_name)
+        })
     }
 
     /// The day the person's region starts its week on, as days from Monday (`0`): the day a
     /// day's `start_of_week` goes back to. Monday unless the platform knows the person's region.
     fn week_start(&self) -> i64 {
-        0
+        self.locale().map_or(0, |locale| {
+            i64::from(locale.formats().first_day.weekday().to_monday_zero_offset())
+        })
     }
 
     /// How the stored `value` of a day or a time of day (`kind` is `date` or `time`) reads in a
     /// sentence — a row's line, a notice — where a view cannot stand: a day as the day fact
-    /// (`Today`, `Friday`, `Jun 29`), a time of day as a list shows when something came. Stored
-    /// text unless the platform formats, which a window's host does.
+    /// (`Today`, `Friday`, `Jun 29`), a time of day as a list shows when something came. Computed
+    /// against [`Self::moment`]; stored text unless the platform formats.
     fn shown(&self, kind: &str, value: &str) -> String {
-        let _ = kind;
-        value.to_owned()
+        let Some(locale) = self.locale() else {
+            return value.to_owned();
+        };
+        let moment = self.moment();
+        shown_at(
+            kind,
+            value,
+            &moment,
+            locale.formats(),
+            locale.format_words(),
+        )
     }
 
     /// How a day or a time of day named in a sentence (`"{d}"`) reads, in the person's formats: a
-    /// day as `Jun 29`, or `Jun 29, 2025` another year, a moment as `Jun 29, 6:00 PM`. Stored text
-    /// unless the platform formats, which a window's instance does.
+    /// day as `Jun 29`, or `Jun 29, 2025` another year, a moment as `Jun 29, 6:00 PM`. Computed
+    /// against [`Self::moment`]; stored text unless the platform formats.
     fn sentence(&self, kind: &str, value: &str) -> String {
-        let _ = kind;
-        value.to_owned()
+        let Some(locale) = self.locale() else {
+            return value.to_owned();
+        };
+        let moment = self.moment();
+        sentence_at(
+            kind,
+            value,
+            &moment,
+            locale.formats(),
+            locale.format_words(),
+        )
     }
 
     /// The time of day `hour`:`minute` as the person reads a clock (`14:05`, `2:05 PM`), in the
@@ -104,7 +290,13 @@ pub trait Platform {
     /// (`a.fetched.clock()`). A 24-hour clock unless the platform knows the person's style, which
     /// a host with the toolkit does.
     fn clock(&self, hour: u32, minute: u32) -> String {
-        format!("{hour:02}:{minute:02}")
+        let Some(locale) = self.locale() else {
+            return format!("{hour:02}:{minute:02}");
+        };
+        locale
+            .formats()
+            .time
+            .format_hm(hour, minute, locale.format_words())
     }
 
     /// The answer to a `web.get` or `web.post` the instance's code makes: this device's

@@ -1413,7 +1413,7 @@ doc = false
 "tilolang-mail" = { path = "../../crates/platform/tilolang-mail", default-features = false, features = ["default", "engine"] }
 "tilolang-process" = { path = "../../crates/platform/tilolang-process", default-features = false, features = ["test-support"] }
 "tilolang-runtime" = { path = "../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
-"tilolang-tilo" = { path = "../../crates/platform/tilolang-tilo", default-features = false, features = [] }
+"tilolang-tilo" = { path = "../../crates/platform/tilolang-tilo", default-features = false, features = ["test-support"] }
 "tilolang-web" = { path = "../../crates/lang/tilolang-web", default-features = false, features = [] }
 "tilolang-youtube" = { path = "../../crates/platform/tilolang-youtube", default-features = false, features = ["connector", "default", "live"] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
@@ -4067,7 +4067,7 @@ doc = false
 "tilolang-mail" = { path = "../../crates/platform/tilolang-mail", default-features = false, features = ["default", "engine"] }
 "tilolang-process" = { path = "../../crates/platform/tilolang-process", default-features = false, features = ["test-support"] }
 "tilolang-runtime" = { path = "../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
-"tilolang-tilo" = { path = "../../crates/platform/tilolang-tilo", default-features = false, features = [] }
+"tilolang-tilo" = { path = "../../crates/platform/tilolang-tilo", default-features = false, features = ["test-support"] }
 "tilolang-web" = { path = "../../crates/lang/tilolang-web", default-features = false, features = [] }
 "tilolang-youtube" = { path = "../../crates/platform/tilolang-youtube", default-features = false, features = ["connector", "default", "live"] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }

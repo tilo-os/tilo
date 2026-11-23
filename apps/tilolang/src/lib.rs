@@ -18,7 +18,7 @@ pub mod app;
 #[cfg(unix)]
 pub mod hosted;
 pub mod i18n;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 pub mod page;
 
 pub mod resource;

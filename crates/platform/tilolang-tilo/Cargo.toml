@@ -7,6 +7,11 @@ publish.workspace = true
 license.workspace = true
 description = "Tilo platform integration for tilolang apps: their resources in the device's store, the published surface, and the UI graph translation."
 
+[features]
+# Shared agreement test harness (`instance::testing`) driving every `Platform` implementer through
+# the same table of dates, times, clocks, week starts and localized date parsing.
+test-support = ["tilo-clock/test-support"]
+
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 automerge.workspace = true
@@ -34,7 +39,10 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 tilolang = { path = "../../lang/tilolang" }
 # The wall clock, which also reads in a browser page, where std has none.
-tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+tilo-clock = { version = "0.1.0", path = "../tilo-clock", features = ["local"] }
+# Dates, times and clocks as the person set them: formatted once on `Platform` so every host
+# writes a day, a moment and a clock the same way.
+tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 # The interpreter alone in a browser page, where the compiled tier cannot run.
 tilolang-runtime = { path = "../../lang/tilolang-runtime", default-features = false }
 # The history verbs a store answers, and the names history speaks of its writers in.
