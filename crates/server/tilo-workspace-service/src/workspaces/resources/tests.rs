@@ -186,6 +186,17 @@ async fn title(workspaces: &Workspaces, workspace: &str, id: &str) -> Option<Val
         .map(|held| held.scalar("title"))
 }
 
+/// Whether the store of this device's copy of `workspace` holds the issue `id`, whoever reads it.
+async fn holds(workspaces: &Workspaces, workspace: &str, id: &str) -> bool {
+    let governed = workspaces.workspace(workspace).await.unwrap();
+    let governed = governed.lock().await;
+    governed
+        .resources
+        .store()
+        .get(KIND, id, &|_| true)
+        .is_some()
+}
+
 /// The title of the issue `id` of `workspace`, as an app reads it through the service.
 async fn title_through_service(
     workspaces: &Workspaces,
@@ -1184,7 +1195,8 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
 
 /// A device that joins a workspace reads the resources written there before it arrived, though
 /// their writes reach its copy before the group's keys reach the device: once the keys do, the
-/// copy opens what it kept, with nothing written since.
+/// copy opens what it kept, with nothing written since. A resource sealed to its author alone
+/// reaches the copy too, and stays shut: no member's keys open it.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1231,6 +1243,28 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
         )
         .await
         .unwrap();
+    // A draft of the owner's that only they read: its own document, sealed to their group.
+    let author = hex::encode(owner_cert.user_public_key);
+    owner
+        .workspaces()
+        .resource_command(
+            &context(&workspace, &owner_cert),
+            Command::Put {
+                kind: KIND.into(),
+                id: "draft-1".into(),
+                resource: Resource {
+                    readers: author.clone(),
+                    ..signed_issue("Only mine")
+                },
+                stamp: Stamp::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let private = |document_id: &str| {
+        collab_types::store_document_readers(document_id)
+            == Some(collab_types::reader_set_name(&author).as_str())
+    };
 
     let (key, cert) = device_cert(
         &SigningKey::from_bytes(&[41; 32]),
@@ -1265,23 +1299,31 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
     let mut woke = member.workspaces().document_writes();
     let invite = tilo_peer_state::join::encode_invitation_text(&invite.signed_invitation);
     member.workspaces().join_member(&invite).await.unwrap();
-    tilo_test_env::within("the copy keeps the issue it cannot open yet", async {
-        loop {
-            let retained = member
-                .workspace_documents()
+    let kept = |shared: bool| {
+        let documents = member.workspace_documents();
+        async move {
+            documents
                 .retained(created.workspace_id)
                 .await
-                .unwrap();
-            if retained.iter().any(|frame| {
-                matches!(NeighbourMsg::decode(&frame.body), Ok(NeighbourMsg::AppDocument {
+                .unwrap()
+                .iter()
+                .any(|frame| {
+                    matches!(NeighbourMsg::decode(&frame.body), Ok(NeighbourMsg::AppDocument {
                     app_id, document_id, ..
-                }) if app_id == APP && collab_types::is_store_document(&document_id))
-            }) {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }) if app_id == APP
+                    && collab_types::is_store_document(&document_id)
+                    && private(&document_id) != shared)
+                })
         }
-    })
+    };
+    tilo_test_env::within(
+        "the copy keeps the issue and the draft it cannot open yet",
+        async {
+            while !(kept(true).await && kept(false).await) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
     .await;
     assert_eq!(
         title(member.workspaces(), &workspace, "i-1").await,
@@ -1291,7 +1333,7 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
 
     // The keys make the kept write readable: the copy tells its followers so again.
     while woke.try_recv().is_ok() {}
-    member_keys.hand_what_is_held_by(&owner_keys);
+    member_keys.hand_every_member_of(&owner_keys, &workspace);
     let expected = Some(Value::Text("Written before".into()));
     tilo_test_env::within("the copy reads the issue once the keys are here", async {
         while title(member.workspaces(), &workspace, "i-1").await != expected {
@@ -1299,6 +1341,16 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
         }
     })
     .await;
+    // The member's device holds the owner's draft, sealed, and opens none of it.
+    assert!(kept(false).await, "the copy keeps the sealed draft");
+    assert!(
+        holds(owner.workspaces(), &workspace, "draft-1").await,
+        "the owner reads their draft"
+    );
+    assert!(
+        !holds(member.workspaces(), &workspace, "draft-1").await,
+        "another member's device holds the draft and cannot open it"
+    );
     tilo_test_env::within(
         "the copy tells its followers the record it restored",
         async { while woke.recv().await.is_ok_and(|write| write.app != APP) {} },

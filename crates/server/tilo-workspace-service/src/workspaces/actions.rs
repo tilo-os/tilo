@@ -976,7 +976,9 @@ impl Args {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(None),
             Some(Value::Bool(value)) => Ok(Some(*value)),
-            Some(_) => Err(invalid(format!("`{name}` must be true or false"))),
+            Some(_) => Err(ActionCallError::invalid_request(format!(
+                "`{name}` must be true or false"
+            ))),
         }
     }
 
@@ -2530,11 +2532,11 @@ impl Workspaces {
         let keeps = self
             .keeping_devices(workspace)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(ActionCallError::refused)?;
         let copies = self
             .copies(workspace)
             .await
-            .map_err(|error| refused(&error.to_string()))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         Ok(json!({ "workspace": workspace, "keeps": keeps, "copies": copies }))
     }
 

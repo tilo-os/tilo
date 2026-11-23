@@ -485,3 +485,13 @@ gap R: the fixture's daemon has no held login session and no server list	-	daemo
 gap S: a daemon cannot redeem an invitation; a second person cannot join from their own computer's daemon	-	one-dispatch	with the account surface (G)
 main 67541d0852a, 115fa702c49, e93e461613c, babde88be75: tree and file actions naming another workspace are refused (through the deleted WorkspaceActions::serve)	ok	one-dispatch	port: a caller in workspace A naming workspace B is refused at the one admission, through the dispatch
 gap view: a view of a real installed app opened through open_view draws its real tilolang window	-	one-dispatch	daemon-host fixture with signed runtime bundles; api_programs moves onto the fixture
+main faff1472c2f: Direct refuses a second signed-in person on the API socket (serves the device or the key's own person only)	-	one-dispatch	after the rebase Direct admits through admit_key; test: a second signed-in person on the same computer acts as themselves and reaches only their own workspaces
+main e413179874b: workspace_actions::computer_agent::a_computers_agent_that_starts_the_workspaces_agents_leaves_them_open_to_every_reader	ok	port-agents	port through the daemon fixture: the agent roster founded with its genesis identity
+main 404449a5e24: workspace_actions::jobs_tests::a_stop_ends_the_threads_after_the_request_in_flight_and_before_the_runtime_does	ok	internal	WorkspaceActions jobs threads are deleted with it
+main 86e4245d4f7: workspace_actions::hosted_coding_agents::a_coding_agent_starts_on_its_persons_word_hears_them_while_it_works_stops_and_resumes	ok	port-agents	port through the daemon fixture: a coding agent run in the workspace service engine
+main 441866ab85e: hosted agent grant approved by the person it acts for (hosted_across_kept/list, hosted_agent_turns, hosted_search)	ok	port-agents	port: an agent key grant approved by its person, through the dispatch
+main a3cb458beef: workspace_actions::desktop_page (the desktop page is the shell's own view of the layout)	ok	one-dispatch	with page-notes/page-reopen: the desktop page through Daemon::open_view of the shell
+main 86e4245d4f7: a server starts coding agents harnesses (web_cli start_roster with_coding)	ok	port-agents	the roster start goes with the bots; coding agents start where the daemon runs the workspace agents
+main 533a770b6c6: workspace_actions::computer_models::a_workspace_the_computer_keeps_after_it_started_runs_on_its_choice_at_once	ok	port-agents	with the computer_models rows
+main 8a26fe1b7ed: hosted_agent_terminal changes (a trigger starts an agent turn)	ok	daemon-shells	with the terminal_streams port
+main 7d0e3d91916 era: put_files test changes on main	ok	port-files	with the put_files rows

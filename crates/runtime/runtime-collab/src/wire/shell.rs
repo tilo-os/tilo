@@ -115,9 +115,12 @@ pub enum ShellCall {
     /// Admit one connection as the app `Vouch` names, which the shell launched: answered with the
     /// one-use secret that connection opens with after [`VOUCH_MAGIC`].
     Vouch(Vouch),
-    /// Record the receipt of an effect an action the shell ran had, in its workspace, as this
-    /// device's: `tilo_peer_state::owner_commit::OwnerCommitRequest` JSON of an effect receipt.
-    Receipt { request: String },
+    /// Record the receipt of an effect an action the shell ran had, in `workspace`, as this
+    /// device's: `redacted` is the redacted `tilo_desktop_model::WorkspaceEffectReceipt` JSON.
+    Receipt {
+        workspace: String,
+        redacted: Vec<u8>,
+    },
     /// Whether the device records the receipts of effects in `workspace`: it does in a workspace
     /// it joined, each device in its own slice of it.
     KeepsReceipts { workspace: String },
@@ -238,9 +241,8 @@ pub enum ShellReply {
         socket: std::path::PathBuf,
         secret: [u8; SHELL_SECRET_BYTES],
     },
-    /// A [`ShellCall::Receipt`]: the receipt as the workspace took it
-    /// (`tilo_peer_state::owner_commit::OwnerCommitReceipt` JSON), or why it took none.
-    Receipted(Result<String, String>),
+    /// A [`ShellCall::Receipt`]: kept in the workspace, or why it was not.
+    Receipted(Result<(), String>),
     /// A [`ShellCall::Authorizes`]: allowed, or why not.
     Authorized(Result<(), String>),
 }

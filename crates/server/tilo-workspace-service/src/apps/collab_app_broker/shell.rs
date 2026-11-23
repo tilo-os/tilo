@@ -225,25 +225,6 @@ async fn write(services: &ShellServices, call: ShellCall) -> Result<ShellReply, 
     }))
 }
 
-/// The effect receipt `request` names, recorded in its workspace as this device's.
-async fn receipt(
-    workspaces: &crate::workspaces::Workspaces,
-    request: &str,
-) -> Result<String, String> {
-    let request: tilo_peer_state::owner_commit::OwnerCommitRequest = serde_json::from_str(request)
-        .map_err(|error| format!("the receipt does not read: {error}"))?;
-    if !matches!(
-        request.operation,
-        tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
-    ) {
-        return Err("a shell records only effect receipts: an app's writes are its own".to_owned());
-    }
-    let receipt = workspaces
-        .commit_member_effect_receipt(&request.workspace, &request)
-        .await?;
-    serde_json::to_string(&receipt).map_err(|error| error.to_string())
-}
-
 /// Where and with which secret a connection opens to be admitted as the app `vouch` names, which
 /// the shell launched.
 fn vouch_for(
@@ -291,9 +272,14 @@ async fn next_writes(
 /// workspaces the device holds.
 async fn kept(workspaces: &crate::workspaces::Workspaces, call: ShellCall) -> ShellReply {
     match call {
-        ShellCall::Receipt { request } => {
-            ShellReply::Receipted(receipt(workspaces, &request).await)
-        }
+        ShellCall::Receipt {
+            workspace,
+            redacted,
+        } => ShellReply::Receipted(
+            workspaces
+                .commit_member_effect_receipt(&workspace, &redacted)
+                .await,
+        ),
         ShellCall::KeepsReceipts { workspace } => {
             ShellReply::Is(workspaces.is_member(&workspace).await.unwrap_or(false))
         }

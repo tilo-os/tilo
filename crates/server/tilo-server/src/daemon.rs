@@ -513,7 +513,6 @@ impl Server {
             },
             tilo_workspace_service::own_device::vault_key(&identity.device_signing_key),
             endpoint.clone(),
-            Self::governs(&cfg, &identity.device_cert),
             Arc::new(tilo_workspace_keys::NoSealChecks),
             |config| {
                 let config = Self::keeping(&cfg, config, app_serving.clone());
@@ -549,14 +548,6 @@ impl Server {
         server.key_service = Some(keys);
         server.iroh_packet_relay = relay.server;
         Ok(server)
-    }
-
-    /// Whether a server governs the workspaces placed on it: only one that admits no one by
-    /// default, on a device that may hold workspace keys, since governing one is holding its keys.
-    #[must_use]
-    pub fn governs(cfg: &ServerConfig, cert: &tilo_user_identity::DeviceCert) -> bool {
-        !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
-            && cert.capabilities.holds_workspace_keys()
     }
 
     /// `config`, a device's workspace service's, as a device keeping what `cfg` says opens it:
@@ -1040,6 +1031,14 @@ fn site_origin(web_entry: &str) -> Option<String> {
 /// The site name a keeper's web entry names: `tilo.sh` for
 /// `https://tilo.sh/app/`. One without a web entry is no site and goes by its
 /// server's name alone.
+/// The https origin of the site `web_entry` names (`https://eu1.tilo.sh`), which the address
+/// this keeper signs carries: `None` for an entry that is no https address.
+fn site_origin(web_entry: &str) -> Option<String> {
+    let rest = web_entry.strip_prefix("https://")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    (!host.is_empty()).then(|| format!("https://{host}"))
+}
+
 fn site_name(web_entry: &str) -> String {
     let rest = web_entry
         .split_once("://")

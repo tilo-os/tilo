@@ -39,8 +39,6 @@ pub(crate) struct Opening<'a> {
     pub(crate) identity: DeviceIdentity,
     /// The endpoint, bound under the device's key, every link of the device runs on.
     pub(crate) endpoint: iroh::Endpoint,
-    /// Whether the service founds and governs workspaces here: on a computer with no login.
-    pub(crate) governs: bool,
     /// What the groups' members seal is checked against: the apps' channels.
     pub(crate) seal_checks: Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
     /// What answers the person's keys' record actions in a workspace governed here.
@@ -60,8 +58,9 @@ pub(crate) struct ServiceWorkspaces {
     bound: Arc<OnceLock<iroh::Endpoint>>,
     /// The device's key service, which settles the keys of every group the device takes part in.
     keys: Option<KeyService>,
-    /// The workspace founded here, which the service governs, once it is.
-    own: OnceLock<WorkspaceId>,
+    /// Where that key service keeps its groups' state, and the vault it seals them under: what a
+    /// desktop's groups are taken into ([`Self::import`]).
+    groups: Option<(std::path::PathBuf, key_group::VaultKey)>,
     /// The session this device entered with, once a holder ran: what the device's own actions are
     /// asked of its host through.
     session: std::sync::OnceLock<Entered>,
@@ -85,7 +84,6 @@ impl ServiceWorkspaces {
             key,
             identity,
             endpoint,
-            governs,
             seal_checks,
             apps,
             configure,
@@ -100,7 +98,6 @@ impl ServiceWorkspaces {
             },
             own_device::vault_key(key),
             endpoint.clone(),
-            governs,
             seal_checks,
             |config| {
                 let config = ServiceConfig { apps, ..config };
@@ -124,6 +121,7 @@ impl ServiceWorkspaces {
         .map_err(|error| format!("this device's workspace service: {error}"))?;
         let mut opened = Self::unopened(Arc::new(service), identity, endpoint);
         opened.keys = Some(keys);
+        opened.groups = Some((dir.join(GROUPS), vault_key(key)));
         Ok(Arc::new(opened))
     }
 
@@ -149,7 +147,7 @@ impl ServiceWorkspaces {
             endpoint,
             bound,
             keys: None,
-            own: OnceLock::new(),
+            groups: None,
             session: std::sync::OnceLock::new(),
             takes_work: std::sync::atomic::AtomicBool::new(false),
             content: OnceLock::new(),
@@ -173,8 +171,149 @@ impl ServiceWorkspaces {
             .await
             .map(drop)
             .map_err(|error| error.to_string())?;
-        let _ = self.own.set(workspace);
         Ok(())
+    }
+
+    /// Take in, once, what a desktop of this device kept itself before this service kept its
+    /// person's workspaces (`account/workspaces#import`): each key group the desktop sealed, opened
+    /// with the key it was sealed with and sealed again under this device's vault beside the groups
+    /// the key service keeps, which opens it once the service takes part in its workspace; and each
+    /// workspace the desktop took part in, entered here as a member at the address its host
+    /// signed. A group the key service keeps already stays as it is: the device keeps the one leaf
+    /// it has in each group, and no group is founded again beside one the desktop had. The
+    /// workspaces the desktop's own service governed move here, after the groups
+    /// ([`tilo_workspace_service::workspaces::Workspaces::move_in`]), and are answered beside
+    /// the answer. When the desktop was to found its person's own workspace and had not yet, this
+    /// service founds it, after the groups are in.
+    ///
+    /// # Errors
+    /// The device keeps no key service, or a group cannot be read, opened or written.
+    pub(crate) async fn import(
+        &self,
+        carried: Carried,
+    ) -> Result<(serde_json::Value, Vec<WorkspaceId>), String> {
+        let groups = match &carried.sealed_with {
+            Some(sealed_with) => self.take_in_groups(sealed_with, &carried.groups)?,
+            None => Vec::new(),
+        };
+        // The key service reads the groups, their readers and the routes of document groups as
+        // it opens: those just written are read now, before the workspaces sealed with them move.
+        if let Some(keys) = self.keys().get() {
+            keys.take_in_kept();
+        }
+        let moved = match &carried.service {
+            Some(service) => {
+                let service = tilo_workspace_service::workspaces::MovingService::from_hex(service)?;
+                self.copies().move_in(service).await?
+            }
+            None => tilo_workspace_service::workspaces::MovedIn::default(),
+        };
+        let person = &self.identity.device_cert.user_public_key;
+        let named = tilo_server_protocol::servers::person_workspace_id(person);
+        let person = WorkspaceId::parse(&named)
+            .ok_or_else(|| format!("a person's workspace id {named} is no workspace id"))?;
+        let founded = if carried.founds_person_workspace && !moved.moved.contains(&person) {
+            let workspace = person;
+            let name = tilo_workspace_service::workspaces::person_workspace::NAME;
+            self.found(workspace, name)
+                .await
+                .inspect_err(|error| {
+                    tracing::warn!(%error, "this device did not found its person's own workspace");
+                })
+                .is_ok()
+        } else {
+            false
+        };
+        let entering: Vec<_> = carried
+            .workspaces
+            .iter()
+            .filter_map(|workspace| {
+                Some((
+                    WorkspaceId::parse(&workspace.workspace)?,
+                    workspace.hint.clone()?,
+                ))
+            })
+            .collect();
+        let entered: Vec<String> = entering.iter().map(|(id, _)| id.to_string()).collect();
+        let copies = self.copies().clone();
+        tokio::spawn(async move { own_device::hold_as_members(&copies, entering).await });
+        let answer = serde_json::json!({
+            "groups": groups.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "entering": entered,
+            "founded_person_workspace": founded,
+            "moved": moved.moved.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "refused": moved
+                .refused
+                .iter()
+                .map(|(workspace, error)| serde_json::json!({"workspace": workspace.to_string(), "error": error}))
+                .collect::<Vec<_>>(),
+        });
+        Ok((answer, moved.moved))
+    }
+
+    /// Seal `groups`, the files of a desktop's key groups sealed under `sealed_with`, again under
+    /// this device's vault beside the key service's own: the workspaces whose groups were taken.
+    fn take_in_groups(
+        &self,
+        sealed_with: &str,
+        groups: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Vec<WorkspaceId>, String> {
+        let (dir, vault) = self
+            .groups
+            .as_ref()
+            .ok_or("this device keeps no key groups to take a desktop's into")?;
+        let from: [u8; 32] = hex::decode(sealed_with)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or("the key the desktop's groups were sealed with is not 32 bytes in hex")?;
+        let from = key_group::VaultKey::new(from);
+        tilo_files::native::atomic::create_private_directory(dir)
+            .map_err(|error| format!("{}: {error}", dir.display()))?;
+        let mut taken = Vec::new();
+        for (name, bytes) in groups {
+            // A plain file name only: what a desktop hands names nothing outside the groups.
+            if Path::new(name)
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                != Some(name.as_str())
+                || name.starts_with('.')
+            {
+                return Err(format!("a desktop's key group file is named {name:?}"));
+            }
+            let bytes =
+                hex::decode(bytes).map_err(|_| format!("the desktop's {name} is not hex"))?;
+            let path = dir.join(name);
+            let written = match name.strip_suffix(".peer") {
+                Some(_) if path.exists() => continue,
+                Some(workspace) => {
+                    let workspace = WorkspaceId::parse(workspace)
+                        .ok_or_else(|| format!("the desktop's {name} names no workspace"))?;
+                    let signer: Box<dyn key_group::DeviceSigner> =
+                        Box::new(Arc::clone(&self.identity.signer));
+                    let peer = match key_group::GroupPeer::restore(workspace, signer, &bytes, &from)
+                    {
+                        Ok(peer) => peer,
+                        // A machine copied from another keeps state its source made, which no
+                        // device but that one acts in: this device joins as itself.
+                        Err(key_group::Error::OtherDevice) => continue,
+                        Err(error) => {
+                            return Err(format!("the desktop's group of {workspace}: {error}"));
+                        }
+                    };
+                    let sealed = peer
+                        .export_sealed(vault)
+                        .map_err(|error| format!("the group of {workspace}: {error}"))?;
+                    taken.push(workspace);
+                    sealed
+                }
+                None if name == READER_GROUPS => readers_with(&path, &bytes)?,
+                None if path.exists() => continue,
+                None => bytes,
+            };
+            tilo_files::native::atomic::write_private(&path, &written)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        Ok(taken)
     }
 
     /// The device's key service.
@@ -283,6 +422,11 @@ impl ServiceWorkspaces {
         block_on_owned(async move { copies.member_ids().await.contains(&workspace) })
     }
 
+    /// Whether this device keeps `workspace`: its member copy, or the workspace founded here.
+    pub(crate) async fn keeps(&self, workspace: WorkspaceId) -> bool {
+        copy_of(self.copies(), workspace).await.is_some()
+    }
+
     /// What reads `workspace`'s policy as this device's copy of it holds it now, `None` while the
     /// copy is not here or its policy does not read.
     pub(crate) fn policy_of(
@@ -305,19 +449,16 @@ impl ServiceWorkspaces {
     }
 
     /// The workspaces this device holds, each with the name its governance gives it and the
-    /// replica it keeps: the member copies, and the workspace founded here.
+    /// copy it keeps: the workspaces served from here first, then the ones it takes part in.
     pub(crate) fn held(&self) -> Vec<(WorkspaceId, String, StatePeer)> {
         let workspaces = self.copies().clone();
-        let own = self.own.get().copied();
         block_on_owned(async move {
+            let members = workspaces.member_ids().await;
+            let mut ids = workspaces.ids().await;
+            ids.sort_by_key(|workspace| members.contains(workspace));
             let mut held = Vec::new();
-            if let Some(own) = own
-                && let Some((name, peer)) = copy_of(&workspaces, own).await
-            {
-                held.push((own, name, peer));
-            }
-            for workspace in workspaces.member_ids().await {
-                if let Some((name, peer)) = workspaces.member_copy(workspace).await {
+            for workspace in ids {
+                if let Some((name, peer)) = copy_of(&workspaces, workspace).await {
                     held.push((workspace, name, peer));
                 }
             }
@@ -355,7 +496,7 @@ impl ServiceWorkspaces {
     ) -> std::io::Result<tilo_fs::identity::PeerCredentials> {
         let workspace = WorkspaceId::parse(workspace)
             .ok_or_else(|| std::io::Error::other("not a workspace id"))?;
-        if !self.holds(workspace) && self.own.get() != Some(&workspace) {
+        if self.workspace(workspace).is_none() {
             return Err(std::io::Error::other("the workspace is not held here"));
         }
         let (cert, _) = self.identity.material_for(workspace);
@@ -735,6 +876,16 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
         held.sandbox = sandbox;
         held.launch_grants()
     }
+
+    /// Whether this device's person, the one every launch here is for, is a member of
+    /// `workspace`: a device that keeps other people's workspaces too launches into none of
+    /// theirs.
+    fn serves(&self, workspace: &str) -> bool {
+        let person = self.identity.device_cert.user_public_key;
+        WorkspaceId::parse(workspace)
+            .and_then(|id| self.peer(id))
+            .is_some_and(|peer| peer.is_member(&person))
+    }
 }
 
 /// The workspace replicas the runtime's own services read: the profile's own
@@ -840,7 +991,6 @@ impl ServiceWorkspaces {
                 None,
                 None,
             ),
-            true,
             // The fixture's endpoint names no address anywhere: nothing will,
             // so opening does not wait for one.
             |config| tilo_workspace_service::service::ServiceConfig {
@@ -863,6 +1013,19 @@ impl ServiceWorkspaces {
     pub(crate) async fn test_hosting_person(
         workspace: WorkspaceId,
     ) -> (
+        Arc<Self>,
+        tempfile::TempDir,
+        ed25519_dalek::SigningKey,
+        tilo_user_identity::DeviceCert,
+        tilo_device_identity::IdentityPaths,
+    ) {
+        let opened = Self::test_of_person().await;
+        opened.0.found(workspace, "Home").await.unwrap();
+        opened
+    }
+
+    /// [`Self::test_hosting_person`] before it founds anything.
+    pub(crate) async fn test_of_person() -> (
         Arc<Self>,
         tempfile::TempDir,
         ed25519_dalek::SigningKey,
@@ -895,7 +1058,6 @@ impl ServiceWorkspaces {
             key: &key,
             identity,
             endpoint,
-            governs: true,
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: Some(Arc::clone(&sessions)
                 as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
@@ -904,7 +1066,6 @@ impl ServiceWorkspaces {
         })
         .await
         .unwrap();
-        workspaces.found(workspace, "Home").await.unwrap();
         (workspaces, directory, key, cert, paths)
     }
 
@@ -925,7 +1086,6 @@ impl ServiceWorkspaces {
             key,
             identity: DeviceIdentity::kept(cert.clone(), key.clone()),
             endpoint,
-            governs: false,
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: None,
             configure: None,

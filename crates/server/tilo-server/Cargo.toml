@@ -26,14 +26,6 @@ web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "d
 name = "tilo-server"
 path = "src/main.rs"
 
-[[bin]]
-name = "tilo-server-admin"
-path = "src/admin.rs"
-
-[[bin]]
-name = "tilo-home-peer-control"
-path = "src/home_peer_control/main.rs"
-
 # The host / server daemon.
 #
 # `tilo-server` is the WAN transport + host tier of the sync/host model:
@@ -234,8 +226,7 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 # The daemon's bounded runtime.
 tilo-rt.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-# `watch`: the daemon follows membership files `tilo-server-admin` edits.
-tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+tilo-files = { path = "../../platform/tilo-files" }
 # Home-peer configuration is one signed filesystem bundle; the server imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }

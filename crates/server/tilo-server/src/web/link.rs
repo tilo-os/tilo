@@ -128,7 +128,15 @@ pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: S
                         )
                         .await;
                     }
-                    LINK_PAGE_PATH => super::page::serve_web(&serving.server, session).await,
+                    LINK_PAGE_PATH => {
+                        // A host that serves no agents asks its people nothing on a page.
+                        #[cfg(feature = "agents")]
+                        let questions: Option<&dyn super::page::Questions> =
+                            Some(&serving.certification);
+                        #[cfg(not(feature = "agents"))]
+                        let questions = None;
+                        super::page::serve_web(&serving.server, questions, session).await;
+                    }
                     LINK_RECORDS_PATH => {
                         let Some(link) = proved(&serving.server, &session).await else {
                             return;

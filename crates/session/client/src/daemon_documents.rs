@@ -347,33 +347,54 @@ pub fn on_daemon(
 #[derive(Clone, Debug)]
 pub struct DaemonReceipts(pub DaemonShell);
 
-impl tilo_peer_state::owner_commit::OwnerCommitService for DaemonReceipts {
-    fn records_effects(&self, workspace: &str) -> bool {
+impl tilo_broker_core::workspace_commits::WorkspaceCommits for DaemonReceipts {
+    fn projects_workspace(&self, workspace: tilo_desktop_model::WorkspaceId) -> bool {
+        let workspace = workspace.to_string();
         let asked = self.0.ask_blocking(ShellCall::KeepsReceipts {
-            workspace: workspace.to_owned(),
+            workspace: workspace.clone(),
         });
-        answered_is(asked, workspace)
-    }
-
-    fn commit(
-        &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
-        let shell = self.0.clone();
-        Box::pin(async move {
-            let request = serde_json::to_string(&request)
-                .map_err(|error| format!("a receipt does not encode: {error}"))?;
-            match shell.ask(ShellCall::Receipt { request }).await? {
-                ShellReply::Receipted(Ok(receipt)) => serde_json::from_str(&receipt)
-                    .map_err(|error| format!("the daemon's receipt does not read: {error}")),
-                ShellReply::Receipted(Err(refusal)) => Err(refusal),
-                other => Err(unexpected(&other)),
-            }
-        })
+        answered_is(asked, &workspace)
     }
 
     fn health(&self) -> Result<(), String> {
         self.0.link().map(drop)
+    }
+
+    /// An app's writes go to the daemon on the app's own connection there, never through the
+    /// desktop.
+    fn document(
+        &self,
+        _workspace: String,
+        _app: String,
+        _document: String,
+        _readers: Option<String>,
+        _envelope: collab_types::SignedOp,
+        _resource_type: Option<String>,
+    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
+        Box::pin(std::future::ready(Err(
+            "an app writes its documents at the device's daemon, on its own connection there"
+                .to_owned(),
+        )))
+    }
+
+    fn effect(
+        &self,
+        workspace: String,
+        redacted: Vec<u8>,
+    ) -> tilo_broker_core::workspace_commits::EffectFuture {
+        let shell = self.0.clone();
+        Box::pin(async move {
+            match shell
+                .ask(ShellCall::Receipt {
+                    workspace,
+                    redacted,
+                })
+                .await?
+            {
+                ShellReply::Receipted(kept) => kept,
+                other => Err(unexpected(&other)),
+            }
+        })
     }
 }
 

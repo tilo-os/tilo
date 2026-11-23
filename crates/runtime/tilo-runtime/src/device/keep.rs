@@ -85,11 +85,6 @@ impl Keeping {
             .map_err(|error| io::Error::other(format!("this server's endpoint: {error}")))
     }
 
-    /// Whether this server governs the workspaces placed on it, as the device `cert` names.
-    pub(crate) fn governs(&self, cert: &DeviceCert) -> bool {
-        Server::governs(&self.cfg, cert)
-    }
-
     /// The device's workspace service configured to keep the workspaces placed on it, as the
     /// work this server takes says.
     pub(crate) fn configuring(&self) -> impl FnOnce(ServiceConfig) -> ServiceConfig + Send + use<> {

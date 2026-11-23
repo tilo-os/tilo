@@ -84,10 +84,10 @@ impl Profile {
     /// A certified device of a person at `identity`, as a machine that joined
     /// leaves it: the production check the launch runs reads these.
     fn identity(&self) {
-        self.identity_at(&self.path("identity"));
+        Self::identity_at(&self.path("identity"));
     }
 
-    fn identity_at(&self, root: &std::path::Path) {
+    fn identity_at(root: &std::path::Path) {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
@@ -269,7 +269,7 @@ tilo_test_env::scenario! {
             "the launch reads the identity it was given and mints none"
         );
         let defaults = Profile::new();
-        defaults.identity_at(&defaults.path(".local/share/tilo"));
+        Profile::identity_at(&defaults.path(".local/share/tilo"));
         std::fs::create_dir_all(defaults.path(".local/state/tilo/files")).expect("create cache");
         std::fs::create_dir_all(defaults.path(".local/state/tilo/files/namespace"))
             .expect("create kept tree");

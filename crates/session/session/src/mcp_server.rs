@@ -50,7 +50,8 @@ use tilo_mcp::session_api::{Consent, Hello};
 use tilo_seal::secret_service::CallerKey;
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
-use tilo_workspace_service::apps::collab_app_broker::{AgentConnection, AppBrokerState};
+use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed};
+use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
@@ -333,12 +334,6 @@ pub(crate) struct Loop {
     /// The hosts of the workspaces this device takes part in but does not host, where a
     /// Terminal window's shell in one of them is opened ([`crate::workspace_terminals`]).
     hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
-    /// This device's actions toward the person's other devices: what a client here works on one
-    /// of them through, and the agents of theirs that work here ([`crate::device_agents`]).
-    devices: Option<(
-        crate::device_actions::DeviceActions,
-        Arc<crate::device_agents::HandedAgents>,
-    )>,
 }
 
 /// What serving one connection takes, on a thread of its own.
@@ -355,7 +350,6 @@ struct Serving {
     room: Room,
     environments: environments::Opener,
     hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
-    devices: Option<crate::device_actions::DeviceActions>,
 }
 
 impl Serving {
@@ -497,7 +491,6 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         environments,
         agent_key,
         hosting: None,
-        devices: None,
     };
     Ok(Mounted { server })
 }
@@ -529,93 +522,6 @@ impl Loop {
         self.hosting = hosting;
     }
 
-    /// Carry this login's clients to the person's other devices through `devices`, and work with
-    /// the agents of theirs that hand it requests ([`crate::device_agents`]).
-    pub(crate) fn hear_device_agents(&mut self, devices: crate::device_actions::DeviceActions) {
-        let handed = devices.hear_agents(self.wake.clone(), Arc::clone(&self.sessions));
-        self.devices = Some((devices, handed));
-    }
-
-    /// Answer what the agents the person's other devices hand requests to asked since the last
-    /// pass: each is the person's agent member for its client in the workspace it asked for, in a
-    /// session of its own here, while this device's setting accepts such agents.
-    fn admit_handed(&self, handle: &DesktopHandle, person: &str, members: &Members<'_>) {
-        let Some((_, handed)) = &self.devices else {
-            return;
-        };
-        for ask in handed.take() {
-            let admitted = (|| {
-                if !crate::device_agents::accepts_own_devices() {
-                    return Err(crate::i18n::t("device-agents-not-accepted"));
-                }
-                let workspace_name = handle
-                    .read(|tree| {
-                        tree.workspaces
-                            .iter()
-                            .find(|held| {
-                                !held.id().is_nil() && held.id().to_string() == ask.workspace
-                            })
-                            .map(|held| tilo_session_core::desktop::names::workspace(&held.name))
-                    })
-                    .ok_or_else(|| word("mcp-server-no-workspace"))?;
-                let (agent, name) = members(&ask.workspace, &ask.client)?;
-                let session = self.sessions.joining(None, Some(ask.origin.clone()));
-                let consent = Consent::Admit {
-                    workspace: ask.workspace.clone(),
-                    agent: agent.clone(),
-                    person: person.to_owned(),
-                    name: name.clone(),
-                };
-                let program = tilo_mcp::session_api::proposed_agent_id(&ask.client);
-                self.sessions
-                    .admit(&session, &consent, &program, &workspace_name);
-                // It acts as an agent of this login's MCP server does: through the broker as its
-                // own agent session, whose steps its grants decide.
-                let admitted = Admitted {
-                    workspace: &ask.workspace,
-                    person,
-                    agent: &agent,
-                    session: &session,
-                    name: &name,
-                };
-                let connection = match self
-                    .broker
-                    .as_ref()
-                    .map(|broker| connect(broker, &admitted))
-                {
-                    Some(Err(why)) => {
-                        self.sessions.left(&session);
-                        return Err(format!("{}: {why}", word("mcp-server-not-started")));
-                    }
-                    Some(Ok(connection)) => connection,
-                    None => None,
-                };
-                if connection.is_some() {
-                    self.sessions.certified(&session);
-                }
-                let host = Host::new(self.broker.clone(), Arc::clone(&self.services))
-                    .with_session_actions(self.services.actions())
-                    .in_agent_session(&self.sessions, session.clone(), &self.wake)
-                    .with_agent(connection);
-                let caller = tilo_actions::remote::Caller::local_person(person)
-                    .in_workspace(ask.workspace.clone())
-                    .delegated_to(agent.clone())
-                    .in_new_execution()
-                    .named(&name)
-                    .in_agent_session(session.as_str());
-                tracing::info!(client = %ask.client, device = %ask.origin.name, workspace = %ask.workspace, %agent, "MCP server: an agent from another of the person's devices works here");
-                Ok(crate::device_agents::Handed {
-                    session,
-                    agent,
-                    caller,
-                    host: Arc::new(host),
-                })
-            })();
-            ask.answer.complete(admitted);
-        }
-        handed.sweep();
-    }
-
     /// End the loop's wait when a client connects, so it is asked about on the
     /// pass that follows.
     ///
@@ -645,7 +551,6 @@ impl Loop {
                 self.request(handle, request, person, members);
             }
         }
-        self.admit_handed(handle, person, members);
         self.settle_waiting(person, members);
     }
 
@@ -697,7 +602,6 @@ impl Loop {
             room: self.room.clone(),
             environments: self.environments.opener(),
             hosting: self.hosting.clone(),
-            devices: self.devices.as_ref().map(|(devices, _)| devices.clone()),
         }
     }
 
@@ -1862,9 +1766,6 @@ pub(crate) struct Host {
     /// The session's own actions, when this session serves them: a desktop with no broker
     /// lists them itself.
     session_actions: Option<Arc<crate::session_actions::SessionActions>>,
-    /// An admitted agent's connection to the broker, as its own agent session. `None` for the
-    /// person's own connection, and on a device with no identity in the workspace.
-    agent: Option<AgentConnection>,
     /// The agent session an admitted agent's connection is: each step it takes says there what
     /// it is doing. `None` for the person's own connection.
     agent_session: Option<Arc<SessionAt>>,
@@ -1955,95 +1856,6 @@ impl SessionAt {
     }
 }
 
-/// Join `broker` as the agent session `admitted` names, certified by this device for a day at
-/// most. `Ok(None)` where the workspace confines no agent to its session, and on a device with no
-/// identity of its own in the workspace (a development session), which can certify nothing: its
-/// agents act on the workspace's grants as any app does.
-///
-/// # Errors
-/// The device's identity is not the person's, or the broker did not admit the session.
-fn connect(
-    broker: &Arc<AppBrokerState>,
-    admitted: &Admitted<'_>,
-) -> Result<Option<AgentConnection>, String> {
-    if !broker.confines_agents(admitted.workspace) {
-        return Ok(None);
-    }
-    let (device, certificate) =
-        match tilo_identity::trusted_device::current(admitted.workspace) {
-            Ok(device) => device,
-            Err(error) => {
-                tracing::warn!(
-                    workspace = admitted.workspace,
-                    %error,
-                    "MCP server: this device certifies no agent here"
-                );
-                return Ok(None);
-            }
-        };
-    let presentation = certify(
-        (&device, &certificate),
-        admitted,
-        tilo_clock::try_unix_now_ns().ok_or("this device has no clock to certify by")?,
-    )?;
-    broker
-        .agent_connection(&presentation, admitted.name)
-        .map(Some)
-}
-
-/// What an agent session is admitted for: the workspace it works in, the person who admitted it
-/// (whom the agent acts for), the agent member it is a session of, the session, and the name the
-/// person reads it by (`Claude Code`).
-struct Admitted<'a> {
-    workspace: &'a str,
-    person: &'a str,
-    agent: &'a str,
-    session: &'a AgentSessionId,
-    name: &'a str,
-}
-
-/// The presentation an agent session joins the broker with: a key of its own, certified as the
-/// admitted agent by this device (`device`, certified as `certificate`) for a day at most from
-/// `now_ns`, in its session alone.
-///
-/// # Errors
-/// The device's certificate is another person's, or the agent certificate does not sign.
-fn certify(
-    (device, certificate): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
-    admitted: &Admitted<'_>,
-    now_ns: u64,
-) -> Result<Vec<u8>, String> {
-    use ed25519_dalek::Signer as _;
-    use tilo_peer_state::join::agent_cert::{AgentCert, MAX_AGENT_CERT_NS};
-    if tilo_broker_core::person_id_for_root(certificate.user_public_key) != admitted.person {
-        return Err("this device's identity is not the person's who admitted the agent".into());
-    }
-    let mut seed = [0_u8; 32];
-    getrandom::fill(&mut seed).map_err(|error| error.to_string())?;
-    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let cert = AgentCert::sign(
-        device,
-        certificate.user_public_key,
-        key.verifying_key().to_bytes(),
-        (admitted.agent, admitted.session.as_str().to_owned()),
-        tilo_peer_state::join::WorkspaceId::parse(admitted.workspace)
-            .ok_or("the admission names no workspace")?,
-        now_ns,
-        now_ns.saturating_add(MAX_AGENT_CERT_NS),
-    )
-    .map_err(|error| format!("the agent certificate does not sign: {error}"))?;
-    let digest = tilo_identity_client::collaboration_join_digest(admitted.workspace)
-        .map_err(|error| error.to_string())?;
-    runtime_collab::AgentJoinIdentity {
-        workspace_id: admitted.workspace.to_owned(),
-        device_certificate: serde_json::to_vec(certificate).map_err(|error| error.to_string())?,
-        certificate: cert.encode(),
-        proof: key.sign(&digest).to_bytes().to_vec(),
-    }
-    .encode()
-    .map_err(|error| error.to_string())
-}
-
 impl Host {
     /// The API over `state` , with `session` beside it.
     pub(crate) fn new(state: Option<Arc<AppBrokerState>>, session: Arc<SessionServices>) -> Self {
@@ -2052,7 +1864,6 @@ impl Host {
             session,
             answered: Arc::default(),
             session_actions: None,
-            agent: None,
             agent_session: None,
             local_person: false,
         }
@@ -2081,12 +1892,6 @@ impl Host {
             apps: std::sync::Mutex::default(),
             named: std::sync::Mutex::default(),
         }));
-        self
-    }
-
-    /// The same API, as the agent session `agent`.
-    fn with_agent(mut self, agent: Option<AgentConnection>) -> Self {
-        self.agent = agent;
         self
     }
 
@@ -2182,10 +1987,6 @@ impl Host {
         // grants. Its change is the turn's, and the broker decides it (shell.md §8.1).
         if own && self.reads(&request) {
             return self.invoke_read_step(caller, request);
-        }
-        // Every other step of an admitted agent's is its session's.
-        if !person && let Some(agent) = &self.agent {
-            return agent.invoke(caller, request);
         }
         // An ask of a workspace this session is founding on its own service lands once the
         // workspace is the service's: the ask waits for the founding, as one of a workspace this
@@ -2330,10 +2131,9 @@ impl ActionProvider for Host {
         if let Some(workspace) = confined {
             let session = Arc::clone(&self.session);
             let agent_session = self.agent_session.clone();
-            let page = match (&self.agent, &self.state) {
-                (Some(agent), _) => agent.query(caller, query),
-                (None, Some(state)) => state.action_query(caller, &query),
-                (None, None) => Pending::ready(Ok(CataloguePage::from_rows(
+            let page = match &self.state {
+                Some(state) => state.action_query(caller, &query),
+                None => Pending::ready(Ok(CataloguePage::from_rows(
                     String::new(),
                     self.session_rows(),
                     &query,
@@ -2391,23 +2191,17 @@ impl ActionProvider for Host {
             .rev()
             .find(|(invocation, _)| invocation == id)
             .map(|(_, update)| InvocationState::new(*id, update.clone()));
-        ours.or_else(|| self.agent.as_ref()?.observe(caller, id))
-            .or_else(|| {
-                self.state
-                    .as_ref()
-                    .and_then(|state| state.action_observe(caller, id))
-            })
+        ours.or_else(|| {
+            self.state
+                .as_ref()
+                .and_then(|state| state.action_observe(caller, id))
+        })
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
-        self.agent
+        self.state
             .as_ref()
-            .and_then(|agent| agent.next_change(caller, id))
-            .or_else(|| {
-                self.state
-                    .as_ref()
-                    .and_then(|state| state.action_next_change_after_now(caller, id))
-            })
+            .and_then(|state| state.action_next_change_after_now(caller, id))
     }
 
     fn cancel(
@@ -2415,9 +2209,6 @@ impl ActionProvider for Host {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionCallError>> {
-        if let Some(agent) = &self.agent {
-            return agent.cancel(caller, id);
-        }
         match &self.state {
             Some(state) => state.action_cancel(caller, id),
             None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
@@ -2429,13 +2220,8 @@ impl ActionProvider for Host {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        // An admitted agent's step is its session's to ask about: its person answers on this
-        // shell's sheet ([`crate::step_questions`]).
-        if let Some(agent) = &self.agent
-            && !caller.acting().is_person()
-        {
-            return agent.confirm(caller, request);
-        }
+        // An admitted agent's step is asked about on this shell's sheet, where its person answers
+        // ([`crate::step_questions`]).
         match &self.state {
             Some(state) => state.request_approval(caller, None, request),
             None => Pending::ready(Err(ActionCallError::confirmation_required())),
@@ -2644,7 +2430,6 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         wake,
         control,
         sessions,
-        devices,
         ..
     } = serving;
     let broker = broker.clone();
@@ -2666,19 +2451,6 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     else {
         return;
     };
-    if let Some(forward) = tilo_mcp::devices::forward_request(&first) {
-        // A client of this login asks to work on another of the person's devices, which decides
-        // each of its requests.
-        tracing::info!(pid, device = %forward.device, "MCP server: a client asks to work on another device");
-        match devices {
-            Some(devices) => devices.other_devices().serve_forward(stream, &forward),
-            None => tilo_mcp::devices::refuse_forward(
-                stream,
-                "this desktop reaches none of your other devices".into(),
-            ),
-        }
-        return;
-    }
     if tilo_mcp::session_api::is_control_request(&first) {
         // Only a program inside an app this session started drives the control protocol: it acts as
         // that app, in the workspace the app was started into, and the broker's permissions decide
@@ -2710,7 +2482,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         stream,
         first,
         facts,
-        (&broker, devices.clone()),
+        &broker,
         session,
         (requests, wake, sessions),
     );
@@ -2742,15 +2514,13 @@ fn serve_shell_runtime(stream: UnixStream, first: &[u8], pid: u32, serving: &Ser
 }
 
 /// Ask the person about one connection whose first line, `first` , opened the MCP server, and serve
-/// it as whom they admit it as, through `broker` .
+/// it as the agent they admit it as, through `broker`, every call it makes signed by that agent's
+/// own key.
 fn serve_admitted(
     stream: UnixStream,
     first: Vec<u8>,
     facts: Facts,
-    (broker, devices): (
-        &Arc<AppBrokerState>,
-        Option<crate::device_actions::DeviceActions>,
-    ),
+    broker: &Arc<AppBrokerState>,
     session: &Arc<SessionServices>,
     (requests, wake, sessions): (&Sender<Request>, &Wake, &Arc<AgentSessions>),
 ) {
@@ -2760,7 +2530,7 @@ fn serve_admitted(
     // session of, from the answer to the host the connection is then served through.
     let agent: Arc<std::sync::Mutex<Option<[String; 4]>>> = Arc::default();
     let starting = Arc::clone(&agent);
-    let agent_session = sessions.joining(facts.entrance.entered(), None);
+    let agent_session = sessions.joining(facts.entrance.entered());
     let session_stream = match stream.try_clone() {
         Ok(copy) => Some(copy),
         Err(error) => {
@@ -2772,40 +2542,29 @@ fn serve_admitted(
         stream,
         Some(first),
         || {
-            let host = Host::new(Some(Arc::clone(broker)), Arc::clone(session))
-                .with_session_actions(session.actions());
             let Some([workspace, person, member, name]) = starting.lock_recover().take() else {
-                return Ok(host);
+                return Err(word("mcp-server-not-started"));
             };
-            let host = host.in_agent_session(sessions, agent_session.clone(), wake);
+            let host = Host::new(Some(Arc::clone(broker)), Arc::clone(session))
+                .with_session_actions(session.actions())
+                .in_agent_session(sessions, agent_session.clone(), wake);
             let name = sessions.name(&agent_session).unwrap_or(name);
-            let admitted = Admitted {
-                workspace: &workspace,
-                person: &person,
-                agent: &member,
-                session: &agent_session,
-                name: &name,
-            };
-            // A session the broker does not admit acts on nothing: the client is told why rather
-            // than refused action by action.
-            match connect(broker, &admitted) {
-                Ok(connection) => {
-                    if connection.is_some() {
-                        sessions.certified(&agent_session);
-                    }
-                    Ok(host.with_agent(connection))
-                }
-                Err(why) => {
-                    tracing::warn!(%workspace, agent = %name, %why, "MCP server: the agent session was not admitted");
-                    Err(format!("{}: {why}", word("mcp-server-not-started")))
-                }
-            }
+            // An agent with no key of its own acts on nothing: the client is told why rather than
+            // refused action by action.
+            let (signer, caller) = tilo_workspace_service::agents::agent_keys::this_device()
+                .and_then(|keys| AgentSigner::grant(keys, &workspace, (&member, &name), &person))
+                .map_err(|why| {
+                    tracing::warn!(%workspace, agent = %name, %why, "MCP server: the agent has no key of its own here");
+                    format!("{}: {why}", word("mcp-server-not-started"))
+                })?;
+            sessions.certified(&agent_session);
+            Ok((
+                Signed::new(host, Some(signer)),
+                caller.in_agent_session(agent_session.as_str()),
+            ))
         },
         tilo_mcp::session_api::Beside {
             tasks: tasks.map(|tasks| tasks as Arc<dyn tilo_mcp::TaskHosts>),
-            devices: devices.map(|devices| {
-                Arc::new(devices.other_devices()) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
-            }),
         },
         |hello, connected| {
             let consent = ask(

@@ -1508,16 +1508,10 @@ async fn a_receipt_the_shell_sends_is_kept_in_the_joined_workspace() {
         tilo_clock::unix_now_i64(),
     );
     effect.completed_at = 100;
-    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-        workspace: created.workspace.clone(),
-        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-            invocation,
-            redacted: serde_json::to_vec(&effect).unwrap(),
-        },
-    };
     let reply = shell
         .call(ShellCall::Receipt {
-            request: serde_json::to_string(&request).unwrap(),
+            workspace: created.workspace.clone(),
+            redacted: serde_json::to_vec(&effect).unwrap(),
         })
         .await
         .unwrap();
