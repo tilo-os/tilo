@@ -119,8 +119,6 @@ settings-store = { path = "../../system/settings-store" }
 tilo-workspace-keys = { path = "../../collab/workspace-keys" }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.
 tilo-api = { path = "../../server/tilo-api" }
-# An agent's actions asked of the workspace's host over the device's one session.
-tilo-session-actions = { path = "../../session/session-actions" }
 # The log a daemon keeps trims, and the socket it stops taking connections at.
 rustix = { workspace = true, features = ["fs", "net", "std"] }
 rand.workspace = true
