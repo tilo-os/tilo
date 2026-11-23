@@ -58,10 +58,6 @@ const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
 /// The broker's durable invocation journal: a retried invocation id never
 /// starts twice, across restarts too.
 pub(super) const INVOCATION_JOURNAL: &str = "invocations";
-/// Where a computer with no login keeps the id of the workspace founded on it for a person, in
-/// the device's directory: this, then the person's key in hex. A root that comes to this computer
-/// later founds a workspace of its own, never enters one another person founded here.
-const FOUNDED: &str = "workspace-of-";
 /// Where the device's workspace service and key service keep their state, in the device's
 /// directory.
 const OWN: &str = "own";
@@ -363,7 +359,9 @@ impl Daemon {
                 None,
             )
         } else {
-            let founded = founded_workspace(identity.place.dir(), &identity.cert.user_public_key)?;
+            // The person's own workspace, at the id their key names: the one a device a ticket
+            // of this computer's makes enters, as the `joined` arm above names it.
+            let founded = person_workspace(&identity.cert.user_public_key);
             (founded.to_string(), Some(founded))
         };
         let apps = Arc::new(apps::Apps::from_env(root, sockets, &workspace_id));
@@ -572,28 +570,10 @@ impl Daemon {
     }
 }
 
-/// The workspace founded on this computer for `person`, as it has no login: the one an earlier
-/// start founded for them, kept in the device's directory `dir`, or a new one.
-fn founded_workspace(dir: &Path, person: &[u8; 32]) -> io::Result<WorkspaceId> {
-    let path = dir.join(format!("{FOUNDED}{}", hex::encode(person)));
-    match std::fs::read_to_string(&path) {
-        Ok(kept) => WorkspaceId::parse(kept.trim()).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{} names no workspace", path.display()),
-            )
-        }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let founded = WorkspaceId::new();
-            tilo_files::native::atomic::write_with_mode(
-                &path,
-                founded.to_string().as_bytes(),
-                0o600,
-            )?;
-            Ok(founded)
-        }
-        Err(error) => Err(error),
-    }
+/// `person`'s own workspace, at the id their key names.
+fn person_workspace(person: &[u8; 32]) -> WorkspaceId {
+    WorkspaceId::parse(&tilo_server_protocol::servers::person_workspace_id(person))
+        .expect("a person's workspace id is a workspace id")
 }
 
 /// The systemd credential that fixes the UDP port this device's endpoint binds, for a device
