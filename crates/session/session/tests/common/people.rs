@@ -1380,7 +1380,7 @@ impl Device {
         format!(
             "windows: {}\nwhat it told: {}\nwhat its session warned:\n{}\n\
              last lines of its log:\n{tail}\nwhat its apps said:\n{apps}",
-            self.ask(&json!({"op": "windows"})),
+            self.session("windows"),
             self.state()["state"]["notifications"],
             self.warnings(),
         )
@@ -1579,10 +1579,19 @@ impl Device {
         })
     }
 
+    /// The session's own `resource` (`state`, `windows`, `layout`, `questions`, `search`,
+    /// `devices`), as the walk reads it on this device's control socket.
+    pub fn session(&self, resource: &str) -> Value {
+        crate::common::completed(&self.ask(&crate::common::invoking(
+            &crate::common::session_target(resource),
+            &json!({}),
+        )))
+    }
+
     /// The shell as this device shows it now: the tree, the workspaces its engine holds, its agents
     /// and its chrome.
     pub fn state(&self) -> Value {
-        self.ask(&json!({"op": "state_dump"}))
+        self.session("state")
     }
 
     /// The workspaces this device keeps, by id: a workspace it joined is one of them.
@@ -2053,7 +2062,7 @@ impl Device {
     /// Whether this device shows a window of `app` that its app has drawn: until then the window
     /// stands nowhere on the screen.
     fn shows_window(&self, app: &str) -> bool {
-        self.ask(&json!({"op": "windows"}))["answer"]["windows"]
+        self.session("windows")["answer"]["windows"]
             .as_array()
             .is_some_and(|rows| {
                 rows.iter()
@@ -2099,7 +2108,7 @@ impl std::fmt::Display for NoWindow<'_> {
             "{} to show a {} window; it shows {}\nin front: {} of {}; held: {}\n{}",
             self.device.label,
             self.app,
-            self.device.ask(&json!({"op": "windows"})),
+            self.device.session("windows"),
             tree["active"],
             tree["workspaces"]
                 .as_array()

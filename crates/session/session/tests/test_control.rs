@@ -1033,7 +1033,7 @@ fn a_pending_question_is_listed_and_answered_through_the_socket() {
         "the session serves the questions the sheets show"
     );
 
-    let listed = ask(&mut session, &socket, &json!({"op": "questions"}));
+    let listed = crate::common::session_read(&mut session, &socket, "questions");
     let rows = listed["answer"]["questions"]
         .as_array()
         .cloned()

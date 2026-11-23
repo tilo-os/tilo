@@ -160,7 +160,7 @@ fn a_paired_device_reaches_the_record_without_the_workspace_list_moving() {
     // in no fleet of the laptop's, and no workspace moved to say so.
     tilo_test_env::wait_until("the laptop lists the phone the desktop paired", || {
         // A pass over the desktop's shell, as its next frame's is.
-        desktop.ask(&json!({"op": "state_dump"}));
+        desktop.session("state");
         lists(&listed(&laptop), "Ada's phone")
     });
     assert_eq!(

@@ -2316,6 +2316,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         &broker,
         session,
         (requests, wake, sessions),
+        control.session_snapshot(),
     );
 }
 
@@ -2354,6 +2355,7 @@ fn serve_admitted(
     broker: &Arc<AppBrokerState>,
     session: &Arc<SessionServices>,
     (requests, wake, sessions): (&Sender<Request>, &Wake, &Arc<AgentSessions>),
+    snapshot: Arc<std::sync::Mutex<crate::session_provider::Snapshot>>,
 ) {
     let tasks = person_tasks(session);
     let admitted = Arc::clone(&tasks);
@@ -2389,8 +2391,14 @@ fn serve_admitted(
                     format!("{}: {why}", word("mcp-server-not-started"))
                 })?;
             sessions.certified(&agent_session);
+            // The session's own resources, the desktop state the loop reads, are served beside
+            // the provider an agent's calls go through.
+            let provider = crate::session_provider::SessionProvider::new(
+                Arc::new(host),
+                Arc::clone(&snapshot),
+            );
             Ok((
-                Signed::new(host, Some(signer)),
+                Signed::new(provider, Some(signer)),
                 caller.in_agent_session(agent_session.as_str()),
             ))
         },

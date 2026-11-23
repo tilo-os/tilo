@@ -309,7 +309,7 @@ fn chat_windows(device: &Device, name: &str) -> Vec<Value> {
 /// This device's Chat windows as the session lists them: each row's title, and whether it is the
 /// one in front of its group.
 fn chat_titles(device: &Device) -> Vec<Value> {
-    let windows = device.ask(&json!({"op": "windows"}));
+    let windows = device.session("windows");
     windows["answer"]["windows"]
         .as_array()
         .into_iter()
@@ -759,7 +759,7 @@ fn chat_opens_first_in_a_workspace_made_after_the_session_restarted() {
     });
     laptop.open("so.tilo.chat");
     laptop.wait_for_window("so.tilo.chat");
-    let windows = laptop.ask(&serde_json::json!({"op": "windows"}));
+    let windows = laptop.session("windows");
     let chat = windows["answer"]["windows"]
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row["app_id"] == "so.tilo.chat"))
@@ -818,7 +818,7 @@ fn a_running_apps_open_is_listed_and_brings_its_window_forward() {
     laptop.wait_for_window("so.tilo.chat");
     let _other = laptop.window("so.tilo.notes", "In front");
     let chat_rows = |laptop: &Device| -> Vec<serde_json::Value> {
-        laptop.ask(&serde_json::json!({"op": "windows"}))["answer"]["windows"]
+        laptop.session("windows")["answer"]["windows"]
             .as_array()
             .map(|rows| {
                 rows.iter()

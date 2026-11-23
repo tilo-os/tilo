@@ -401,7 +401,7 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
 /// shows for a window of one tab, just above what the window draws. The app's own parts stand
 /// past the tab, and the window's controls at the bar's end.
 fn bar(device: &Device, title: &str) -> Option<(f64, f64)> {
-    let windows = device.ask(&json!({"op": "windows"}));
+    let windows = device.session("windows");
     let rect: Vec<f64> = windows["answer"]["windows"]
         .as_array()?
         .iter()
@@ -418,7 +418,7 @@ fn bar(device: &Device, title: &str) -> Option<(f64, f64)> {
 
 /// The row `device` lists for the window titled `title`.
 fn window_of(device: &Device, title: &str) -> Option<Value> {
-    let windows = device.ask(&json!({"op": "windows"}));
+    let windows = device.session("windows");
     windows["answer"]["windows"]
         .as_array()?
         .iter()
@@ -492,7 +492,7 @@ fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() 
     let from = bar(&laptop, CHAT).unwrap_or_else(|| {
         panic!(
             "Chat's window stands on the laptop: {}",
-            laptop.ask(&json!({"op": "windows"}))
+            laptop.session("windows")
         )
     });
     move_to(&laptop, from);
@@ -554,7 +554,7 @@ fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() 
         assert!(
             Instant::now() < settle,
             "the laptop still shows Chat apart from Notes' window: {}",
-            laptop.ask(&json!({"op": "windows"}))
+            laptop.session("windows")
         );
         std::thread::sleep(Duration::from_millis(10));
     }

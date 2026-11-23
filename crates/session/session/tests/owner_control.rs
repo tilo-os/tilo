@@ -20,7 +20,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tilo_actions::remote::{RemoteActionMessage, RemoteActionTarget};
 
-use crate::common::{action_answer, action_frame, invoking, listing, refused};
+use crate::common::{
+    action_answer, action_frame, completed, invoking, listing, refused, session_target,
+};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
@@ -89,6 +91,15 @@ fn ask(session: &mut Session, socket: &Path, request: &Value) -> Value {
     crate::common::wait_for(session, "the control socket's answer", |_| {
         answered.try_recv().ok()
     })
+}
+
+/// The session's own `resource`, read as the walk reads it on `socket`.
+fn read_state(session: &mut Session, socket: &Path, resource: &str) -> Value {
+    completed(&ask(
+        session,
+        socket,
+        &invoking(&session_target(resource), &json!({})),
+    ))
 }
 
 /// The shell the session starts on: one workspace with one window in front.
@@ -213,13 +224,13 @@ fn the_owner_socket_serves_the_action_model_and_the_state_it_shows() {
         ),
         "the socket cancels an invocation, and none it never started: {cancelled}"
     );
-    let state = ask(&mut session, &owner, &json!({"op": "state_dump"}));
+    let state = read_state(&mut session, &owner, "state");
     assert_eq!(state["state"]["chrome"]["session_locked"], false, "{state}");
     assert!(
         state["state"]["workspace_tree"].is_object(),
         "the shell is shown while it is unlocked: {state}"
     );
-    let windows = ask(&mut session, &owner, &json!({"op": "windows"}));
+    let windows = read_state(&mut session, &owner, "windows");
     assert_eq!(
         windows["answer"]["windows"][0]["title"], TITLE,
         "the windows are shown while the shell is unlocked: {windows}"
@@ -306,7 +317,7 @@ fn a_locked_session_invokes_nothing_through_the_owner_socket() {
         "the actions are still listed: {listed}"
     );
     // The state it shows carries nothing the lock hides: no windows, no workspaces, no titles.
-    let locked = ask(&mut session, &owner, &json!({"op": "state_dump"}));
+    let locked = read_state(&mut session, &owner, "state");
     assert_eq!(
         locked["state"]["chrome"]["session_locked"], true,
         "{locked}"
@@ -321,7 +332,7 @@ fn a_locked_session_invokes_nothing_through_the_owner_socket() {
         !locked.to_string().contains(TITLE),
         "no title of a window is shown while it is locked: {locked}"
     );
-    let windows = ask(&mut session, &owner, &json!({"op": "windows"}));
+    let windows = read_state(&mut session, &owner, "windows");
     assert_eq!(
         windows["answer"]["windows"],
         json!([]),
@@ -339,7 +350,7 @@ fn a_locked_session_invokes_nothing_through_the_owner_socket() {
     );
 
     // The development socket drives the seat it was started for: it sees the shell it drives.
-    let driven = ask(&mut session, &dev, &json!({"op": "state_dump"}));
+    let driven = read_state(&mut session, &dev, "state");
     assert!(
         driven["state"]["workspace_tree"].is_object(),
         "a development socket sees the locked shell: {driven}"
@@ -383,7 +394,7 @@ fn unlock_through_the_development_socket(
         "a session already unlocked is left as it is: {again}"
     );
     session.step(Duration::from_millis(1)).expect("a turn");
-    let shown = ask(session, owner, &json!({"op": "state_dump"}));
+    let shown = read_state(session, owner, "state");
     assert!(
         shown["state"]["workspace_tree"].is_object(),
         "the shell is shown again once it is unlocked: {shown}"

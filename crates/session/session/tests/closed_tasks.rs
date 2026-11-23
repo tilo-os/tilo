@@ -160,7 +160,7 @@ fn step(device: &Device, action: &RemoteActionTarget, args: &Value) -> Value {
 
 /// Whether `device`'s shell shows a window of `app`.
 fn shows_window(device: &Device, app: &str) -> bool {
-    device.ask(&json!({"op": "windows"}))["answer"]["windows"]
+    device.session("windows")["answer"]["windows"]
         .as_array()
         .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
 }
@@ -212,7 +212,7 @@ fn an_agents_step_makes_an_issue_with_tasks_closed_and_the_persons_devices_read_
     assert!(
         !shows_window(&laptop, APP),
         "the start ran Tasks without a window: {:?}",
-        laptop.ask(&json!({"op": "windows"}))
+        laptop.session("windows")
     );
 
     // Then the tracker's own `create`, delivered to the instance's published action: what the

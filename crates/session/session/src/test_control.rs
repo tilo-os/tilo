@@ -537,6 +537,14 @@ pub(crate) struct Shared {
     changes: Arc<Changes>,
 }
 
+impl Shared {
+    /// The snapshot the session's own provider answers from: the MCP server serves the same
+    /// desktop state the control socket does.
+    pub(crate) fn session_snapshot(&self) -> Arc<Mutex<Snapshot>> {
+        self.actions.person.snapshot()
+    }
+}
+
 impl Control {
     /// The sockets `options` name, opened. The actions and the change signal exist whether or not
     /// one does: the app socket answers the programs it admits through them too.

@@ -1437,6 +1437,40 @@ pub fn refused(answer: &Value) -> Option<&'static str> {
     }
 }
 
+/// The target of the session's own resource `resource`'s `read`.
+#[must_use]
+pub fn session_target(resource: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: "so.tilo.session".to_owned(),
+        address: tilo_actions::ActionAddress::new(resource, "read"),
+    }
+}
+
+/// The value an invocation frame's completed receipt carried.
+///
+/// # Panics
+/// The answer was not a completed receipt.
+#[must_use]
+pub fn completed(answer: &Value) -> Value {
+    match action_answer(answer) {
+        RemoteActionMessage::Receipt(InvocationReceipt {
+            status: ReceiptStatus::Completed { output },
+            ..
+        }) => output.value.unwrap_or(Value::Null),
+        other => panic!("an invocation completed: {other:?}"),
+    }
+}
+
+/// The session's own `resource` (`state`, `windows`, `layout`, `questions`, `search`, `devices`)
+/// as the walk reads it, on the test-control socket at `socket`.
+pub fn session_read(session: &mut Session, socket: &Path, resource: &str) -> Value {
+    completed(&control(
+        session,
+        socket,
+        &invoking(&session_target(resource), &json!({})),
+    ))
+}
+
 /// The surface the shell shows over the windows now, as the surface stack's reading names it:
 /// `none` at rest, `centre` for the notification centre, `quick-settings`, `launcher` and the rest.
 #[must_use]

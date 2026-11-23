@@ -602,6 +602,57 @@ fn pointer_to_wire(cmd: &Command) -> serde_json::Value {
     }
 }
 
+/// The session's own resource `command` reads, when it reads one: the desktop state, the open
+/// windows, the questions waiting for the person, and the rest, published as resources the
+/// action model reads. A command that is not one of these sends its own request.
+const fn read_resource(cmd: &Command) -> Option<&'static str> {
+    match cmd {
+        Command::StateDump { .. } => Some("state"),
+        Command::Windows { .. } => Some("windows"),
+        Command::Questions { .. } => Some("questions"),
+        _ => None,
+    }
+}
+
+/// The frame that reads the session's own `resource`.
+fn read_frame(resource: &str) -> String {
+    use tilo_actions::remote::{
+        InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    };
+    let request = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: "so.tilo.session".to_owned(),
+            address: tilo_actions::ActionAddress::new(resource, "read"),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    serde_json::to_string(&RemoteActionFrame::new(RemoteActionMessage::Invoke(
+        request,
+    )))
+    .expect("a frame")
+}
+
+/// The value a frame's completed receipt carried.
+fn frame_value(answer: &serde_json::Value) -> Option<serde_json::Value> {
+    use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
+    let frame: RemoteActionFrame = serde_json::from_value(answer.clone()).ok()?;
+    match frame.message {
+        RemoteActionMessage::Receipt(receipt) => match receipt.status {
+            ReceiptStatus::Completed { output } => output.value,
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Build the JSON wire payload for a parsed [`Command`]. For `raw`
 /// the caller's JSON is used verbatim; every other variant serialises
 /// through `serde_json::to_string`.
@@ -944,17 +995,22 @@ fn main() -> ExitCode {
         json.truncate(json.trim_end().len());
     }
 
-    let cmd_json = match command_to_wire(&invocation.command) {
-        Ok(j) => j,
-        // `command_to_wire` never produces `Help` — degrade like a usage
-        // error rather than assert a state that would need main to panic.
-        Err(ParseError::Help) => {
-            eprintln!("tilo-control: internal error: unexpected help state");
-            return ExitCode::from(2);
-        }
-        Err(ParseError::Usage(msg)) => {
-            eprintln!("tilo-control: {msg}");
-            return ExitCode::from(2);
+    let read = read_resource(&invocation.command);
+    let cmd_json = if let Some(resource) = read {
+        read_frame(resource)
+    } else {
+        match command_to_wire(&invocation.command) {
+            Ok(j) => j,
+            // `command_to_wire` never produces `Help` — degrade like a usage
+            // error rather than assert a state that would need main to panic.
+            Err(ParseError::Help) => {
+                eprintln!("tilo-control: internal error: unexpected help state");
+                return ExitCode::from(2);
+            }
+            Err(ParseError::Usage(msg)) => {
+                eprintln!("tilo-control: {msg}");
+                return ExitCode::from(2);
+            }
         }
     };
 
@@ -994,6 +1050,19 @@ fn main() -> ExitCode {
         eprintln!("{refusal}");
         return ExitCode::from(1);
     }
+    // The state reads are the session's own resources, read as the walk reads them: the value
+    // is the same the op answered, so what is printed below does not change.
+    let response = if let Some(resource) = read {
+        match frame_value(&response) {
+            Some(value) => value,
+            None => {
+                eprintln!("tilo-control: the desktop did not read `{resource}`");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        response
+    };
     let code = print_response(&invocation.command, &response);
     if code == 0 {
         ExitCode::SUCCESS

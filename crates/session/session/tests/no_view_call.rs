@@ -35,7 +35,7 @@ fn start_action(workspace: &str) -> RemoteActionTarget {
 
 /// Whether `device`'s shell shows a view of `app`.
 fn shows_window(device: &Device, app: &str) -> bool {
-    device.ask(&json!({"op": "windows"}))["answer"]["windows"]
+    device.session("windows")["answer"]["windows"]
         .as_array()
         .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
 }
@@ -71,7 +71,7 @@ fn a_call_of_a_tilolang_app_with_nothing_shown_never_opens_a_view() {
     assert!(
         !shows_window(&laptop, APP),
         "the call opened no view: {:?}",
-        laptop.ask(&json!({"op": "windows"}))
+        laptop.session("windows")
     );
     // Nothing of the app is running, so no call of it is offered either: a view would have to
     // open for one, and none did.
