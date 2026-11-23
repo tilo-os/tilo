@@ -2516,12 +2516,8 @@ impl<'a> Parser<'a> {
         for piece in pieces {
             match piece {
                 StrPiece::Lit(s) => out.push(StrPart::Lit(s)),
-                StrPiece::Interp { start, end } => {
-                    let local = start.checked_sub(self.base).zip(end.checked_sub(self.base));
-                    let Some(text) = local.and_then(|(from, to)| self.src.get(from..to)) else {
-                        return self.fail(Span::new(start, end), "invalid interpolation");
-                    };
-                    let (toks, mut diags) = lex_at(text, start);
+                StrPiece::Interp { start, end, expr } => {
+                    let (toks, mut diags) = lex_at(&expr, start);
                     self.diags.append(&mut diags);
                     let mut sub = Parser::new_at(toks, self.src, self.base);
                     sub.skip_nl();

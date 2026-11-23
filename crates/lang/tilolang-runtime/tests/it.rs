@@ -50,6 +50,8 @@ mod effects;
 mod filters;
 #[path = "foreign_readings.rs"]
 mod foreign_readings;
+#[path = "interpolation.rs"]
+mod interpolation;
 #[path = "json.rs"]
 mod json;
 #[path = "list.rs"]
