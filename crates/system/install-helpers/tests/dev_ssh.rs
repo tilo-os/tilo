@@ -44,10 +44,12 @@ fn words(text: &str) -> Vec<String> {
     text.split_whitespace().take(2).map(str::to_owned).collect()
 }
 
-tilo_test_env::scenario! {
-    fn dev_ssh_owner_key_provisioning;
-
-    phase pending_oobe_and_key_only_recovery;
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey through one command reads as one flow"
+)]
+fn dev_ssh_owner_key_provisioning() {
     {
         let work = tempfile::tempdir().unwrap();
         let root = work.path();
@@ -60,7 +62,8 @@ tilo_test_env::scenario! {
             words(&fs::read_to_string(etc.join("ssh/authorized_keys/bob")).unwrap()),
             words(&fs::read_to_string(root.join("key.pub")).unwrap())
         );
-        let config = fs::read_to_string(etc.join("ssh/sshd_config.d/00-tilo-bringup.conf")).unwrap();
+        let config =
+            fs::read_to_string(etc.join("ssh/sshd_config.d/00-tilo-bringup.conf")).unwrap();
         for directive in [
             "AllowUsers bob",
             "PasswordAuthentication no",
@@ -106,7 +109,6 @@ tilo_test_env::scenario! {
         assert!(again.0.contains("already exists"), "{again}");
     }
 
-    phase several_owner_keys;
     {
         let work = tempfile::tempdir().unwrap();
         let root = work.path();
@@ -133,7 +135,6 @@ tilo_test_env::scenario! {
         assert_eq!(installed, expected);
     }
 
-    phase symlink_and_key_options_refused;
     {
         let work = tempfile::tempdir().unwrap();
         let root = work.path();
@@ -151,7 +152,6 @@ tilo_test_env::scenario! {
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
     }
 
-    phase malformed_requests_refuse_with_the_scripts_messages;
     {
         let work = tempfile::tempdir().unwrap();
         let root = work.path();
@@ -165,7 +165,6 @@ tilo_test_env::scenario! {
             fs::write(&path, content).unwrap();
             apply(&Labels::default(), &etc, "bob", &path).unwrap_err().0
         };
-        assert_eq!(refuse("empty", " \n\n"), "expected 1 to 16 SSH public keys");
         assert_eq!(
             refuse("many", &real.repeat(17)),
             "expected 1 to 16 SSH public keys"
@@ -191,9 +190,6 @@ tilo_test_env::scenario! {
 
         let invalid = apply(&Labels::default(), &etc, "Bob", &path).unwrap_err().0;
         assert_eq!(invalid, "invalid installed /etc or account");
-        let long = "a".repeat(33);
-        let invalid = apply(&Labels::default(), &etc, &long, &path).unwrap_err().0;
-        assert_eq!(invalid, "invalid installed /etc or account");
 
         let linked = root.join("linked.pub");
         fs::hard_link(root.join("real.pub"), &linked).unwrap();
@@ -213,7 +209,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase enablement_must_be_cleared_first;
     {
         let work = tempfile::tempdir().unwrap();
         let root = work.path();

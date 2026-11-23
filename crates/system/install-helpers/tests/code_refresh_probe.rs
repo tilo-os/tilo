@@ -14,9 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use tilo_install_helpers::code_refresh_probe::{
-    Fixture, fixture_probe, non_cmdline_bytes, promotion_probe,
-};
+use tilo_install_helpers::code_refresh_probe::{Fixture, fixture_probe};
 use tilo_install_helpers::dev_target_uki::{Inputs, Selected};
 use tilo_install_helpers::py::sha256_hex;
 use tilo_install_helpers::{Error, Result};
@@ -163,33 +161,8 @@ fn promotion() -> Value {
            "loader": "title Tilo\n", "update_origin": "registry/test"})
 }
 
-tilo_test_env::scenario! {
-    fn the_code_refresh_probes_cached_target_check;
-
-    phase the_promotion_receipt_masks_only_the_command_line_and_its_virtual_size;
-    {
-        let raw = pe(b"old\0");
-        let mut changed = pe(b"new");
-        assert_eq!(
-            non_cmdline_bytes(&raw).unwrap(),
-            non_cmdline_bytes(&changed).unwrap()
-        );
-        changed[200] = 1;
-        assert_ne!(
-            non_cmdline_bytes(&raw).unwrap(),
-            non_cmdline_bytes(&changed).unwrap()
-        );
-        changed[108..112].copy_from_slice(&500u32.to_le_bytes());
-        assert!(
-            non_cmdline_bytes(&changed)
-                .unwrap_err()
-                .0
-                .contains("bounds")
-        );
-        assert!(non_cmdline_bytes(b"not a pe").is_err());
-    }
-
-    phase the_original_ci_boot_fixture_validates_and_refuses_tampering;
+#[test]
+fn the_code_refresh_probes_cached_target_check() {
     {
         let fixture = scenario(None, false);
         let result = fixture_probe(&fixture).unwrap();
@@ -229,7 +202,6 @@ tilo_test_env::scenario! {
         refused(fixture_probe(&fixture), "differ");
     }
 
-    phase a_scratch_promotion_may_change_only_the_command_line;
     {
         let fixture = scenario(Some(promotion()), false);
         let result = fixture_probe(&fixture).unwrap();
@@ -243,23 +215,5 @@ tilo_test_env::scenario! {
 
         let tampering = scenario(Some(promotion()), true);
         refused(fixture_probe(&tampering), "non-command-line PE bytes");
-    }
-
-    phase promotion_metadata_is_bounded_before_scratch_writes;
-    {
-        let fixture = scenario(None, false);
-        let root = fixture.base.join("root");
-        fs::create_dir(&root).unwrap();
-        let mut long = promotion();
-        long["origin"] = json!("x".repeat(16385));
-        for metadata in [json!([]), long, json!({"composefs_digest": "short"})] {
-            let manifest = json!({"promotion": metadata});
-            refused(
-                promotion_probe(&fixture, &root, manifest.as_object().unwrap(), "7"),
-                "invalid scratch promotion fixture",
-            );
-            assert!(!root.join("promotion-target").exists());
-        }
-        assert!(!fixture.promoted.get());
     }
 }

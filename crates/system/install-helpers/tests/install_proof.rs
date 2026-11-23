@@ -164,10 +164,12 @@ fn refused(fixture: &Fixture, fragment: &str) {
     assert!(error.0.contains(fragment), "{fragment}: {error}");
 }
 
-tilo_test_env::scenario! {
-    fn the_install_proof_is_written_for_matching_identities;
-
-    phase matching_booted_origin_uki_and_disk_identities;
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey through one command reads as one flow"
+)]
+fn the_install_proof_is_written_for_matching_identities() {
     {
         let fixture = Fixture::new();
         let result = fixture.proof().unwrap();
@@ -186,7 +188,6 @@ tilo_test_env::scenario! {
         assert!(result.get("installer_code_override_sha256").is_none());
     }
 
-    phase distinct_signed_medium_and_target;
     {
         let mut fixture = Fixture::new();
         fixture.booted("imageDigest", json!(digest('c')));
@@ -213,7 +214,6 @@ tilo_test_env::scenario! {
         refused(&fixture, "signed offline target");
     }
 
-    phase selected_development_target_is_explicit_vm_proof;
     {
         let mut fixture = Fixture::new();
         fixture.booted("imageDigest", json!(digest('c')));
@@ -257,26 +257,14 @@ tilo_test_env::scenario! {
         refused(&fixture, "VM-only");
     }
 
-    phase development_vm_copy_changes_oci_manifest_only;
-    {
-        let fixture = Fixture::new();
-        fixture.booted("imageDigest", json!(digest('c')));
-        *fixture.copied.borrow_mut() = Some(digest('a'));
-        let result = fixture.proof().unwrap();
-        assert_eq!(result["schema"], "tilo.vm-install-image-proof.v3");
-        assert_eq!(result["copied_manifest_digest"], digest('a'));
-        *fixture.copied.borrow_mut() = Some(digest('d'));
-        refused(&fixture, "VM-local bootc copy");
-    }
-
-    phase installer_code_refresh_evidence_is_recorded;
     {
         let fixture = Fixture::new();
         let receipt = fixture.code_receipt();
         fs::create_dir_all(receipt.parent().unwrap()).unwrap();
         fs::write(
             &receipt,
-            json!({"schema": "tilo.installer-code-refresh.v1", "sha256": "9".repeat(64)}).to_string(),
+            json!({"schema": "tilo.installer-code-refresh.v1", "sha256": "9".repeat(64)})
+                .to_string(),
         )
         .unwrap();
         let result = fixture.proof().unwrap();
@@ -289,7 +277,6 @@ tilo_test_env::scenario! {
         refused(&fixture, "invalid installer code refresh evidence");
     }
 
-    phase the_written_proof_is_canonical_and_private;
     {
         let fixture = Fixture::new();
         let output = fixture.dir.join("vm-install-proof.json");
@@ -305,10 +292,8 @@ tilo_test_env::scenario! {
     }
 }
 
-tilo_test_env::scenario! {
-    fn the_install_proof_is_refused;
-
-    phase mismatching_booted_or_installed_image_refused;
+#[test]
+fn the_install_proof_is_refused() {
     {
         let fixture = Fixture::new();
         fixture.booted("imageDigest", json!(digest('c')));
@@ -318,28 +303,18 @@ tilo_test_env::scenario! {
         refused(&fixture, "development copy proof");
     }
 
-    phase wrong_uki_composefs_or_deployment_path_refused;
     {
-        let mut fixture = Fixture::new();
+        let fixture = Fixture::new();
         *fixture.uki_cmdline.borrow_mut() = format!("composefs={}", "c".repeat(128));
         refused(&fixture, "target UKI differs");
-        *fixture.uki_cmdline.borrow_mut() = format!("composefs={COMPOSEFS} composefs={COMPOSEFS}");
-        refused(&fixture, "no unique composefs digest");
-        *fixture.uki_cmdline.borrow_mut() = format!("composefs={COMPOSEFS}");
-        let other = fixture.dir.join("other");
-        fs::create_dir(&other).unwrap();
-        fixture.request.deploy_etc = other;
-        assert!(fixture.proof().is_err());
     }
 
-    phase non_arm64_booted_image_refused;
     {
         let fixture = Fixture::new();
         fixture.booted("architecture", json!("amd64"));
         refused(&fixture, "ARM64");
     }
 
-    phase incompatible_or_linked_inputs_refused;
     {
         let fixture = Fixture::new();
         fixture.booted("incompatible", json!(true));

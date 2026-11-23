@@ -47,10 +47,12 @@ fn context(path: &Path) -> Vec<u8> {
     buffer
 }
 
-tilo_test_env::scenario! {
-    fn the_setup_handoff_copy;
-
-    phase existing_directory_metadata_and_public_configuration_remain_readable;
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey through one command reads as one flow"
+)]
+fn the_setup_handoff_copy() {
     {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
@@ -92,7 +94,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase new_structural_directories_are_traversable_and_files_private;
     {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
@@ -116,7 +117,6 @@ tilo_test_env::scenario! {
         assert_eq!(mode(&target.join("tilo/request")), 0o600);
     }
 
-    phase an_existing_file_is_rewritten_private;
     {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
@@ -132,7 +132,6 @@ tilo_test_env::scenario! {
         assert_eq!(mode(&target.join("conf")), 0o600);
     }
 
-    phase linked_source_or_destination_cannot_escape_the_installed_tree;
     {
         for linked_source in [true, false] {
             let temporary = tempfile::tempdir().unwrap();
@@ -147,10 +146,12 @@ tilo_test_env::scenario! {
             }
             fs::write(outside.join("private"), "unchanged").unwrap();
             if linked_source {
-                std::os::unix::fs::symlink(outside.join("private"), source.join("private")).unwrap();
+                std::os::unix::fs::symlink(outside.join("private"), source.join("private"))
+                    .unwrap();
             } else {
                 fs::write(source.join("private"), "new").unwrap();
-                std::os::unix::fs::symlink(outside.join("private"), target.join("private")).unwrap();
+                std::os::unix::fs::symlink(outside.join("private"), target.join("private"))
+                    .unwrap();
             }
             let error = copy_tree(&source, &target).unwrap_err();
             assert!(error.0.contains("symlinks"), "{error}");
@@ -161,7 +162,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase type_mismatches_refuse;
     {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
@@ -193,7 +193,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_command_line_and_exit_statuses_are_the_scripts;
     {
         let binary = tilo_test_env::package_binary!("tilo-install-handoff-copy");
         let temporary = tempfile::tempdir().unwrap();
