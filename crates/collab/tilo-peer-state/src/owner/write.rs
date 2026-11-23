@@ -8,9 +8,7 @@
 //! answered.
 
 use crate::AdmissionError;
-use crate::owner::{
-    NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, stored,
-};
+use crate::owner::{NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, stored};
 use collab_types::signer::DeviceSigner;
 use std::sync::Arc;
 
