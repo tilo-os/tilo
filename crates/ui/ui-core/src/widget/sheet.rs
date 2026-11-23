@@ -20,6 +20,7 @@ use crate::text_edit::{EditCore, Motion};
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
 use crate::widget::scrollbar::{ScrollMetrics, Scrollbar};
 use crate::widget::{EventCtx, NodeId, TaffyTreeExt, Widget};
 
@@ -231,6 +232,9 @@ pub(crate) struct Events {
     resized_column: crate::component::Event,
     resized_row: crate::component::Event,
     fill: crate::component::Event,
+    copy: crate::component::Event,
+    cut: crate::component::Event,
+    paste: crate::component::Event,
 }
 
 /// A sheet drawn as a grid of cells.
@@ -247,6 +251,14 @@ pub struct Sheet {
     heights: HashMap<u32, f64>,
     cells: HashMap<Addr, SheetCell>,
     found: HashSet<Addr>,
+    /// The cells a search in the window found, and what each matched where: its place in the
+    /// cell's own text. The search paints these and steps through them; the app's `found` prop
+    /// marks cells by its own reason.
+    matches: Vec<(Addr, usize, usize)>,
+    /// The cells a search found, for the mark under their text.
+    searched: HashSet<Addr>,
+    /// How many times what the cells hold changed: a search runs again when it moves.
+    revision: u64,
     commented: HashSet<Addr>,
     answered: HashSet<Addr>,
     peers: Vec<((Addr, Addr), String)>,
@@ -301,6 +313,9 @@ impl Sheet {
             heights: HashMap::new(),
             cells: HashMap::new(),
             found: HashSet::new(),
+            matches: Vec::new(),
+            searched: HashSet::new(),
+            revision: 0,
             commented: HashSet::new(),
             answered: HashSet::new(),
             peers: Vec::new(),
@@ -392,6 +407,7 @@ impl Sheet {
             .collect();
         if self.cells != cells {
             self.cells = cells;
+            self.revision = self.revision.wrapping_add(1);
             changed = true;
         }
         let addresses = |list: Vec<String>| -> HashSet<Addr> {
@@ -833,6 +849,25 @@ impl Sheet {
                     self.fire_select();
                     return true;
                 }
+                // The person's clipboard is the app's to write: the grid reports what to copy,
+                // cut or take, and the app's action declares `uses clipboard`.
+                if text.eq_ignore_ascii_case("c") {
+                    self.events
+                        .copy
+                        .fire(Some(crate::component::Value::Text(self.copy_selection())));
+                    return true;
+                }
+                if text.eq_ignore_ascii_case("x") {
+                    let cut = self.copy_selection();
+                    self.events
+                        .cut
+                        .fire(Some(crate::component::Value::Text(cut)));
+                    return true;
+                }
+                if text.eq_ignore_ascii_case("v") {
+                    self.events.paste.fire(None);
+                    return true;
+                }
                 false
             }
             Key::Character(text) if !control && !modifiers.state().alt_key() => {
@@ -1085,6 +1120,8 @@ impl Widget for Sheet {
     fn name(&self) -> &'static str {
         "Sheet"
     }
+
+    crate::provides!(dyn Findable);
 
     fn get_rect(&self) -> Rect {
         self.rect
@@ -1706,13 +1743,13 @@ impl Sheet {
         columns: &std::ops::Range<u32>,
         rows: &std::ops::Range<u32>,
     ) {
-        if self.found.is_empty() {
+        if self.found.is_empty() && self.searched.is_empty() {
             return;
         }
         let body = self.body();
         for row in rows.clone() {
             for column in columns.clone() {
-                if !self.found.contains(&(column, row)) {
+                if !self.found.contains(&(column, row)) && !self.searched.contains(&(column, row)) {
                     continue;
                 }
                 let rect = self.cell_rect((column, row)).intersect(body);
@@ -1845,5 +1882,233 @@ impl Sheet {
             return;
         }
         ctx.fill_round(handle, 2.0, theme.tokens.colors.intent.accent_ink);
+    }
+}
+
+/// A window's search over the grid: each match is a cell and a span of the text it shows, stepped
+/// through in reading order, and a replacement writes the cell through the same edit event an
+/// in-cell edit fires. The app's `found` prop marks cells for its own reasons; a search's cells
+/// are marked beside them.
+impl Findable for Sheet {
+    fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
+        self.matches.clear();
+        self.searched.clear();
+        self.dirty = true;
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let needle = if options.match_case {
+            query.to_owned()
+        } else {
+            query.to_lowercase()
+        };
+        let mut addrs: Vec<Addr> = self.cells.keys().copied().collect();
+        // Reading order: row by row, left to right.
+        addrs.sort_by_key(|(column, row)| (*row, *column));
+        for addr in addrs {
+            let Some(cell) = self.cells.get(&addr) else {
+                continue;
+            };
+            let hay = if options.match_case {
+                cell.text.clone()
+            } else {
+                cell.text.to_lowercase()
+            };
+            let mut at = 0;
+            while let Some(found) = hay.get(at..).and_then(|rest| rest.find(&needle)) {
+                let start = at + found;
+                let end = start + needle.len();
+                let bounded = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+                if !options.whole_word
+                    || (bounded(hay.get(..start).and_then(|s| s.chars().last()))
+                        && bounded(hay.get(end..).and_then(|s| s.chars().next())))
+                {
+                    self.matches.push((addr, start, end));
+                    self.searched.insert(addr);
+                }
+                at = end;
+            }
+        }
+        self.matches
+            .iter()
+            .map(|(_, start, end)| FindMatch::new(*start, *end))
+            .collect()
+    }
+
+    fn reveal(&mut self, index: usize) {
+        if let Some((addr, _, _)) = self.matches.get(index).copied() {
+            self.reveal(addr);
+        }
+    }
+
+    fn mark_current(&mut self, index: usize) {
+        if let Some((addr, _, _)) = self.matches.get(index).copied() {
+            self.focus = addr;
+            self.dirty = true;
+        }
+    }
+
+    fn clear_find(&mut self) {
+        if !self.matches.is_empty() || !self.searched.is_empty() {
+            self.dirty = true;
+        }
+        self.matches.clear();
+        self.searched.clear();
+    }
+
+    fn supports_replace(&self) -> bool {
+        self.editable
+    }
+
+    fn replace(&mut self, index: usize, with: &str) -> bool {
+        if !self.editable {
+            return false;
+        }
+        let Some((addr, start, end)) = self.matches.get(index).copied() else {
+            return false;
+        };
+        let Some(cell) = self.cells.get(&addr) else {
+            return false;
+        };
+        let mut text = cell.text.clone();
+        if end > text.len()
+            || start > end
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
+            return false;
+        }
+        text.replace_range(start..end, with);
+        if let Some(cell) = self.cells.get_mut(&addr) {
+            cell.text.clone_from(&text);
+        }
+        self.revision = self.revision.wrapping_add(1);
+        self.fire_edit(vec![(addr, text)]);
+        true
+    }
+
+    fn replace_all(&mut self, with: &str) -> usize {
+        if !self.editable {
+            return 0;
+        }
+        let mut ordered = std::mem::take(&mut self.matches);
+        // From the last match of a cell to its first, so each span still names what it matched.
+        ordered.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        let mut writes: Vec<(Addr, String)> = Vec::new();
+        for (addr, start, end) in ordered {
+            let Some(cell) = self.cells.get(&addr) else {
+                continue;
+            };
+            let mut text = cell.text.clone();
+            if end > text.len()
+                || start > end
+                || !text.is_char_boundary(start)
+                || !text.is_char_boundary(end)
+            {
+                continue;
+            }
+            text.replace_range(start..end, with);
+            if let Some(cell) = self.cells.get_mut(&addr) {
+                cell.text.clone_from(&text);
+            }
+            writes.push((addr, text));
+        }
+        self.searched.clear();
+        let done = writes.len();
+        if done > 0 {
+            self.revision = self.revision.wrapping_add(1);
+            self.fire_edit(writes);
+            self.dirty = true;
+        }
+        done
+    }
+
+    fn content_revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::*;
+    use crate::component::{Described, Event, Fired, Intent, Value};
+    use crate::widget::InPlace;
+
+    fn cell(reference: &str, text: &str) -> SheetCell {
+        SheetCell {
+            cell: reference.to_owned(),
+            text: text.to_owned(),
+            ..SheetCell::default()
+        }
+    }
+
+    fn sheet_of(queue: &crate::Intents<Fired>, cells: Vec<SheetCell>) -> Sheet {
+        let mut sheet = Sheet::new();
+        sheet.set_props(crate::widget::SheetProps {
+            columns: 4,
+            rows: 4,
+            cells,
+            edit: Event::View(Intent::new(queue, "sheet", "edit")),
+            ..Default::default()
+        });
+        sheet
+    }
+
+    /// A window's search reaches a sheet where it stands: it finds the cells in reading order,
+    /// shows each match, and a replacement is written through the edit event an in-cell edit
+    /// fires.
+    #[test]
+    fn a_window_s_search_finds_cells_in_reading_order_and_replaces_them() {
+        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let mut sheet = sheet_of(
+            &queue,
+            vec![
+                cell("A1", "total"),
+                cell("B2", "Total spent"),
+                cell("A3", "subtotal"),
+            ],
+        );
+        assert_eq!(InPlace::of(&mut sheet), InPlace::Document);
+
+        let found = Findable::find(&mut sheet, "total", FindOptions::default());
+        assert_eq!(found.len(), 3, "A1, B2's Total and A3's subtotal");
+        assert!(sheet.searched.contains(&(0, 0)));
+        assert!(sheet.searched.contains(&(1, 1)));
+        assert!(sheet.searched.contains(&(0, 2)));
+
+        assert!(Findable::replace(&mut sheet, 0, "sum"));
+        let fired = queue.take();
+        assert_eq!(fired.len(), 1, "one edit");
+        assert_eq!(fired[0].event, "edit");
+        assert_eq!(
+            fired[0].value,
+            Some(Value::List(vec![
+                Value::Text("A1".to_owned()),
+                Value::Text("sum".to_owned()),
+            ])),
+            "the cell's reference and its new text"
+        );
+        let found = Findable::find(&mut sheet, "total", FindOptions::default());
+        assert_eq!(found.len(), 2, "the replaced cell no longer matches");
+    }
+
+    /// Options narrow the search as the bar says, and closing it stops marking cells.
+    #[test]
+    fn match_case_and_whole_word_narrow_and_closing_clears() {
+        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let mut sheet = sheet_of(&queue, vec![cell("A1", "cat"), cell("A2", "concatenate")]);
+        let exact = FindOptions {
+            match_case: true,
+            ..FindOptions::default()
+        };
+        assert_eq!(Findable::find(&mut sheet, "cat", exact).len(), 2);
+        let word = FindOptions {
+            whole_word: true,
+            ..FindOptions::default()
+        };
+        assert_eq!(Findable::find(&mut sheet, "cat", word).len(), 1);
+        Findable::clear_find(&mut sheet);
+        assert!(sheet.searched.is_empty());
+        assert!(sheet.matches.is_empty());
     }
 }
