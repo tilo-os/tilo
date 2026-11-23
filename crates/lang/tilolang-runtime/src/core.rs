@@ -37,8 +37,8 @@ use Imp::{
     ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom,
     MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
     MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
-    MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase,
-    Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
+    MissingV, ModelCall, NoneV, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PersonNamed,
+    Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
     RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
     RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
     ResTextSet, ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew,
@@ -522,9 +522,8 @@ impl Core {
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
             Today | TimeDay | TimeOfDay | TimeClock | TimeSpan | DayShift | DayPart
-            | DayWeekday | DayStartOfWeek | DayParse | TimeParse | WallClock | DateShow => {
-                self.time_import(imp, a)
-            }
+            | DayWeekday | DayStartOfWeek | DayParse | TimeParse | WallClock | DateShow
+            | Occurrences => self.time_import(imp, a),
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }

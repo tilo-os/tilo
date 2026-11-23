@@ -455,6 +455,12 @@ pub const KINDS: &[OriginKind] = &[
                  workspace's own, which no server is ever asked about.",
             ),
             people("name", "Text", "Its name, as the person reads it."),
+            people(
+                "color",
+                "Text",
+                "The colour it is shown in, as its server's `calendar-color` says it; empty \
+                 for none.",
+            ),
             field(
                 "writable",
                 "Bool",
@@ -518,6 +524,11 @@ pub const KINDS: &[OriginKind] = &[
                 "categories",
                 "Set<Text>",
                 "What it is filed under, as its server's `CATEGORIES`.",
+            ),
+            people(
+                "color",
+                "Text",
+                "The colour it is shown in, as its `COLOR`; empty for none.",
             ),
             people(
                 "recurrence",

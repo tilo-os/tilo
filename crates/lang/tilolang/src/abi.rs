@@ -301,6 +301,7 @@ imports! {
     TimeClock = "time_clock" ([H] -> [H]);
     DayShift = "day_shift" ([H, I64, I32] -> [H]);
     TimeSpan = "time_span" ([H, H] -> [I64]);
+    Occurrences = "occurrences" ([H, H, H, H, H, H] -> [H]);
     DayPart = "day_part" ([H, I32] -> [I64]);
     DayWeekday = "day_weekday" ([H] -> [I64]);
     DayStartOfWeek = "day_start_of_week" ([H] -> [H]);

@@ -140,6 +140,7 @@ impl Core {
                 self.ret_h(Value::Text(self.wall_clock(&text)?))
             }
             Imp::TimeParse => self.time_parse(a),
+            Imp::Occurrences => self.occurrences_import(a),
             _ => trap("not a day or moment import"),
         }
     }
@@ -177,10 +178,54 @@ impl Core {
         day_of(&text).ok_or_else(|| crate::engine::HostFail::Trap(format!("`{text}` is not a day")))
     }
 
+    /// A list of `Date` texts as the days since the epoch it holds.
+    fn day_texts(&self, h: i32) -> HResult<Vec<i64>> {
+        let Value::List(items) = self.val(h)? else {
+            return trap("expected a list of days");
+        };
+        items
+            .into_iter()
+            .map(|item| match item {
+                Value::Text(text) => day_of(&text)
+                    .map(days_of)
+                    .ok_or_else(|| crate::engine::HostFail::Trap(format!("`{text}` is not a day"))),
+                other => trap(format!("expected a day, got {}", other.kind_name())),
+            })
+            .collect()
+    }
+
     /// A `Time` value as the instant it is.
     pub(crate) fn instant_arg(&self, h: i32) -> HResult<i64> {
         let text = self.text(h)?;
         Self::instant_arg_text(&text)
+    }
+
+    /// The moments a repeat's rule falls on between two days, in the entry's zone: what a view
+    /// shows of it in a window, read from the rule alone.
+    fn occurrences_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let rule = self.text(a.h(0)?)?;
+        let start = self.text(a.h(1)?)?;
+        let zone = self.text(a.h(2)?)?;
+        let exdates = self.day_texts(a.h(3)?)?;
+        let from = self.day(a.h(4)?)?;
+        let to = self.day(a.h(5)?)?;
+        let Ok(start) = Self::instant_arg_text(&start) else {
+            return trap(format!("`{start}` is not a moment"));
+        };
+        let times = crate::recurrence::occurrences(
+            &rule,
+            start,
+            &zone,
+            &exdates,
+            days_of(from),
+            days_of(to),
+        );
+        self.ret_h(Value::List(
+            times
+                .into_iter()
+                .map(|secs| Value::Text(tilolang::calendar::time_text(secs)))
+                .collect(),
+        ))
     }
 
     /// A time's text as the instant it is.
@@ -325,4 +370,13 @@ pub(crate) fn day_of(text: &str) -> Option<Date> {
 /// A day as the language holds one, `YYYY-MM-DD`.
 pub(crate) fn day_text(day: Date) -> String {
     day.strftime("%Y-%m-%d").to_string()
+}
+
+/// The days `day` is since the epoch.
+fn days_of(day: Date) -> i64 {
+    tilolang::calendar::days_from_civil(
+        i64::from(day.year()),
+        i64::from(day.month()),
+        i64::from(day.day()),
+    )
 }

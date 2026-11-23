@@ -54,6 +54,7 @@ mod query_host;
 mod query_imports;
 mod random;
 pub mod reads;
+pub mod recurrence;
 pub mod registry;
 mod render;
 pub mod rich;
