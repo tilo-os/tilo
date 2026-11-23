@@ -33,8 +33,22 @@ fn shell() -> (Host, Asked, ResourceRef) {
         || None,
     )
     .unwrap();
-    for meta in tilolang_tilo::platform_apps::platform_packages().unwrap() {
-        host.runtime().load_foreign(meta).unwrap();
+    // Only what the picker reads and calls: the windows the device publishes, and the session's
+    // package, whose actions the shell's calls name (its `focus` and its `report_problem`
+    // shortcut). Both must load, or the test says so.
+    let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    for app in [
+        tilolang_tilo::platform_apps::DEVICE_APP,
+        tilolang_tilo::platform_apps::SESSION_APP,
+    ] {
+        let meta = platform
+            .iter()
+            .find(|meta| meta.app == app)
+            .unwrap_or_else(|| panic!("the platform publishes {app}"))
+            .clone();
+        host.runtime()
+            .load_foreign(meta)
+            .unwrap_or_else(|why| panic!("{app}: {why}"));
     }
     let compiled = tilolang_tilo::shell::compile().unwrap_or_else(|why| panic!("{why}"));
     let package = compiled.last().expect("the shell's packages");
@@ -44,14 +58,28 @@ fn shell() -> (Host, Asked, ResourceRef) {
         .unwrap();
     let asked = Asked(Rc::default());
     host.runtime().set_foreign_invoker(asked.clone());
-    let root = host
-        .root_resource("so.tilo.shell", "so.tilo.shell#Shell")
-        .unwrap();
+    let root = root_of_type(&host, "Shell");
     // The person's layout is the session's to write; a shell whose layout says nothing offers
     // every window it has.
-    host.root_resource("so.tilo.shell", "so.tilo.shell#Layout")
-        .unwrap();
+    root_of_type(&host, "Layout");
     (host, asked, root)
+}
+
+/// The shell's own root resource of the type `name` (`Shell`, `Layout`), made the first time it
+/// is wanted as the host makes it.
+fn root_of_type(host: &Host, name: &str) -> ResourceRef {
+    let app = "so.tilo.shell";
+    let ty = host
+        .package(app)
+        .unwrap_or_else(|| panic!("the shell's package"))
+        .meta
+        .types
+        .iter()
+        .find(|ty| ty.name == name)
+        .unwrap_or_else(|| panic!("the shell declares {name}"))
+        .id
+        .clone();
+    host.root_resource(app, &ty).unwrap()
 }
 
 /// The windows the session publishes: the ones a person meets on the desktop in front.
