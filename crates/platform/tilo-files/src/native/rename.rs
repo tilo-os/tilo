@@ -19,77 +19,102 @@ pub enum FileRename {
     SourceUnlinkFailed(io::Error),
 }
 
-#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
-#[derive(Clone, Copy)]
-enum DirectoryFallback {
-    ReturnRenameError,
-    ReturnUnsupported,
-}
-
 /// Rename a non-directory file `src` to `dest`, failing with `AlreadyExists`
 /// instead of replacing an existing `dest`.
 ///
-/// On Linux, Android, and Apple systems this tries the exclusive rename
+/// Equal paths (`src == dest`) are refused before any system call with
+/// `AlreadyExists` (carrying `EEXIST` on Unix).
+///
+/// On Linux and Apple systems this tries the exclusive rename
 /// (`renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`) and, when the
 /// kernel or filesystem answers `EINVAL`, `ENOSYS`, or `ENOTSUP`, falls back
-/// to hard-linking `src` to `dest` without following symbolic links (refusing
-/// an existing `dest`) and then unlinking `src`. On every other target it takes
-/// the hard-link-then-unlink path directly.
+/// to hard-linking `src` to `dest` (refusing an existing `dest`) and then
+/// unlinking `src`. On every other target — Android and Windows included — it
+/// takes the hard-link-then-unlink path directly.
 ///
-/// The link-then-unlink path never runs for a directory: on Linux, Android, and
-/// Apple systems a directory returns the rename error directly; on other
-/// targets it returns `io::ErrorKind::Unsupported`.
+/// On Unix the hard link uses `linkat` with empty flags and follows no
+/// symbolic link; on other targets it uses `std::fs::hard_link`, which on
+/// Windows links to a symbolic link's target.
+///
+/// The link-then-unlink path never runs for a directory: on Linux and Apple
+/// systems a directory returns the rename error directly; on other targets it
+/// returns `io::ErrorKind::Unsupported`.
 ///
 /// # Errors
 ///
 /// Returns the host's error when `dest` could not be created (carrying the raw
-/// OS error, such as `EEXIST` on Unix when `dest` already exists). When the
-/// link-then-unlink path creates `dest` and only unlinking `src` fails, this
-/// returns `Ok(FileRename::SourceUnlinkFailed(_))`.
+/// OS error, such as `EEXIST` on Unix when `dest` already exists or when
+/// `src == dest`). When the link-then-unlink path creates `dest` and only
+/// unlinking `src` fails, this returns
+/// `Ok(FileRename::SourceUnlinkFailed(_))`.
 pub fn rename_file_noreplace(src: &Path, dest: &Path) -> io::Result<FileRename> {
-    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    if src == dest {
+        return Err(already_exists_error());
+    }
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     {
         rename_noreplace_inner(
             src,
             dest,
-            DirectoryFallback::ReturnRenameError,
+            |error| error,
             rename_exclusive,
-            link_nofollow,
+            hard_link_entry,
             unlink_file,
         )
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
     {
         link_then_unlink_with(
             src,
             dest,
             directory_unsupported_error,
-            link_nofollow,
+            hard_link_entry,
             unlink_file,
         )
     }
 }
 
-/// Shared no-replace rename for [`crate::disk::rename_noreplace`]: moves
-/// directories through the exclusive rename where supported, answers
-/// `Unsupported` when a directory reaches the link-then-unlink path, and treats
-/// a post-link unlink failure as an error.
+/// Shared no-replace rename for [`crate::disk::rename_noreplace`].
+///
+/// On Linux, Android, and Apple systems this tries the exclusive rename
+/// (moving files and directories atomically where supported) and falls back to
+/// hard-linking and unlinking on `EINVAL`, `ENOSYS`, or `ENOTSUP`; on every
+/// other target it takes the link-then-unlink path directly. A directory
+/// reaching the link-then-unlink path answers `Unsupported`, and a post-link
+/// unlink failure is returned as an error.
 pub(crate) fn rename_entry_noreplace(src: &Path, dest: &Path) -> io::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
     let outcome = rename_noreplace_inner(
         src,
         dest,
-        DirectoryFallback::ReturnUnsupported,
+        |_| directory_unsupported_error(),
         rename_exclusive,
-        link_nofollow,
+        hard_link_entry,
         unlink_file,
     )?;
     #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
-    let outcome = rename_file_noreplace(src, dest)?;
+    let outcome = link_then_unlink_with(
+        src,
+        dest,
+        directory_unsupported_error,
+        hard_link_entry,
+        unlink_file,
+    )?;
 
     match outcome {
         FileRename::Moved => Ok(()),
         FileRename::SourceUnlinkFailed(error) => Err(error),
+    }
+}
+
+fn already_exists_error() -> io::Error {
+    #[cfg(unix)]
+    {
+        io::Error::from_raw_os_error(libc::EEXIST)
+    }
+    #[cfg(not(unix))]
+    {
+        io::Error::from(io::ErrorKind::AlreadyExists)
     }
 }
 
@@ -104,8 +129,8 @@ fn link_then_unlink_with(
     link: impl FnOnce(&Path, &Path) -> io::Result<()>,
     unlink: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<FileRename> {
-    // Never follow a symbolic link at `src`, and never run the hard-link path
-    // for a directory.
+    // Do not follow a symbolic link when checking for a directory, and never
+    // run the hard-link path for a directory.
     if fs::symlink_metadata(src)?.is_dir() {
         return Err(directory_error());
     }
@@ -120,23 +145,16 @@ fn link_then_unlink_with(
 fn rename_noreplace_inner(
     src: &Path,
     dest: &Path,
-    directory_fallback: DirectoryFallback,
+    on_directory: impl FnOnce(io::Error) -> io::Error,
     rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
     link: impl FnOnce(&Path, &Path) -> io::Result<()>,
     unlink: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<FileRename> {
     match rename(src, dest) {
         Ok(()) => Ok(FileRename::Moved),
-        Err(error) if is_noreplace_unsupported(&error) => link_then_unlink_with(
-            src,
-            dest,
-            || match directory_fallback {
-                DirectoryFallback::ReturnRenameError => error,
-                DirectoryFallback::ReturnUnsupported => directory_unsupported_error(),
-            },
-            link,
-            unlink,
-        ),
+        Err(error) if is_noreplace_unsupported(&error) => {
+            link_then_unlink_with(src, dest, || on_directory(error), link, unlink)
+        }
         Err(error) => Err(error),
     }
 }
@@ -166,7 +184,7 @@ fn is_noreplace_unsupported(error: &io::Error) -> bool {
         })
 }
 
-fn link_nofollow(src: &Path, dest: &Path) -> io::Result<()> {
+fn hard_link_entry(src: &Path, dest: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         rustix::fs::linkat(
@@ -225,6 +243,19 @@ mod tests {
         assert_eq!(fs::read(&src).unwrap(), b"candidate bytes");
     }
 
+    #[test]
+    fn public_rename_file_noreplace_refuses_equal_paths_with_eexist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("same");
+        fs::write(&path, b"kept bytes").unwrap();
+
+        let error = rename_file_noreplace(&path, &path).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(error.raw_os_error(), Some(libc::EEXIST));
+        assert_eq!(fs::read(&path).unwrap(), b"kept bytes");
+    }
+
     #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
     mod fallback {
         use std::fs;
@@ -232,8 +263,8 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         use super::super::{
-            DIRECTORY_FALLBACK_UNSUPPORTED, DirectoryFallback, FileRename, link_nofollow,
-            rename_noreplace_inner, unlink_file,
+            DIRECTORY_FALLBACK_UNSUPPORTED, FileRename, directory_unsupported_error,
+            hard_link_entry, rename_noreplace_inner, unlink_file,
         };
 
         const FALLBACK_ERRNOS: [i32; 3] = [libc::ENOSYS, libc::EINVAL, libc::ENOTSUP];
@@ -252,9 +283,9 @@ mod tests {
                 let outcome = rename_noreplace_inner(
                     &src,
                     &dest,
-                    DirectoryFallback::ReturnRenameError,
+                    |error| error,
                     |_, _| Err(io::Error::from_raw_os_error(errno)),
-                    link_nofollow,
+                    hard_link_entry,
                     unlink_file,
                 )
                 .unwrap();
@@ -277,9 +308,9 @@ mod tests {
                 let error = rename_noreplace_inner(
                     &src,
                     &dest,
-                    DirectoryFallback::ReturnRenameError,
+                    |error| error,
                     |_, _| Err(io::Error::from_raw_os_error(errno)),
-                    link_nofollow,
+                    hard_link_entry,
                     unlink_file,
                 )
                 .unwrap_err();
@@ -304,11 +335,11 @@ mod tests {
                 let error = rename_noreplace_inner(
                     &src,
                     &dest,
-                    DirectoryFallback::ReturnRenameError,
+                    |error| error,
                     |_, _| Err(io::Error::from_raw_os_error(errno)),
                     |from, to| {
                         link_called = true;
-                        link_nofollow(from, to)
+                        hard_link_entry(from, to)
                     },
                     unlink_file,
                 )
@@ -337,11 +368,11 @@ mod tests {
                 let error = rename_noreplace_inner(
                     &src,
                     &dest,
-                    DirectoryFallback::ReturnUnsupported,
+                    |_| directory_unsupported_error(),
                     |_, _| Err(io::Error::from_raw_os_error(errno)),
                     |from, to| {
                         link_called = true;
-                        link_nofollow(from, to)
+                        hard_link_entry(from, to)
                     },
                     unlink_file,
                 )
@@ -370,11 +401,11 @@ mod tests {
                 let error = rename_noreplace_inner(
                     &src,
                     &dest,
-                    DirectoryFallback::ReturnRenameError,
+                    |error| error,
                     |_, _| Err(io::Error::from_raw_os_error(errno)),
                     |from, to| {
                         link_called = true;
-                        link_nofollow(from, to)
+                        hard_link_entry(from, to)
                     },
                     unlink_file,
                 )
@@ -397,9 +428,9 @@ mod tests {
             let outcome = rename_noreplace_inner(
                 &src,
                 &dest,
-                DirectoryFallback::ReturnRenameError,
+                |error| error,
                 |_, _| Err(io::Error::from_raw_os_error(libc::ENOSYS)),
-                link_nofollow,
+                hard_link_entry,
                 |_| Err(io::Error::from_raw_os_error(libc::EACCES)),
             )
             .unwrap();
@@ -426,9 +457,9 @@ mod tests {
             let outcome = rename_noreplace_inner(
                 &src_link,
                 &dest_link,
-                DirectoryFallback::ReturnRenameError,
+                |error| error,
                 |_, _| Err(io::Error::from_raw_os_error(libc::ENOSYS)),
-                link_nofollow,
+                hard_link_entry,
                 unlink_file,
             )
             .unwrap();
@@ -445,9 +476,9 @@ mod tests {
             let error = rename_noreplace_inner(
                 &src_file,
                 &dangling_dest,
-                DirectoryFallback::ReturnRenameError,
+                |error| error,
                 |_, _| Err(io::Error::from_raw_os_error(libc::ENOSYS)),
-                link_nofollow,
+                hard_link_entry,
                 unlink_file,
             )
             .unwrap_err();
