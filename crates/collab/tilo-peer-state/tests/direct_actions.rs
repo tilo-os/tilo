@@ -960,11 +960,11 @@ async fn a_device_asking_from_an_endpoint_keyed_apart_is_answered_once_named() {
     b_endpoint.close().await;
 }
 
-/// `action` on the wait list's entry `entry`, as a visitor's page asks it.
-fn on_the_wait_list(action: &str) -> InvokeRequest {
+/// `action` on the address `entry-1` left at the workspace's entry, as a visitor's page asks it.
+fn at_the_entry(action: &str) -> InvokeRequest {
     InvokeRequest {
         target: RemoteActionTarget {
-            provider: tilo_action_policy::WAIT_LIST_APP.into(),
+            provider: tilo_action_policy::VISITOR_ENTRY_APP.into(),
             address: ActionAddress::new("entry-1", action),
         },
         ..invoke(InvocationId::new())
@@ -1022,7 +1022,7 @@ async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
         "a visitor may not change a note"
     );
     assert_eq!(
-        ask(on_the_wait_list("invite")).await,
+        ask(at_the_entry("invite")).await,
         Err(ActionCallError::NotPermitted),
         "nor invite anyone from the wait list"
     );
@@ -1030,7 +1030,7 @@ async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
     for action in ["join", "confirm", "leave"] {
         assert!(
             matches!(
-                ask(on_the_wait_list(action)).await,
+                ask(at_the_entry(action)).await,
                 Ok(ReceiptStatus::Completed { .. })
             ),
             "a visitor may {action}"
@@ -1055,7 +1055,7 @@ async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
     let calls_so_far = 3;
     for _ in calls_so_far..tilo_peer_state::actions::VISITOR_CALLS_PER_TEN_MINUTES {
         assert!(matches!(
-            ask(on_the_wait_list("join")).await,
+            ask(at_the_entry("join")).await,
             Ok(ReceiptStatus::Completed { .. })
         ));
     }
@@ -1064,7 +1064,7 @@ async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
     let fresh_key = another_service.remote(&another_endpoint, &engine.addr(), WORKSPACE);
     let refused = tokio::time::timeout(
         PATIENCE,
-        ActionProvider::invoke(&fresh_key, &nobody, on_the_wait_list("join")),
+        ActionProvider::invoke(&fresh_key, &nobody, at_the_entry("join")),
     )
     .await
     .expect("the device answers")

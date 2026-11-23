@@ -11,12 +11,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActionKind, Answer, Grant, GrantId, Grantee, KindSet, Lifetime, Role, TreePath};
 
-/// The app that keeps a workspace's wait list: one resource per address left at its entry.
-pub const WAIT_LIST_APP: &str = "so.tilo.lang.wait-list";
+/// The app that keeps what visitors leave at a workspace's entry: one resource per address left
+/// there by someone asking to be let in.
+pub const VISITOR_ENTRY_APP: &str = "so.tilo.lang.entry";
 
-/// What a visitor may do on a wait list, and nothing else of it: leave an address, confirm it
-/// from the link mailed there, and take it off again.
-pub const WAIT_LIST_VISITOR_ACTIONS: [&str; 3] = ["join", "confirm", "leave"];
+/// What a visitor may do at the entry, and nothing else of it: leave an address, confirm it from
+/// the link mailed there, and take it off again.
+pub const VISITOR_ENTRY_ACTIONS: [&str; 3] = ["join", "confirm", "leave"];
 
 /// The longest description a listing carries, in characters: what a
 /// directory shows of a workspace, in a sentence or two.
@@ -95,7 +96,7 @@ impl EntryPolicy {
     }
 
     /// What the entry opens to any key ([`Grantee::AnyKey`]) in `workspace`: on an entry that
-    /// keeps requests, joining its wait list, confirming and leaving it. Nothing on any other
+    /// keeps requests, leaving an address there, confirming it and taking it off. Nothing on any other
     /// entry. Every device derives these from the entry alike, so a visitor's call is admitted,
     /// and its change taken in, by the same grants everywhere.
     #[must_use]
@@ -103,13 +104,13 @@ impl EntryPolicy {
         if !self.keeps_requests() {
             return Vec::new();
         }
-        WAIT_LIST_VISITOR_ACTIONS
+        VISITOR_ENTRY_ACTIONS
             .into_iter()
             .map(|action| Grant {
-                id: GrantId::new(format!("entry:wait-list:{action}")),
+                id: GrantId::new(format!("entry:visitor:{action}")),
                 grantee: Grantee::AnyKey,
                 node: TreePath::workspace(workspace)
-                    .app(WAIT_LIST_APP)
+                    .app(VISITOR_ENTRY_APP)
                     .rest()
                     .action(action),
                 kinds: KindSet::of(ActionKind::Read).with(ActionKind::Undoable),
