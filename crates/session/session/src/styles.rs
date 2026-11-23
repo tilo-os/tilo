@@ -83,9 +83,9 @@ pub enum News {
 /// runs, whether they came from the store or this build's fallback copy (`shell.md` §6). The
 /// switch always offers them, so a device with no store still shows a layout.
 pub fn of_shell(packages: &[tilolang_tilo::tilolang::Compiled]) -> Vec<Style> {
-    let metas: Vec<(String, Meta)> = packages
+    let metas: Vec<(&str, &Meta)> = packages
         .iter()
-        .map(|package| (package.meta.app.clone(), package.meta.clone()))
+        .map(|package| (package.meta.app.as_str(), &package.meta))
         .collect();
     match metas.last() {
         Some((package, meta)) => styles_of(package, meta, &metas),
@@ -99,7 +99,15 @@ pub fn of_shell(packages: &[tilolang_tilo::tilolang::Compiled]) -> Vec<Style> {
 /// reads is one whose views are declared, and the shell's runtime finds them by the type they
 /// take. `false` for one whose payload does not read, so the switch can say so without the
 /// style drawing anything.
-pub fn installed(catalog: &package_store::Catalog) -> Vec<Style> {
+///
+/// `shell` is the package the shell runs, from the store or this build's fallback copy. The
+/// layout's type is declared by that package, and a store that holds only the person's copy
+/// still needs it: a copy writes its view of `so.tilo.shell.Layout`, which nothing in the store
+/// declares.
+pub fn installed(
+    catalog: &package_store::Catalog,
+    shell: &[tilolang_tilo::tilolang::Compiled],
+) -> Vec<Style> {
     let Ok(apps) = app_catalogue::apps::read(catalog) else {
         return Vec::new();
     };
@@ -130,10 +138,20 @@ pub fn installed(catalog: &package_store::Catalog) -> Vec<Style> {
         }
     }
     // The layout types, by every module's own name for them: a module of another package
-    // names the layout's type as `layout_app.Name`, so a style of it holds that name.
+    // names the layout's type as `layout_app.Name`, so a style of it holds that name. The
+    // shell the session runs declares it too, whether or not the store holds that package.
+    let layouts: Vec<(&str, &Meta)> = modules
+        .iter()
+        .map(|(app, meta)| (app.as_str(), meta))
+        .chain(
+            shell
+                .iter()
+                .map(|package| (package.meta.app.as_str(), &package.meta)),
+        )
+        .collect();
     let mut out = broken;
     for (package, meta) in &modules {
-        out.extend(styles_of(package, meta, &modules));
+        out.extend(styles_of(package, meta, &layouts));
     }
     out
 }
@@ -176,20 +194,20 @@ fn unreadable(package: &str) -> Style {
 /// The views `meta` declares that draw the layout: a style is a view whose one
 /// parameter is a record type whose origin is `session.layout`. The layout's type is
 /// declared once, by the package that owns it (`so.tilo.shell`); another package's style names
-/// it as `shell.Layout`, so `modules` is read to know which names hold the layout,
+/// it as `shell.Layout`, so `layouts` is read to know which names hold the layout,
 /// never a list in code (`shell.md` §6).
-fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Style> {
+fn styles_of(package: &str, meta: &Meta, layouts: &[(&str, &Meta)]) -> Vec<Style> {
     // The layout type as any view names it: the package declaring it, and the name the
     // declaring package gives it. `parse_ty`, below, turns a style's parameter into the same
     // app and name, whether the style writes `Layout` (the declaring package) or
     // `shell.Layout` (another one).
-    let layout: Vec<(String, String)> = modules
+    let layout: Vec<(&str, &str)> = layouts
         .iter()
         .flat_map(|(_, meta)| {
             meta.types
                 .iter()
                 .filter(|t| t.origin.as_deref() == Some(LAYOUT_ORIGIN))
-                .map(|t| (meta.app.clone(), t.name.clone()))
+                .map(|t| (meta.app.as_str(), t.name.as_str()))
         })
         .collect();
     // A module that declares none of its own still offers none: a style must draw the
@@ -225,7 +243,7 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Styl
                 Ok(Ty::Record(ref key))
                     if layout
                         .iter()
-                        .any(|(app, name)| app == &key.app && name == &key.name)
+                        .any(|(app, name)| *app == key.app.as_str() && *name == key.name.as_str())
             ))
         })
         .map(|v| Style {
@@ -246,9 +264,15 @@ mod tests {
     /// A meta of one layout type and the views that draw it, as the store's module carries
     /// it: what the session reads to find the styles (`shell.md` §6).
     fn meta(types: &serde_json::Value, views: &serde_json::Value) -> Meta {
+        meta_of("so.tilo.shell", types, views)
+    }
+
+    /// [`meta`] as the package `app` carries it: another package's module names the layout by
+    /// the package that declares it.
+    fn meta_of(app: &str, types: &serde_json::Value, views: &serde_json::Value) -> Meta {
         serde_json::from_value(serde_json::json!({
-            "app": "so.tilo.shell",
-            "title": "Shell",
+            "app": app,
+            "title": app,
             "module_hash": "",
             "fns": [],
             "actions": [],
@@ -325,7 +349,7 @@ mod tests {
                 view("notes", "Notes", "Note"),
             ]),
         );
-        let modules = [("so.tilo.shell".to_owned(), meta.clone())];
+        let modules = [("so.tilo.shell", &meta)];
         let found = styles_of("so.tilo.shell", &meta, &modules);
         assert_eq!(
             found.iter().map(|s| s.style.as_str()).collect::<Vec<_>>(),
@@ -343,8 +367,38 @@ mod tests {
     #[test]
     fn a_package_with_no_layout_type_offers_no_style() {
         let meta = meta(&serde_json::json!([]), &serde_json::json!([]));
-        let modules = [("so.tilo.notes".to_owned(), meta.clone())];
+        let modules = [("so.tilo.notes", &meta)];
         assert!(styles_of("so.tilo.notes", &meta, &modules).is_empty());
+    }
+
+    /// A person's copy of a shipped style names the layout by the package that declares it
+    /// (`so.tilo.shell.Layout`). A store that holds only the copy — a device whose shell is the
+    /// build's own, no store row — still offers it: the shell the session runs declares the type
+    /// the name resolves against.
+    #[test]
+    fn a_copied_style_is_offered_when_the_store_holds_no_shell() {
+        let shell = meta_of("so.tilo.shell", &layout_type(), &serde_json::json!([]));
+        let copy = meta_of(
+            "mine.shell",
+            &serde_json::json!([]),
+            &serde_json::json!([view("strips", "Strips", "so.tilo.shell.Layout")]),
+        );
+        let found = styles_of(
+            "mine.shell",
+            &copy,
+            &[("mine.shell", &copy), ("so.tilo.shell", &shell)],
+        );
+        assert_eq!(
+            found.iter().map(|s| s.style.as_str()).collect::<Vec<_>>(),
+            ["mine.shell:strips"],
+            "the copy is a style of the shell the session runs: {found:?}"
+        );
+        // Without the shell's package in the layout names, nothing declares the type: the
+        // store's own modules alone offer no style of it.
+        assert!(
+            styles_of("mine.shell", &copy, &[("mine.shell", &copy)]).is_empty(),
+            "the copy's parameter resolves to what the shell declares"
+        );
     }
 
     /// A package whose module does not read is listed by its package, never by nothing: the

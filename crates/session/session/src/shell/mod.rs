@@ -558,7 +558,7 @@ impl Shell {
         // cleared too: the shell must draw it again for its view to run and tell whether it is
         // fixed, and a store that moved is the only news the session gets of a reinstall.
         self.republish = true;
-        for style in crate::styles::installed(&catalog) {
+        for style in crate::styles::installed(&catalog, &self.packages) {
             // The shell's own package is the one the part already runs, never one loaded
             // beside itself.
             if style.package != tilo_session_core::shell::SHELL_APP {
@@ -574,7 +574,7 @@ impl Shell {
         // The store's styles, the shell's own among them when the store holds the shell: each
         // package's styles are offered once, the shell's own from the package the shell runs.
         let own = crate::styles::of_shell(&self.packages);
-        let mut list = crate::styles::installed(&catalog);
+        let mut list = crate::styles::installed(&catalog, &self.packages);
         for style in own {
             if !list.iter().any(|s| s.style == style.style) {
                 list.push(style);

@@ -245,6 +245,102 @@ fn a_broken_copy_is_a_diagnostic_and_never_installs() {
     );
 }
 
+/// A person's copy is a style on a device whose store holds no shell, the case of a device that
+/// runs this build's own shell: the layout type the copy draws is declared by the shell the
+/// session runs, never by a store row. The copy is offered beside the shipped style, choosing it
+/// draws it and keeps the choice, and a copy that does not compile is refused with the
+/// compiler's words and changes nothing.
+#[test]
+fn a_copied_style_is_offered_and_drawn_with_no_shell_in_the_store() {
+    let _settled = ui::motion::testing::settled();
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_copied_style_is_offered_and_drawn_with_no_shell_in_the_store",
+        || {
+            let root = crate::common::private_home();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            for (name, dir) in [
+                ("TILO_APPS_DATA_DIR", "apps"),
+                ("TILO_PACKAGES_DIR", "packages"),
+                ("XDG_STATE_HOME", "state"),
+                ("XDG_CACHE_HOME", "cache"),
+                ("XDG_DATA_HOME", "data"),
+            ] {
+                let dir = root.path().join(dir);
+                std::fs::create_dir_all(&dir).expect("the device's directory");
+                env.set(name, &dir);
+            }
+            let mut session = session();
+            crate::common::until(&mut session, "the shell draws", |session| {
+                !session.shell_parts().is_empty()
+            });
+            // The copy is made and installed, as the switch's own command does it. The store
+            // holds nothing else: no `so.tilo.shell` row declares the layout it draws.
+            let answer = style_action(
+                &mut session,
+                "make-it-mine",
+                serde_json::json!({"style": "so.tilo.shell:strips"}),
+            )
+            .expect("make it mine ran")
+            .expect("completed");
+            assert_eq!(answer["ok"], true, "{answer}");
+            assert_eq!(answer["package"], tilo_session::style_packages::COPY_ID);
+            let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
+            crate::common::until(&mut session, "the copy is offered", |session| {
+                style_state(session, &copy) == Some((true, String::new()))
+            });
+            assert!(
+                style_state(&session, "so.tilo.shell:strips").is_some(),
+                "the shipped style stands beside the copy"
+            );
+            // Choosing it draws the shell through the copy, and the choice is the copy's: the
+            // shell's own record names it, where the switch reads what it shows.
+            session
+                .run_shell_action("show_style", vec![serde_json::Value::from(copy.clone())])
+                .expect("the shell shows the copy");
+            crate::common::until(&mut session, "the copy draws the shell", |session| {
+                crate::common::on_screen(session, "No window here yet").is_some()
+            });
+            assert_eq!(
+                session.shell_setting("style"),
+                Some(serde_json::Value::from(copy.clone())),
+                "the shell shows the copy: {:?}",
+                session.accessible_labels()
+            );
+            // A copy whose source does not compile is the compiler's answer, named where the
+            // person chose to install it, and it never reaches the store.
+            let dir = root.path().join("packages").join("mine.broken");
+            std::fs::create_dir_all(&dir).expect("a directory for the broken copy");
+            std::fs::write(dir.join("app.ids"), "").expect("an ids lock");
+            std::fs::write(
+                dir.join("app.tl"),
+                "app mine.broken \"Broken\"\n\nuse so.tilo.shell as shell\n\n\
+                 /// Broken style\nview broken(a: shell.Layout) {\n    ui.Text(oops\n}\n",
+            )
+            .expect("the broken source");
+            let refused = style_action(
+                &mut session,
+                "install",
+                serde_json::json!({"package": "mine.broken"}),
+            )
+            .expect_err("a broken copy never installs");
+            assert!(
+                refused.contains("E003"),
+                "the refusal names the parse error: {refused}"
+            );
+            assert!(
+                style_state(&session, "mine.broken:broken").is_none(),
+                "nothing broken reached the store"
+            );
+            assert_eq!(
+                session.shell_setting("style"),
+                Some(serde_json::Value::from(copy)),
+                "the shell stays on the style it had"
+            );
+        },
+    );
+}
+
 /// The same commands through the REPL's API: a person (or their agent) typing at the
 /// session's MCP server runs "make it mine" and gets a style the switch offers, the very call
 /// the canvas chat's agent makes (`shell.md` §6, "Every step is an action in the broker's
