@@ -266,17 +266,26 @@ impl Registry {
             return Ok(Rc::clone(existing));
         }
         let hash = pkg.hash.clone();
+        // The apps whose packages are loaded, by module: a refusal names the two packages a
+        // declaration collides in, so a person reading a failed card learns which apps to look
+        // at, not only that one id is taken.
+        let loaded: HashMap<ModuleHash, String> = self
+            .packages
+            .iter()
+            .map(|(hash, package)| (hash.clone(), package.meta.app.clone()))
+            .collect();
+        let incoming = pkg.meta.app.as_str();
         for t in &pkg.meta.types {
-            Self::claim(&mut self.types, &t.id, &hash, "type")?;
+            Self::claim(&mut self.types, &t.id, &hash, "type", incoming, &loaded)?;
         }
         for a in &pkg.meta.actions {
-            Self::claim(&mut self.actions, &a.id, &hash, "action")?;
+            Self::claim(&mut self.actions, &a.id, &hash, "action", incoming, &loaded)?;
         }
         for v in &pkg.meta.views {
-            Self::claim(&mut self.views, &v.id, &hash, "view")?;
+            Self::claim(&mut self.views, &v.id, &hash, "view", incoming, &loaded)?;
         }
         for f in &pkg.meta.fns {
-            Self::claim(&mut self.fns, &f.id, &hash, "fn")?;
+            Self::claim(&mut self.fns, &f.id, &hash, "fn", incoming, &loaded)?;
         }
         let rc = Rc::new(pkg);
         self.packages.insert(hash.clone(), Rc::clone(&rc));
@@ -378,11 +387,19 @@ impl Registry {
         id: &str,
         owner: &ModuleHash,
         what: &str,
+        incoming: &str,
+        loaded: &HashMap<ModuleHash, String>,
     ) -> Result<(), String> {
         match map.get(id) {
-            Some(other) if other != owner => Err(format!(
-                "{what} id `{id}` is already declared by module {other}"
-            )),
+            Some(other) if other != owner => {
+                let declared = loaded
+                    .get(other)
+                    .cloned()
+                    .unwrap_or_else(|| other.to_string());
+                Err(format!(
+                    "{what} id `{id}` is declared by both `{declared}` and `{incoming}`"
+                ))
+            }
             _ => {
                 map.insert(id.to_owned(), owner.clone());
                 Ok(())
@@ -706,5 +723,38 @@ impl Registry {
             fields: info.specs(),
             text_defaults: info.text_defaults(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A package of `app` describing one action, `action`, and nothing else: what two apps that
+    /// declare one id load as.
+    fn package(app: &str, action: &str) -> Package {
+        let meta: Meta = serde_json::from_str(&format!(
+            r#"{{"app":"{app}","title":"{app}","module_hash":"","types":[],"views":[],"fns":[],"actions":[{{"id":"{action}","name":"{action}","doc":"","params":[],"result":null,"class":"undoable","proposal":null,"reaches":[]}}]}}"#
+        ))
+        .expect("a description");
+        Package::foreign(ModuleHash::of_bytes(app.as_bytes()), meta).expect("a package")
+    }
+
+    /// The refusal names the id and the two apps that declare it: a person reading a failed card
+    /// learns which packages collide, never a bare id.
+    #[test]
+    fn a_duplicate_action_names_both_declaring_packages() {
+        let mut registry = Registry::default();
+        registry
+            .add(package("so.tilo.device", "open"))
+            .expect("the first package loads");
+        let refused = registry
+            .add(package("so.tilo.session", "open"))
+            .err()
+            .expect("the second package is refused");
+        assert_eq!(
+            refused,
+            "action id `open` is declared by both `so.tilo.device` and `so.tilo.session`"
+        );
     }
 }

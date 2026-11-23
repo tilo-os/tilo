@@ -378,7 +378,11 @@ impl Loads for ShellPlatform {
                     }
                     let app = meta.app.clone();
                     if let Err(error) = host.runtime().load_foreign(meta) {
-                        tracing::error!(app, %error, "a platform package did not load");
+                        tracing::error!(%app, %error, "a platform package did not load");
+                        // A view that names this package's resources while it is missing draws
+                        // a failed state: it says which package failed and why, never a blank
+                        // card with no reason.
+                        host.runtime().app_failed(&app, error.to_string());
                     }
                 }
             }
@@ -407,12 +411,18 @@ impl Loads for ShellPlatform {
             Ok(session) => {
                 if let Err(error) = host.runtime().load_foreign(session) {
                     tracing::error!(%error, "the session's package did not load");
+                    host.runtime().app_failed(SESSION_APP, error.to_string());
                 }
             }
-            Err(error) => tracing::error!(%error, "the session's description does not read"),
+            Err(error) => {
+                tracing::error!(%error, "the session's description does not read");
+                host.runtime().app_failed(SESSION_APP, error);
+            }
         }
         if let Err(error) = host.load_compiled(shell) {
             tracing::error!(app = shell.meta.app, %error, "the shell package did not load");
+            host.runtime()
+                .app_failed(&shell.meta.app, error.to_string());
         }
         host.runtime().set_invoker(PlaceInvoker {
             link: Rc::clone(&self.link),
