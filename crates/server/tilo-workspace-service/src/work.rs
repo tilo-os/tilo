@@ -734,15 +734,18 @@ pub trait AgentEngine: Send + Sync {
     }
 
     /// Start `agent`'s turn in `workspace` on `event`, the change a trigger `saver` keeps fired
-    /// on: whether this device took the turn, or why it did not start.
+    /// on, as the answer invocation `invocation`: whether this device took the turn, or why it
+    /// did not start, once the turn ended. The reply the turn writes names `invocation`, and
+    /// the invocation's cancel sets `stop`, which ends the turn at its next step.
     fn answer(
         &self,
         workspace: String,
         agent: String,
         event: tilo_automation::dispatch::DocumentEvent,
         saver: String,
+        (invocation, stop): (tilo_actions::InvocationId, Arc<std::sync::atomic::AtomicBool>),
     ) -> Pending<Result<Started, String>> {
-        let _ = (workspace, agent, event, saver);
+        let _ = (workspace, agent, event, saver, invocation, stop);
         Pending::ready(Err(
             "this device's agent engine answers no trigger".to_owned()
         ))
@@ -752,8 +755,9 @@ pub trait AgentEngine: Send + Sync {
 /// What became of a turn a trigger started ([`AgentEngine::answer`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Started {
-    /// This device took the turn, and runs it.
-    Taken,
+    /// This device took the turn and ran it: what answered its model calls and what they used
+    /// and cost (`provider`, `model`, `tokens`, `cost_usd`), as its invocation keeps them.
+    Taken(serde_json::Value),
     /// Another device took it, or did it already: why this one did not.
     Elsewhere(String),
 }

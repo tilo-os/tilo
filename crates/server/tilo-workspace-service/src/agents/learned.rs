@@ -13,7 +13,7 @@
 //!
 //! One rule decides which turn knows and keeps facts ([`keeps`]): one a person asked about
 //! something private to them and the agent, so every member who may read it is one of the two
-//! ([`crate::asks::private_to`]), as their direct conversation with the agent is. Such a turn is
+//! (their own direct conversation with the agent, [`Turn::private`]). Such a turn is
 //! told that person's facts with its request ([`learned_for`], [`told`]), and is offered four
 //! tools beside the agent tools: `learn`, `correct`, `forget`, and `learned` for the whole list.
 //! What it keeps is kept about that person. So Ada's agent answering Bo in his own conversation
@@ -84,9 +84,10 @@ pub(super) fn knows(agent: &Agent, person: &str) -> Option<[u8; 32]> {
 /// theirs and the agent's alone. `None` for every other turn, and for an issue's: what it reads
 /// is whoever wrote the issue's.
 pub(super) fn keeps(turn: &Turn) -> Option<[u8; 32]> {
-    match &turn.ask {
-        Ask::Asked { private: true, .. } => knows(&turn.agent, &turn.person),
-        Ask::Asked { .. } | Ask::Issue { .. } => None,
+    if turn.private {
+        knows(&turn.agent, &turn.person)
+    } else {
+        None
     }
 }
 
@@ -141,15 +142,13 @@ impl Keeping {
     /// facts ([`keeps`]).
     pub(super) fn of(workspaces: &Workspaces, workspace: &str, turn: &Turn) -> Option<Self> {
         let person = keeps(turn)?;
-        let Ask::Asked { app, ask, .. } = &turn.ask else {
-            return None;
-        };
+        let Ask::Triggered(place) = &turn.ask;
         Some(Self {
             workspaces: workspaces.clone(),
             person,
             workspace: workspace.to_owned(),
             agent: turn.agent.id.0.clone(),
-            message: format!("{app}/{ask}"),
+            message: format!("{}/{}", place.app, place.item),
         })
     }
 

@@ -894,9 +894,7 @@ impl Asked {
 /// it.
 fn thread(person: &str, agent: &str) -> String {
     use tilo_actions::policy::MemberId;
-    chat::Chat::direct_id([MemberId::person(person.to_owned()), MemberId::agent(agent)])
-        .as_str()
-        .to_owned()
+    MemberId::direct_conversation([MemberId::person(person.to_owned()), MemberId::agent(agent)])
 }
 
 /// Where `workspace` keeps what its assistant's initiative keeps.
@@ -919,7 +917,7 @@ fn read(workspaces: &Workspaces, workspace: &str) -> Kept {
 /// The look-round's day, where the turn the message `cause` asks for is one a look of
 /// `person`'s started in `workspace`: a look is kept before its look-round hands its
 /// instruction over under the look's id as the cause's key, which names that message
-/// ([`chat::cause::message_id`]). Whoever carries out the turn counts every model call of it on
+/// (the turn's cause). Whoever carries out the turn counts every model call of it on
 /// this day beside the assistant's own, so the turn stops where the look-round's limit is
 /// reached. `None` for every other turn.
 #[must_use]
@@ -930,16 +928,14 @@ pub fn day_of_turn(
     cause: &str,
     day: &str,
 ) -> Option<Spender> {
-    use tilo_actions::policy::MemberId;
     // A turn names its person as a resource does. Only a person's own root is looked up:
     // nothing else names a place this keeps.
     person_of(person).ok()?;
     let kept = read(workspaces, workspace);
     let event = kept.event.as_deref()?;
-    let asker = MemberId::person(person.to_owned());
     kept.looks
         .iter()
-        .any(|past| chat::cause::message_id(&asker, &past.look.id).to_string() == cause)
+        .any(|past| past.look.id == cause)
         .then(|| look_round_spender(workspace, event, NAME, day, kept.day_limit()))
 }
 

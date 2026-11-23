@@ -12,8 +12,9 @@
 //!   `stop-sub-agent`. Each is applied on the list as the turn's agent acting for the person
 //!   who keeps it, the way this server writes how a sub-agent stands. So the list's rules
 //!   decide, and what it refuses is what the turn's tools are told. Nothing more is needed to
-//!   start one: this server asks a sub-agent it started its job at once, made from the reply
-//!   of the turn that started it, and works it ([`super::sub_agents`]).
+//!   start one: the turn tells the sub-agent its job at once, and each note later, in a message
+//!   that mentions it beside the turn's reply, which its trigger fires on
+//!   ([`super::sub_agents::tell`]).
 //! - **One read**, the team: the sub-agents the turn's agent started and theirs, each with
 //!   how it stands, since when, its line and what it made ([`WorkspaceAgents::team_of`]).
 //!   Nothing of whoever started the turn's agent is in the answer, and nothing of a
@@ -110,9 +111,9 @@ struct TurnTeam {
     workspace_id: WorkspaceId,
     /// The turn's agent, as the list held it when the turn began.
     agent: Agent,
-    /// Where the turn's reply is written, for a turn made from an ask: a sub-agent it starts is
-    /// asked its job from that reply.
-    replying: Option<super::asked::Replying>,
+    /// Where the turn tells its team, for a turn asked in a conversation: what it answers there,
+    /// and as whom. A sub-agent it starts is told its job there, and each note.
+    telling: Option<(super::WorkspaceActionProvider, Caller, super::triggered::Where)>,
     /// What the turn is offered: nothing for a caller that is no turn of this agent.
     offered: Vec<CatalogueRow>,
 }
@@ -137,10 +138,15 @@ impl TurnTeam {
             workspace: scope.workspace.clone(),
             workspace_id: scope.workspace_id,
             agent: turn.agent.clone(),
-            replying: scope.replying.clone(),
+            telling: None,
             offered: Vec::new(),
         };
-        let caller = scope.reply(turn).caller;
+        let reply = scope.reply(turn);
+        team.telling = turn
+            .ask
+            .message()
+            .map(|place| (reply.provider.clone(), reply.caller.clone(), place.clone()));
+        let caller = reply.caller;
         if team.on_turn(&caller).await.is_ok() {
             team.offered = rows()
                 .into_iter()
@@ -365,29 +371,45 @@ impl TurnTeam {
         }
         // It is a member acting for the same person, added by the agent that started it: the
         // member list takes that only from a member acting for that person.
-        if let Some(keeper) = super::keeper_of(&self.agent)
-            && let Err(error) = self
-                .workspaces
-                .add_agent(
-                    &self.workspace,
-                    tilo_action_policy::MemberId::agent(self.agent.id.0.clone()),
-                    &id,
-                    &keeper,
-                )
-                .await
+        if let Err(error) = self
+            .workspaces
+            .add_agent(
+                &self.workspace,
+                tilo_action_policy::MemberId::agent(self.agent.id.0.clone()),
+                &id,
+                &self.agent.acts_for,
+            )
+            .await
         {
             tracing::warn!(workspace = %self.workspace, agent = %id, %error, "a sub-agent is not a member yet");
         }
-        // Its job is asked at once from the reply this turn writes; without one, a look asks it
-        // from the starter's newest reply.
-        if let Some(replying) = &self.replying
-            && let Ok(reply) = replying.reply().await
-            && let Err(error) =
-                super::sub_agents::ask_started(&self.workspaces, &self.workspace, &id, reply).await
-        {
-            tracing::warn!(workspace = %self.workspace, agent = %id, %error, "a sub-agent was not asked its job at once");
+        // Its job is told at once, in a message that mentions it: its trigger starts its turn.
+        let name = given
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&id)
+            .to_owned();
+        let job = given
+            .get("job")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if let Err(error) = self.tell(&id, &name, &job).await {
+            tracing::warn!(workspace = %self.workspace, agent = %id, %error, "a sub-agent was not told its job");
         }
         Ok(self.one(&id).await)
+    }
+
+    /// Tell the sub-agent `id` (called `name`) `text` beside the turn's reply, in a message that
+    /// mentions it. A turn asked outside a conversation has nowhere to tell it.
+    ///
+    /// # Errors
+    /// Chat refused the message, or the turn answers in no conversation.
+    async fn tell(&self, id: &str, name: &str, text: &str) -> Result<(), String> {
+        let Some((provider, caller, place)) = &self.telling else {
+            return Err("only a turn asked in a conversation tells a sub-agent".to_owned());
+        };
+        super::sub_agents::tell((provider, caller), &self.workspace, place, (id, name), text).await
     }
 
     /// Take the call `request` asks for as `caller`: how it ended, or why this server did
@@ -427,12 +449,25 @@ impl TurnTeam {
                 (START, _) => self.start(given, caller).await?,
                 (NOTE, Some(agent)) => match NonBlank::parse(&read_as::<Noted>(given)?.text) {
                     Some(text) => {
+                        let said = text.to_string();
                         let noted = WorkspaceAgents::NOTE_SUB_AGENT.with(NoteSubAgent {
                             agent: Id::from_raw(agent.clone()),
                             text,
                         });
                         match self.on_list(noted, caller).await {
-                            Ok(()) => self.one(&agent).await,
+                            Ok(()) => {
+                                // The note reaches the sub-agent as a message that mentions it.
+                                let name = self
+                                    .list()
+                                    .await
+                                    .ok()
+                                    .and_then(|list| list.get(&Id::from_raw(agent.clone())).map(|its| its.name.clone()))
+                                    .unwrap_or_else(|| agent.clone());
+                                if let Err(error) = self.tell(&agent, &name, &said).await {
+                                    tracing::warn!(workspace = %self.workspace, %agent, %error, "a sub-agent was not told its note");
+                                }
+                                self.one(&agent).await
+                            }
                             Err(why) => Err(why),
                         }
                     }

@@ -1,6 +1,6 @@
-//! A turn answers with the thing it worked on, shown live: a card of that document in the
-//! reply to the ask ([`asks::show`]); or with a view it wrote over what the workspace keeps
-//! ([`asks::show_view`]), which each reader may add to their own views.
+//! A turn answers with the thing it worked on, shown live: a message referring to that document
+//! beside its reply; or with a view it wrote over what the workspace keeps, sent into the
+//! conversation through Chat's `send_view`, which each reader may add to their own views.
 //!
 //! The card stands in the reply after its body, which shows the document in its own app where
 //! the reply is drawn and opens it: the person who asked sees the document
@@ -17,15 +17,12 @@
 //! - **It gives nobody anything.** A card is a reference, and each reader of the reply reads it
 //!   with what they hold: one the workspace lets read the document sees it, anyone else reads
 //!   only that something is there, never what it is called.
-//!
-//! [`asks::show`]: crate::asks::show
-//! [`asks::show_view`]: crate::asks::show_view
 
-use crate::asks::Reference;
+use tilo_reference::Embed as Reference;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
 
-use super::{Ask, Reply, ToolDefinition, Turn, WorkspaceActionProvider};
+use super::{Reply, ToolDefinition, Turn, WorkspaceActionProvider};
 
 /// The tool a turn answers through with the thing it worked on.
 pub(super) const ANSWER_WITH_DOCUMENT: &str = "answer_with_document";
@@ -34,7 +31,7 @@ pub(super) const ANSWER_WITH_DOCUMENT: &str = "answer_with_document";
 pub(super) const ANSWER_WITH_VIEW: &str = "answer_with_view";
 
 /// When a view is the answer and how one is written, as the model is told it.
-const VIEW_GUIDE: &str = "Answer with a view: a small piece of interface you write in Tilo's \
+pub(super) const VIEW_GUIDE: &str = "Answer with a view: a small piece of interface you write in Tilo's \
 app language over what the workspace's apps keep. It goes with your reply, and everyone who \
 reads it can add it to their own views, where it is drawn as that reader, with what they may \
 read, and again whenever what it reads changes. Use it when what was asked for keeps changing \
@@ -74,7 +71,7 @@ const WINDOW_KIND: &str = "tilo.window";
 
 /// Whether `turn` answers with a reply that can carry a card: one made from an ask.
 fn answers_with_a_reply(turn: &Turn) -> bool {
-    matches!(turn.ask, Ask::Asked { .. })
+    turn.ask.message().is_some()
 }
 
 /// What a turn's instructions say of the tools: when a view or the thing itself is the answer.
@@ -229,14 +226,11 @@ impl Reply {
     /// Answer with the view the model wrote, on the turn's reply: what the model reads back,
     /// and whether it failed. Nothing the model says names the reply or whose view it is.
     pub(super) async fn view(&self, input: &Value) -> (String, bool) {
-        let Some(replying) = &self.replying else {
-            return ("only an answer to an ask carries a view".to_owned(), true);
-        };
         let (title, source) = match view_asked(input) {
             Ok(asked) => asked,
             Err(why) => return (why, true),
         };
-        match replying.show_view(&title, &source).await {
+        match self.send_view(&title, &source).await {
             Ok(()) => (
                 "The view goes with your reply, for everyone who reads it to add to their own \
                  views. Now say in a sentence or two what it shows."
@@ -255,9 +249,6 @@ impl Reply {
         tools: &McpServer<WorkspaceActionProvider>,
         input: &Value,
     ) -> (String, bool) {
-        let Some(replying) = &self.replying else {
-            return ("only an answer to an ask shows a document".to_owned(), true);
-        };
         let (path, title) = match asked(input) {
             Ok(asked) => asked,
             Err(why) => return (why, true),
@@ -266,7 +257,7 @@ impl Reply {
             Ok(read) => read,
             Err(why) => return (format!("The document was not shown: {why}"), true),
         };
-        match replying.show(&title, card((&app, &document))).await {
+        match self.show(&title, &card((&app, &document))).await {
             Ok(()) => (
                 "It is shown live in your reply, in its own app: the person sees it change \
                  and opens it there to work in it. Now say in a sentence what it is."

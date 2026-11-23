@@ -15,8 +15,9 @@
 //! takes twice what it answered or left behind.
 //!
 //! This is the one thing the host keeps of a turn besides the records, and only while it runs:
-//! a host that restarts holds none, and reads from the records what was left
-//! ([`chat::summons::left_begun`]).
+//! a host that restarts holds none. A turn's stop is the cancel of the `#answer` invocation that
+//! started it ([`Turns::enter_stopping`]): Chat's Stop cancels the invocation its reply names, and
+//! the flag the cancel sets is the turn's own.
 //!
 //! A server that is stopping closes its turns ([`Turns::close`]): no turn begins any more, and
 //! it waits until the turns going ended ([`Turns::idle`]) before it stops, so a restart never
@@ -45,7 +46,7 @@ pub(super) fn place(workspace: &str, turn: &Turn) -> Place {
         Ask::Triggered(place) if place.app == super::triggered::TASKS => {
             format!("{}/{}", place.app, place.item)
         }
-        Ask::Message { .. } | Ask::Triggered(_) => turn.conversation.clone(),
+        Ask::Triggered(_) => turn.conversation.clone(),
     };
     (workspace.to_owned(), turn.agent.id.0.clone(), at)
 }
@@ -56,8 +57,14 @@ pub(super) struct Going {
     ask: Mutex<Ask>,
     /// The person it works for.
     person: String,
-    /// Set by that person's stop.
+    /// Set by that person's stop: the cancel of the invocation that began the turn.
     stop: Arc<AtomicBool>,
+    /// The stops of the invocations whose asks it went on with: a cancel of any of them stops it
+    /// at its next step.
+    stops: Mutex<Vec<Arc<AtomicBool>>>,
+    /// Set once its place is given back, for whoever waits until it ended ([`Self::ended`]).
+    over: AtomicBool,
+    ended: tokio::sync::Notify,
     /// What the person wrote since it began and it has not been told yet, oldest first.
     came: Mutex<Vec<Turn>>,
     /// Every ask it answered so far, the one it answers now included: none reaches it again.
@@ -97,6 +104,27 @@ impl Going {
 
     pub(super) fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
+            || self
+                .stops
+                .lock_recover()
+                .iter()
+                .any(|stop| stop.load(Ordering::Relaxed))
+    }
+
+    /// Stop it, too, when `stop` is set: the cancel of an invocation whose ask it went on with.
+    pub(super) fn stopped_by(&self, stop: Arc<AtomicBool>) {
+        self.stops.lock_recover().push(stop);
+    }
+
+    /// Wait until it ended: its place was given back.
+    pub(super) async fn ended(&self) {
+        loop {
+            let ending = self.ended.notified();
+            if self.over.load(Ordering::SeqCst) {
+                return;
+            }
+            ending.await;
+        }
     }
 
     /// The stop itself, for a model call under way to end on.
@@ -121,7 +149,9 @@ impl Going {
     }
 
     fn hand(&self, turn: Turn, reading: Option<Reading>) -> Handed {
-        if !turn.typed || turn.person != self.person || !matches!(turn.ask, Ask::Message { .. }) {
+        let in_conversation =
+            matches!(&turn.ask, Ask::Triggered(place) if place.app == super::triggered::CHAT);
+        if !turn.typed || turn.person != self.person || !in_conversation {
             return Handed::Left;
         }
         // Held from here on, as `take` holds it while the turn goes on: what is handed is
@@ -186,6 +216,9 @@ impl Drop for Held {
         {
             going.remove(&self.place);
         }
+        drop(going);
+        self.going.over.store(true, Ordering::SeqCst);
+        self.going.ended.notify_waiters();
     }
 }
 
@@ -265,7 +298,19 @@ impl Turns {
     }
 
     /// Begin `turn` in `workspace`, unless a turn of its agent goes in its place already.
+    #[cfg(test)]
     pub(super) fn enter(self: &Arc<Self>, workspace: &str, turn: &Turn) -> Entered {
+        self.enter_stopping(workspace, turn, Arc::default())
+    }
+
+    /// [`Self::enter`] for a turn that `stop` stops: the flag the cancel of the invocation that
+    /// began it sets.
+    pub(super) fn enter_stopping(
+        self: &Arc<Self>,
+        workspace: &str,
+        turn: &Turn,
+        stop: Arc<AtomicBool>,
+    ) -> Entered {
         let place = place(workspace, turn);
         let mut going = self.going.lock_recover();
         if let Some(held) = going.get(&place) {
@@ -277,7 +322,10 @@ impl Turns {
         let began = Arc::new(Going {
             ask: Mutex::new(turn.ask.clone()),
             person: turn.person.clone(),
-            stop: Arc::default(),
+            stop,
+            stops: Mutex::default(),
+            over: AtomicBool::new(false),
+            ended: tokio::sync::Notify::new(),
             came: Mutex::default(),
             had: Mutex::new(vec![turn.ask.clone()]),
             moved: AtomicU64::new(self.moves.fetch_add(1, Ordering::SeqCst).saturating_add(1)),
@@ -312,18 +360,19 @@ mod tests {
                 ..Agent::default()
             },
             person: "ada".to_owned(),
-            ask: Ask::Message {
-                part: "part".to_owned(),
-                message: message.to_owned(),
-                attempt: 0,
-            },
+            ask: Ask::Triggered(crate::agents::triggered::Where {
+                app: crate::agents::triggered::CHAT.to_owned(),
+                record: "ada with scout".to_owned(),
+                item: message.to_owned(),
+            }),
             conversation: "ada with scout".to_owned(),
             cause: message.to_owned(),
             request: message.to_owned(),
             history: Vec::new(),
             asked: message.to_owned(),
-            fold: None,
+            invocation: None,
             typed: true,
+            private: false,
             line: None,
             task: None,
         }

@@ -31,10 +31,6 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use crate::workspaces::person_model::Spender;
 use crate::workspaces::{Spenders, WeakWorkspaces, Workspaces};
 
-mod caused;
-mod mentions;
-mod questions;
-pub(crate) use caused::{firing, turn_ended};
 pub use questions::Feeder;
 
 /// The longest the teller sleeps when nothing is due: what it would miss is

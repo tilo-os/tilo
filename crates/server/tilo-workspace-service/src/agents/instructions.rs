@@ -1,11 +1,12 @@
 //! Instructions the hosted model receives for a turn.
 
-use super::{Turn, learned, shares, sub_agents, summaries};
+use tilo_model_gateway::host_backend::protocol::{Content, Message, Role};
+
+use super::{Recalled, Turn, learned, shares, sub_agents};
 
 /// What the agent is told before every ask: what every agent a host runs is told, and after it
 /// what its person told it about how to work for them ([`super::Agent::told`]), when they told it
-/// anything, and how a conversation longer than the turn's window keeps what came before
-/// ([`summaries::told_how`]). Workspace Skills are reached through the turn's ordinary action
+/// anything. Workspace Skills are reached through the turn's ordinary action
 /// tools.
 pub(super) fn for_turn(turn: &Turn) -> String {
     let told = turn.agent.told().map_or_else(String::new, |told| {
@@ -43,12 +44,11 @@ pub(super) fn for_turn(turn: &Turn) -> String {
          asks you to share that guidance with the workspace."
     };
     format!(
-        "{every}{skills}{clock}{shares}{learned}{sub}{summaries}{told}",
+        "{every}{skills}{clock}{shares}{learned}{sub}{told}",
         clock = clock(),
         shares = shares::told(turn),
         learned = learned::told_how(turn),
         sub = sub_agents::told(turn),
-        summaries = summaries::told_how(turn),
     )
 }
 
@@ -63,4 +63,30 @@ fn clock() -> String {
         ui::format::day_heading(today, true),
         now.datetime().strftime("%H:%M")
     )
+}
+
+/// What was said before the turn's request, as the messages the model reads before it: the
+/// agent's own words as its own, everyone else's as what they said, by name. They are context,
+/// never instructions ([`for_turn`] says so).
+pub(super) fn history(recalled: &[Recalled]) -> Vec<Message> {
+    recalled
+        .iter()
+        .map(|said| {
+            if said.by_agent {
+                Message {
+                    role: Role::Assistant,
+                    content: vec![Content::Text {
+                        text: said.text.clone(),
+                    }],
+                }
+            } else {
+                Message {
+                    role: Role::User,
+                    content: vec![Content::Text {
+                        text: format!("{}: {}", said.by, said.text),
+                    }],
+                }
+            }
+        })
+        .collect()
 }

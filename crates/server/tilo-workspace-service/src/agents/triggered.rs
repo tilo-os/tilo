@@ -15,7 +15,11 @@
 //! answers where the change was made, with an ordinary write there. There is no record of
 //! asking and no queue beside the turn's own claim ([`crate::work::takes_turn`]).
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tilo_lock::MutexRecover as _;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionDescriptor;
@@ -45,9 +49,9 @@ pub const AGENT_KIND: &str = "agents.agent";
 pub const ANSWER: &str = "answer";
 
 /// tilolang Chat, whose messages an agent is mentioned and written to in.
-pub const CHAT: &str = "so.tilo.lang.chat";
+pub const CHAT: &str = "so.tilo.chat";
 /// The kind of a message of [`CHAT`].
-pub const MESSAGE: &str = "tl.so.tilo.lang.chat.Message";
+pub const MESSAGE: &str = "tl.so.tilo.chat.Message";
 /// tilolang Tasks, whose tasks are assigned to an agent.
 pub const TASKS: &str = "so.tilo.tasks";
 /// The kind of a task of [`TASKS`].
@@ -292,6 +296,29 @@ pub fn asker(event: &DocumentEvent) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Whether the message `event` made is in a direct conversation of `person` and `agent` alone:
+/// one whose people are those two.
+#[must_use]
+pub fn alone_with(event: &DocumentEvent, agent: &str, person: &str) -> bool {
+    let Some(people) = event
+        .after
+        .as_ref()
+        .and_then(|after| after.pointer("/$in/people"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    let (agent, person) = (
+        names(&tilo_action_policy::MemberId::agent(agent)),
+        names(&tilo_action_policy::MemberId::person(person)),
+    );
+    !people.is_empty()
+        && people.iter().all(|one| {
+            let one = one.to_string();
+            one.contains(&agent) || one.contains(&person)
+        })
+}
+
 /// What the change says, as the turn is told it: the text of the item it made.
 #[must_use]
 pub fn said(event: &DocumentEvent) -> String {
@@ -313,7 +340,7 @@ pub fn said_in(event: &DocumentEvent, fields: &[&str]) -> String {
 }
 
 /// Every text `value` holds, in order: a rich text's runs and a plain text alike.
-fn collect_text(value: &Value, into: &mut Vec<String>) {
+pub(super) fn collect_text(value: &Value, into: &mut Vec<String>) {
     match value {
         Value::String(text) if !text.trim().is_empty() => into.push(text.clone()),
         Value::Array(items) => items.iter().for_each(|item| collect_text(item, into)),
@@ -347,20 +374,29 @@ fn not_started(message: String) -> tilo_actions::ActionFailure {
 /// engine this device runs ([`crate::work::AgentEngine::answer`]).
 pub struct Answers {
     service: ServiceSlot,
+    /// The stop of each answer still going, by its invocation: its cancel (Chat's Stop on the
+    /// reply that names it) sets the stop, and the turn ends at its next step.
+    going: Arc<std::sync::Mutex<HashMap<InvocationId, Arc<AtomicBool>>>>,
 }
 
 impl Answers {
     /// The answers of the agents of the workspaces `service` holds once it opens.
     #[must_use]
-    pub const fn new(service: ServiceSlot) -> Self {
-        Self { service }
+    pub fn new(service: ServiceSlot) -> Self {
+        Self {
+            service,
+            going: Arc::default(),
+        }
     }
 }
 
 /// The answer of `agent`, named `name`, as a step of a program reaches it.
 fn descriptor(agent: &str, name: &str) -> ActionDescriptor {
+    // A turn runs for as long as its agent works, and its person may stop it: the reply names
+    // this invocation, and Chat's Stop cancels it.
     let contract = ActionContract {
         kind: tilo_actions::ActionKind::Undoable,
+        execution: tilo_actions::contract::ExecutionMode::Background { cancellable: true },
         ..ActionContract::default()
     };
     ActionDescriptor {
@@ -458,13 +494,33 @@ impl Answers {
         let workspace = caller
             .workspace()
             .ok_or("the answer was asked in no workspace of this device")?;
-        let started = engine.answer(workspace.to_owned(), agent, event, saver);
+        let invocation = request.invocation;
+        let stop = Arc::new(AtomicBool::new(false));
+        self.going
+            .lock_recover()
+            .insert(invocation, Arc::clone(&stop));
+        let started = engine.answer(
+            workspace.to_owned(),
+            agent,
+            event,
+            saver,
+            (invocation, stop),
+        );
         let (done, outcome) = pending();
+        let going = Arc::clone(&self.going);
         started.then(move |started| {
+            going.lock_recover().remove(&invocation);
             done.complete(match started {
                 Some(Ok(started)) => Ok(ActionOutput {
                     value: Some(match started {
-                        Started::Taken => json!({"taken": true}),
+                        Started::Taken(used) => {
+                            let mut taken = Map::new();
+                            taken.insert("taken".into(), json!(true));
+                            if let Value::Object(used) = used {
+                                taken.extend(used);
+                            }
+                            Value::Object(taken)
+                        }
                         Started::Elsewhere(why) => json!({"taken": false, "why": why}),
                     }),
                     resources: Vec::new(),
@@ -526,7 +582,16 @@ impl ActionProvider for Answers {
         None
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    /// Stop the turn answer `id` started: it ends at its next step, a model call under way
+    /// included, and its reply says it was stopped. Whether the caller may cancel it was decided
+    /// before it reached here, as for every invocation.
+    fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(match self.going.lock_recover().get(id) {
+            Some(stop) => {
+                stop.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            None => Err(ActionCallError::UnknownInvocation),
+        })
     }
 }

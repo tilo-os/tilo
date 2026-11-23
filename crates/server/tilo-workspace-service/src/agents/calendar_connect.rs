@@ -414,25 +414,24 @@ impl Carrier {
         })
     }
 
-    /// Tell the agent that asked `open` once how its person answered and what came of it: an
-    /// ask about what the turn that asked was asked about.
+    /// Keep in the log how its person answered `open` and what came of it: the agent that
+    /// asked reads what it connected through its tools.
+    #[allow(clippy::unused_async, reason = "its callers await every end of an ask the same")]
     pub(super) async fn tell_of_password(
         &self,
         open: &dyn PutAsk,
         asked: &str,
         (answered, came): (&str, &str),
     ) {
-        let about = AskedIn::read(open.put_in()).cause;
-        let news = super::answers::carried_out(
-            (open.id(), &about),
-            (open.of_person(), open.by_agent()),
-            asked,
-            (answered, came),
-        );
         let workspace = open.in_workspace();
-        if let Err(error) = self.wake(workspace, &news).await {
-            tracing::warn!(%workspace, %error, "an agent was not told how asking for a password ended");
-        }
+        tracing::info!(
+            %workspace,
+            agent = %open.by_agent(),
+            %asked,
+            %answered,
+            %came,
+            "a person answered an agent's ask for a password"
+        );
     }
 
     /// Let the entry do what it kept for `claimed` with the reference its person's password is

@@ -53,13 +53,13 @@ fn then_of(step: &Step) -> &[Step] {
 /// The `text` the tell step hands over, and its other arguments.
 fn told_by(step: &Step) -> (&str, &BTreeMap<String, Binding>) {
     let StepKind::Invoke { action, args, .. } = &step.kind else {
-        panic!("the instruction is handed over by Chat's ask-agent: {step:?}");
+        panic!("the instruction is written by Chat's write_to: {step:?}");
     };
     assert_eq!(
         (action.app.as_str(), action.action.as_str()),
-        (tilo_app_id::apps::CHAT, ASK_AGENT)
+        (super::super::triggered::CHAT, "write_to")
     );
-    let Some(Binding::Template(text)) = args.get("text") else {
+    let Some(Binding::Template(text)) = args.get("body") else {
         panic!("the words are a template: {args:?}");
     };
     (text, args)
@@ -87,24 +87,10 @@ fn a_reminder_is_a_moment_and_one_instruction_handed_to_the_persons_assistant() 
         text, "{{input.instruction}}",
         "the words are bound, never written into the shortcut"
     );
-    let conversation = chat::Chat::direct_id([MemberId::agent("scout"), MemberId::person(PERSON)]);
     assert_eq!(
-        args.get(IN),
-        Some(&Binding::Literal(json!(conversation.to_string()))),
-        "in the conversation the person has with their assistant"
-    );
-    let Some(Binding::Object(cause)) = args.get("cause") else {
-        panic!("the turn is asked for under a cause: {args:?}");
-    };
-    assert_eq!(cause.get("kind"), Some(&Binding::Literal(json!(REMINDER))));
-    assert_eq!(
-        cause.get("label"),
-        Some(&Binding::Literal(json!("Call home")))
-    );
-    assert_eq!(
-        cause.get("key"),
-        Some(&Binding::Input(FIRING_INPUT.into())),
-        "the firing's own key: a run taken again asks for the same turn"
+        args.get(WHO),
+        Some(&Binding::Literal(json!(MemberId::agent("scout")))),
+        "written to the person's assistant, in their own conversation with it"
     );
     // The instruction is the input's default, with which event this is and its note.
     let instruction = shortcut

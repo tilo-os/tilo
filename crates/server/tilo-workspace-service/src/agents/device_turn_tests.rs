@@ -3,9 +3,10 @@
 //! key the device makes for the agent.
 //!
 //! Everything here is the production path a native desktop takes: the workspace is the device's
-//! own, the agent and the conversation are the records Chat and the agent app publish, the turn is
-//! read from them (`ServerAgents::turns`), and the answer goes through the agent's tools as the
-//! agent — here a scripted model standing where the workspace's linked model would be.
+//! own, the agent is the record the agent app publishes, the turn is started by the change its
+//! trigger fired on (`ServerAgents::triggered`), and the answer goes through the agent's tools as
+//! the agent into a reply of Chat — here a scripted model standing where the workspace's linked
+//! model would be.
 
 #![allow(
     clippy::expect_used,
@@ -18,10 +19,9 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
-use tilo_actions::MemberId;
 use tilo_actions::remote::InvokeRequest;
 use tilo_agent_session::model::PlanTurns;
-use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
+use tilo_agent_session::AppCatalogue;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, Usage,
 };
@@ -156,49 +156,19 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
         .await
         .unwrap();
 
-    // The person writes to it, as their own window's composer does.
-    let conversation = chat::Chat::direct_id([MemberId::person(&person), MemberId::agent(SCOUT)]);
-    let posted = {
-        let mut page = Replica::open(
-            &catalogue,
-            CHAT,
-            &workspace,
-            &MemberId::person(&person),
-            ReplicaActor::Owner,
-            Seed::New,
-        )
-        .unwrap();
-        page.invoke(
-            &tilo_actions::api::ActionAddress::new(
-                collab_types::document::chain_resource_id(&chat::parts::chain()),
-                "post",
-            ),
-            &serde_json::Map::from_iter([
-                ("channel".to_owned(), conversation.as_str().into()),
-                ("text".to_owned(), "what is planned?".into()),
-            ]),
-            false,
-        )
-        .unwrap();
-        page.take_document_mutations().unwrap()
-    };
-    for (document, mutation) in posted {
-        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
-            continue;
-        };
-        let document = document.as_str();
-        workspaces
-            .author_workspace_document(&workspace, &cert, (CHAT, document), |doc| {
-                tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                    .map_err(|error| error.to_string())
-            })
-            .await
-            .unwrap();
-    }
-
-    // The engine on this device reads the turn its workspace owes, and works it with the scripted
-    // model through the device's broker.
-    let provider = Arc::new(tilo_actions::remote::TestProvider::new());
+    // The person writes to it in their direct conversation with it, and the agent's trigger
+    // invokes its answer with that change.
+    let wrote = message_written(&workspace, &person, "what is planned?");
+    let provider = Arc::new(tilo_actions::remote::TestProvider::new().completing(|request| {
+        tilo_actions::ActionOutput {
+            value: None,
+            resources: if request.target.address.action == "send" {
+                vec!["tl:so.tilo.chat:reply-1".to_owned()]
+            } else {
+                Vec::new()
+            },
+        }
+    }));
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model: Model = {
         let asked = Arc::clone(&asked);
@@ -210,25 +180,24 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     };
     let agents = ServerAgents::on_device(workspaces.clone(), provider.clone(), Arc::new(Keys))
         .scripted(model);
-    let turns = agents.turns(&workspace).await.unwrap();
-    assert_eq!(
-        turns.len(),
-        1,
-        "the message is the agent's one turn: {turns:?}"
-    );
-    assert_eq!(turns[0].person, person, "it works for whoever wrote to it");
-    assert!(
-        turns[0].request.contains("what is planned?"),
-        "the turn asks what the person wrote: {}",
-        turns[0].request
-    );
-    tokio::time::timeout(
+    let invocation = tilo_actions::InvocationId::new();
+    let started = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        agents.answer(&workspace, &turns[0]),
+        agents.triggered(
+            &workspace,
+            SCOUT,
+            wrote,
+            person.clone(),
+            (invocation, Arc::default()),
+        ),
     )
     .await
     .expect("the turn ends")
     .unwrap();
+    assert!(
+        matches!(started, crate::work::Started::Taken(_)),
+        "this device took the turn: {started:?}"
+    );
 
     // The model was told the person's day and what was asked, on this device.
     let requests = asked.lock().unwrap().clone();
@@ -251,31 +220,28 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
         "the model reads what the person asked"
     );
 
-    // What the turn did went through the device's broker as the agent: the note it was doing, and
-    // the answer it wrote into its reply. It says first that it took the turn, then what it is at.
+    // The reply is a message of Chat answering the person's, naming the turn's invocation, and
+    // the answer is written into it, all as the agent.
     let invoked = provider.asked();
-    let note = invoked
+    let sent = invoked
         .iter()
-        .filter(|request| request.target.address.action.as_str() == "record-work")
-        .map(|request| argument(request, "work"))
-        .find(|work| work["state"] == "doing")
-        .unwrap_or_else(|| panic!("the turn says what it is doing: {invoked:?}"));
+        .find(|request| request.target.address.action == "send")
+        .unwrap_or_else(|| panic!("the reply is sent: {invoked:?}"));
+    assert_eq!(argument(sent, "turn"), Value::String(invocation.to_string()));
     assert_eq!(
-        note["did"], "Looking at what the workspace can do…",
-        "{note}"
+        argument(sent, "reply_to"),
+        Value::String("tl:so.tilo.chat:asked-1".to_owned())
     );
     let answered = invoked
         .iter()
-        .filter(|request| request.target.address.action.as_str() == "record-work")
-        .map(|request| argument(request, "say"))
-        .any(|said| {
-            said.as_str()
-                .is_some_and(|said| said.contains("The plan is ready"))
+        .filter(|request| request.target.address.action == "edit")
+        .any(|request| {
+            argument(request, "m") == "tl:so.tilo.chat:reply-1"
+                && argument(request, "body")
+                    .as_str()
+                    .is_some_and(|said| said.contains("The plan is ready"))
         });
-    assert!(
-        answered,
-        "the answer is written into the reply: {invoked:?}"
-    );
+    assert!(answered, "the answer is written into the reply: {invoked:?}");
     assert!(
         provider
             .callers()
@@ -283,6 +249,39 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
             .any(|caller| caller.acting().agent_id() == Some(SCOUT)),
         "every call is the agent's own"
     );
+}
+
+/// What the trigger hands on when `person` wrote `text` to the agent in their direct
+/// conversation with it in `workspace`.
+fn message_written(workspace: &str, person: &str, text: &str) -> tilo_automation::dispatch::DocumentEvent {
+    tilo_automation::dispatch::DocumentEvent {
+        workspace: workspace.to_owned(),
+        record: "asked-1".to_owned(),
+        kind: super::triggered::MESSAGE.to_owned(),
+        change: "change-1".to_owned(),
+        actor: tilo_action_policy::Acting::person(person.to_owned()),
+        did: tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(CHAT, super::triggered::MESSAGE, "send"),
+            [],
+        ),
+        arguments: serde_json::Map::new(),
+        item: Some(tilo_automation::dispatch::ItemRef {
+            kind: super::triggered::MESSAGE.to_owned(),
+            id: "asked-1".to_owned(),
+            label: String::new(),
+        }),
+        before: None,
+        after: Some(serde_json::json!({
+            "body": text,
+            "$in": {"$id": "direct-1", "people": [{"person": person}, {"agent": SCOUT}]},
+        })),
+        origin: None,
+        caused_by: None,
+        incoming_message: false,
+        housekeeping: false,
+        shortcut: None,
+        invocation: None,
+    }
 }
 
 /// The text of `message`, whichever content part it holds it in.
