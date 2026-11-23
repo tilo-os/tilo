@@ -770,3 +770,261 @@ fn helper_receipt_with_all_carried_units_round_trips_with_shared_wire_shape() {
     assert_eq!(wire["service_sessions"]["consumer_protocol"], 2);
     assert_eq!(serde_json::from_slice::<Receipt>(&bytes).unwrap(), receipt);
 }
+
+#[test]
+fn headless_entry_refuses_parent_dir_arguments_before_extracting_quarantine() {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let (package, _, _, _) = fixture(&root);
+    let target_home = root.join("target-home");
+    let host_root = root.join("host-root");
+    for dir in [
+        root.join("sub"),
+        root.join("identities/sub"),
+        root.join("tilo/sub"),
+        target_home.join("sub"),
+        host_root.join("sub"),
+    ] {
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    for dir in [
+        root.join("identities"),
+        root.join("tilo"),
+        target_home.clone(),
+        host_root.clone(),
+    ] {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    let cases = [
+        (
+            "identity-dir",
+            "--identity-dir",
+            root.join("identities/sub/.."),
+        ),
+        ("config-root", "--config-root", root.join("tilo/sub/..")),
+        ("target-home", "--target-home", target_home.join("sub/..")),
+        (
+            "host-device-root",
+            "--host-device-root",
+            host_root.join("sub/.."),
+        ),
+        ("package", "--package", root.join("sub/../setup.sealed")),
+    ];
+    for (label, flag, bad_path) in cases {
+        let quarantine_dir = root.join(format!("refused-run-{label}"));
+        fs::create_dir(&quarantine_dir).unwrap();
+        fs::set_permissions(&quarantine_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut pairs = vec![
+            ("--package", package.clone()),
+            ("--quarantine", quarantine_dir.join("contents")),
+            ("--identity-dir", root.join("identities")),
+            ("--config-root", root.join("tilo")),
+        ];
+        if flag == "--target-home" || flag == "--host-device-root" {
+            pairs.push((flag, bad_path));
+        } else {
+            for (name, value) in &mut pairs {
+                if *name == flag {
+                    *value = bad_path.clone();
+                }
+            }
+        }
+        let argv = pairs
+            .into_iter()
+            .flat_map(|(key, value)| [OsString::from(key), value.into_os_string()]);
+        let mut output = Vec::new();
+        let error = run(argv, &mut &PASSWORD[..], &mut output).expect_err(label);
+        assert_eq!(error.kind(), io::ErrorKind::Other, "{label}: {error}");
+        assert_eq!(
+            error.to_string(),
+            "Prepared setup could not be imported",
+            "{label}"
+        );
+        assert!(output.is_empty(), "{label}");
+        assert_eq!(fs::read_dir(&quarantine_dir).unwrap().count(), 0, "{label}");
+        assert!(!root.join("identities/primary.json").exists(), "{label}");
+    }
+
+    let quarantine_dir = root.join("refused-run-quarantine");
+    fs::create_dir_all(quarantine_dir.join("sub")).unwrap();
+    fs::set_permissions(&quarantine_dir, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(
+        quarantine_dir.join("sub"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let argv = [
+        ("--package", package),
+        ("--quarantine", quarantine_dir.join("sub/../contents")),
+        ("--identity-dir", root.join("identities")),
+        ("--config-root", root.join("tilo")),
+    ]
+    .into_iter()
+    .flat_map(|(key, value)| [OsString::from(key), value.into_os_string()]);
+    let mut output = Vec::new();
+    let error = run(argv, &mut &PASSWORD[..], &mut output).expect_err("quarantine");
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(error.to_string(), "Prepared setup could not be imported");
+    assert!(output.is_empty());
+    assert!(!quarantine_dir.join("contents").exists());
+}
+
+#[test]
+fn authenticate_install_refuses_parent_dir_arguments_before_reading_or_extracting() {
+    use sha2::{Digest, Sha256};
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let (package, _, _, _) = fixture(&root);
+    let bytes = fs::read(&package).unwrap();
+    let receipt = root.join("expectation.json");
+    fs::write(
+        &receipt,
+        serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "sealed_bytes": bytes.len(),
+            "ciphertext_sha256": hex::encode(Sha256::digest(&bytes)),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&receipt, fs::Permissions::from_mode(0o600)).unwrap();
+    let sub = root.join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o700)).unwrap();
+
+    for (label, bad_package, bad_receipt, quarantine_suffix) in [
+        (
+            "package-interior",
+            root.join("sub/../setup.sealed"),
+            receipt.clone(),
+            "contents",
+        ),
+        (
+            "receipt-interior",
+            package.clone(),
+            root.join("sub/../expectation.json"),
+            "contents",
+        ),
+        (
+            "quarantine-interior",
+            package.clone(),
+            receipt.clone(),
+            "sub/../contents",
+        ),
+        ("quarantine-trailing", package, receipt, ".."),
+    ] {
+        let quarantine_parent = root.join(format!("auth-dir-{label}"));
+        fs::create_dir_all(&quarantine_parent).unwrap();
+        fs::set_permissions(&quarantine_parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let quarantine = quarantine_parent.join(quarantine_suffix);
+        let argv = [
+            ("--package", bad_package),
+            ("--receipt", bad_receipt),
+            ("--quarantine", quarantine),
+        ]
+        .into_iter()
+        .flat_map(|(key, value)| [OsString::from(key), value.into_os_string()]);
+        let mut output = Vec::new();
+        let error = authenticate::run(argv, &mut &PASSWORD[..], &mut output).expect_err(label);
+        assert_eq!(error.kind(), io::ErrorKind::Other, "{label}: {error}");
+        assert_eq!(
+            error.to_string(),
+            "Prepared setup could not be imported",
+            "{label}"
+        );
+        assert!(output.is_empty(), "{label}");
+        assert_eq!(
+            fs::read_dir(&quarantine_parent).unwrap().count(),
+            0,
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn machine_ownership_phase_refuses_parent_dir_arguments() {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let (package, key, _, _) = fixture(&root);
+    let system_root = root.join("system-root");
+    fs::create_dir_all(system_root.join("sub")).unwrap();
+    fs::set_permissions(&system_root, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(system_root.join("sub"), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    fs::set_permissions(root.join("sub"), fs::Permissions::from_mode(0o700)).unwrap();
+
+    let is_root = rustix::process::geteuid().as_raw() == 0;
+    let valid_quarantine = root.join("valid-machine-q");
+    fs::create_dir(&valid_quarantine).unwrap();
+    fs::set_permissions(&valid_quarantine, fs::Permissions::from_mode(0o700)).unwrap();
+    let valid_args = || {
+        [
+            ("--package", package.clone()),
+            ("--quarantine", valid_quarantine.join("contents")),
+            ("--system-root", system_root.clone()),
+        ]
+        .into_iter()
+        .flat_map(|(key, value)| [OsString::from(key), value.into_os_string()])
+        .collect::<Vec<_>>()
+    };
+    assert!(enrolled::arguments(valid_args()).is_ok());
+    if is_root {
+        let mut ok_output = Vec::new();
+        enrolled::run(valid_args(), &mut &PASSWORD[..], &mut ok_output).unwrap();
+        let receipt: serde_json::Value = serde_json::from_slice(&ok_output).unwrap();
+        assert_eq!(receipt["identity_public_key"], serde_json::json!(key));
+    }
+
+    for (label, bad_package, quarantine_suffix, bad_system) in [
+        (
+            "system-root",
+            package.clone(),
+            "contents",
+            system_root.join("sub/.."),
+        ),
+        (
+            "package",
+            root.join("sub/../setup.sealed"),
+            "contents",
+            system_root.clone(),
+        ),
+        ("quarantine", package, "sub/../contents", system_root),
+    ] {
+        let quarantine_dir = root.join(format!("q-{label}"));
+        fs::create_dir_all(&quarantine_dir).unwrap();
+        fs::set_permissions(&quarantine_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let argv = [
+            ("--package", bad_package),
+            ("--quarantine", quarantine_dir.join(quarantine_suffix)),
+            ("--system-root", bad_system),
+        ]
+        .into_iter()
+        .flat_map(|(key, value)| [OsString::from(key), value.into_os_string()])
+        .collect::<Vec<_>>();
+        let parsed_error = enrolled::arguments(argv.clone()).expect_err(label);
+        assert_eq!(parsed_error.kind(), io::ErrorKind::Other, "{label}");
+        assert_eq!(
+            parsed_error.to_string(),
+            "Prepared setup could not be imported",
+            "{label}"
+        );
+        let mut output = Vec::new();
+        let error = enrolled::run(argv, &mut &PASSWORD[..], &mut output).expect_err(label);
+        assert_eq!(error.kind(), io::ErrorKind::Other, "{label}: {error}");
+        assert_eq!(
+            error.to_string(),
+            "Prepared setup could not be imported",
+            "{label}"
+        );
+        assert!(output.is_empty(), "{label}");
+        assert_eq!(fs::read_dir(&quarantine_dir).unwrap().count(), 0, "{label}");
+    }
+}
