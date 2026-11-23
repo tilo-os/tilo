@@ -2,8 +2,8 @@
 //!
 //! # What the lock belongs to
 //!
-//! On Unix the lock is `flock(2)`; elsewhere the standard library's file lock
-//! (`LockFileEx` on Windows). A `flock` lock belongs to the open file description,
+//! The lock is the standard library's file lock: `flock(2)` on Unix and
+//! `LockFileEx` on Windows. A `flock` lock belongs to the open file description,
 //! not to a descriptor, a thread or a process: every descriptor that refers to the
 //! same description shares it (`try_clone`, `dup(2)` and `fork(2)` make such
 //! descriptors), two `open(2)` calls make two descriptions whose locks conflict even
@@ -274,19 +274,20 @@ pub fn owner_pid(path: &Path) -> Option<u32> {
     text.trim().parse().ok().filter(|pid| *pid != 0)
 }
 
-#[cfg(unix)]
 #[allow(
     clippy::disallowed_methods,
     reason = "this is the one wrapper the workspace routes file locks through"
 )]
 mod sys {
     use super::{LockMode, TryLockError};
-    use rustix::fs::FlockOperation;
-    use rustix::io::{Errno, FdFlags};
     use std::fs::File;
     use std::io;
 
+    /// A file this process did not open may lack close-on-exec; the lock's
+    /// description must never reach an executed program.
+    #[cfg(unix)]
     pub(super) fn set_cloexec(file: &File) -> io::Result<()> {
+        use rustix::io::FdFlags;
         let flags = rustix::io::fcntl_getfd(file)?;
         if !flags.contains(FdFlags::CLOEXEC) {
             rustix::io::fcntl_setfd(file, flags | FdFlags::CLOEXEC)?;
@@ -294,65 +295,71 @@ mod sys {
         Ok(())
     }
 
-    fn blocking(mode: LockMode) -> FlockOperation {
-        match mode {
-            LockMode::Shared => FlockOperation::LockShared,
-            LockMode::Exclusive => FlockOperation::LockExclusive,
-        }
+    // Handles are not inherited by spawned processes unless a caller
+    // explicitly marks them inheritable, which the standard library never
+    // does for files it opens.
+    #[cfg(not(unix))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "shares the fallible signature of the Unix implementation"
+    )]
+    pub(super) fn set_cloexec(_file: &File) -> io::Result<()> {
+        Ok(())
     }
 
-    fn non_blocking(mode: LockMode) -> FlockOperation {
-        match mode {
-            LockMode::Shared => FlockOperation::NonBlockingLockShared,
-            LockMode::Exclusive => FlockOperation::NonBlockingLockExclusive,
-        }
-    }
-
-    /// `flock` restarts neither a wait nor an unlock interrupted by a signal
-    /// handler installed without `SA_RESTART`; resuming the same call is the
-    /// documented response and says nothing about contention.
-    fn flock(file: &File, operation: FlockOperation) -> Result<(), Errno> {
+    /// The standard library's lock is `flock` on Unix and `LockFileEx` on
+    /// Windows. `flock` restarts neither a wait nor an unlock interrupted by a
+    /// signal handler installed without `SA_RESTART`; resuming the same call is
+    /// the documented response and says nothing about contention.
+    fn resumed(mut call: impl FnMut() -> io::Result<()>) -> io::Result<()> {
         loop {
-            match rustix::fs::flock(file, operation) {
-                Err(Errno::INTR) => {}
+            match call() {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
             }
         }
     }
 
-    fn try_flock(file: &File, operation: FlockOperation) -> Result<(), TryLockError> {
-        flock(file, operation).map_err(|errno| {
-            if errno == Errno::WOULDBLOCK {
-                TryLockError::WouldBlock
-            } else {
-                TryLockError::Error(errno.into())
-            }
+    pub(super) fn lock(file: &File, mode: LockMode) -> io::Result<()> {
+        resumed(|| match mode {
+            LockMode::Shared => file.lock_shared(),
+            LockMode::Exclusive => file.lock(),
         })
     }
 
-    pub(super) fn lock(file: &File, mode: LockMode) -> io::Result<()> {
-        Ok(flock(file, blocking(mode))?)
-    }
-
     pub(super) fn try_lock(file: &File, mode: LockMode) -> Result<(), TryLockError> {
-        try_flock(file, non_blocking(mode))
+        loop {
+            match match mode {
+                LockMode::Shared => file.try_lock_shared(),
+                LockMode::Exclusive => file.try_lock(),
+            } {
+                Err(TryLockError::Error(error)) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
     }
 
-    // `flock` converts a held lock in place when called with another mode.
+    // `flock` converts a held lock in place; Windows byte-range locks stack
+    // instead, so there the old one is released first.
     pub(super) fn convert(file: &File, mode: LockMode) -> io::Result<()> {
+        #[cfg(not(unix))]
+        unlock(file)?;
         lock(file, mode)
     }
 
     pub(super) fn try_convert(file: &File, mode: LockMode) -> Result<(), TryLockError> {
+        #[cfg(not(unix))]
+        unlock(file).map_err(TryLockError::Error)?;
         try_lock(file, mode)
     }
 
     pub(super) fn unlock(file: &File) -> io::Result<()> {
-        Ok(flock(file, FlockOperation::Unlock)?)
+        resumed(|| file.unlock())
     }
 
     /// Whether `path` names `file` now: same device and inode. A missing
     /// `path` names nothing.
+    #[cfg(unix)]
     pub(super) fn names(path: &std::path::Path, file: &File) -> io::Result<bool> {
         use std::os::unix::fs::MetadataExt;
         let held = file.metadata()?;
@@ -362,60 +369,10 @@ mod sys {
             Err(error) => Err(error),
         }
     }
-}
-
-#[cfg(not(unix))]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "this is the one wrapper the workspace routes file locks through"
-)]
-mod sys {
-    use super::{LockMode, TryLockError};
-    use std::fs::File;
-    use std::io;
-
-    // Handles are not inherited by spawned processes unless a caller
-    // explicitly marks them inheritable, which the standard library never
-    // does for files it opens.
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "shares the fallible signature of the Unix implementation"
-    )]
-    pub(super) fn set_cloexec(_file: &File) -> io::Result<()> {
-        Ok(())
-    }
-
-    pub(super) fn lock(file: &File, mode: LockMode) -> io::Result<()> {
-        match mode {
-            LockMode::Shared => file.lock_shared(),
-            LockMode::Exclusive => file.lock(),
-        }
-    }
-
-    pub(super) fn try_lock(file: &File, mode: LockMode) -> Result<(), TryLockError> {
-        match mode {
-            LockMode::Shared => file.try_lock_shared(),
-            LockMode::Exclusive => file.try_lock(),
-        }
-    }
-
-    // Windows byte-range locks stack rather than convert, so release first.
-    pub(super) fn convert(file: &File, mode: LockMode) -> io::Result<()> {
-        file.unlock()?;
-        lock(file, mode)
-    }
-
-    pub(super) fn try_convert(file: &File, mode: LockMode) -> Result<(), TryLockError> {
-        file.unlock().map_err(TryLockError::Error)?;
-        try_lock(file, mode)
-    }
-
-    pub(super) fn unlock(file: &File) -> io::Result<()> {
-        file.unlock()
-    }
 
     // A file the standard library opened cannot be removed while it is
     // open, so the name still refers to it.
+    #[cfg(not(unix))]
     #[expect(
         clippy::unnecessary_wraps,
         reason = "shares the fallible signature of the Unix implementation"
