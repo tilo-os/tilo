@@ -9,6 +9,7 @@ app so.tilo.canvas "Canvas" (
 /// records are the work; the device's drawing engine is asked only to see it and to carry it
 /// over its file, so every member of the workspace holds the same artwork and edits it alike.
 type Artwork (title: title, untitled: "Untitled artwork") {
+    title: Text = "Untitled artwork"
     width: Float = 1024.0
     height: Float = 768.0
     /// `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`.
@@ -51,7 +52,7 @@ type Mark (title: name) {
     /// `stroke` or `path`.
     kind: Text = "stroke"
     /// A stroke's points, `x, y, pressure` in turn, in artwork units.
-    points: List<Float> = []
+    points: List<Float>
     /// A shape's SVG path data, or the area it is kept inside.
     d: Text = ""
     size: Float = 6.0
@@ -95,11 +96,37 @@ type ExportRequest {
     scale: Float
 }
 
+/// What an SVG export asks for: the whole artwork, its text as text.
+type SvgRequest {
+    ids: Option<List<Text>>
+    outline_text: Option<Bool>
+}
+
+/// Where an imported SVG goes: the top layer, in a group of its own.
+type PlaceRequest {
+    layer: Option<Text>
+    group: Option<Text>
+    fit: Option<List<Float>>
+}
+
 root library: Library
+
+default view library for Library
+
+view library(lib: Library) {
+    if lib.artworks.is_empty() {
+        ui.EmptyState("No artwork yet", message: "New artwork starts one", icon: .image)
+    } else {
+        stack {
+            for art in lib.artworks {
+                ui.ListRow(title: art.title, icon: .image)
+            }
+        }
+    }
+}
 
 default view artwork for Artwork
 
-row view artwork_row for Artwork
 
 /// Opens a saved artwork from the file a person, Files or another app hands over.
 primary action open_artwork(lib: Library, file: File) -> Artwork (
@@ -130,7 +157,7 @@ primary action open_artwork(lib: Library, file: File) -> Artwork (
 
 /// A blank artwork begun with a problem to show, so a file that cannot be opened still lands
 /// where a person can read why.
-fn blank_with(lib: Library, why: Text) -> Artwork {
+action blank_with(lib: Library, why: Text) -> Artwork {
     let made = new_artwork(lib, "Untitled artwork", 1024.0, 768.0)
     made.notice = why
     made
@@ -230,7 +257,7 @@ action extend_stroke(a: Artwork, m: Mark, point: List<Float>) (
 }
 
 /// The layer a stroke lands on when none is chosen: the top one that shows.
-fn top_layer(a: Artwork) -> Layer {
+action top_layer(a: Artwork) -> Layer {
     if let top = a.layers.filter(l -> l.visible).last() {
         top
     } else {
@@ -266,7 +293,7 @@ action resize_mark(a: Artwork, m: Mark, size: Float) (label: "Size a mark", did:
 
 /// Selects an area, its outline as SVG path data.
 action select_area(a: Artwork, d: Text, feather: Float = 0.0) (
-    icon: .dashed_square,
+    icon: .circle_dashed,
     label: "Select an area",
     did: "selected an area",
 ) {
@@ -287,11 +314,10 @@ action fill_selection(a: Artwork, layer: Option<Layer>, colour: Text) -> Option<
     did: "filled the selection",
 ) {
     if let area = a.selection {
-        .some(add_shape(a, layer, area.d, colour))
-    } else {
-        a.notice = "Nothing is selected; select part of the artwork first"
-        .none
+        return .some(add_shape(a, layer, area.d, colour))
     }
+    a.notice = "Nothing is selected; select part of the artwork first"
+    return .none
 }
 
 /// The artwork as the device's drawing engine reads it, and the addresses of its pictures.
@@ -311,7 +337,9 @@ action draw_look(a: Artwork, size: Int = 768) (icon: .eye, label: "Look at the a
             a.look = file.url
             a.notice = ""
         }
-        .err(why) => a.notice = why,
+        .err(why) => {
+            a.notice = why
+        }
     }
 }
 
@@ -326,14 +354,14 @@ action export_picture(a: Artwork, format: Text = "png", scale: Float = 1.0) -> O
         .ok(file) => .some(file),
         .err(why) => {
             a.notice = why
-            .none
+            return .none
         }
     }
 }
 
 /// Writes the artwork as an SVG document.
 action export_svg(a: Artwork) -> Text (icon: .download, label: "Export SVG", did: "exported an SVG") {
-    match canvas.svg(artwork_json(a), "{}") {
+    match canvas.svg(artwork_json(a), json.encode(SvgRequest(ids: .none, outline_text: .none))) {
         .ok(markup) => {
             a.notice = ""
             markup
@@ -355,7 +383,7 @@ action save_artwork(a: Artwork) -> Option<File> (
         .ok(file) => .some(file),
         .err(why) => {
             a.notice = why
-            .none
+            return .none
         }
     }
 }
@@ -366,7 +394,7 @@ action import_svg(a: Artwork, markup: Text) -> Text (
     label: "Import an SVG",
     did: "imported an SVG",
 ) {
-    match canvas.svg_import(markup, "{}") {
+    match canvas.svg_import(markup, json.encode(PlaceRequest(layer: .none, group: .none, fit: .none))) {
         .ok(drawn) => {
             a.notice = "Imported the SVG's shapes"
             drawn
@@ -388,7 +416,7 @@ type OpenedArtwork {
     title: Text = ""
     width: Float = 1024.0
     height: Float = 768.0
-    layers: List<OpenedLayer> = []
+    layers: List<OpenedLayer>
 }
 
 type OpenedLayer {
@@ -416,7 +444,7 @@ view artwork(a: Artwork) {
             if show_layers {
                 layers_rail(a, chosen)
             }
-            column(gap: .none, fill) {
+            stack(gap: .none, fill) {
                 ui.PaintSurface(
                     picture: a.look,
                     width: a.width,
@@ -427,7 +455,6 @@ view artwork(a: Artwork) {
                     zoom: 1.0,
                     pan: [0.0, 0.0],
                     label: a.title,
-                    fill,
                 ) {
                     on stroke_start(p: List<Float>): paint_point(a, p, size, colour, brush)
                     on stroke(p: List<Float>): paint_point(a, p, size, colour, brush)
@@ -464,9 +491,9 @@ view artwork_head(a: Artwork, brush: Text, size: Float, colour: Text, show_layer
 
 /// The layers, and the brush and colour the window paints with.
 view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
-    column(gap: .related, fill) {
+    stack(gap: .related, fill) {
         ui.Text("Layers", role: .heading)
-        ui.List {
+        stack {
             for layer in a.layers {
                 ui.ListRow(
                     title: layer.name,
@@ -500,14 +527,12 @@ fn inks() -> List<Text> {
 
 /// Paints the point the hand is at: the stroke being painted takes the next point, else a
 /// stroke starts here.
-fn paint_point(a: Artwork, point: List<Float>, size: Float, colour: Text, brush: Text) {
+action paint_point(a: Artwork, point: List<Float>, size: Float, colour: Text, brush: Text) -> Mark {
     if let painting = a.marks.filter(m -> m.name == "painting").last() {
         extend_stroke(a, painting, point)
+        painting
     } else {
         add_stroke(a, .none, point, size, colour, brush)
     }
 }
 
-row view artwork_row(a: Artwork) {
-    ui.ListRow(title: a.title, note: "{a.width} × {a.height}", icon: .image)
-}
