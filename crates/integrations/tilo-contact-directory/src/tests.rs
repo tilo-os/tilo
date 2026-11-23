@@ -458,6 +458,7 @@ fn one_projection_of_many_people_is_each_projected_alone() {
         phones: vec!["+12025550123".into()],
         emails: vec![format!("{person}@example.test")],
         photo: String::new(),
+        photo_size: 0,
         person,
     });
     batched
@@ -514,29 +515,33 @@ fn one_projection_of_many_people_is_each_projected_alone() {
 fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
     use super::MAX_PHOTO_BYTES;
     let mut record = fixture();
-    let person = |id: Id, email: &str, photo: &str| Projected {
+    let person = |id: Id, email: &str, photo: &str, size: u64| Projected {
         label: format!("Person {id}"),
         phones: Vec::new(),
         emails: vec![email.into()],
         photo: photo.into(),
+        photo_size: size,
         person: id,
     };
     record
         .apply(ContactDirectory::PROJECT_CONTACTS.with((
             vec![
-                person(first(), "ada@example.test", "QUJD"),
-                person(second(), "team@example.test", "REVG"),
+                person(first(), "ada@example.test", "00c0ffee", 3),
+                person(second(), "team@example.test", "00beef", 4),
             ],
             Vec::new(),
         )))
         .expect("projecting succeeds");
     let state = record.state().expect("readable");
-    assert_eq!(state.photo_for_email("ada@Example.TEST"), Some("QUJD"));
+    assert_eq!(
+        state.photo_for_email("ada@Example.TEST"),
+        Some(("00c0ffee", 3))
+    );
     assert_eq!(state.photo_for_email("nobody@example.test"), None);
 
     record
         .apply(ContactDirectory::PROJECT_CONTACTS.with((
-            vec![person(third(), "team@example.test", "R0hJ")],
+            vec![person(third(), "team@example.test", "00cafe", 5)],
             Vec::new(),
         )))
         .expect("projecting succeeds");
@@ -554,15 +559,33 @@ fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
         None
     );
 
-    let oversized = person(
-        second(),
-        "team@example.test",
-        &"A".repeat(MAX_PHOTO_BYTES + 1),
-    );
+    let oversized = person(second(), "team@example.test", "00dead", MAX_PHOTO_BYTES + 1);
     assert!(
         record
             .apply(ContactDirectory::PROJECT_CONTACTS.with((vec![oversized], Vec::new())))
             .is_err()
+    );
+}
+
+/// The surface this crate ships for `tilolang-tilo` to publish as Contacts'
+/// `directory` root: the type and the verbs, written from the model itself, so a
+/// field or a verb that changes here changes there. `UPDATE_SNAPSHOTS=1` writes it.
+#[test]
+fn the_directory_surface_file_is_what_this_crate_publishes() {
+    let surface = tilo_resource::surface::surface_of::<ContactDirectory>();
+    let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": [surface] }))
+        .expect("a surface writes as JSON");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("surface.json");
+    let committed = std::fs::read_to_string(&path).ok();
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
+        std::fs::write(&path, &text).expect("the surface file is written");
+        return;
+    }
+    assert_eq!(
+        committed.as_deref(),
+        Some(text.as_str()),
+        "crates/platform/tilo-contact-directory/surface.json is not what this crate publishes; \
+         regenerate it with UPDATE_SNAPSHOTS=1"
     );
 }
 

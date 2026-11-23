@@ -58,10 +58,15 @@ pub fn session_verbs()
 
 /// Settings' committed surface, the one its package ships.
 const SETTINGS_SURFACE: &str = include_str!("../../../../apps/settings/surface.toml");
-/// Contacts' app, whose directory is one record of the workspace ([`CONTACTS_ROOTS`]).
-pub use tilo_app_id::apps::CONTACTS as CONTACTS_APP;
-/// Contacts' committed surface, the one its package ships.
-const CONTACTS_SURFACE: &str = include_str!("../../../../apps/contacts/surface.toml");
+/// The directory's package, whose root is one record of the workspace ([`CONTACTS_ROOTS`]).
+/// Its own id, not the Contacts app's (`so.tilo.contacts`): the app is a tilolang package of
+/// that id, and a package a view imports is one id.
+pub const CONTACTS_APP: &str = "so.tilo.contacts.directory";
+/// The directory's surface, as the crate that keeps it publishes it: written from
+/// the record's own declarations (`tilo-contact-directory`'s test), so the type and
+/// verbs a view calls are the record's.
+const CONTACTS_SURFACE: &str =
+    include_str!("../../../integrations/tilo-contact-directory/surface.json");
 /// The settings service's own resource a view reads and changes: the agent
 /// model choice, over the device's provider section and the person's (its
 /// committed surface beside the service, written by its own test, as
@@ -205,7 +210,13 @@ const CONTACTS_DIRECTORY_KIND: &str = "tilo.contacts.identities";
 /// its own window is not one: a view of another language names what the session
 /// publishes, and the session publishes the directory.
 fn contacts_surfaces() -> Result<Vec<Surface>, String> {
-    let surfaces: Vec<Surface> = parse_surfaces(CONTACTS_SURFACE)?
+    #[derive(Deserialize)]
+    struct File {
+        resources: Vec<Surface>,
+    }
+    let file: File = serde_json::from_str(CONTACTS_SURFACE).map_err(|error| error.to_string())?;
+    let surfaces: Vec<Surface> = file
+        .resources
         .into_iter()
         .filter(|surface| surface.kind == CONTACTS_DIRECTORY_KIND)
         .collect();

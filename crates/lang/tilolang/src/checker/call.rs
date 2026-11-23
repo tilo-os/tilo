@@ -2219,6 +2219,8 @@ impl Checker<'_> {
                 vec![zone, text],
                 Ty::Option(Box::new(Ty::Time)),
             );
+        if ty == Ty::Bytes {
+            return self.bytes_type_method(name, args, span);
         }
         if name.name != "parse" {
             self.err(
@@ -2413,6 +2415,38 @@ impl Checker<'_> {
         // invocation records it.
         self.st.facts.outside = true;
         Ex::host(imp, vec![value], ty)
+    }
+
+    /// `Bytes`'s method: `Bytes.from_base64(text)`, the bytes a base64 text holds — how a picture
+    /// or another file an action came by as text becomes bytes it can keep.
+    fn bytes_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        if name.name != "from_base64" {
+            self.err(
+                "E027",
+                name.span,
+                format!(
+                    "`Bytes` has `from_base64`, not `{}`: `Bytes.from_base64(text)` reads the bytes a base64 text holds (a vCard's PHOTO, a reply's body)",
+                    name.name
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let [text] = args else {
+            self.err(
+                "E022",
+                span,
+                "`Bytes.from_base64` takes the text: `Bytes.from_base64(text)`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        let text = self.expr_as(&text.value, &Ty::Text);
+        Ex::host(Imp::Base64Decode, vec![text], Ty::Bytes)
     }
 
     /// `File`'s methods: `File.of_text(name, text)`, `File.of_bytes(name, bytes)`, `File.at(name,
@@ -2965,6 +2999,7 @@ fn parse_ty(name: &str) -> Option<Ty> {
         "Time" => Some(Ty::Time),
         "RichText" => Some(Ty::RichText),
         "File" => Some(Ty::File),
+        "Bytes" => Some(Ty::Bytes),
         _ => None,
     }
 }

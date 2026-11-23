@@ -21,6 +21,7 @@ mod capture;
 mod chained;
 mod chat;
 mod composer;
+mod contacts;
 mod discussion;
 mod done_days;
 mod engines;

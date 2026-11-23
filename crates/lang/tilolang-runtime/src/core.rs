@@ -21,7 +21,7 @@ use crate::value::Value;
 
 use Imp::{
     Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen, ActUndo,
-    Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, BytesLength, CallFn,
+    Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, Base64Decode, BytesLength, CallFn,
     ChangeView, ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText,
     CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove,
     CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere,
@@ -549,7 +549,7 @@ impl Core {
             | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
             | InvocationPush | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
-            | WebText | BytesLength => self.web_import(imp, a),
+            | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
             FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {

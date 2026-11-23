@@ -307,6 +307,7 @@ imports! {
     (FileFiles, "file_files", "i", "i"),
     (FileOfText, "file_of_text", "ii", "i"),
     (FileOfBytes, "file_of_bytes", "ii", "i"),
+    (Base64Decode, "base64_decode", "i", "i"),
     (FileAt, "file_at", "ii", "i"),
     (FileZip, "file_zip", "ii", "i"),
     (FileImageInfo, "file_image_info", "i", "i"),

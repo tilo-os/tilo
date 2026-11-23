@@ -343,6 +343,7 @@ imports! {
     // file called by its name; and an archive of the files it holds, each under its own name.
     FileOfText = "file_of_text" ([H, H] -> [H]);
     FileOfBytes = "file_of_bytes" ([H, H] -> [H]);
+    Base64Decode = "base64_decode" ([H] -> [H]);
     FileAt = "file_at" ([H, H] -> [H]);
     FileZip = "file_zip" ([H, H] -> [H]);
     // A file's pixels: what its container says (an `Option` of the host's `ImageInfo`), and the

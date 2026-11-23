@@ -674,6 +674,7 @@ d-bbuecgsi = Conversation
 d-krn2y5tw = Conversation messages
 
 d-n2xgxnbw = Message
+    .w-open-contact = Open contact
     .w-reply = Reply
     .w-reply-all = Reply all
     .w-forward = Forward

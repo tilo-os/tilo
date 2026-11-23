@@ -13,9 +13,10 @@ use tilo_resource::{
 /// reasonable payload.
 pub const MAX_PROJECTED: usize = 10_000;
 
-/// How much text one person's picture may take; Contacts keeps a small portrait,
-/// far below this.
-pub const MAX_PHOTO_BYTES: usize = 96 * 1024;
+/// How big one person's picture may be; Contacts keeps a small portrait, far
+/// below this. The bytes are kept as content, so what a reading carries is the
+/// reference and never the picture.
+pub const MAX_PHOTO_BYTES: u64 = 96 * 1024;
 
 /// One Contacts identity as Contacts projects it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -24,10 +25,14 @@ pub struct Projected {
     pub label: String,
     pub phones: Vec<String>,
     pub emails: Vec<String>,
-    /// The person's picture as Contacts keeps it (a small JPEG, base64); empty for
-    /// none.
+    /// The content hash of the person's picture, or empty for none. The bytes are
+    /// kept as the workspace's content, and a reading carries this reference, never
+    /// a picture.
     #[serde(default)]
     pub photo: String,
+    /// How many bytes that picture is; 0 for none.
+    #[serde(default)]
+    pub photo_size: u64,
 }
 
 #[cfg(test)]
@@ -51,9 +56,12 @@ pub struct Person {
     pub phones: Vec<String>,
     /// Address-book mailboxes, never identity evidence or a sending grant.
     pub emails: Vec<String>,
-    /// The picture Contacts shows for the person, for apps that show them; empty for
-    /// none, and never fetched from anywhere.
+    /// The content hash of the picture Contacts shows for the person, or empty for
+    /// none: the bytes are the workspace's content, and a reading carries only this
+    /// and its size, so a directory of ten thousand people sends no picture.
     pub photo: String,
+    /// How many bytes that picture is; 0 for none.
+    pub photo_size: u64,
     pub endpoints: Collection<Endpoint>,
 }
 
@@ -269,7 +277,7 @@ impl ContactDirectory {
             }
             hints_bounded(&projected.phones)?;
             hints_bounded(&projected.emails)?;
-            if projected.photo.len() > MAX_PHOTO_BYTES {
+            if projected.photo_size > MAX_PHOTO_BYTES {
                 return Err(refused());
             }
             match self.people.get_mut(&projected.person) {
@@ -280,6 +288,7 @@ impl ContactDirectory {
                     existing.emails = projected.emails;
                     if existing.photo != projected.photo {
                         existing.photo = projected.photo;
+                        existing.photo_size = projected.photo_size;
                     }
                 }
                 None => {
@@ -290,6 +299,7 @@ impl ContactDirectory {
                             phones: projected.phones,
                             emails: projected.emails,
                             photo: projected.photo,
+                            photo_size: projected.photo_size,
                             ..Person::default()
                         },
                     );
@@ -371,13 +381,14 @@ impl ContactDirectory {
 
     /// The picture of the one person in the book with mailbox `email`, if they have
     /// one; several people sharing it show none.
-    pub fn photo_for_email(&self, email: &str) -> Option<&str> {
+    pub fn photo_for_email(&self, email: &str) -> Option<(&str, u64)> {
         let candidates = self.email_candidates(email);
         let [person] = candidates.as_slice() else {
             return None;
         };
         let person = self.people.get(person)?;
-        (!person.removed && !person.photo.is_empty()).then_some(person.photo.as_str())
+        (!person.removed && !person.photo.is_empty())
+            .then_some((person.photo.as_str(), person.photo_size))
     }
 
     /// Every matching person remains a candidate, including a unique match: local-part

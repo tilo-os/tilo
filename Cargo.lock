@@ -18481,6 +18481,7 @@ name = "tilo-contact-directory"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "tilo-app-id",
  "tilo-automerge-fork",
  "tilo-resource",

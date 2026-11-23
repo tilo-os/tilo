@@ -93,6 +93,17 @@ impl Core {
                 };
                 self.ret_h(Value::Text(text))
             }
+            // The bytes a base64 text holds: how a picture or any other bytes an action came by
+            // as text (a vCard's PHOTO, a body written inline) becomes a file it can keep.
+            Imp::Base64Decode => {
+                let text = self.text(a.h(0)?)?;
+                use base64::Engine as _;
+                let bytes = match base64::engine::general_purpose::STANDARD.decode(text.trim()) {
+                    Ok(bytes) => bytes,
+                    Err(why) => return trap(format!("this is not base64: {why}")),
+                };
+                self.ret_h(Value::Bytes(Rc::new(bytes)))
+            }
             Imp::BytesLength => {
                 let n = match self.val(a.h(0)?)? {
                     Value::Bytes(bytes) => bytes.len(),
