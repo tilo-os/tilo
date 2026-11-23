@@ -403,7 +403,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     .as_ref()
                     .map(|from| ui::tilo_actions::params::MadeFrom {
                         resource: from.id_string(),
-                        kind: from.ty.clone(),
+                        kind: tilolang_tilo::resources::kinds::kind_of_type(&from.ty),
                     }),
             },
             Invocation::Action { app, action, .. }

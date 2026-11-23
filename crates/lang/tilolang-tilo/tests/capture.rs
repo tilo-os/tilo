@@ -227,15 +227,23 @@ fn a_task_captured_from_a_message_says_what_it_was_made_from() {
         tilo_actions::params::FROM_ARGUMENT.to_owned(),
         tilo_actions::params::MadeFrom {
             resource: message.id_string(),
-            kind: message.ty.clone(),
+            kind: tilolang_tilo::resources::kinds::kind_of_type(&message.ty),
         }
         .to_json(),
     );
+    // It names the app whose message it is, which the dispatch decides a read of it in.
+    let named =
+        tilo_actions::params::MadeFrom::from_json(&arguments[tilo_actions::params::FROM_ARGUMENT])
+            .unwrap();
+    assert_eq!(named.app(), Some(CHAT_APP));
     // What the published action's builder does with the arguments the palette sends: the
     // resource it is made from, parsed from the one argument that names it.
     let from =
         tilo_actions::params::MadeFrom::from_json(&arguments[tilo_actions::params::FROM_ARGUMENT])
-            .and_then(|from| ResourceRef::parse_id(&from.resource, from.kind))
+            .and_then(|from| {
+                let ty = tilolang_tilo::resources::kinds::type_of_kind(&from.kind)?;
+                ResourceRef::parse_id(&from.resource, ty)
+            })
             .expect("the arguments name what the task is made from");
     let root = ada.host.root_of(TASKS_APP).unwrap();
     let root = root.id_string();

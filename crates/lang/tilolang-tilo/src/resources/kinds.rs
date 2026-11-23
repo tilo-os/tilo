@@ -109,6 +109,26 @@ pub fn kind_of(app: &str, name: &str) -> String {
     format!("tl.{app}.{name}")
 }
 
+/// The kind the store keeps a resource of the tilolang type `ty` as: the app and name a loaded
+/// package declares it under, or that `<app>#<Name>` spells. Otherwise `ty` itself, which names
+/// no app, so a dispatch that must know whose resource it is refuses it.
+#[must_use]
+pub fn kind_of_type(ty: &str) -> String {
+    if let Some(schema) = crate::schema::lookup(ty) {
+        return kind_of(&schema.app, &schema.name);
+    }
+    ty.split_once('#')
+        .map_or_else(|| ty.to_owned(), |(app, name)| kind_of(app, name))
+}
+
+/// The tilolang type of a resource the store keeps as `kind`, where a loaded package declares
+/// it ([`kind_of_type`] turned around).
+#[must_use]
+pub fn type_of_kind(kind: &str) -> Option<String> {
+    let (app, name) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
+    crate::schema::lookup_in(app, name).map(|schema| schema.id.clone())
+}
+
 impl Kinds {
     /// Takes in the types and enums of `meta`, replacing what an earlier version declared.
     /// `former` is the retired declarations of the package's ids lock, `(name, id)` each: a

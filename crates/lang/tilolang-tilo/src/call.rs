@@ -182,7 +182,8 @@ fn published_call(
 
 /// What the invocation is made from, when it is made from something, among the arguments the
 /// api takes: the key [`tilo_actions::params::FROM_ARGUMENT`], as the reference a caller names
-/// its source with.
+/// its source with, and the kind the store keeps it as, which names the app a caller must be
+/// able to read it in.
 fn made_from(
     from: Option<&ResourceRef>,
     arguments: &mut serde_json::Map<String, Json>,
@@ -191,7 +192,11 @@ fn made_from(
     if let Some(from) = from {
         arguments.insert(
             tilo_actions::params::FROM_ARGUMENT.to_owned(),
-            json!({"ref": published(from), "ty": from.ty}),
+            tilo_actions::params::MadeFrom {
+                resource: published(from),
+                kind: crate::resources::kinds::kind_of_type(&from.ty),
+            }
+            .to_json(),
         );
     }
 }

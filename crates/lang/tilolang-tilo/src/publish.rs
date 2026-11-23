@@ -237,9 +237,12 @@ fn build_of(
         let json = args.to_json();
         let caller = planner.caller();
         // What the invocation is made from, as the caller named it with the arguments.
-        let from = args
-            .from()
-            .and_then(|from| ResourceRef::parse_id(&from.resource, from.kind.clone()));
+        let from = args.from().and_then(|from| {
+            // The kind names the type; one no loaded package declares is read off the
+            // resource where it is stamped.
+            let ty = crate::resources::kinds::type_of_kind(&from.kind).unwrap_or_default();
+            ResourceRef::parse_id(&from.resource, ty)
+        });
         let request = PlanRequest {
             app: &app,
             kind: &kind,
