@@ -1,5 +1,6 @@
 use super::*;
 use crate::wire::{Handle, HostFrame, Operation, Reply};
+use tilo_sort::CompactSort as _;
 
 const HOST: [u8; 16] = [2; 16];
 const ID: [u8; 16] = [1; 16];
