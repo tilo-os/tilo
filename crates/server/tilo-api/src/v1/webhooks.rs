@@ -684,6 +684,9 @@ mod tests {
             "http://[::1]:8080/hook",
             "http://example.com/hook",
             "file:///etc/passwd",
+            "file://127.0.0.1/etc/passwd",
+            "redis://127.0.0.1/",
+            "blob:http://127.0.0.1/x",
             "not a url",
         ];
         for own in OWN.iter().chain(&plain) {
@@ -715,6 +718,9 @@ mod tests {
             "http://[::ffff:127.0.0.1]/hook",
             "http://example.com/hook",
             "file:///etc/passwd",
+            "file://127.0.0.1/etc/passwd",
+            "redis://127.0.0.1/",
+            "blob:http://127.0.0.1/x",
         ];
         for own in OWN.iter().chain(&elsewhere) {
             assert!(
