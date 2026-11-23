@@ -577,7 +577,9 @@ def touch_unlock(ctx, res):
         # that.
         _expect_snapshot_refused_while_locked(ctx)
         log_lines = _session_log_lines(ctx)
+        # The lock's field is a password field: Return submits it, as a person does.
         ctx.vm.input("type", passcode)
+        ctx.vm.key("Return")
         try:
             ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
                            "the session unlocked with the passcode typed after the touch")
