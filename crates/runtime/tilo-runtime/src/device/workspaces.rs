@@ -106,7 +106,13 @@ impl ServiceWorkspaces {
                 let config = ServiceConfig { apps, ..config };
                 match configure {
                     Some(configure) => configure(config),
-                    None => config,
+                    // A person's computer serves its workspaces at once, on the network or off
+                    // it: the service names its address in them once a relay answers, so
+                    // starting never waits out a net report.
+                    None => ServiceConfig {
+                        reaching: tilo_workspace_service::Reaching::WhenNeeded,
+                        ..config
+                    },
                 }
             },
         )
