@@ -525,9 +525,9 @@ What an app may do:
 
 - **Own its content surfaces.** A canvas, a document page, a video, a game or
   a map is content, and the app chooses how it looks. The reference pattern is
-  `apps/ebook/src/reader_theme.rs`: all chrome (toolbars, drawers, buttons)
-  reads strictly from `Theme`, while the page uses a palette the reader picks
-  (light, sepia, dark, high contrast).
+  the reading page (`crates/sdk/tilo-rich-edit/src/reading/`): its own paper
+  and ink are the reader's to pick, while everything the toolkit draws around
+  it reads strictly from `Theme`.
 
 What an app may not do:
 
@@ -540,8 +540,7 @@ What an app may not do:
   widget in `ui`, not a local copy (HIG §8).
 - Override accessibility. High contrast and forced colours reach into content
   surfaces too: a page palette must offer a forced-colours rendering and switch
-  to it when the person asks for high contrast, the way the ebook's high
-  contrast page already exists.
+  to it when the person asks for high contrast.
 
 The trade for an app developer: dark mode, high contrast, text and UI scaling,
 RTL and accessibility come for free, and there is no "a theme broke my app"
@@ -682,9 +681,7 @@ theme should supply.
 
 | File | Sites | Content | Chrome | Notes |
 |---|---:|---:|---:|---|
-| `ebook/src/reader_theme.rs` | 27 | 27 | 0 | page palettes (the reference pattern) |
-| `ebook/src/app.rs` | 4 | 2 | 2 | scheme swatches are content; badge ink should be measured (`readable_on`) |
-| `ebook/src/model.rs`, `input_controls.rs` | 3 | 3 | 0 | user-picked scheme and highlight colours |
+| `crates/sdk/tilo-rich-edit/src/reading/` | 4 | 4 | 0 | the reading page's paper and ink, picked by its reader |
 | `word-processor/src/widget.rs` | 19 | 16 | 3 | paper, paper ink, table and placeholder tints and stored run colours are content; caret, active-band edge and spelling squiggle are affordances that should come from `intent.you` and `danger`, made legible on paper |
 | `word-processor/src/review_overlay.rs` | 14 | 0 | 14 | comment and change cards, accept/reject buttons, insertion/deletion ink |
 | `word-processor/src/widget/tests.rs`, `style_color_picker.rs` | 4 | 4 | 0 | fixtures; seed from a stored style |

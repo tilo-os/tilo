@@ -365,7 +365,7 @@ like every other file.
 
 ## OpenType and paragraph controls
 
-These controls are for document engines (the ebook reader, book
+These controls are for document engines (the reading page, book
 composition, the specimen gallery), not for application chrome, which says
 what text is with a [text kind](#text-kinds) instead.
 `TextStyle` carries advanced typography through the same measurement, shaping,
@@ -566,7 +566,8 @@ Text::new("Internationalization demonstrates typography.")
 
 ## Book composition
 
-The ebook reader's default **Book** composition goes beyond ordinary widget
+The reading page's default ragged composition, and its **Book** composition
+when a reader chooses it, go beyond ordinary widget
 wrapping. It fits each complete paragraph with a Knuth–Plass-style global
 search, adjustable inter-word glue, TeX/Liang hyphenation selected from the
 EPUB language, consecutive-hyphen penalties, line-fitness transitions, and
@@ -576,30 +577,21 @@ mixed-direction paragraphs preserve visual BiDi order while retaining logical
 selection offsets. Pagination keeps headings with their following text and
 enforces two-line widow and orphan minima.
 
-Readers choose the typeface in the typography popover: the system's reading
-face, the other reading faces ([Reading faces](#reading-faces)), the UI face,
-mono, or a family they added from the system list.
-
-Readers can switch the typography popover to **Ragged** composition when they
-prefer natural spacing. That mode deliberately disables automatic hyphenation,
-glyph expansion, justification, and punctuation protrusion. The preference is
-stored with the other reader settings and participates in layout cache
+Readers choose the page's face (`serif`, `sans` or `mono`) and its text
+size, and whether its paragraphs are justified. Ragged composition, the
+default, deliberately disables automatic hyphenation, glyph expansion,
+justification, and punctuation protrusion; both participate in layout cache
 identity.
 
-The actual 1280×800 serif reading surface is a committed visual regression at
-`apps/ebook/tests/fixtures/typography/serif-reader.png`. After visually
-approving an intentional change, regenerate it through the build container:
-
-```sh
-UPDATE_EBOOK_TYPOGRAPHY_BASELINE=1 cargo test -p ebook \
-  serif_reader_matches_typography_baseline -- --nocapture
-```
+The typesetter is `crates/sdk/tilo-rich-edit/src/reading/`: a document's rich
+text becomes pages the `ui.Reading` component draws. Its unit tests hold the
+line breaking, hyphenation, BiDi and pagination rules.
 
 ## Mathematical composition
 
 Structured formulas use the single compositor in `ui::math`. Its semantic tree,
 recursive 2D box layout, insertion-gap geometry, and painter are shared by the
-calculator's live editor and the ebook reader's immutable MathML content. The
+calculator's live editor and the reading page's immutable MathML content. The
 calculator alone owns mutation, caret-navigation, clipboard, and collaborative
 state; these policies are not duplicated in read-only document rendering.
 
@@ -624,14 +616,8 @@ indexed roots, large operators and limits, constructed delimiter families,
 matrices, arrays, cases, aligned rows, accents, binomials, common mathematical
 alphabets, Greek, relations, sets, and arrows.
 
-The real ebook integration is pinned by
-`apps/ebook/tests/fixtures/typography/math-reader.png`. Regenerate it only after
-visual approval:
-
-```sh
-UPDATE_EBOOK_MATH_BASELINE=1 cargo test -p ebook \
-  mathematical_reader_matches_shared_typesetting_baseline -- --nocapture
-```
+The reading page's formulas go through the same compositor, in the shared
+reading module's tests.
 
 Editable shaped text retains caret affinity as well as its UTF-8 document
 offset. `TextPosition { byte, affinity }` represents the two legitimate visual

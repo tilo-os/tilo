@@ -243,7 +243,6 @@ FEATURE_CONFIG_FILE = ".config/hakari.toml"
 VENDORED_TEST_RUNNER = "tools/ci/test-vendored-crates.sh"
 HEAVY_PACKAGES = {
     "browser",
-    "ebook",
     "tilo-media",
     "tilo-doc-pdf",
     "tilo-session",

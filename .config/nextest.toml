@@ -331,7 +331,7 @@ agent-sessions = { max-threads = 2 }
 
 # Golden rendering shares Vulkan resources across test processes.
 [[profile.default.overrides]]
-filter = '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))'
+filter = '(package(tilo-ui) and test(typography_visual_regression::))'
 test-group = "gpu-golden"
 
 # What a person's interactions at 10k tasks cost, printed on a pass too: the

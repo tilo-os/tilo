@@ -396,13 +396,13 @@ exclude = [
 ]
 default = false
 
-# The visual goldens: tilo-ui and ebook, whose baselines are pixels, under the filter
+# The visual goldens: tilo-ui's baselines are pixels, under the filter
 # `.config/nextest-filters.toml` keeps (`golden`), on the project's builder image. That is the
 # image the repository's own visual-goldens runs render and verify on, and a renderer that moves
 # pixels fails there with a diff, so a second pinned builder only made every render compile the
 # workspace again under another compiler identity. They stay on x86_64: on aarch64 seven of them
 # come out different (`nightly-arm64-goldens`), so a result from there would not stand for both.
-# `packages` and `unify` keep the build to these two packages and make their units the test and
+# `packages` and `unify` keep the build to this package and make its units the test and
 # test-idle families' units, which the compiler cache serves.
 [[cargo]]
 name = "goldens"
@@ -410,9 +410,9 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 requires = ["arch=x86_64"]
 unify = "workspace-unify"
-packages = ["ebook", "tilo-ui"]
+packages = ["tilo-ui"]
 wrapper = ["bash", "-c", "export TILO_FONT_ASSET_CACHE=\"$CARGO_TARGET_DIR/font-artifacts\"; exec bash tools/test-env.sh \"$@\"", "goldens"]
-args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))"]
+args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::))"]
 on = ["schedule:0 3 * * *", "idle"]
 
 # The repository policy suite, one check per step of `tools/policy/steps.toml`: the step's own
@@ -837,7 +837,7 @@ on = ["schedule:20 5 * * *", "dispatch"]
 [[check]]
 name = "visual-goldens"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))'"
+run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::))'"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
@@ -1457,7 +1457,7 @@ on = ["schedule:0 3 * * *", "dispatch"]
 [[check]]
 name = "nightly-arm64-goldens"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))'"
+run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::))'"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=arm64"]
@@ -5677,7 +5677,7 @@ default = false
 [[check]]
 name = "test-assets"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
+run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
 outputs = ["/target/test-assets/**"]
 default = false
 

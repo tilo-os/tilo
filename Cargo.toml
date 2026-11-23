@@ -141,7 +141,6 @@ members = [
     "apps/disk-usage",
     "apps/disk-usage-model",
     "apps/disk-usage-model-wasm",
-    "apps/ebook",
     "apps/feeds",
     "apps/file-explorer",
     "apps/file-explorer-model",

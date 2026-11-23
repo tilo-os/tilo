@@ -66,7 +66,7 @@ from ci.affected_packages import package_cost, recorded_test_seconds  # noqa: E4
 # spent the machine it was on. `--stage policy` asks for them here.
 DEFAULT_STAGES = "check,clippy,test,goldens,certify,scenarios,scoped"
 CHANGED_STAGES = "check,clippy,test"
-GOLDEN_PACKAGES = {"tilo-ui", "ebook"}
+GOLDEN_PACKAGES = {"tilo-ui"}
 # Above this much recorded test time (seconds, tools/ci/recorded_test_time.json) a
 # test set is split between the builders; below it one builder finishes before a
 # second one's compile would.

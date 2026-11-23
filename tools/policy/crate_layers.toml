@@ -23,11 +23,6 @@ reason = "it is the toolkit's CPU fallback renderer, and a UI draws through ui-c
   why = "the toolkit's KMS host keeps one rasterizer across frames and copies only the damaged regions into dumb buffers, which ui-core's offscreen renderer does not expose"
 
   [[rule.allow]]
-  package = "ebook"
-  tests = true
-  why = "its scroll tests read back the pixels of the frames the CPU renderer draws"
-
-  [[rule.allow]]
   package = "pdf-viewer"
   tests = true
   why = "its zoom and selection tests read back the pixels of the frames the CPU renderer draws"

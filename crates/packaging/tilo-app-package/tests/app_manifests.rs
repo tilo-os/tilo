@@ -209,13 +209,9 @@ tilo_test_env::scenario! {
 
     phase shipped_apps_declare_presentation_metadata;
     {
-        let semantic_apps = ["so.tilo.browser", "so.tilo.ebook", "so.tilo.music"];
+        let semantic_apps = ["so.tilo.browser", "so.tilo.music"];
         let semantic_schemas = BTreeMap::from([
             ("so.tilo.browser", ContinuitySemanticSchema::WebLocationV1),
-            (
-                "so.tilo.ebook",
-                ContinuitySemanticSchema::PublicationPositionV1,
-            ),
             ("so.tilo.music", ContinuitySemanticSchema::MediaPositionV1),
             ("so.tilo.chat", ContinuitySemanticSchema::RealtimeSessionV1),
             (

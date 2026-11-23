@@ -301,7 +301,6 @@ doc = false
 "drm-sys-0_8_0" = { package = "drm-sys", version = "^0.8.0", default-features = false, features = ["default"] }
 "durable-store" = { path = "../../crates/system/durable-store", default-features = false, features = ["conformance"] }
 "dyn-clone-1_0_20" = { package = "dyn-clone", version = "^1.0.20", default-features = false, features = [] }
-"ebook" = { path = "../../apps/ebook", default-features = false, features = ["samples"] }
 "ecdsa-0_16_9" = { package = "ecdsa", version = "^0.16.9", default-features = false, features = ["alloc", "arithmetic", "der", "digest", "hazmat", "pem", "pkcs8", "rfc6979", "signing", "spki", "std", "verifying"] }
 "ecdsa-0_17_0" = { package = "ecdsa", version = "^0.17.0", default-features = false, features = ["algorithm", "alloc", "default", "der", "digest", "getrandom", "pem", "pkcs8", "spki", "std"] }
 "ecow-0_2_6" = { package = "ecow", version = "^0.2.6", default-features = false, features = ["default", "serde", "std"] }
@@ -2952,7 +2951,6 @@ doc = false
 "drm-sys-0_8_0" = { package = "drm-sys", version = "^0.8.0", default-features = false, features = ["default"] }
 "durable-store" = { path = "../../crates/system/durable-store", default-features = false, features = ["conformance"] }
 "dyn-clone-1_0_20" = { package = "dyn-clone", version = "^1.0.20", default-features = false, features = [] }
-"ebook" = { path = "../../apps/ebook", default-features = false, features = ["samples"] }
 "ecdsa-0_16_9" = { package = "ecdsa", version = "^0.16.9", default-features = false, features = ["alloc", "arithmetic", "der", "digest", "hazmat", "pem", "pkcs8", "rfc6979", "signing", "spki", "std", "verifying"] }
 "ecdsa-0_17_0" = { package = "ecdsa", version = "^0.17.0", default-features = false, features = ["algorithm", "alloc", "default", "der", "digest", "getrandom", "pem", "pkcs8", "spki", "std"] }
 "ecow-0_2_6" = { package = "ecow", version = "^0.2.6", default-features = false, features = ["default", "serde", "std"] }

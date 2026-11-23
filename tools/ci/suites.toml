@@ -773,6 +773,7 @@ package = "tilolang-runtime"
 inputs = [
   "apps/tl/",
   "crates/lang/tilolang/tests/fixtures/",
+  "crates/lang/tilolang-runtime/tests/fixtures/",
   "scripts/headless-examples/agent-tilolang/",
 ]
 readers = [
@@ -782,6 +783,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_cleanup.rs",
   "crates/lang/tilolang-runtime/tests/e2e_counter.rs",
   "crates/lang/tilolang-runtime/tests/e2e_mail_files.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_ebook.rs",
   "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
   "crates/lang/tilolang-runtime/tests/programs.rs",
@@ -2160,11 +2162,6 @@ readers = [
 [[covered]]
 suite = "tools/font-catalog.py"
 by = "tools/tests/test_font_artifacts.py"
-
-[[cargo]]
-package = "ebook"
-inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
-readers = ["apps/ebook/src/app/interaction_tests.rs", "apps/ebook/build.rs"]
 
 [[cargo]]
 package = "store"

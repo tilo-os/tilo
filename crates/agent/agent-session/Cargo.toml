@@ -53,7 +53,6 @@ chip-design = { path = "../../../apps/chip-design" }
 clocks = { path = "../../../apps/clocks" }
 tilo-console = { path = "../../../apps/console" }
 diffmerge = { path = "../../../apps/diffmerge" }
-ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }
 file-explorer = { path = "../../../apps/file-explorer", default-features = false, features = [] }
 hex-editor = { path = "../../../apps/hex-editor" }

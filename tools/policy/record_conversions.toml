@@ -77,12 +77,6 @@ change = "removed"
 conversion = "apps/disk-usage/src/view.rs:new"
 
 [[change]]
-kind = "ebook.files"
-app = "ebook"
-change = "removed"
-conversion = "apps/ebook/src/local_library.rs:open"
-
-[[change]]
 kind = "files.recent"
 app = "file-explorer"
 change = "removed"

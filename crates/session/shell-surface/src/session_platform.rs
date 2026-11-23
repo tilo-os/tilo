@@ -40,34 +40,10 @@ impl<L: Loads> Platform for OnSession<L> {
         tilo_app_window::i18n::phrase(id, args)
     }
 
-    /// The time of day as the person reads a clock: the package's views run in the session,
-    /// which holds their settings.
-    fn clock(&self, hour: u32, minute: u32) -> String {
-        ui::clock::hour_minute(hour, minute)
-    }
-
     /// The families this device sets text in: the toolkit's catalog, which a session running a
     /// window has.
     fn fonts(&self) -> Vec<String> {
         ui::font_catalog::installed_families()
-    }
-
-    /// How a day or a time of day named in a sentence reads: the person's formats, which the
-    /// session holds.
-    fn sentence(&self, kind: &str, value: &str) -> String {
-        tilo_app_window::date::sentence_text(kind, value)
-    }
-
-    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
-        if window {
-            tilo_app_window::i18n::add_catalogues(catalogues);
-        } else {
-            tilo_app_window::i18n::add_shared_catalogues(catalogues);
-        }
-    }
-
-    fn words_revision(&self) -> u64 {
-        tilo_app_window::i18n::revision()
     }
 
     fn now(&self) -> String {

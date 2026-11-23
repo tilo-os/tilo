@@ -4495,44 +4495,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "ebook"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "bounded-zip",
- "ebook",
- "flate2",
- "image",
- "roxmltree 0.21.1",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "taffy",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-content",
- "tilo-cpu-raster",
- "tilo-document",
- "tilo-files",
- "tilo-net",
- "tilo-paths",
- "tilo-rich-text",
- "tilo-test-env",
- "tilo-thumbnail",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "unicode-bidi",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17439,7 +17401,6 @@ dependencies = [
  "contacts",
  "diffmerge",
  "discord",
- "ebook",
  "ed25519-dalek 3.0.0",
  "feeds",
  "file-explorer",
@@ -28205,7 +28166,6 @@ dependencies = [
  "drm-sys",
  "durable-store",
  "dyn-clone",
- "ebook",
  "ecdsa 0.16.9",
  "ecdsa 0.17.0",
  "ecow",
