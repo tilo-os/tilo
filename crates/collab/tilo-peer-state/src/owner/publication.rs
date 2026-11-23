@@ -1,3 +1,10 @@
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the record layout an earlier build wrote is read by the host's journal"
+    )
+)]
 //! The outgoing ownership an earlier build kept in a workspace's record, read
 //! so a record an earlier build wrote still opens and its journal replays.
 //!
