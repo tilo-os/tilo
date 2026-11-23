@@ -11,7 +11,10 @@ use std::sync::Arc;
 
 use super::super::PreAdmitRequest;
 use super::super::WorkspaceSummary;
-use super::super::fixtures::{TestHost, device_cert, governor, signed_pre_admission, test_host};
+use super::super::fixtures::{
+    TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host,
+    test_host_holding,
+};
 use super::MemberDevice;
 use ed25519_dalek::SigningKey;
 use tilo_server_protocol::WorkspaceId;
@@ -25,6 +28,18 @@ async fn shared(
     seed: u8,
 ) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
     shared_with(serving_state, name, seed, laptop(seed)).await
+}
+
+thread_local! {
+    /// The keys of the workspaces' every-member groups, as the devices of one test hold them: a
+    /// group hands a device it admits the keys its other devices seal with. Each device holding
+    /// keys of its own would seal what the others cannot open.
+    static GROUP_KEYS: Arc<TestGroupKeys> = Arc::default();
+}
+
+/// The group keys the devices of this test share.
+fn group_keys() -> Arc<TestGroupKeys> {
+    GROUP_KEYS.with(Arc::clone)
 }
 
 /// The laptop of the person of `seed`.
@@ -44,7 +59,7 @@ pub(super) async fn shared_with(
     device: (SigningKey, DeviceCert),
 ) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
     let (serving_key, serving_cert) = governor();
-    let serving = test_host(serving_state, &serving_key, &serving_cert).await;
+    let serving = test_host_holding(serving_state, &serving_key, &serving_cert, group_keys()).await;
     invited(serving, &serving_cert, name, seed, device).await
 }
 
@@ -84,7 +99,7 @@ pub(super) async fn member_service(
     state: &std::path::Path,
     (key, cert): (SigningKey, DeviceCert),
 ) -> TestHost {
-    let service = test_host(state, &key, &cert).await;
+    let service = test_host_holding(state, &key, &cert, group_keys()).await;
     service
         .workspaces()
         .set_member_device(Arc::new(MemberDevice {
