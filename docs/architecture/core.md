@@ -96,6 +96,11 @@ use the same addresses.
   the keys (reading means holding the keys of the resource's readers;
   resources with the same readers share one key group, and removing a reader
   rekeys it). What a device already received cannot be taken back.
+- A window does not decide permissions itself. The device's daemon answers
+  for the actions a view shows, the window holds those answers for its
+  controls and updates them live as grants change, and the call is still
+  admitted when it is made. There is no permission check in the UI library,
+  the app SDK, tilolang's runtime or an app.
 - A file action is an action at the file's address. A grant on a folder
   covers what is below it. The mount is one more caller and decides every
   open from the replicated member list; a path a person may not see does not
