@@ -1308,10 +1308,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
     assert!(!names.contains(&"Budget".to_owned()));
 }
 
-/// How long a page waits for its host to answer a barrier. A healthy host answers within a second
-/// even on a loaded runner; a barrier still open after this holds a write the host never took, and
-/// every test of a shard waiting the whole shared hang bound on one kept a runner busy for an hour.
-const BARRIER_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+pub use crate::harness::page::BARRIER_BOUND;
 
 /// The host's answer to a page's barrier: whether every write it asked after is saved. A barrier
 /// the host never answers fails here by name within [`BARRIER_BOUND`], instead of holding a

@@ -123,7 +123,7 @@ pub(super) async fn make_agent(
     page.peer
         .write(route, &collab_types::DocumentMutation::Snapshot(bytes))
         .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = crate::harness::page::write_deadline();
     while workspaces
         .resource_document(workspace, ui::tilo_workspace_agent::OWNER, &record)
         .await
@@ -133,7 +133,8 @@ pub(super) async fn make_agent(
     {
         assert!(
             Instant::now() < deadline,
-            "the host never holds the agents record"
+            "the host never holds the agents record the page wrote: not within {:?}",
+            crate::harness::page::BARRIER_BOUND
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

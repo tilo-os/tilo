@@ -35,6 +35,21 @@ use tilo_server_client::ServerAddress;
 use tilo_session_actions::Heard;
 
 use super::hosted::Hosted;
+
+/// How long a page waits for its host to answer a barrier, or to hold what the page wrote. A
+/// healthy host answers within a second even on a loaded runner; a write still not taken after
+/// this is one the host never took, and every test of a shard waiting the whole shared hang bound
+/// on one kept a runner busy for an hour.
+pub const BARRIER_BOUND: Duration = Duration::from_secs(60);
+
+/// When a wait for the host to take a page's write gives up: [`BARRIER_BOUND`] from now, or the
+/// shared hang bound if that is shorter.
+#[must_use]
+pub fn write_deadline() -> Instant {
+    Instant::now()
+        .checked_add(tilo_test_env::hang_bound().min(BARRIER_BOUND))
+        .expect("the bound fits in an Instant")
+}
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
 use tilo_server_protocol::WorkspaceId;
 
@@ -513,7 +528,7 @@ impl Page {
     /// Wait until everything this page published is durable on the host.
     pub async fn durable(&self) {
         let receipt = self.peer.barrier().unwrap();
-        let deadline = tilo_test_env::hang_deadline();
+        let deadline = write_deadline();
         loop {
             match receipt.try_recv() {
                 Ok(result) => return result.unwrap(),
@@ -522,7 +537,8 @@ impl Page {
             }
             assert!(
                 Instant::now() < deadline,
-                "the page's edits never became durable"
+                "the page's edits never became durable: the host did not answer its barrier \
+                 within {BARRIER_BOUND:?}"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
