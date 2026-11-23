@@ -223,7 +223,7 @@ fn hours_at(amount: u64, per_hour: u64) -> Option<Duration> {
 /// driver actually exposes. Settings builds its choices from this rather than
 /// assuming every laptop accepts the same percentages.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChargeCapCapability {
     pub backend: ChargeCapBackend,
     pub current: u32,
@@ -232,7 +232,7 @@ pub struct ChargeCapCapability {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ChargeCapBackend {
     PowerSupply,
     /// Lenovo `IdeaPad`'s binary conservation mode (roughly 55–60 %, or off).

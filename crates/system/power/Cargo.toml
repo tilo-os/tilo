@@ -14,10 +14,11 @@ path = "src/lib.rs"
 
 [features]
 default = ["service"]
+serde = ["dep:serde"]
 service = [
+    "serde",
     "dep:tilo-files",
     "dep:futures-util",
-    "dep:serde",
     "dep:serde_json",
     "dep:settings-store",
     "dep:tokio",

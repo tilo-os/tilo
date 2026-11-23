@@ -1313,7 +1313,7 @@ doc = false
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
 "tilo-polkit-agent" = { path = "../../../crates/session/polkit-agent", default-features = false, features = [] }
 "tilo-portal" = { path = "../../../crates/session/portal", default-features = false, features = ["pipewire"] }
-"tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "service"] }
+"tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "serde", "service"] }
 "tilo-presentation" = { path = "../../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-process-services" = { path = "../../../crates/sdk/tilo-process-services", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
@@ -1352,7 +1352,7 @@ doc = false
 "tilo-session-client" = { path = "../../../crates/session/client", default-features = false, features = ["default", "toolkit"] }
 "tilo-session-core" = { path = "../../../crates/session/core", default-features = false, features = [] }
 "tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
-"tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
+"tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = ["default", "service"] }
 "tilo-settings-service" = { path = "../../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-shell-surface" = { path = "../../../crates/session/shell-surface", default-features = false, features = [] }
@@ -2495,7 +2495,7 @@ doc = false
 "tilo-paths" = { path = "../../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-peer-state" = { path = "../../../crates/collab/tilo-peer-state", default-features = false, features = ["test-support"] }
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
-"tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "service"] }
+"tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "serde", "service"] }
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
@@ -3977,7 +3977,7 @@ doc = false
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
 "tilo-polkit-agent" = { path = "../../../crates/session/polkit-agent", default-features = false, features = [] }
 "tilo-portal" = { path = "../../../crates/session/portal", default-features = false, features = ["pipewire"] }
-"tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "service"] }
+"tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "serde", "service"] }
 "tilo-presentation" = { path = "../../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-process-services" = { path = "../../../crates/sdk/tilo-process-services", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
@@ -4016,7 +4016,7 @@ doc = false
 "tilo-session-client" = { path = "../../../crates/session/client", default-features = false, features = ["default", "toolkit"] }
 "tilo-session-core" = { path = "../../../crates/session/core", default-features = false, features = [] }
 "tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
-"tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
+"tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = ["default", "service"] }
 "tilo-settings-service" = { path = "../../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-shell-surface" = { path = "../../../crates/session/shell-surface", default-features = false, features = [] }
@@ -5158,7 +5158,7 @@ doc = false
 "tilo-paths" = { path = "../../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-peer-state" = { path = "../../../crates/collab/tilo-peer-state", default-features = false, features = ["test-support"] }
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
-"tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "service"] }
+"tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "serde", "service"] }
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
