@@ -40,11 +40,14 @@ use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{
-    self, AddItem, AlwaysUse, AskForItem, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse,
-    ItemUses, ItemView, KeepEntry, KeptItems, RemoveItem, TakeBack, UsesOf,
+    self, AddItem, AlwaysUse, AskForItem, Asked, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse,
+    ItemUses, ItemView, KeepConnectorSecret, KeepEntry, KeptItems, RemoveItem, TakeBack, UsesOf,
 };
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
+
+/// The most bytes a connector's secret takes.
+const MAX_CONNECTOR_SECRET: usize = 512;
 
 use super::person_asking::{ApprovalChange, is_scoped_approval};
 use super::workspace_stores::Store;
@@ -141,6 +144,13 @@ impl Workspaces {
                 )
             }
             person_vault::ENTRIES => said(self.vault_entries(&workspace).await),
+            person_vault::KEEP_CONNECTOR_SECRET => {
+                let keeping: KeepConnectorSecret = argument(
+                    request,
+                    "a connector's secret names its app, its purpose, its item and the secret",
+                )?;
+                said(self.keep_connector_secret(&workspace, keeping).await)
+            }
             person_vault::KEEP_ENTRY => {
                 let keeping: KeepEntry =
                     argument(request, "an entry to keep is an entry of Passwords")?;
@@ -192,6 +202,52 @@ impl Workspaces {
     async fn vault_entries(&self, workspace: &str) -> Result<Entries, String> {
         let opened = self.open_vault(workspace).await?;
         entries_of(opened.entries().iter().map(|(entry, _)| entry))
+    }
+
+    /// Keep `keeping`'s secret as an item of `workspace`'s vault, titled for the connector and
+    /// the purpose it serves, and answer the item's reference: the record names the reference,
+    /// never the secret. Keeping it again under the same purpose replaces the secret and keeps
+    /// the item, so a token rotated reaches the worker that asks for it.
+    async fn keep_connector_secret(
+        &self,
+        workspace: &str,
+        keeping: KeepConnectorSecret,
+    ) -> Result<Asked, String> {
+        let app = keeping.app.trim();
+        let item = keeping.item.trim();
+        let secret = keeping.secret.trim();
+        if app.is_empty() || item.is_empty() || app.len() > 200 || item.len() > 200 {
+            return Err("A connector's secret names the app, its purpose and the item".to_owned());
+        }
+        if !person_vault::CONNECTOR_PURPOSES.contains(&keeping.purpose.as_str()) {
+            return Err("That is no purpose a connector asks the vault for".to_owned());
+        }
+        if secret.is_empty() || secret.len() > MAX_CONNECTOR_SECRET {
+            return Err("The secret is empty or too long".to_owned());
+        }
+        let title = person_vault::connector_title(app, &keeping.purpose, item);
+        let place = Place::parse(&person_vault::connector_place(app))
+            .map_err(|_| "That is no app a connector's secret belongs to".to_owned())?;
+        let reference = self
+            .changing_vault(workspace, |items| {
+                let kept = items.facts().into_iter().find(|facts| facts.title == title);
+                let adding = NewItem::new(
+                    vault_items::ItemKind::Value,
+                    vec![place],
+                    String::new(),
+                    secret.to_owned(),
+                );
+                let facts = match kept {
+                    Some(facts) => items.keep(Some(&facts.id), adding, &title)?,
+                    None => items.keep(None, adding, &title)?,
+                };
+                ItemRef::from_id(facts.id.as_str()).ok_or(vault_items::ItemError::NotFound)
+            })
+            .await
+            .map_err(|error| format!("The secret could not be kept: {error}"))?;
+        Ok(Asked {
+            reference: Some(reference),
+        })
     }
 
     /// Keep `keeping`'s entry, a new one or the edit of one kept, answering every entry then.

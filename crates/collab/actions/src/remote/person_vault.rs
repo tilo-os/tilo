@@ -63,6 +63,30 @@ pub const KEEP_ENTRY: &str = "keep-entry";
 /// the [`Entries`] that remain.
 pub const FORGET_ENTRY: &str = "forget-entry";
 
+/// Keep the secret a connector on the workspace's host signs in with
+/// ([`KeepConnectorSecret`]), answering the item's reference as [`Asked`]:
+/// an item of the vault like any other, titled for the connector and the
+/// purpose it serves, and never written into a record.
+pub const KEEP_CONNECTOR_SECRET: &str = "keep-connector-secret";
+
+/// The purposes a connector's worker may ask the host for a secret by.
+pub const CONNECTOR_PURPOSES: [&str; 2] = ["bot-token", "webhook"];
+
+/// What the vault titles the entry keeping connector `app`'s secret `purpose`
+/// for `item` under: what Passwords lists it as, so a person reads where a
+/// secret they did not type themselves came from.
+#[must_use]
+pub fn connector_title(app: &str, purpose: &str, item: &str) -> String {
+    format!("{app} {purpose} for {item}")
+}
+
+/// Where the vault keeps a connector's secret: the connector's own id, which
+/// is reverse DNS, as the origin it signs in at.
+#[must_use]
+pub fn connector_place(app: &str) -> String {
+    format!("https://{app}")
+}
+
 /// The use that fills a field of a web page from an item, by reference
 /// ([`FillPage`]): the action a leave names it by ([`use_word`]) and a
 /// narrowed agent's rule names. No catalogue offers it by itself
@@ -263,6 +287,31 @@ impl std::fmt::Debug for AddItem {
             .debug_struct("AddItem")
             .field("kind", &self.kind)
             .field("belongs_to", &self.belongs_to)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Keep the secret a connector on the workspace's host signs in with, as an
+/// item of the workspace's vault titled for the connector ([`connector_title`]).
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeepConnectorSecret {
+    /// The app whose connector it is (`so.tilo.discord`).
+    pub app: String,
+    /// What the worker asks for it by: one of [`CONNECTOR_PURPOSES`].
+    pub purpose: String,
+    /// The service's own name for it: `default` for the one it signs in with.
+    pub item: String,
+    pub secret: String,
+}
+
+impl std::fmt::Debug for KeepConnectorSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KeepConnectorSecret")
+            .field("app", &self.app)
+            .field("purpose", &self.purpose)
+            .field("item", &self.item)
             .finish_non_exhaustive()
     }
 }

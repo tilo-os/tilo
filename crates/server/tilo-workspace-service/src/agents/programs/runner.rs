@@ -98,6 +98,7 @@ pub fn run(
     person: String,
     steps: Arc<dyn HostSteps>,
     progress: PathBuf,
+    connectors: &crate::agents::connectors::Connectors,
 ) -> Result<(Arc<KeptFile>, tokio::task::JoinHandle<()>), String> {
     let program = Program {
         id: definition.id.clone(),
@@ -110,6 +111,7 @@ pub fn run(
         workspaces.governor().clone(),
         program,
         progress,
+        connectors,
     )?
     .runs_for(person, steps);
     let kept = runner.kept();
@@ -238,7 +240,8 @@ pub struct ProgramRunner {
 
 impl ProgramRunner {
     /// The runner of `program` in `workspace`, for the person whose device
-    /// `host` serves it, its progress kept in `state_file`.
+    /// `host` serves it, its progress kept in `state_file`, and the outboxes of
+    /// the connectors `connectors` names drained by its steps.
     ///
     /// # Errors
     /// The program does not parse, or its kept progress does not read.
@@ -248,6 +251,7 @@ impl ProgramRunner {
         host: DeviceCert,
         program: Program,
         state_file: PathBuf,
+        connectors: &crate::agents::connectors::Connectors,
     ) -> Result<Self, String> {
         let shortcut = program.shortcut()?;
         let catalogue = AppCatalogue::native();
@@ -283,7 +287,7 @@ impl ProgramRunner {
             Arc::clone(&records),
             program.id.clone(),
             installer,
-            Vec::new(),
+            connectors.outboxes(),
         ));
         let progress = read_progress(&state_file)?;
         let keeps = Arc::new(KeptFile::open(state_file.with_extension("kept.json"))?);

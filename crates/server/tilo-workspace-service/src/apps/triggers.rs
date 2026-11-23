@@ -13,7 +13,9 @@
 //! there ([`keep_done`]), so a device that takes over carries on from what was written.
 //!
 //! A watch the runner has more of later (a source that changed, a time a resource names) is one
-//! more kind of [`Event`] it hands the dispatcher, placed the same way.
+//! more kind of [`Event`] it hands the dispatcher, placed the same way. So are the events a
+//! connector on this device reports ([`ConnectorEvents`]): each is a firing of every armed
+//! shortcut whose connector trigger names its app, source and matching fields.
 
 pub mod folders;
 
@@ -26,7 +28,7 @@ use serde_json::{Map, Value};
 use tilo_actions::ActionContext;
 use tilo_actions::remote::Caller;
 use tilo_automation::dispatch::{
-    self, AppEvent, DocumentEvent, Event, Firer, ScheduleEvent, event_of,
+    self, AppEvent, ConnectorEvent, DocumentEvent, Event, Firer, ScheduleEvent, event_of,
 };
 use tilo_automation::schedule::{SchedulePlan, Timed, plan};
 use tilo_automation::{AutomationInvocationId, Shortcut, TriggerSpec};
@@ -184,6 +186,27 @@ impl Firing {
 struct Waiting {
     firing: Firing,
     turn: Turn,
+}
+
+/// One event a connector on this device reported: what fired it and what it carried.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportedEvent {
+    /// Its place in the connector's log, so the next look asks for what follows it.
+    pub seq: u64,
+    /// The source the connector declared it under (`message-created`).
+    pub source: String,
+    /// The service's id for it, which tells it from a replay of itself.
+    pub id: String,
+    /// When the service said it happened, ms since the epoch.
+    pub at_ms: i64,
+    /// What it carried, which a trigger's filter narrows and its run reads.
+    pub payload: Map<String, Value>,
+}
+
+/// What the connectors this device runs reported, as the trigger runner reads them.
+pub trait ConnectorEvents: Send + Sync {
+    /// The events the connector `app` reported after `cursor`, oldest first.
+    fn since(&self, app: &str, cursor: u64) -> Vec<ReportedEvent>;
 }
 
 /// The firings `event` causes among `armed`, through the dispatcher every automation fires
@@ -357,6 +380,10 @@ pub struct Runner {
     joined: Option<BTreeSet<String>>,
     /// Firings waiting for their turn, by their turn's lease.
     pending: BTreeMap<String, Waiting>,
+    /// What this device's connectors report, when it runs any.
+    connectors: Option<Arc<dyn ConnectorEvents>>,
+    /// How far each connector app's event log was read, by app id.
+    reported: BTreeMap<String, u64>,
 }
 
 impl Runner {
@@ -374,7 +401,17 @@ impl Runner {
             folders: FolderWatch::default(),
             joined: None,
             pending: BTreeMap::new(),
+            connectors: None,
+            reported: BTreeMap::new(),
         }
+    }
+
+    /// Fire the triggers on what the connectors this device runs report, read
+    /// through `connectors`.
+    #[must_use]
+    pub fn watching_connectors(mut self, connectors: Arc<dyn ConnectorEvents>) -> Self {
+        self.connectors = Some(connectors);
+        self
     }
 
     /// Read schedules' fire times in `zone`.
@@ -473,7 +510,45 @@ impl Runner {
         }
         self.schedules(now_ms).await;
         self.files(now_ms);
+        self.connector_events(now_ms);
         self.take_turns().await;
+    }
+
+    /// Fire the triggers on every event the connectors this device runs reported
+    /// after the last look, each read once: a firing kept done in the workspace
+    /// stops a replay of the same event from starting it again.
+    fn connector_events(&mut self, now_ms: i64) {
+        let Some(connectors) = self.connectors.clone() else {
+            return;
+        };
+        let watched: BTreeSet<String> = self
+            .armed
+            .iter()
+            .flat_map(|armed| armed.shortcut.triggers.iter())
+            .filter_map(|trigger| match trigger {
+                TriggerSpec::Connector { app_id, .. } => Some(app_id.clone()),
+                _ => None,
+            })
+            .collect();
+        self.reported.retain(|app, _| watched.contains(app));
+        let mut firings = Vec::new();
+        for app in watched {
+            let cursor = self.reported.get(&app).copied().unwrap_or(0);
+            let mut last = cursor;
+            for reported in connectors.since(&app, cursor) {
+                last = last.max(reported.seq);
+                let event = ConnectorEvent {
+                    app_id: app.clone(),
+                    source: reported.source,
+                    id: reported.id,
+                    at_ms: reported.at_ms,
+                    payload: reported.payload,
+                };
+                firings.extend(dispatched(&self.armed, Event::Connector(&event), now_ms));
+            }
+            self.reported.insert(app, last);
+        }
+        self.offer(firings);
     }
 
     /// The events of the records `written`, in the workspaces whose records an armed shortcut
@@ -792,6 +867,19 @@ pub async fn run_on_device(
     broker: Arc<crate::apps::collab_broker::AppActionBroker>,
 ) {
     Runner::new(workspaces, broker, Order::WORKSPACE)
+        .run()
+        .await;
+}
+
+/// [`run_on_device`], firing the triggers on what the connectors this device runs report, read
+/// through `connectors`: the device that runs a connector is the one its events start runs on.
+pub async fn run_on_device_with_connectors(
+    workspaces: Workspaces,
+    starts: Arc<crate::apps::collab_broker::AppActionBroker>,
+    connectors: Arc<dyn ConnectorEvents>,
+) {
+    Runner::new(workspaces, starts, Order::WORKSPACE)
+        .watching_connectors(connectors)
         .run()
         .await;
 }

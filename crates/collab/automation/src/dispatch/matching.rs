@@ -190,10 +190,7 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
                 filter,
             },
             Event::Connector(fired),
-        ) => {
-            matches!(armed.firer, Firer::Bot { .. })
-                && connector_matches(app_id, source, filter, fired)
-        }
+        ) => connector_matches(app_id, source, filter, fired),
         (TriggerSpec::AppEvent { app_id, kind }, Event::AppEvent(declared)) => {
             declared.app_id == *app_id && declared.kind == *kind
         }

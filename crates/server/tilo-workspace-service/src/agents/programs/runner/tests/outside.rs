@@ -180,6 +180,7 @@ impl Server {
             self.workspaces.governor().clone(),
             program,
             self.state.join(format!("{name}.json")),
+            &crate::agents::connectors::Connectors::new(),
         )
         .unwrap();
         let mut runner = carried_out_for(runner, person.to_owned(), assistant);

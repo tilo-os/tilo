@@ -623,9 +623,10 @@ pub enum TriggerSpec {
         #[serde(default, skip_serializing_if = "ActorFilter::is_anyone")]
         by: ActorFilter,
     },
-    /// An event from a connector's declared trigger source on the
-    /// workspace's host. Only a bot can carry one: a person's devices see no
-    /// connector.
+    /// An event from a connector's declared trigger source, reported by the
+    /// device that runs the connector: the app the connector belongs to, the
+    /// source it named, and equality on top-level payload fields to narrow
+    /// which events fire it.
     Connector {
         app_id: String,
         source: String,

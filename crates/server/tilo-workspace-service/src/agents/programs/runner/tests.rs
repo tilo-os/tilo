@@ -109,6 +109,7 @@ fn program_runner(
         cert.clone(),
         program,
         state,
+        &crate::agents::connectors::Connectors::new(),
     )
     .unwrap()
 }

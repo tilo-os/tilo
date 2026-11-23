@@ -181,6 +181,10 @@ struct Inner {
     workspaces: Workspaces,
     /// What the server answers an event's steps with.
     steps: StepsFor,
+    /// The connectors this host runs for the events' runs: what a run sends
+    /// out through one is handed to its worker, and its secret stays in the
+    /// workspace's vault.
+    connectors: crate::agents::connectors::Connectors,
     /// The events running in each workspace, by their id.
     running: Mutex<BTreeMap<String, BTreeMap<String, Running>>>,
 }
@@ -244,7 +248,11 @@ impl WorkspaceEvents {
             Some(before) => Arc::new(move |event: &Definition| before(steps(event))),
             None => steps,
         };
-        Self::started(workspaces, steps)
+        Self::started(
+            workspaces,
+            steps,
+            crate::agents::connectors::Connectors::new(),
+        )
     }
 
     /// [`Self::start`], with what answers the events' steps given.
@@ -253,14 +261,35 @@ impl WorkspaceEvents {
         Self::started(
             workspaces,
             Arc::new(move |_: &Definition| Arc::clone(&steps)),
+            crate::agents::connectors::Connectors::new(),
         )
     }
 
-    fn started(workspaces: Workspaces, steps: StepsFor) -> Self {
+    /// [`Self::start_with`], with the connectors this host runs too: an event's
+    /// run hands what it sends out through one to the connector's worker.
+    #[must_use]
+    pub fn start_with_connectors(
+        workspaces: Workspaces,
+        steps: Arc<dyn HostSteps>,
+        connectors: crate::agents::connectors::Connectors,
+    ) -> Self {
+        Self::started(
+            workspaces,
+            Arc::new(move |_: &Definition| Arc::clone(&steps)),
+            connectors,
+        )
+    }
+
+    fn started(
+        workspaces: Workspaces,
+        steps: StepsFor,
+        connectors: crate::agents::connectors::Connectors,
+    ) -> Self {
         let events = Self {
             inner: Arc::new(Inner {
                 workspaces,
                 steps,
+                connectors,
                 running: Mutex::default(),
             }),
         };
@@ -321,6 +350,7 @@ impl WorkspaceEvents {
             stored.person.clone(),
             (self.inner.steps)(&stored.definition),
             dir.join(PROGRESS),
+            &self.inner.connectors,
         )?;
         Ok(Running { stored, kept, task })
     }
