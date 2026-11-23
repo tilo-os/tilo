@@ -28,6 +28,9 @@ pub mod app_files;
 mod appended;
 #[cfg(feature = "agents")]
 mod applications;
+// The grant a person gives with an approve of an asked record.
+#[cfg(not(target_arch = "wasm32"))]
+mod asked_grants;
 mod authored;
 mod authority;
 mod branch;
