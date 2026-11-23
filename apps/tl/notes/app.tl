@@ -1083,7 +1083,8 @@ template view note_page(
 }
 
 /// What a note says of itself, as one quiet line under its title: the notes it stands under,
-/// each opening it, and beside them when it was last written and how many words it holds.
+/// each opening it, and beside them when it was made, when it was last written and how many
+/// words it holds.
 view note_details(n: Note) {
     // The notes over `n`, the outermost first, ending at `n` itself: a trail opens every place
     // before its last, so each note it stands under stays a press and nothing of the path is
@@ -1094,6 +1095,9 @@ view note_details(n: Note) {
     let count = n.body.text.words()
     // Written since it was made: a note written once says nothing of when.
     let shows_edited = edited != .none and edited != made
+    // A page another service held before this notebook arrived here when it was imported: its
+    // arrival is a move, which the line says rather than naming it a day it was written.
+    let made_said = if n.service == "" { "Created" } else { "Moved here" }
     row(gap: .related, align: .center) {
         // The trail takes the room the facts leave, a line under the title rather than the
         // window's own: what the page says of the note stands with the note.
@@ -1124,8 +1128,15 @@ view note_details(n: Note) {
                     text("From {n.service} by {n.by}", role: .caption, secondary: true)
                 }
             }
-            // When it was written since it was made; who made it and when is the window's
-            // History's to say.
+            // When it was made — and, for a page brought here from another service, when it
+            // arrived — then when it was written since; who made it is the window's History's
+            // to say.
+            if let at = made {
+                row(gap: .tight) {
+                    text(made_said, role: .caption, secondary: true)
+                    ui.Time(at, role: .caption, secondary: true)
+                }
+            }
             if shows_edited {
                 if let at = edited {
                     row(gap: .tight) {

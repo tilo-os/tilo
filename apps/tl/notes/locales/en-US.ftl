@@ -285,6 +285,8 @@ d-6wqou47w = Note editor
     .w-page = page
 
 d-nki6assy = Note details
+    .w-created = Created
+    .w-moved-here = Moved here
     .w-from = From { $service }
     .w-from-by = From { $service } by { $by }
     .w-edited = Edited

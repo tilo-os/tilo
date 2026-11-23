@@ -1042,6 +1042,35 @@ mod cases {
         );
     }
 
+    /// A page another service held arrives here when it is imported: its line says it was moved
+    /// here rather than written here, which is the day its history names.
+    #[test]
+    fn a_page_from_another_service_says_it_moved_here() {
+        let n = Notes::new();
+        let page = n.import_page(
+            "Q3 plan.md",
+            "# Q3 plan\n\nShip the offline editor.\n",
+            "Ada",
+            "Outline",
+            "https://outline.example/doc/1",
+        );
+        let mut view = n.window();
+        view.fire_with(
+            &the_tree(&view).key.clone(),
+            "select",
+            Some(&Value::resource(&page)),
+        )
+        .unwrap();
+        view.poll_patches().unwrap();
+        assert!(line_says(&view, "Moved here"), "{}", dump(view.tree()));
+        assert!(
+            !line_says(&view, "Created"),
+            "it was not written here: {}",
+            dump(view.tree())
+        );
+        assert_eq!(moments(&view)[..1], ["2026-06-30T08:00:00Z"]);
+    }
+
     /// The editor's `/` menu offers a picture and a page of the note's own, which only the app can
     /// give it: a page made from a block is a note under the open one, titled with the words that
     /// stood in the block.
