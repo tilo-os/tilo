@@ -4,7 +4,7 @@
     {
       "id": "invite-live",
       "title": "Make a workspace, invite someone, and work together live",
-      "intent": "Ada makes a new workspace and invites Grace. Grace opens the invitation in Tilo on a computer that has never seen it, and joins. Each sees the other in their people list within about two seconds. What Ada types in Chat shows on Grace's screen within about a second.",
+      "intent": "Ada makes a new workspace and invites Grace. Grace opens the invitation in Tilo on a computer that has never seen it, and joins. Each sees the other in their people list within about two seconds. Grace signs out, and a line Ada writes in Chat says it has reached nobody yet; once Grace signs back in, it reaches her screen within about a second.",
       "walk": "shell",
       "driver": "shell/invite-live.py",
       "steps": [
@@ -16,7 +16,10 @@
         "Grace joins Garden club",
         "Ada and Grace see each other in their people lists",
         "Grace opens Chat",
-        "Ada writes a line in Chat",
+        "Grace’s computer goes offline",
+        "Ada writes a line while Grace’s computer is off",
+        "Grace signs back in",
+        "Ada’s line reaches Grace’s computer",
         "Grace sees Ada’s words"
       ]
     },

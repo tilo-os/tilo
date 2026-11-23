@@ -8,6 +8,11 @@ list within about two seconds. Grace opens Chat and the conversation with Ada
 its sidebar lists her under, and a line Ada writes in the same conversation
 shows on Grace's screen within about a second.
 
+The line says where it stands: with Grace signed out, no other computer keeps
+the workspace, so Chat says under Ada's line that it has reached nobody yet.
+Once Grace signs back in, the line reaches her computer, the note goes, and the
+conversation shows her the words.
+
 Every claim is read off the two shells: the workspaces each holds, the people
 its own presence lists, the controls each draws, and the words Chat shows.
 
@@ -26,6 +31,7 @@ from story import (  # noqa: E402
     CHROME, SHELL, Failed, Person, Story, front, in_front_named, invite_link, peers,
     stand_in as stands_in, until, walk, workspaces,
 )
+from real_apps import Refused  # noqa: E402
 
 WORKSPACE = "Garden club"
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
@@ -33,6 +39,9 @@ JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
 # under apps/tl), where the two write to each other.
 TL_APPS = ("chat",)
 CHAT = "so.tilo.chat"
+# This session's own screen: its log-out is what the power menu's row runs, and it takes this
+# computer off Tilo and the workspace with it until the person signs in again.
+SCREEN = "session:screen"
 # The line Ada writes.
 LINE = f"Grace, the tomatoes are planted ({int(time.time()) % 10000:04d})."
 # What Chat says under a line no other device has taken in yet (std.reach_note).
@@ -153,21 +162,62 @@ def steps(story: Story) -> None:
 
     story.step("Grace opens Chat", lambda: opens_conversation(grace, "Ada"), people=[grace])
 
+    def grace_goes_offline():
+        # Grace signs out, as the power menu logs a person out: the session ends, and with it
+        # every link this computer takes the workspace on. She is the only other computer that
+        # keeps it, so nothing Ada writes now can reach anyone until she signs in again.
+        try:
+            grace.session.invoke(SHELL, SCREEN, "log-out")
+        except Failed as error:
+            # Signing out ends the session, which may stop before its answer is read back; the
+            # next wait is what says whether the shell went. A refusal is not that.
+            if isinstance(error, Refused):
+                raise
+        until("Grace's computer to be off", lambda: not grace.running, 60, 0.25)
+
+    story.step("Grace’s computer goes offline", grace_goes_offline, people=[ada, grace])
+
     def ada_writes():
         opens_conversation(ada, "Grace")
         ada.press(composer("Grace"), "Chat's composer")
         ada.session.type(LINE)
         # Enter sends what the composer holds, as Chat's own field and button both do.
         ada.session.key("Enter")
-        # The line stands in Ada's conversation at once, saying it has reached nobody until a
-        # device that keeps the workspace takes it in: the note going is the workspace taking it.
+        # The line stands in Ada's conversation at once, and no other device can take it in:
+        # Chat says so under it until one does.
+        began = time.monotonic()
         try:
-            until("Ada's line to reach the workspace",
-                  lambda: ada.shows(LINE) and not ada.shows(NOT_REACHED), 60, 0.1)
+            until("Ada's line to say it reached nobody yet",
+                  lambda: ada.shows(LINE) and ada.shows(NOT_REACHED), 60, 0.1)
         finally:
             story.note("chat-controls-after-send", ada.names())
+        return {"tookMs": (time.monotonic() - began) * 1000}
 
-    story.step("Ada writes a line in Chat", ada_writes, people=[ada])
+    story.step("Ada writes a line while Grace’s computer is off", ada_writes, people=[ada])
+
+    def grace_returns():
+        # The session is over, not running: signing in starts it again on the state and desktop
+        # Grace left, as a login brings back the person's own computer.
+        grace.stop()
+        took = grace.start(fresh=False, tilolang=TL_APPS)
+        story.timing("Grace's session start again, to its first frame", took["tookMs"])
+        until(f"Grace's shell to hold {WORKSPACE} again",
+              lambda: any(w.get("id") == shared["id"] for w in workspaces(grace)), 120, 0.5)
+        stands_in(grace, shared["id"])
+        opens_conversation(grace, "Ada")
+        return {"tookMs": took["tookMs"]}
+
+    story.step("Grace signs back in", grace_returns, people=[grace])
+
+    def reaches():
+        # Grace's computer takes the line in on the link that comes up: another device keeping
+        # the workspace has it now, so the note under Ada's line goes.
+        began = time.monotonic()
+        until("Ada's line to reach Grace's computer",
+              lambda: ada.shows(LINE) and not ada.shows(NOT_REACHED), 90, 0.1)
+        return {"tookMs": (time.monotonic() - began) * 1000}
+
+    story.step("Ada’s line reaches Grace’s computer", reaches, people=[ada])
 
     def grace_sees():
         began = time.monotonic()

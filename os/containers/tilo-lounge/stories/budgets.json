@@ -56,7 +56,10 @@
       "Grace joins Garden club": 15000,
       "Ada and Grace see each other in their people lists": 2000,
       "Grace opens Chat": 120000,
-      "Ada writes a line in Chat": 120000,
+      "Grace’s computer goes offline": 15000,
+      "Ada writes a line while Grace’s computer is off": 120000,
+      "Grace signs back in": 180000,
+      "Ada’s line reaches Grace’s computer": 90000,
       "Grace sees Ada’s words": 1000
     },
     "cli-login-ticket": {
