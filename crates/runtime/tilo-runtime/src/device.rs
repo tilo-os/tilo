@@ -38,7 +38,7 @@ mod person;
 pub mod processes;
 pub mod serve;
 pub mod services;
-mod shortcuts;
+pub mod shortcuts;
 pub mod take_work;
 mod ticket;
 #[cfg(test)]

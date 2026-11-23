@@ -34,8 +34,9 @@ use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, 
 use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
 use tilo_workspace_service::apps::services::{
     ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch, SpeakerChange,
-    SpeakerServices, WifiContinuityServices, WorkspaceMemberships,
+    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
+    ShortcutLibraryServices, SpeakerChange, SpeakerServices, WifiContinuityServices,
+    WorkspaceMemberships,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -365,8 +366,9 @@ pub struct Sealed {
 
 /// What this session hands the broker besides the link and the launcher: the
 /// board every app's live activity shows on, the index its publications land
-/// in, the session it decides a workspace against, the workspace's activity it
-/// serves, and the runs of what people ask its agents.
+/// in, the session it decides a workspace against, the shortcuts it saves and
+/// runs, the workspace's activity it serves, and the runs of what people ask
+/// its agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
     /// The calls this session's apps join: the service an app's
@@ -377,6 +379,9 @@ pub struct Hosted {
     /// what search finds of an app that never opened them here.
     pub records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
     pub layout: std::sync::Arc<LayoutAuthority>,
+    /// The workspace's shortcuts as the broker saves and runs them, from this device's own
+    /// workspace service; no session without a device identity keeps any.
+    pub shortcuts: Option<std::sync::Arc<dyn ShortcutLibraryServices>>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
@@ -1095,6 +1100,7 @@ fn broker_services(
         content,
         records,
         layout,
+        shortcuts,
         activity,
         agents,
         agent_sessions,
@@ -1223,11 +1229,15 @@ fn broker_services(
         workspace_governance: BrokerService::unserved(
             "workspace grants are given in the session's own sheets, not by an app",
         ),
-        // A shortcut a person saves lands in its workspace, and a shortcut's run executes on the
-        // device's runtime: this session installs neither.
-        shortcut_library: BrokerService::unserved(
-            "shortcuts are saved and run by the device's own broker, not by this session",
-        ),
+        // A shortcut a person saves lands in its workspace, written through this device's own
+        // workspace service, and a shortcut's run executes on the library's runtime. A session
+        // with no device identity keeps no shortcut and says so.
+        shortcut_library: match shortcuts {
+            Some(library) => BrokerService::served(library),
+            None => BrokerService::unserved(
+                "this session holds no device identity to save a shortcut with",
+            ),
+        },
         // The device's shortcut catalogue, as the shortcut guide and
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
@@ -1744,6 +1754,7 @@ mod tests {
                 crate::engine::revocations_of(None),
                 Names::default(),
             )),
+            shortcuts: None,
             activity: crate::activity_provider::wire(requests()),
             agents: None,
             agent_sessions: None,
@@ -2365,5 +2376,77 @@ mod tests {
         ) -> Result<Started, ApiError> {
             Ok(Started::Done(tilo_actions::ActionOutput::default()))
         }
+    }
+
+    /// The broker this session starts answers the shortcut library a launched app asks for: the
+    /// library in its services writes a shortcut through this device's own workspace service, and
+    /// the workspace lists it.
+    #[tokio::test]
+    async fn the_services_an_app_is_given_answer_the_shortcut_library() {
+        use tilo_workspace_service::apps::services::ShortcutLibraryRequest;
+        use tilo_workspace_service::workspaces::fixtures;
+
+        let directory = tempfile::tempdir().expect("a directory for the service");
+        let (key, cert) = fixtures::governor();
+        let host = fixtures::test_host(directory.path(), &key, &cert).await;
+        let workspaces = host.workspaces().clone();
+        let workspace = workspaces
+            .create("Home")
+            .await
+            .expect("a workspace")
+            .workspace;
+        let library = tilo_runtime::device::shortcuts::Shortcuts::new(
+            workspaces.clone(),
+            cert.clone(),
+            std::sync::Arc::new(key.clone()),
+        )
+        .expect("a runtime for shortcut runs");
+        let decided = broker_services(
+            Link::for_test(),
+            std::sync::Arc::new(Launches::default()),
+            None,
+            Hosted {
+                shortcuts: Some(std::sync::Arc::new(library)),
+                ..hosted(None)
+            },
+            None,
+            None,
+            None,
+        );
+        assert!(
+            decided
+                .decisions()
+                .iter()
+                .any(|(service, why)| *service == "shortcut_library" && why.is_none()),
+            "the broker this session starts serves the shortcut library"
+        );
+        let library = decided
+            .into_host_services()
+            .shortcut_library
+            .expect("the broker holds the library it serves");
+        let saved = library
+            .store(ShortcutLibraryRequest {
+                workspace: workspace.clone(),
+                actor: tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
+                change: serde_json::from_value(serde_json::json!({
+                    "save": { "id": "tidy", "name": "Tidy", "steps": [], "triggers": [] },
+                }))
+                .expect("a shortcut change"),
+                context: tilo_actions::ActionContext::default(),
+                invocation: tilo_actions::InvocationId::new(),
+            })
+            .await;
+        assert_eq!(saved, Ok(()));
+        let described = workspaces.described().await;
+        let listed = described
+            .iter()
+            .find(|described| described.id().to_string() == workspace)
+            .expect("the workspace the shortcut was saved in");
+        assert_eq!(
+            listed.shortcuts.len(),
+            1,
+            "the workspace lists the shortcut the app saved"
+        );
+        host.shutdown().await;
     }
 }

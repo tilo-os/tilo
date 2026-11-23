@@ -729,9 +729,11 @@ fn broker_services(
         // The person's shortcuts, saved into the workspaces this device holds and run here: the
         // same store the trigger runner arms them from, so a computer keeps its shortcuts with
         // no desktop session open on it.
-        shortcut_library: Some(Arc::new(super::shortcuts::Shortcuts::new(Arc::clone(
-            parts.workspaces,
-        ))?) as Arc<dyn ShortcutLibraryServices>),
+        shortcut_library: Some(Arc::new(super::shortcuts::Shortcuts::new(
+            parts.workspaces.copies().clone(),
+            parts.workspaces.device_cert().clone(),
+            parts.workspaces.signer(),
+        )?) as Arc<dyn ShortcutLibraryServices>),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
