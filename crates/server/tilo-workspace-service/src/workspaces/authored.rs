@@ -105,21 +105,35 @@ impl Workspaces {
                     .with_message(tilo_actions::FrameworkChange::Native.change_message()),
             );
         }
-        let mut candidate = governed.peer().clone();
-        let published = publish_authored(
-            &mut candidate,
-            keys.as_ref(),
-            (app, name),
-            (&mut document, heads),
-            (&self.inner.host.key, system_time(now)),
-        )?;
+        // Build the change on the workspace as it stands, with its copy locked
+        // from the build to the commit, the staging the workspace's other
+        // changes use. The link takes members' writes into that same copy
+        // without the workspace's other lock, so a candidate cloned before
+        // this lock can be older than the copy by the time it commits, and the
+        // commit is then refused for history it was not built on. Locked here,
+        // a write the link takes in meanwhile waits for this commit, which
+        // publishes it with this change.
+        let (result, published) = governed
+            .change_held(
+                &self.inner.host.key,
+                system_time(now),
+                |_, candidate| {
+                    let published = publish_authored(
+                        candidate,
+                        keys.as_ref(),
+                        (app, name),
+                        (&mut document, heads),
+                        (&self.inner.host.key, system_time(now)),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    Ok(((result, published), published))
+                },
+                |record, _| Ok(record.collaboration.clone()),
+            )
+            .map_err(CollaborationError::new)?;
         if !published {
             return Ok(result);
         }
-        let collaboration = governed.collaboration().clone();
-        governed.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-            Ok(collaboration)
-        })?;
         self.settle(&mut governed).await?;
         Ok(result)
     }

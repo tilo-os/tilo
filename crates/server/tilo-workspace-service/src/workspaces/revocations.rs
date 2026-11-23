@@ -184,14 +184,24 @@ impl Workspaces {
             return Ok(());
         }
         let now = tilo_clock::wall();
-        let mut candidate = workspace.peer().clone();
-        if candidate
-            .governance_mut()
-            .publish_governed_revocations(&carry, key, now)?
-        {
-            workspace.commit(candidate, key, now, |record, _| {
-                Ok(record.collaboration.clone())
-            })?;
+        // Written on the workspace as it stands, with its copy locked from the
+        // build to the commit, the staging the workspace's other changes use:
+        // a write the link takes in meanwhile waits for this commit, which
+        // publishes it with the revocation, instead of landing between the
+        // copy this change was made on and it and leaving the commit refused
+        // for history it was not built on.
+        let carried_now = workspace.change_held(
+            key,
+            now,
+            |_, candidate| {
+                let carried = candidate
+                    .governance_mut()
+                    .publish_governed_revocations(&carry, key, now)?;
+                Ok((carried, carried))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )?;
+        if carried_now {
             tracing::info!(workspace = %workspace.workspace(), revocations = carry.len(), "workspace carries revocations");
         }
         self.settle(workspace).await
