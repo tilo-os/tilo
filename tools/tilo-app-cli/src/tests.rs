@@ -5627,4 +5627,24 @@ fn every_graph_template_declares_the_contract_its_template_kind_expects() {
     }
 }
 
+#[test]
+fn validate_app_id_enforces_the_canonical_length_bound() {
+    let at_limit = format!("org.example.{}", "a".repeat(243));
+    assert_eq!(at_limit.len(), 255);
+    assert!(
+        validate_app_id(&at_limit).is_ok(),
+        "three-part id of exactly 255 bytes must be accepted"
+    );
+
+    let too_long = format!("org.example.{}", "a".repeat(244));
+    assert_eq!(too_long.len(), 256);
+    let error = validate_app_id(&too_long)
+        .expect_err("three-part id over 255 bytes must be refused")
+        .to_string();
+    assert!(
+        error.contains("255"),
+        "length refusal must name the 255-byte limit: {error}"
+    );
+}
+
 mod scaffolded_offers;

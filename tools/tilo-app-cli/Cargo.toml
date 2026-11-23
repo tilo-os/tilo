@@ -27,6 +27,7 @@ hex.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 image = { workspace = true, features = ["png"] }
+tilo-app-id.workspace = true
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 # Inside a Tilo session, `dev` hands the app the shell's file chooser the
 # way the launcher does.
