@@ -797,6 +797,35 @@ fn tilolang_item_surface() -> tilo_actions::surface::Surface {
     }))
 }
 
+/// The surface of a tilolang package whose record holds one record of another kind in a field
+/// (`stored = "record"`), not in a collection.
+fn tilolang_holding_surface() -> tilo_actions::surface::Surface {
+    toml_like(serde_json::json!({
+        "kind": "tl.so.tilo.clocks.Clocks",
+        "label": "Clocks",
+        "version": 1,
+        "verbs": [{"id": "$create", "kind": "undoable"}],
+        "fields": [
+            {"path": "n1", "owner": "clocks", "title": "name", "type": "text"},
+            {"path": "s2", "owner": "clocks", "title": "stopwatch", "stored": "record",
+             "type": {"resource": "tl.so.tilo.clocks.Stopwatch"}},
+        ],
+    }))
+}
+
+/// The surface of the record [`tilolang_holding_surface`]'s field holds.
+fn tilolang_held_surface() -> tilo_actions::surface::Surface {
+    toml_like(serde_json::json!({
+        "kind": "tl.so.tilo.clocks.Stopwatch",
+        "label": "Stopwatch",
+        "version": 1,
+        "verbs": [{"id": "$create", "kind": "undoable"}],
+        "fields": [
+            {"path": "l3", "owner": "stopwatch", "title": "label", "type": "text"},
+        ],
+    }))
+}
+
 /// A surface that names no type of its own kind still declares the record it describes: the store
 /// knows the kind its resources are, the fields they hold, and what each verb writes of them.
 #[test]
@@ -1969,6 +1998,55 @@ mod store {
             .get("tl.so.tilo.lang.gallery.Gallery", "g", &all)
             .expect("the root stands");
         assert_eq!(held.scalar("name"), Value::from("Gallery"));
+    }
+
+    /// A record a field holds is nested in the record holding it, as a collection's items are:
+    /// the store admits it under its holder, and the holder's type says it nests that kind.
+    #[test]
+    fn a_record_a_field_holds_is_admitted_under_its_holder() {
+        let holding = Schema::from_surface(&super::tilolang_holding_surface());
+        assert_eq!(
+            holding.get("tl.so.tilo.clocks.Clocks").unwrap().nested,
+            [(
+                "stopwatch".to_owned(),
+                "tl.so.tilo.clocks.Stopwatch".to_owned()
+            )],
+            "the holder's type nests the held kind"
+        );
+        let mut there = Store::new();
+        there.declare(holding);
+        there.declare(Schema::from_surface(&super::tilolang_held_surface()));
+        let anyone = |_: &Proposal<'_>| true;
+        let record = |parent: Option<&str>, field: &str, text: &str| Resource {
+            readers: MEMBERS.to_owned(),
+            parent: parent.map(str::to_owned),
+            order: None,
+            fields: BTreeMap::from([(field.to_owned(), Cell::One(text.into()))]),
+        };
+        let mut made = Store::new();
+        let mut changes = made
+            .put(
+                "tl.so.tilo.clocks.Clocks",
+                "c",
+                record(None, "name", "Clocks"),
+                &stamp("$create", "i1"),
+            )
+            .unwrap();
+        changes.extend(
+            made.put(
+                "tl.so.tilo.clocks.Stopwatch",
+                "s",
+                record(Some("c"), "label", "Tea"),
+                &stamp("$create", "i2"),
+            )
+            .unwrap(),
+        );
+        assert_eq!(deliver(&changes, &mut there, &anyone), []);
+        let all = |_: &str| true;
+        let held = there
+            .get("tl.so.tilo.clocks.Stopwatch", "s", &all)
+            .expect("the held record stands");
+        assert_eq!(held.scalar("label"), Value::from("Tea"));
     }
 
     #[test]

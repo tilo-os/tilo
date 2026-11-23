@@ -179,7 +179,15 @@ impl Schema {
         let types = declared
             .iter()
             .filter(|ty| !ty.is_enum())
-            .map(|ty| Type::of(ty, &enums, &cases))
+            .map(|ty| {
+                let mut ty_of = Type::of(ty, &enums, &cases);
+                // A record one of the surface's own fields holds is nested in its record, as an
+                // item of a collection is: its type names no `stored`, the surface's field does.
+                if ty.name == own_name {
+                    ty_of.nested.extend(held_records(surface));
+                }
+                ty_of
+            })
             .collect();
         let verbs = surface
             .verbs
@@ -221,7 +229,7 @@ impl Schema {
 }
 
 /// The kinds the surface's own record holds records of that no surface here types: each
-/// collection of resources, by its kind.
+/// collection of resources and each record a field holds, by its kind.
 fn nested_kinds(surface: &Surface) -> BTreeSet<String> {
     let mut kinds = BTreeSet::new();
     for field in surface
@@ -239,7 +247,34 @@ fn nested_kinds(surface: &Surface) -> BTreeSet<String> {
             kinds.insert(kind.clone());
         }
     }
+    kinds.extend(held_records(surface).into_iter().map(|(_, kind)| kind));
     kinds
+}
+
+/// The records the surface's own record holds one of in a field (`stored = "record"`), each by
+/// the name its record keeps the field under ([`own_type`]) and the kind it is.
+fn held_records(surface: &Surface) -> Vec<(String, String)> {
+    let by_title = surface.verbs.iter().any(|verb| verb.id == CREATE_ACTION);
+    surface
+        .fields
+        .iter()
+        .filter(|field| !field.path.contains('.') && field.stored == RESOURCE_UNIT)
+        .filter_map(|field| {
+            let mut ty = &field.ty;
+            while let FieldType::Option(inner) = ty {
+                ty = inner;
+            }
+            let FieldType::Resource(kind) = ty else {
+                return None;
+            };
+            let name = if by_title && !field.title.is_empty() {
+                field.title.clone()
+            } else {
+                field.path.clone()
+            };
+            Some((name, kind.clone()))
+        })
+        .collect()
 }
 
 /// The surface's own record, as a type: the fields it lists at its root (a dotted path names a
