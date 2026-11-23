@@ -595,22 +595,26 @@ The copies:
   `ActionEnvelope` replay, `ActionProvider`), with `action-policy` deciding
   every call and `automation` on top. The OS and session verbs are
   providers in it, and their descriptions are generated.
-- **One view path**: tilolang view patches, through
-  `tilo-app-window::reconcile`, to ui-core widgets. ui-core is the one widget
-  library. The web page's HTML comes from the same view output, not from a
-  second per-widget path. Today the page renders the composed widget tree
-  through each widget's `html` (`composition.rs` `HtmlCx`, 277 files); the
-  page entry (`PageShow`, `PageAct`) stays as the seam, and a renderer from
-  view nodes replaces `Page::render` behind it, deleting `HtmlCx` view by
-  view. No new `html` code is written meanwhile.
+- **One view path**: views, from tilolang view patches through
+  `tilo-app-window::reconcile` or from a Rust app, become widgets of the UI
+  library. The web page's HTML comes from one renderer over the semantics
+  tree every window already produces (role, name, value, state, actions,
+  bounds), written as semantic HTML in the shared components' styles; a
+  press on the page is that node's accessibility action. It serves Rust and
+  tilolang windows alike, replaces every widget's `html` (`HtmlCx`) in one
+  push once the page walks match, and there is no second renderer from view
+  nodes beside it.
 - **One sandbox for app code**: `tilolang-process`, started through
   `app-launch` and the `launcher` sandbox when an action is called or a view
   is shown, one per workspace and app, serving every window, page viewer and
   windowless call of that app, and stopped when idle. It is how the system
   runs app code, not an app being open. `app-keeper` stays only for programs that are not Tilo
   apps.
-- **One undo boundary and one executor in the toolkit**: `LocalDispatch`.
-  Widgets change things only through bound actions.
+- **One undo boundary and one executor, in the app SDK**: `LocalDispatch`.
+  The UI library's widgets take plain closures; an app's state changes only
+  through its typed actions, which agents and automations call. A press on a
+  control is not itself a published action: an agent shown a window presses
+  through the same accessibility action a person's assistive tool uses.
 
 ### What goes
 
