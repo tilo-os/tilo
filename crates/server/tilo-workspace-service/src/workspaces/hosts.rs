@@ -52,6 +52,11 @@ use tilo_server_protocol::WorkspaceId;
 /// ([`CATCH_UP_ABSENT`]).
 const ABSENT_PER_ASK: usize = 4096;
 
+/// How many answers a catch-up takes at most: one follows each time what the device
+/// answering it lacks narrowed or its store moved, and a device that keeps writing while it
+/// answers moves its store without ever catching up, so the asking is bounded.
+const CATCH_UP_ANSWERS: u32 = 100;
+
 /// How long a server taking a workspace in waits for its content to move before it answers what
 /// it still lacks ([`Workspaces::content_settled`]).
 const CONTENT_SETTLES_WITHIN: Duration = Duration::from_secs(60);
@@ -381,7 +386,10 @@ impl Workspaces {
     /// handed the workspace afresh, as `role`. Answers that address once the
     /// server says it keeps every change this device's store keeps of the
     /// workspace ([`Self::caught_up_with_this`]): only then may this device
-    /// go without the workspace losing any of them.
+    /// go without the workspace losing any of them. Before this answers,
+    /// every other device the workspace names to keep it that can be reached
+    /// takes in the change naming the new one, so whichever device goes next,
+    /// the rest still reach one another.
     ///
     /// # Errors
     ///
@@ -453,8 +461,42 @@ impl Workspaces {
                 ),
             });
         }
+        // A device that keeps the workspace but never hears of the one just named cannot link
+        // to it once this device has gone, and nothing else would tell it: each takes in the
+        // change before this answers.
+        self.tell_the_others(workspace, workspace_id, device).await;
         tracing::info!(%workspace, server = %hex::encode(device), person = %hex::encode(member.user_public_key), ?role, "another device holds the workspace");
         Ok(hint)
+    }
+
+    /// Have every device that keeps `workspace`, besides this one and `named`, take in every
+    /// change this device keeps, the change naming `named` among them: a device that never
+    /// hears of a newly named one cannot link to it once the device that named both is gone.
+    /// One that cannot be reached is no live copy to tell, and is told when it next links;
+    /// nothing of the workspace is lost by answering without it.
+    async fn tell_the_others(&self, workspace: &str, workspace_id: WorkspaceId, named: [u8; 32]) {
+        let own = self.inner.host.cert.device_public_key;
+        let Ok(devices) = self.hosts(workspace).await else {
+            tracing::warn!(%workspace, "the devices that keep a workspace were not read to tell them of a newly named one");
+            return;
+        };
+        for hint in devices {
+            let device = host_device(&hint);
+            if device == own || device == named {
+                continue;
+            }
+            let told = async {
+                let address = WorkspaceDeviceHintV1::from_transport_hint(&hint)
+                    .map_err(|error| error.to_string())?;
+                let reached = self.reach_host(device, address.endpoint_addr).await?;
+                self.caught_up_with_this(workspace, workspace_id, &reached)
+                    .await
+            }
+            .await;
+            if let Err(error) = told {
+                tracing::warn!(%workspace, device = %hex::encode(device), %error, "a device that keeps the workspace did not take in a newly named one; it may not reach it");
+            }
+        }
     }
 
     /// Ask `reached`, a server `workspace` names among those keeping it, to
@@ -517,9 +559,9 @@ impl Workspaces {
 
     /// Ask `reached` to take in what this device keeps of `workspace`, over
     /// `link`, until it says it keeps it all, or answers that neither narrowed
-    /// what it lacks nor fetched any ([`Self::caught_up_with_this`]). The
-    /// content this device keeps none of is `absent`, or, when `None`, the
-    /// list it handed the server in parts.
+    /// what it lacks, nor fetched any, nor moved where its store stands
+    /// ([`Self::caught_up_with_this`]). The content this device keeps none of
+    /// is `absent`, or, when `None`, the list it handed the server in parts.
     async fn caught_up_counting(
         &self,
         workspace: &str,
@@ -529,8 +571,13 @@ impl Workspaces {
         absent: Option<Vec<Value>>,
     ) -> Result<(), String> {
         let server = reached.certificate.device_public_key;
-        let mut before: Option<(usize, u32)> = None;
+        // What it lacked, could not read, and held before the last answer. Its standing moves
+        // when it takes frames in even while this device keeps writing more, so a count that
+        // grew is progress too, and not an answer to give up on.
+        let mut before: Option<(usize, u32, Vec<tilo_peer_state::store::Cursor>)> = None;
+        let mut answers: u32 = 0;
         loop {
+            answers = answers.saturating_add(1);
             let mut arguments = Map::new();
             arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
             arguments.insert("names_content".into(), Value::Bool(names_content));
@@ -560,23 +607,29 @@ impl Workspaces {
                 let rest = read_standing(reached, workspace, cursors.last()).await?;
                 cursors.extend(rest);
             }
+            cursors.sort_unstable();
+            cursors.dedup();
             let lacked = link.lacked_by(server, &cursors)?;
             let content_missing = caught_up.content_missing;
             if lacked == 0 && content_missing == 0 {
                 return Ok(());
             }
-            let narrowed = before.is_none_or(|(lacked_before, missing_before)| {
-                lacked < lacked_before || content_missing < missing_before
-            });
-            if !narrowed && !caught_up.fetched {
+            let narrowed = before.as_ref().is_none_or(
+                |(lacked_before, missing_before, cursors_before)| {
+                    lacked < *lacked_before
+                        || content_missing < *missing_before
+                        || cursors != *cursors_before
+                },
+            );
+            if (!narrowed && !caught_up.fetched) || answers >= CATCH_UP_ANSWERS {
                 return Err(format!(
                     "the server {} still lacks {lacked} of the changes this device keeps and \
                      {content_missing} blobs of the content they name (each resource still waiting \
-                     for its keys there counts as one)",
+                     for its keys there counts as one; {answers} answers)",
                     hex::encode(server)
                 ));
             }
-            before = Some((lacked, content_missing));
+            before = Some((lacked, content_missing, cursors));
         }
     }
 
