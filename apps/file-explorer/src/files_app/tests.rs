@@ -2873,6 +2873,105 @@ mod command_path_tests {
         );
     }
 
+    /// The surface the session's catalogue is built from says what each row offers with a device
+    /// near: the row's `send-to` names every device online as a choice of its target, read by the
+    /// device's name, and a value outside them binds nothing. An agent or a script picks the
+    /// device from here, as a person does in the row's menu.
+    #[test]
+    #[cfg(unix)]
+    fn a_published_row_offers_each_nearby_device_as_a_send_to_choice() {
+        use ui::collaboration::{
+            CollabEvent, CollabRequest, NearbyTargetHandle, NearbyTransferCommand,
+            NearbyTransferReply, NearbyTransferSnapshot, NearbyTransferTarget,
+        };
+        fn find<'a>(
+            rows: &'a [ui::tilo_actions::ResourceSpec],
+            action: &str,
+        ) -> Option<&'a ui::tilo_actions::ActionSpec> {
+            rows.iter().find_map(|row| {
+                row.actions
+                    .iter()
+                    .find(|spec| spec.id == action)
+                    .or_else(|| find(&row.children, action))
+            })
+        }
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("report.txt"), b"to send").unwrap();
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::FileExplorerShell>::for_person(
+                &"fe".repeat(32),
+            )
+            .unwrap();
+        app.with_widget(|w: &mut FileExplorerWidget| {
+            w.state().navigate(directory.path().to_path_buf());
+        });
+        app.settle();
+        app.with_widget(|w: &mut FileExplorerWidget| {
+            w.state()
+                .nearby_send
+                .handle_event(&CollabEvent::NearbyTransferChanged);
+            let request_id = w
+                .state()
+                .nearby_send
+                .take_requests()
+                .iter()
+                .find_map(|request| match request {
+                    CollabRequest::NearbyTransferCommand {
+                        request_id,
+                        command: NearbyTransferCommand::Snapshot,
+                    } => Some(*request_id),
+                    _ => None,
+                })
+                .unwrap();
+            let handle = NearbyTargetHandle::from_issued_bytes([7; 16]);
+            w.state()
+                .nearby_send
+                .handle_event(&CollabEvent::NearbyTransferCommandResult {
+                    request_id,
+                    result: Ok(NearbyTransferReply::Snapshot {
+                        snapshot: NearbyTransferSnapshot {
+                            targets: vec![NearbyTransferTarget {
+                                handle,
+                                label: "Kitchen tablet".into(),
+                                online: true,
+                            }],
+                            ..NearbyTransferSnapshot::default()
+                        },
+                    }),
+                });
+        });
+        app.settle();
+        let resources = app.harness().resources();
+        let send = find(&resources, "send-to")
+            .expect("a row offers sending to the device the surface names");
+        let target = send
+            .params()
+            .iter()
+            .find(|param| param.name == "target")
+            .expect("the device is the action's target");
+        let device = hex::encode([7u8; 16]);
+        assert_eq!(
+            target
+                .choices
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec![device.clone()],
+            "the device online is the one choice"
+        );
+        assert_eq!(
+            target.choice_label(&device),
+            Some("Kitchen tablet"),
+            "the choice reads as the device's name"
+        );
+        let mut refused = serde_json::Map::new();
+        refused.insert("target".into(), "not-a-device".into());
+        assert!(
+            send.build_json(&refused).is_err(),
+            "a value the surface did not offer binds nothing"
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn airdrop_file_action_requires_host_availability_and_cannot_submit_trust() {
