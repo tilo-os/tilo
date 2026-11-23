@@ -37,7 +37,7 @@ disk=$check/disk.qcow2
   || { echo "no installed dev disk in $check: the check needs os-dev-disk-$arch" >&2; exit 1; }
 [[ -x $tilo_vm ]] || { echo "no $tilo_vm: the check needs tilo-vm-binary-$arch" >&2; exit 1; }
 commit=${TILO_ACCEPTANCE_COMMIT:-$(git rev-parse HEAD)}
-install -m 0755 "$tilo_vm" /usr/local/bin/tilo-vm
+install -m 0755 -t /usr/local/bin "$tilo_vm" "${tilo_vm%/*}/tilo" "${tilo_vm%/*}/tilo-runtime"
 echo "branching a box of ${commit:0:12}'s dev image $(cat "$check/image-digest")"
 
 # The installed disk is never booted: box's disk is a qcow2 overlay of it the session user owns.

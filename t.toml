@@ -3265,7 +3265,7 @@ default = false
 [[check]]
 name = "tilo-vm-binary-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-vm --bin tilo-vm\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncp \"$CARGO_TARGET_DIR/debug/tilo-vm\" /target/tilo-vm-bin/\n"
+run = "cargo build --locked -p tilo-vm --bin tilo-vm -p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncd \"$CARGO_TARGET_DIR/debug\" && cp tilo-vm tilo tilo-runtime /target/tilo-vm-bin/\n"
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/tilo-vm-bin/**"]
@@ -3274,7 +3274,7 @@ default = false
 [[check]]
 name = "tilo-vm-binary-aarch64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-vm --bin tilo-vm\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncp \"$CARGO_TARGET_DIR/debug/tilo-vm\" /target/tilo-vm-bin/\n"
+run = "cargo build --locked -p tilo-vm --bin tilo-vm -p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncd \"$CARGO_TARGET_DIR/debug\" && cp tilo-vm tilo tilo-runtime /target/tilo-vm-bin/\n"
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
 outputs = ["/target/tilo-vm-bin/**"]

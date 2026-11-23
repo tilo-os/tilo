@@ -21,6 +21,16 @@ use crate::sshkey;
 /// How long a booting VM has to spend its ticket.
 const JOIN_WAIT: Duration = Duration::from_secs(300);
 
+/// The `tilo` command that adds VMs: the one built beside this tilo-vm when there is one (a
+/// checkout's build, or CI's tilo-vm with the command it built), else the one on `PATH`.
+fn tilo_program() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("tilo")))
+        .filter(|beside| beside.is_file())
+        .unwrap_or_else(|| "tilo".into())
+}
+
 /// A ticket handed to a VM, and the `tilo device add` that waits for it to be spent.
 pub(super) struct Joining {
     child: Child,
@@ -49,7 +59,7 @@ impl App {
         if let Some(machine) = Machine::own(&dir)? {
             return Ok(machine);
         }
-        let output = Command::new("tilo")
+        let output = Command::new(tilo_program())
             .args(["login", "--new-identity", "--json"])
             .envs(own_env(&dir))
             .output()
@@ -83,7 +93,7 @@ impl App {
             return Ok(None);
         }
         let machine = self.adding_machine()?;
-        let mut child = Command::new("tilo")
+        let mut child = Command::new(tilo_program())
             .args(["device", "add", "--json"])
             .envs(machine.env())
             .stdin(Stdio::null())

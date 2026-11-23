@@ -49,7 +49,7 @@ disk=$check/disk.qcow2
 [[ -s $disk && -s $check/image-digest ]] \
   || { echo "no installed dev disk in $check: the check needs os-dev-disk-$arch" >&2; exit 1; }
 [[ -x $tilo_vm ]] || { echo "no $tilo_vm: the check needs tilo-vm-binary-$arch" >&2; exit 1; }
-install -m 0755 "$tilo_vm" /usr/local/bin/tilo-vm
+install -m 0755 -t /usr/local/bin "$tilo_vm" "${tilo_vm%/*}/tilo" "${tilo_vm%/*}/tilo-runtime"
 commit=${TILO_ACCEPTANCE_COMMIT:-$(git rev-parse HEAD)}
 echo "boxes from ${commit:0:12}'s dev image $(cat "$check/image-digest")"
 
