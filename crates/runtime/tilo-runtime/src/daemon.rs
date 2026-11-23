@@ -610,8 +610,8 @@ pub(crate) struct Endpoint<H> {
     search: Arc<OnceLock<Arc<tilo_os_search::OsSearch>>>,
     /// Where answers read the content actions produced.
     media: Option<Arc<dyn tilo_mcp::MediaReader>>,
-    /// The person's other devices, which a `--connect --device` client is carried to and the
-    /// `tilo_devices` tool lists; `None` for an endpoint that reaches none.
+    /// The person's other devices, which a `--connect --device` client is carried to; `None` for
+    /// an endpoint that reaches none.
     other_devices: Option<crate::other_devices::OtherDevices>,
     /// For the connections of the agents this computer's login was made for: the device's
     /// presence in its workspace, which answers their account calls and says when the person

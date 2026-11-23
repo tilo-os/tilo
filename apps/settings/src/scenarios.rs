@@ -403,7 +403,7 @@ pub(crate) fn access_fixture(
 ) -> Option<crate::panes::devices_access::AccessSample> {
     use crate::device_fleet::DeviceView;
     use crate::panes::devices_access::AccessSample;
-    use ui::tilo_actions::remote::identity_admin::KeyKind;
+    use ui::tilo_actions::remote::device_tickets::KeyKind;
     use ui::tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach, Server};
     const MINUTE: i64 = 60_000;
     const DAY: i64 = 86_400_000;

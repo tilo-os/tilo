@@ -446,6 +446,11 @@ impl Daemon {
         tilo_rt::app()
             .handle()
             .spawn(async move { restoring.restore().await });
+        // What the person's other devices ask of this one: the device actions that are its own.
+        workspaces.copies().provide(
+            tilo_device_identity::login::PROVIDER,
+            Arc::new(super::ticket::OnThisDevice(Tickets::clone(&tickets))),
+        );
         stage("serving the device's endpoint");
         let endpoint_router = serve_device_endpoint(EndpointServing {
             workspaces: &workspaces,
@@ -1997,9 +2002,5 @@ impl crate::other_devices::Whereabouts for Known {
                 .map(|(workspace, ..)| workspace.to_string())
                 .collect()
         })
-    }
-
-    fn reachable(&self, _workspace: &str, _device: [u8; 32]) -> bool {
-        true
     }
 }

@@ -37,12 +37,12 @@ use tilo_actions::remote::{
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity::device_admin;
 use tilo_lock::MutexRecover as _;
-use tilo_server_session::workspaces::{PersonalList, WorkspaceLabels};
+use tilo_server_session::workspaces::WorkspaceLabels;
 use tilo_session_client::device::{Device, DeviceActions};
 use tilo_session_client::{Cmd, Outbox as _};
 use tilo_session_client::{PeerConfig, PersonalWorkspaces};
+use tilo_workspace_service::device_tickets::PersonHost;
 
 use crate::engine::Engine;
 
@@ -359,94 +359,22 @@ impl HostedWorkspaces {
         })
     }
 
-    /// The person's devices as the record on each host of a workspace `engine` holds lists them:
-    /// every key `workspace.personal` answers there, once, each saying whether that host refuses it,
-    /// the browser it is a tab of, the agent it runs and when it was last there. A key their root
-    /// certified on another of their devices — a browser in its own tab, a device paired there —
-    /// is in that record and in no fleet of this one's, so this is what lists the person's
-    /// devices and not the devices this machine happens to know. The workspaces the hosts name
-    /// come with it, so a grant's one workspace is listed by name.
-    ///
-    /// Empty when no workspace of theirs is placed on a host.
-    pub(crate) fn record_devices(&self, engine: &Engine) -> Pending<device_admin::Record> {
-        let asks: Vec<_> = hosts_of(engine)
+    /// The person's hosts as this device reaches them, each once, in one of the workspaces of
+    /// theirs it runs: where their list of devices is read, named in and told of a revocation.
+    pub(crate) fn person_hosts(&self) -> Vec<Arc<dyn PersonHost>> {
+        hosts_of(&self.0.engine)
             .into_iter()
             .filter_map(|on| {
-                let actions = self.actions_of(&on.workspace)?;
-                Some(actions.invoke(
-                    &Caller::local_person("tilo"),
-                    record_request(
-                        tilo_server_session::workspaces::LIST_PERSONAL,
-                        serde_json::Map::new(),
-                    ),
-                ))
+                let placed = self.placed(&on.workspace)?;
+                let host = self.host(&placed);
+                Some(Arc::new(OnHost {
+                    host,
+                    workspace: placed.workspace,
+                    workspace_id: placed.workspace_id,
+                    runtime: self.0.runtime.clone(),
+                }) as Arc<dyn PersonHost>)
             })
-            .collect();
-        if asks.is_empty() {
-            return Pending::ready(device_admin::Record::default());
-        }
-        let (answer, answered) = pending();
-        self.0.runtime.spawn(async move {
-            let mut record = device_admin::Record::default();
-            for ask in asks {
-                let Some(Ok(receipt)) = ask.await else {
-                    continue;
-                };
-                let tilo_actions::remote::ReceiptStatus::Completed { output } = receipt.status
-                else {
-                    continue;
-                };
-                let Ok(list) = serde_json::from_value::<PersonalList>(
-                    output.value.unwrap_or(serde_json::Value::Null),
-                ) else {
-                    continue;
-                };
-                record.workspaces.extend(
-                    list.workspaces
-                        .into_iter()
-                        .map(|workspace| (workspace.workspace, workspace.name)),
-                );
-                for device in list.devices {
-                    record.add(device_admin::RecordDevice {
-                        cert: device.cert,
-                        refused: device.revoked,
-                        browser: device.browser,
-                        agent: device.agent,
-                        last_active_ms: device.last_active_ms,
-                        online: device.online,
-                    });
-                }
-            }
-            answer.complete(record);
-        });
-        answered
-    }
-
-    /// Tell every host of a workspace `engine` holds that the person's root revoked `entry`: the
-    /// host keeps it and refuses the key from then on, and answers it as refused in the person's
-    /// record, which is how every device of theirs comes to list the key as taken back.
-    pub(crate) fn announce_revocation(
-        &self,
-        engine: &Engine,
-        entry: &tilo_user_identity::RevocationEntry,
-    ) {
-        for on in hosts_of(engine) {
-            let Some(placed) = self.placed(&on.workspace) else {
-                continue;
-            };
-            let host = self.host(&placed);
-            if host
-                .device
-                .session()
-                .send(Cmd::Revoke(entry.clone()))
-                .is_err()
-            {
-                tracing::info!(
-                    host = host.device.label(),
-                    "a host did not hear that the person took a device back"
-                );
-            }
-        }
+            .collect()
     }
 }
 
@@ -768,6 +696,49 @@ async fn enter(
         .lock_recover()
         .insert(workspace_id, actions.clone());
     Ok(actions)
+}
+
+/// A host as the person's devices are managed through it: its own actions asked in the workspace
+/// this device is in there, and a revocation told on this device's session with it.
+impl PersonHost for OnHost {
+    fn ask(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> futures_util::future::BoxFuture<'_, Result<serde_json::Value, String>> {
+        let asked = self.invoke(
+            &Caller::local_person("tilo"),
+            record_request(action, arguments),
+        );
+        Box::pin(async move {
+            match asked.await {
+                Some(Ok(receipt)) => match receipt.status {
+                    tilo_actions::remote::ReceiptStatus::Completed { output } => {
+                        Ok(output.value.unwrap_or(serde_json::Value::Null))
+                    }
+                    tilo_actions::remote::ReceiptStatus::Failed { error } => Err(error.message),
+                    tilo_actions::remote::ReceiptStatus::Rejected { error } => {
+                        Err(error.to_string())
+                    }
+                    _ => Err("the host did not finish in time".to_owned()),
+                },
+                Some(Err(error)) => Err(error.to_string()),
+                None => Err("the host did not answer".to_owned()),
+            }
+        })
+    }
+
+    fn revoked(&self, entry: &tilo_user_identity::RevocationEntry) -> Result<(), String> {
+        self.host
+            .device
+            .session()
+            .send(Cmd::Revoke(entry.clone()))
+            .map_err(|_| "the session with the host ended".to_owned())
+    }
+
+    fn label(&self) -> String {
+        self.host.device.label().to_owned()
+    }
 }
 
 impl ActionProvider for OnHost {

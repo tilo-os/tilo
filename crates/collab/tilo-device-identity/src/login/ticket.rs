@@ -42,6 +42,17 @@ pub const LOG_IN: &str = "logIn";
 pub const FOUND: &str = "found";
 /// What [`FOUND`] is refused with on a device a person's certificate names already.
 pub const ALREADY_A_PERSONS: &str = "this device is a person's already";
+/// The action a daemon answers on its own workspace: the person's devices, as every device of
+/// theirs lists them.
+pub const LIST: &str = "list";
+/// The action a daemon answers on its own workspace: what one of the person's devices is called
+/// in every list.
+pub const RENAME: &str = "rename";
+/// The action a daemon that holds the person's root answers: end one of their devices' logins.
+pub const REVOKE: &str = "revoke";
+/// The action a device answers for itself: update its apps and system. Asked of a daemon naming
+/// another of the person's devices, it is carried to that device, which answers it.
+pub const UPDATE: &str = "update";
 /// The action a device of the person's that holds their root calls on the host that serves a
 /// sign-in ticket: the tab waiting for them.
 pub const PENDING: &str = "pending";

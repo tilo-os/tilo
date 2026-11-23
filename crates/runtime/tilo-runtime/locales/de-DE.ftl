@@ -22,4 +22,3 @@ app-grant-detail = Das gilt ab jetzt in diesem Arbeitsbereich. Du kannst es unte
 other-devices-none = Hier ist keines deiner anderen Geräte bekannt.
 other-devices-unknown = Keines deiner Geräte hier heißt { $device }. Deine Geräte hier: { $devices }.
 other-devices-name-workspace = { $device } ist hier in mehr als einem deiner Arbeitsbereiche. Nenne einen mit --workspace.
-other-devices-not-connected = gerade nicht mit diesem Gerät verbunden

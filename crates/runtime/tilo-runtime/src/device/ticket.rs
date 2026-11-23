@@ -4,9 +4,14 @@
 //! on a computer that holds the person's root, that root.
 //!
 //! They are ordinary actions (`tilo.device`'s `devices#issue` and `devices#logIn`), answered by
-//! the daemon's action provider. A ticket's certify action is answered by the device action
+//! the daemon's action provider, beside the person's devices themselves ([`manage`]): listing,
+//! renaming, revoking and updating them. A ticket's certify action is answered by the device action
 //! service the daemon's one iroh router already serves (`tilo-actions/1`), as the one call it
 //! admits from a computer with no certificate yet, so no second endpoint or service is made.
+
+mod manage;
+
+pub(crate) use manage::OnThisDevice;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,9 +31,9 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, ISSUE,
-    LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS, PROVIDER, Place, REPORTED, RESOURCE, Report,
-    SCOPE, TICKET_LIFETIME_NS, Ticket,
+    APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, ISSUE, LIST,
+    LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS, PROVIDER, Place, RENAME, REPORTED, RESOURCE,
+    REVOKE, Report, SCOPE, TICKET_LIFETIME_NS, Ticket, UPDATE,
 };
 use tilo_enrollment::root::PersonSigner;
 use tilo_lock::MutexRecover as _;
@@ -36,6 +41,7 @@ use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_peer_state::new_device::{ServedTicket, ServedTickets};
 use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::{DeviceCert, RevocationList, StatementSigner};
+use tilo_workspace_service::device_tickets::TicketServer;
 
 /// How long the issuer keeps serving once the computer is certified, for it to read its answer.
 const TELL_WAIT: Duration = Duration::from_secs(30);
@@ -129,6 +135,45 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
                          entry in your Servers workspace.",
                 ),
             ],
+        ))),
+        row(Some(descriptor(
+            LIST,
+            "Your devices",
+            "Every device of the person's: how it is listed, whether it is online, and whether \
+                 it was revoked.",
+            &[],
+        ))),
+        row(Some(descriptor(
+            RENAME,
+            "Rename a device",
+            "What one of the person's devices is called in every list.",
+            &[
+                ActionParam::required("device", ParamType::Text, "The device's key."),
+                ActionParam::required("name", ParamType::Text, "Its new name."),
+            ],
+        ))),
+        row(Some(descriptor(
+            REVOKE,
+            "Revoke a device",
+            "End one of the person's devices' logins, everywhere: signed by their root here.",
+            &[
+                ActionParam::required("device", ParamType::Text, "The device's key."),
+                ActionParam::optional(
+                    "reason",
+                    ParamType::Text,
+                    "retired, lost, stolen or compromised.",
+                ),
+            ],
+        ))),
+        row(Some(descriptor(
+            UPDATE,
+            "Update a device",
+            "Update the device's apps and system, as `tilo update` does on it.",
+            &[ActionParam::optional(
+                "device",
+                ParamType::Text,
+                "The device's key: another of the person's devices carries it out itself.",
+            )],
         ))),
         row(Some(descriptor(
             PENDING,
@@ -444,8 +489,14 @@ struct Inner {
     /// Every ticket the service answers a computer's certify call for now: planned machines'
     /// beside the one printed last.
     served: ServedTickets,
+    /// The person's devices, as they are listed, named and revoked from this one.
+    fleet: TicketServer,
     /// Each invocation of a device action, and where it is.
     calls: std::sync::Mutex<HashMap<InvocationId, InvocationState>>,
+    /// What starts this device's update, where it is not `tilo update`.
+    update: std::sync::OnceLock<manage::UpdateStart>,
+    /// Where the person's devices are reached that no lookup finds.
+    reach: std::sync::Mutex<HashMap<[u8; 32], iroh::EndpointAddr>>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -465,6 +516,14 @@ impl Tickets {
         place: Place,
         service: ActionService,
     ) -> Self {
+        let fleet = TicketServer::new(Arc::new(manage::Fleet {
+            key: key.clone(),
+            cert: cert.clone(),
+            endpoint: endpoint.clone(),
+            root: Arc::clone(&root),
+            workspaces: workspaces.clone(),
+            service: service.clone(),
+        }));
         Self(Arc::new(Inner {
             key,
             cert,
@@ -477,7 +536,10 @@ impl Tickets {
             service,
             outstanding: std::sync::Mutex::new(None),
             served: ServedTickets::default(),
+            fleet,
             calls: std::sync::Mutex::new(HashMap::new()),
+            update: std::sync::OnceLock::new(),
+            reach: std::sync::Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
     }
@@ -488,7 +550,15 @@ impl Tickets {
             && request.target.address.resource == RESOURCE
             && matches!(
                 request.target.address.action.as_str(),
-                INFO | ISSUE | LOG_IN | PENDING | APPROVE | REPORTED
+                INFO | ISSUE
+                    | LOG_IN
+                    | PENDING
+                    | APPROVE
+                    | REPORTED
+                    | LIST
+                    | RENAME
+                    | REVOKE
+                    | UPDATE
             )
     }
 
@@ -517,7 +587,11 @@ impl Tickets {
         // in. It waits for the relay first, as an invitation does.
         let unreached = action == ISSUE && !wait && !reached(&self.0.endpoint);
         let waiting =
-            matches!(action.as_str(), LOG_IN | PENDING | APPROVE | REPORTED) || wait || unreached;
+            matches!(
+            action.as_str(),
+            LOG_IN | PENDING | APPROVE | REPORTED | LIST | RENAME | REVOKE | UPDATE
+        ) || wait
+            || unreached;
         if !waiting {
             let answer = if action == INFO {
                 Ok(device_info(&self.0.place, &self.0.key))
@@ -545,6 +619,7 @@ impl Tickets {
                 PENDING => served.pending(&args).await,
                 APPROVE => served.approve(&args).await,
                 REPORTED => served.report(&args).await,
+                LIST | RENAME | REVOKE | UPDATE => served.manage(&action, &args).await,
                 ISSUE if !wait => {
                     tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
                     served.issue(&args)
@@ -747,6 +822,8 @@ impl Tickets {
             ),
         }
         .context("the certificate given is there")?;
+        // The person's other devices list it as soon as the host keeps it there.
+        self.0.tickets.keep_listed(&cert).await;
         let mut told = served.told();
         let _ = tokio::time::timeout(TELL_WAIT, told.wait_for(|told| *told)).await;
         // The computer may ask a lost answer again: the call is answered where it is.

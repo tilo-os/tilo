@@ -1138,6 +1138,7 @@ fn broker_services(
         hosted_endpoint,
         hosted_device_actions,
         service.clone(),
+        hosting.clone(),
     );
     device_tickets.restore_once_open();
     // The session decides who may administer a workspace's identity.
@@ -1362,7 +1363,7 @@ fn broker_services(
         // person's list is kept there too, and the devices of it read back
         // from the host that keeps it, so Settings lists the same devices on
         // every device of theirs.
-        hosted_workspaces: BrokerService::when(hosting.clone().map(|hosting| {
+        hosted_workspaces: BrokerService::when(hosting.map(|hosting| {
             std::sync::Arc::new(hosting)
                 as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
         })),
@@ -1372,9 +1373,10 @@ fn broker_services(
         // The person's shell connects to the device daemon's broker, which answers it.
         shell: BrokerService::unserved("the device daemon's broker answers the person's shell"),
         // The steps only this session may take for the person: the
-        // workspace's activity the Activity app reads, a ticket for a new
-        // computer, administering their identities and the devices trusted
-        // under them, whose secret stays here, and their hosting account.
+        // workspace's activity the Activity app reads, their devices (a
+        // ticket for a new computer, the list, names and revocations),
+        // administering their identities, whose secret stays here, and their
+        // hosting account.
         host_steps: BrokerService::served(
             [
                 vec![
@@ -1389,8 +1391,6 @@ fn broker_services(
                     crate::model_steps::ModelSteps::session(engine.clone()),
                     std::sync::Arc::new(crate::identity_admin::BrokerApi {
                         layout: layout_authority,
-                        hosting,
-                        engine: engine.clone(),
                     }),
                     // The person's account with the host the session runs
                     // on: what Settings and the overview of their Tilo show,

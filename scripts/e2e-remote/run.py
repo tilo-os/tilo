@@ -12,7 +12,7 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    network tilo-vm gives the VMs of one host (`tilolan0`, 198.18.0.0/16).
 2. On A, an agent adds A's MCP server carried to B (`tilo-runtime --connect --device B`);
    the scripted client (guest/agent.py, clientInfo `reviewer`) runs exactly that command.
-3. A's own server lists B as reachable (`tilo_devices`).
+3. A's own server lists B online (`devices#list`).
 4. With B's "Accept agents from my other devices" off, the agent's calls are refused on B,
    saying which setting would let it in, with nobody asked and nothing registered there. With
    it on, the agent works on B; B's person's Stop refuses its calls from then on, saying so.
@@ -43,7 +43,7 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    tab's record and in who set each field. B's own agent is recorded with none. B's shell registers
    each of them the same way: an agent from another machine with that machine's key and label,
    B's own with neither, and none of them with an environment.
-10. The person's third device lists the second among their devices (`tilo_devices`), as the
+10. The person's third device lists the second among their devices (`devices#list`), as the
     first does, so that `--device <name>` can name it there.
 11. A person at another machine watches that tab: B's person shares the Browser's window with
     the workspace, naming its tab, and A's shell holds the window's picture in a tab of its own,
@@ -524,7 +524,7 @@ class Run:
                       lambda res: self.same_person(a, b, res), "E02")
             self.step("E04", "A has the MCP server an agent adds to reach B (`--connect --device B`)",
                       lambda res: self.register(a, b, res, facts), "E03")
-            self.step("E05", "A's server lists B as reachable (tilo_devices)",
+            self.step("E05", "A's server lists B online (devices#list)",
                       lambda res: self.reachable(a, b, res), "E04")
             self.step("E06", "With B's setting off, B refuses the agent's calls, naming the setting, "
                              "with nobody asked",
@@ -549,7 +549,7 @@ class Run:
                              "machine (key and capped label), and none for B's own agent",
                       self.devices_named, "E10")
             self.step("E13", "The person's third device lists the second among their devices "
-                             "(tilo_devices)",
+                             "(devices#list)",
                       lambda res: self.third_lists_second(d, b, res), "E10")
             self.step("E14", "A's person watches the Browser window B shares, in a tab of its own "
                              "on A's shell",
@@ -708,10 +708,9 @@ class Run:
         text = text_of(t.get("devices"))
         res.facts["devices"] = text
         res.facts["open_here"] = text_of(t.get("open_here")) or t.get("open_here")
-        line = next((l for l in text.splitlines() if key in l), None)
-        if line is None or not line.rstrip().endswith("  reachable"):
-            raise Failed(f"{a.letter.upper()}'s tilo_devices does not list {b.letter.upper()} ({key}) "
-                         f"as reachable after {FIND_S}s: {text!r}")
+        if not online(text, key):
+            raise Failed(f"{a.letter.upper()}'s devices#list does not list {b.letter.upper()} ({key}) "
+                         f"online after {FIND_S}s: {text!r}")
 
     def answer_when_asked(self, box: Box, res: Result, thread, within: float = 90) -> None:
         deadline = time.monotonic() + within
@@ -1341,7 +1340,7 @@ class Run:
 
     def third_lists_second(self, d: Box, b: Box, res: Result) -> None:
         """Whether D, enrolled after B, knows B as one of the person's devices: what
-        `tilo_devices` lists there, and so whether `--device <name>` could name B on D."""
+        `devices#list` lists there, and so whether `--device <name>` could name B on D."""
         if not self.third_made:
             raise Failed("no third device was made")
         self.reachable(d, b, res)
@@ -2325,6 +2324,19 @@ def _entries(record) -> list[dict]:
 
 def _fields(review) -> list[dict]:
     return [f for fields in _found(review, "fields") for f in fields if isinstance(f, dict)]
+
+
+def online(text: str, device: str) -> bool:
+    """Whether the `devices#list` answer `text` names `device` as online."""
+    try:
+        answer = json.loads(text)
+    except ValueError:
+        return False
+    if isinstance(answer, dict) and isinstance(answer.get("result"), dict):
+        answer = answer["result"]
+    devices = answer.get("devices") if isinstance(answer, dict) else None
+    return any(isinstance(one, dict) and one.get("device") == device and one.get("online") is True
+               for one in devices or [])
 
 
 def text_of(reply) -> str:

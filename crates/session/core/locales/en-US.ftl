@@ -375,10 +375,6 @@ search-action-identity-remove = Remove an identity from this device
 search-action-identity-remove-subtitle = Delete an identity you no longer use here, with its key
 search-action-identity-protect = Protect an identity's key
 search-action-identity-protect-subtitle = Move an identity's key from a plain file into protected storage
-search-action-identity-devices-list = List your trusted devices
-search-action-identity-devices-list-subtitle = Show the devices trusted under this workspace's identity and which are revoked
-search-action-identity-device-revoke = Revoke an identity device
-search-action-identity-device-revoke-subtitle = Permanently stop trusting a lost, retired, or compromised device
 
 # A new device another of yours found: the banner that asks the person here.
 pairing-asks-title = A device asks to be you

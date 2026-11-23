@@ -541,6 +541,13 @@ enum DeviceCmd {
     /// daemon founded.
     #[command(hide = true)]
     Key,
+    /// Name one of your devices, in every list.
+    Rename {
+        /// The device, by its key (a prefix of it) or its name.
+        device: String,
+        /// Its new name.
+        name: String,
+    },
     /// End the login of one of your devices, everywhere it reaches.
     Revoke {
         /// The device, by its key (a prefix of it) or its name.
@@ -1022,6 +1029,7 @@ fn run_system_command(cmd: DeviceCmd) -> Result<ExitCode> {
             | DeviceCmd::Add { .. }
             | DeviceCmd::Ls { .. }
             | DeviceCmd::Key
+            | DeviceCmd::Rename { .. }
             | DeviceCmd::Revoke { .. }
             | DeviceCmd::LocalPerson { .. }
     ) {
@@ -1619,6 +1627,10 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
         } => device::add(ticket.as_deref(), json, no_wait, plan.as_deref(), server),
         DeviceCmd::Ls { json } => device::list(json),
         DeviceCmd::Key => device::key(),
+        DeviceCmd::Rename {
+            device: which,
+            name,
+        } => device::rename(&which, &name),
         DeviceCmd::Revoke {
             device: which,
             reason,

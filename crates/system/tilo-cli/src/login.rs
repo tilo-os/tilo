@@ -199,18 +199,6 @@ fn invitation_in(link: &str) -> Result<Vec<u8>> {
         .map_err(|_| anyhow!("This link's invitation is damaged: ask for it again."))
 }
 
-/// Announce `entry`, a revocation the person's root signed, to every workspace `session` is in.
-///
-/// # Errors
-/// The session ended first.
-pub(crate) fn announce_revocation(
-    session: &Entered,
-    entry: tilo_user_identity::RevocationEntry,
-) -> Result<()> {
-    session
-        .session()
-        .send(tilo_session_client::Cmd::Revoke(entry))
-        .map_err(|_| anyhow!("the session ended before the revocation was sent"))
 }
 
 /// `tilo login <invitation link>`: this computer joins the workspace a member invited the person

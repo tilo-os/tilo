@@ -19,14 +19,14 @@
 
 use crate::common::people::{Device, Person, Site, join_together};
 use serde_json::{Value, json};
-use tilo_actions::remote::identity_admin;
+use tilo_actions::remote::device_tickets;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_server_protocol::workspaces::Role;
 
 /// The devices Settings lists on `device`.
 fn listed(device: &Device) -> Vec<Value> {
-    let answer = device.act_wait(&identity_admin::target(identity_admin::DEVICES), &json!({}));
-    answer["update"]["output"]["value"]
+    let answer = device.act_wait(&device_tickets::target(device_tickets::LIST), &json!({}));
+    answer["update"]["output"]["value"]["devices"]
         .as_array()
         .cloned()
         .unwrap_or_else(|| {

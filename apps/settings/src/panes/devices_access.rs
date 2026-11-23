@@ -23,7 +23,7 @@ use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
     Item, SettingsSection, block, note, page, row, rows, section, untitled,
 };
-use ui::tilo_actions::remote::identity_admin::KeyKind;
+use ui::tilo_actions::remote::device_tickets::KeyKind;
 
 crate::effects::effect_family!(DevicesAccessEffect => answer);
 

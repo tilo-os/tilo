@@ -1,7 +1,7 @@
-//! The person's trusted devices, as the host's identity actions answer them.
+//! The person's devices, as every device of theirs answers the `devices` actions.
 
 use ui::icons::Icon;
-use ui::tilo_actions::remote::identity_admin::{self, FleetDevice, KeyKind};
+use ui::tilo_actions::remote::device_tickets::{self, FleetDevice, KeyKind};
 use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -65,10 +65,9 @@ pub fn device_icon(label: &str) -> Icon {
     }
 }
 
-/// Where the person's devices are listed: a host that keeps the read current
-/// sends the list again whenever it changes.
+/// Where the person's devices are listed.
 pub(crate) fn listed() -> ui::tilo_actions::remote::RemoteActionTarget {
-    identity_admin::target(identity_admin::DEVICES)
+    device_tickets::target(device_tickets::LIST)
 }
 
 pub(crate) fn revoke(
@@ -79,9 +78,8 @@ pub(crate) fn revoke(
     let mut arguments = serde_json::Map::new();
     arguments.insert("device".into(), hex::encode(device).into());
     arguments.insert("reason".into(), reason.into());
-    arguments.insert("confirm".into(), true.into());
     remote.invoke(
-        identity_admin::target(identity_admin::REVOKE),
+        device_tickets::target(device_tickets::REVOKE),
         InvokeArgument::Json(arguments),
         Some(Confirmation::Confirmed),
     )
@@ -98,16 +96,19 @@ pub(crate) fn rename(
     arguments.insert("device".into(), hex::encode(device).into());
     arguments.insert("name".into(), name.into());
     remote.invoke(
-        identity_admin::target(identity_admin::RENAME),
+        device_tickets::target(device_tickets::RENAME),
         InvokeArgument::Json(arguments),
         None,
     )
 }
 
 pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView>, String> {
-    let listed: Vec<FleetDevice> =
-        serde_json::from_value(value.unwrap_or(serde_json::Value::Array(Vec::new())))
-            .map_err(|_| "the device list the host answered is not readable".to_string())?;
+    let listed: Vec<FleetDevice> = serde_json::from_value(
+        value
+            .and_then(|mut value| value.get_mut("devices").map(serde_json::Value::take))
+            .unwrap_or(serde_json::Value::Array(Vec::new())),
+    )
+    .map_err(|_| "the device list the host answered is not readable".to_string())?;
     listed
         .into_iter()
         .map(|device| {

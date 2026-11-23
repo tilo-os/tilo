@@ -376,6 +376,8 @@ pub fn workspace_person(address: &ActionAddress) -> Option<&str> {
 /// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon
 /// issues it, prints the one string, and the new computer logs in with it.
 pub mod device_tickets {
+    use serde::{Deserialize, Serialize};
+
     use super::{ActionAddress, RemoteActionTarget};
 
     /// The provider the device's daemon answers tickets under.
@@ -384,6 +386,13 @@ pub mod device_tickets {
     pub const RESOURCE: &str = "devices";
     /// Serve a ticket for a new computer.
     pub const ISSUE: &str = "issue";
+    /// The person's devices, as every device of theirs lists them: `{"devices": [FleetDevice]}`.
+    pub const LIST: &str = "list";
+    /// Name one of the person's devices (`device`, `name`) in every list.
+    pub const RENAME: &str = "rename";
+    /// End one of the person's devices' logins (`device`, `reason`), signed by their root on the
+    /// device that holds it.
+    pub const REVOKE: &str = "revoke";
 
     #[must_use]
     pub fn target(action: &str) -> RemoteActionTarget {
@@ -392,67 +401,8 @@ pub mod device_tickets {
             address: ActionAddress::new(RESOURCE, action),
         }
     }
-}
 
-/// Machines a person prepared to install: the plan and its waiting entry in
-/// their Servers workspace, read and written through the session that holds
-/// it. The command and the installer's window name one set of steps.
-pub mod machines;
-
-/// The person's settings, kept by the provider whether or not the app that shows
-/// them is open: each section a record published with its field edits and
-/// verbs (`settings:<kind>`), changed through them as that app's window
-/// changes them. It is answered under the settings provider.
-pub mod settings_resources {
-    /// The provider that answers the person's settings.
-    pub const PROVIDER: &str = "tilo.settings";
-}
-
-/// Administering the person's identities and the devices trusted under
-/// them. The provider keeps the identity store — records, root secrets, the
-/// active selector, device fleets — and runs every step, so no application
-/// reads a secret or signs with the root key. It is answered under the
-/// identity provider, which a caller names without reading a catalogue, for the
-/// person at this device in the workspace their connection was admitted to.
-pub mod identity_admin {
-    use serde::{Deserialize, Serialize};
-
-    use super::{ActionAddress, RemoteActionTarget};
-
-    /// The provider that answers identity administration.
-    pub const PROVIDER: &str = "tilo.identity";
-    /// The resource the steps are actions of.
-    pub const RESOURCE: &str = "identity";
-    /// The person's identities on this device, without secrets.
-    pub const LIST: &str = "list";
-    /// Sign new apps in as identity `id`.
-    pub const ACTIVATE: &str = "activate";
-    /// Remove identity `id` from this device (`confirm`).
-    pub const REMOVE: &str = "remove";
-    /// Move identity `id`'s key from a plain file into protected storage.
-    pub const PROTECT: &str = "protect";
-    /// The devices trusted under the workspace's identity, as [`FleetDevice`]s.
-    pub const DEVICES: &str = "devices";
-    /// Root-sign a device's permanent revocation (`device`, `reason`,
-    /// `confirm`), answering the signed entry (`revocation`).
-    pub const REVOKE: &str = "revoke";
-    /// Name one of the person's devices (`device`, `name`): what their device
-    /// lists read it by from now on. A page's API forwards it to the provider
-    /// that keeps their record; it is no step of the device's own store.
-    pub const RENAME: &str = "rename-device";
-
-    /// Every step, in the order a catalogue lists them.
-    pub const STEPS: [&str; 6] = [LIST, ACTIVATE, REMOVE, PROTECT, DEVICES, REVOKE];
-
-    #[must_use]
-    pub fn target(step: &str) -> RemoteActionTarget {
-        RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: ActionAddress::new(RESOURCE, step),
-        }
-    }
-
-    /// One device trusted under an identity, as [`DEVICES`] answers it.
+    /// One of the person's devices, as [`LIST`] answers it.
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub struct FleetDevice {
         /// The name the device was enrolled with.
@@ -517,6 +467,54 @@ pub mod identity_admin {
             } else {
                 Self::Device
             }
+        }
+    }
+}
+
+/// Machines a person prepared to install: the plan and its waiting entry in
+/// their Servers workspace, read and written through the session that holds
+/// it. The command and the installer's window name one set of steps.
+pub mod machines;
+
+/// The person's settings, kept by the provider whether or not the app that shows
+/// them is open: each section a record published with its field edits and
+/// verbs (`settings:<kind>`), changed through them as that app's window
+/// changes them. It is answered under the settings provider.
+pub mod settings_resources {
+    /// The provider that answers the person's settings.
+    pub const PROVIDER: &str = "tilo.settings";
+}
+
+/// Administering the person's identities on this device. The provider keeps
+/// the identity store — records, root secrets, the active selector — and runs
+/// every step, so no application reads a secret or signs with the root key.
+/// Their devices are [`device_tickets`]' actions. It is answered under the
+/// identity provider, which a caller names without reading a catalogue, for the
+/// person at this device in the workspace their connection was admitted to.
+pub mod identity_admin {
+    use super::{ActionAddress, RemoteActionTarget};
+
+    /// The provider that answers identity administration.
+    pub const PROVIDER: &str = "tilo.identity";
+    /// The resource the steps are actions of.
+    pub const RESOURCE: &str = "identity";
+    /// The person's identities on this device, without secrets.
+    pub const LIST: &str = "list";
+    /// Sign new apps in as identity `id`.
+    pub const ACTIVATE: &str = "activate";
+    /// Remove identity `id` from this device (`confirm`).
+    pub const REMOVE: &str = "remove";
+    /// Move identity `id`'s key from a plain file into protected storage.
+    pub const PROTECT: &str = "protect";
+
+    /// Every step, in the order a catalogue lists them.
+    pub const STEPS: [&str; 4] = [LIST, ACTIVATE, REMOVE, PROTECT];
+
+    #[must_use]
+    pub fn target(step: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: ActionAddress::new(RESOURCE, step),
         }
     }
 }

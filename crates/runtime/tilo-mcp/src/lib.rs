@@ -111,10 +111,6 @@ pub struct McpServer<H> {
     open_files: std::sync::Arc<OpenFiles>,
     /// Where answers read the content an action produced, to show it.
     media: Option<std::sync::Arc<dyn crate::MediaReader>>,
-    /// The person's other devices as the host reaches them, which
-    /// [`crate::devices::DEVICES_TOOL`] lists; `None` for a host that
-    /// reaches none, which lists no device.
-    devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
     /// The app each of this session's invocations went to, so a later
     /// `tilo_status` reads produced content with that app's scope.
     produced_by: std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, String>>,
@@ -651,7 +647,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             handles: std::sync::Mutex::default(),
             open_files: std::sync::Arc::default(),
             media: None,
-            devices: None,
             produced_by: std::sync::Mutex::default(),
             produced_effect: std::sync::Mutex::default(),
             shown: std::sync::Mutex::default(),
@@ -757,16 +752,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         self
     }
 
-    /// List the person's devices as `devices` reaches them, with
-    /// [`crate::devices::DEVICES_TOOL`].
-    #[must_use]
-    pub fn with_devices(
-        mut self,
-        devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
-    ) -> Self {
-        self.devices = devices;
-        self
-    }
     fn produced_by(
         &self,
     ) -> std::sync::MutexGuard<'_, std::collections::HashMap<tilo_actions::InvocationId, String>>
@@ -1279,7 +1264,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut tools = definitions(
             self.host.content_puts().is_some(),
             self.host.content_gets().is_some(),
-            self.devices.is_some(),
         );
         // A session is offered what it can use. Where this server starts no programs (the one
         // a server takes a person's turn through) `tilo`, the tool for them, is not listed: a
@@ -1440,16 +1424,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Ok(call) if get::is_get_tool(&call.name) => {
                 Ok(self.get_call(&call.name, call.arguments, structured).await)
             }
-            Ok(call) if call.name == crate::devices::DEVICES_TOOL => match &self.devices {
-                Some(devices) => {
-                    let reach = devices.reach().await;
-                    Ok(json!({
-                        "content": [{"type": "text", "text": crate::devices::listing(&reach)}],
-                        "isError": false
-                    }))
-                }
-                None => Err("Unknown tool".into()),
-            },
             Ok(call)
                 if agent::tool_definitions()
                     .iter()
@@ -2987,16 +2961,13 @@ fn take_path(arguments: &mut serde_json::Map<String, Value>) -> Result<Option<St
 }
 /// Every tool a session offers: its surface's, then the ones its host and its
 /// server add.
-fn definitions(content_puts: bool, content_gets: bool, devices: bool) -> Vec<Value> {
+fn definitions(content_puts: bool, content_gets: bool) -> Vec<Value> {
     let mut tools = agent::tool_definitions().to_vec();
     if content_puts {
         tools.extend(put::tool_definitions());
     }
     if content_gets {
         tools.extend(get::tool_definitions());
-    }
-    if devices {
-        tools.push(crate::devices::tool_definition());
     }
     tools
 }
@@ -3008,7 +2979,7 @@ fn definitions(content_puts: bool, content_gets: bool, devices: bool) -> Vec<Val
 /// a machine with neither.
 #[must_use]
 pub fn tools_json() -> Value {
-    json!({"tools": definitions(true, true, false)})
+    json!({"tools": definitions(true, true)})
 }
 #[cfg(test)]
 #[path = "mcp_serve_tests.rs"]

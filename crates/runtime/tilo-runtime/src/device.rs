@@ -31,6 +31,8 @@ mod confirm;
 mod content;
 #[cfg(target_os = "linux")]
 pub mod control;
+#[cfg(test)]
+mod flow_laptop_phone_server;
 mod host_runs;
 mod keep;
 #[cfg(target_os = "linux")]

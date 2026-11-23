@@ -27,4 +27,3 @@ app-grant-detail = It may from now on in this workspace. You can revoke this und
 other-devices-none = None of your other devices is known here.
 other-devices-unknown = None of your devices here is called { $device }. Your devices here: { $devices }.
 other-devices-name-workspace = { $device } is in more than one of your workspaces here. Name one with --workspace.
-other-devices-not-connected = not connected to this device now

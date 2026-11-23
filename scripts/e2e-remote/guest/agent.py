@@ -10,13 +10,13 @@ and prints one line, `E2E-MCP <json>`, with everything it saw. It judges nothing
 reads the transcript. Python standard library only (the guest image's).
 
 Scenarios:
-  devices     initialize, tools/list, then `tilo_devices` until it lists the device
+  devices     initialize, tools/list, then `devices#list` until it lists the device online
               E2E_DEVICE (an endpoint id) as reachable, or E2E_WAIT_S passes
-  not_accepted  initialize, tools/list, `tilo_devices`, `tilo_ls`, whose answers the harness reads
-  stop        initialize, tools/list, `tilo_devices`, `tilo_ls`; then E2E_READY is written
+  not_accepted  initialize, tools/list, `devices#list`, `tilo_ls`, whose answers the harness reads
+  stop        initialize, tools/list, `devices#list`, `tilo_ls`; then E2E_READY is written
               and `tilo_ls` asked once a second until it is refused or the connection ends (or
               E2E_WAIT_S)
-  work        initialize, tools/list, `tilo_devices`, `tilo_ls`, Notes opened with
+  work        initialize, tools/list, `devices#list`, `tilo_ls`, Notes opened with
               `notes#open`; then E2E_ASKING is written and the command E2E_COMMAND run with
               `terminal#run` (a step that asks first, which a device puts to its person
               unless they let their other devices' agents act without asking), waited on
@@ -162,6 +162,23 @@ def until(client: Client, name: str, arguments: dict, ready, timeout: float):
         time.sleep(1.0)
 
 
+def listed(text: str) -> list:
+    """The devices a `devices#list` answer names, each `{device, label, online, ...}`."""
+    try:
+        answer = json.loads(text)
+    except ValueError:
+        return []
+    if isinstance(answer, dict) and isinstance(answer.get("result"), dict):
+        answer = answer["result"]
+    devices = answer.get("devices") if isinstance(answer, dict) else None
+    return [one for one in devices or [] if isinstance(one, dict)]
+
+
+def online(text: str, device: str) -> bool:
+    """Whether the `devices#list` answer `text` names `device` as online."""
+    return any(one.get("device") == device and one.get("online") is True for one in listed(text))
+
+
 def touch(path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as marker:
@@ -201,7 +218,7 @@ def introduce(client: Client, out: dict) -> bool:
     if not isinstance(out["initialize"], dict) or "result" not in out["initialize"]:
         return False
     out["tools_list"] = client.call("tools/list")
-    out["devices"] = client.tool("tilo_devices", {})
+    out["devices"] = client.tool("tilo_do", {"path": "devices#list"})
     out["apps"] = client.tool("tilo_ls", {})
     return True
 
@@ -213,10 +230,8 @@ def devices(client: Client, out: dict) -> None:
         return
     out["tools_list"] = client.call("tools/list")
     want = os.environ.get("E2E_DEVICE", "")
-    # One line a device: `NAME  ENDPOINT-ID  reachable`, or `not reachable: why`.
-    out["devices"] = until(client, "tilo_devices", {}, lambda text: any(
-        want in line and line.rstrip().endswith("  reachable") for line in text.splitlines()),
-        WAIT_S)
+    out["devices"] = until(client, "tilo_do", {"path": "devices#list"},
+                           lambda text: online(text, want), WAIT_S)
     out["devices_at"] = client.since()
     # The same action the agent takes on the other device, taken here: whether this API
     # carries it out tells a refusal of the other device's API from every API's.

@@ -21,7 +21,8 @@
 //! another device of the person's reads the entry and leaves it.
 //!
 //! What is the embedder's own (its endpoint and action service, how it signs, where its root and
-//! its workspaces are, where a computer it adds enters) it supplies as an [`Issuer`].
+//! its workspaces are, where a computer it adds enters, its sessions with the person's hosts) it
+//! supplies as an [`Issuer`]. The same server lists, names and revokes the person's devices.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
@@ -45,6 +46,8 @@ use tilo_peer_state::new_device::{ServedTicket, ServedTickets};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, StatementSigner};
 
 use crate::workspaces::{Workspaces, person_workspace, servers};
+
+mod manage;
 
 /// The field of a vault entry that names the plan whose ticket the entry keeps.
 const PLAN_FIELD: &str = "tilo.planned-machine.plan";
@@ -98,6 +101,16 @@ pub trait Issuer: Send + Sync + 'static {
     /// plans and their tickets are.
     fn servers(&self) -> Option<Workspaces>;
 
+    /// The person's hosts as this device reaches them, which keep their list of devices: none
+    /// by default.
+    fn hosts(&self) -> Vec<Arc<dyn PersonHost>> {
+        Vec::new()
+    }
+
+    /// Keep `entry`, a revocation the person's root just signed here, where this device keeps
+    /// what its root signed: nowhere by default.
+    fn keep_revocation(&self, _entry: &tilo_user_identity::RevocationEntry) {}
+
     /// Take the certified computer `cert` in as `role`: by default through [`Self::servers`].
     fn admit<'a>(
         &'a self,
@@ -106,6 +119,27 @@ pub trait Issuer: Send + Sync + 'static {
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(admit_in(self.servers(), role, cert))
     }
+}
+
+/// One of the person's hosts, which keeps their list of devices beside their workspaces, as the
+/// device a [`TicketServer`] runs on reaches it.
+pub trait PersonHost: Send + Sync {
+    /// The host's own action `action` (`workspace.personal`, `workspace.personal.keep`,
+    /// `workspace.personal.name`) with `arguments`, asked as this device: its answer.
+    fn ask(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> BoxFuture<'_, Result<serde_json::Value, String>>;
+
+    /// Tell the host the person's root revoked `entry`: it refuses the key from then on.
+    ///
+    /// # Errors
+    /// The session with the host ended.
+    fn revoked(&self, entry: &tilo_user_identity::RevocationEntry) -> Result<(), String>;
+
+    /// The host, as a log names it.
+    fn label(&self) -> String;
 }
 
 /// Take the certified computer `cert` in as `role` in the person's Servers workspace `workspaces`

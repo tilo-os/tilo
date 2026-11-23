@@ -5,7 +5,7 @@ use super::*;
 
 use ui::prelude::TestApp;
 use ui::tilo_actions::remote::{
-    ActionCallError, Caller, Completer, InvocationReceipt, InvokeRequest, identity_admin,
+    ActionCallError, Caller, Completer, InvocationReceipt, InvokeRequest, device_tickets,
 };
 
 use crate::resource::SettingsShell;
@@ -198,7 +198,7 @@ impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
                 }
             };
         }
-        if request.target == identity_admin::target(identity_admin::DEVICES)
+        if request.target == device_tickets::target(device_tickets::LIST)
             && let Some(current) = &mut *self.current.lock().unwrap()
         {
             // A read this host keeps current: admitted, and answered with
@@ -210,8 +210,8 @@ impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
                 status: ui::tilo_actions::remote::ReceiptStatus::Accepted,
             }));
         }
-        let value = if request.target == identity_admin::target(identity_admin::DEVICES) {
-            self.listed.lock().unwrap().clone()
+        let value = if request.target == device_tickets::target(device_tickets::LIST) {
+            serde_json::json!({ "devices": self.listed.lock().unwrap().clone() })
         } else if request.target == mcp_server::target(mcp_server::SERVER) {
             let answer = self.served.lock().unwrap().clone();
             let Some(answer) = answer else {
@@ -248,7 +248,7 @@ impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
             current.reads.iter().find(|(read, _)| read == id)?;
             Some(current.changes.saturating_add(1))
         })?;
-        let value = self.listed.lock().unwrap().clone();
+        let value = serde_json::json!({ "devices": self.listed.lock().unwrap().clone() });
         Some(ui::tilo_actions::remote::InvocationState::new(
             *id,
             ui::tilo_actions::InvocationUpdate::Item {
@@ -370,7 +370,7 @@ tilo_test_env::scenario! {
         model.act(&remote, &rename, None).unwrap();
         model.poll(&remote);
         assert_eq!(
-            host.asked_at(&identity_admin::target(identity_admin::RENAME)),
+            host.asked_at(&device_tickets::target(device_tickets::RENAME)),
             [
                 serde_json::json!({"device": LAPTOP_AGENT, "name": "Build server"})
                     .as_object()
@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
         };
         assert!(model.act(&remote, &rename, None).is_err());
         assert!(
-            host.asked_at(&identity_admin::target(identity_admin::RENAME))
+            host.asked_at(&device_tickets::target(device_tickets::RENAME))
                 .is_empty(),
             "nothing is asked for a device the person gave no name"
         );
@@ -446,14 +446,14 @@ tilo_test_env::scenario! {
         );
         model.act(&remote, &removal, None).unwrap();
         let listed_before = host
-            .asked_at(&identity_admin::target(identity_admin::DEVICES))
+            .asked_at(&device_tickets::target(device_tickets::LIST))
             .len();
         model.poll(&remote);
-        let revoked = host.asked_at(&identity_admin::target(identity_admin::REVOKE));
+        let revoked = host.asked_at(&device_tickets::target(device_tickets::REVOKE));
         assert_eq!(
             revoked,
             [
-                serde_json::json!({"device": LAPTOP_AGENT, "reason": "retired", "confirm": true})
+                serde_json::json!({"device": LAPTOP_AGENT, "reason": "retired"})
                     .as_object()
                     .unwrap()
                     .clone()
@@ -462,11 +462,11 @@ tilo_test_env::scenario! {
         let revoke = host
             .asked()
             .into_iter()
-            .find(|request| request.target == identity_admin::target(identity_admin::REVOKE))
+            .find(|request| request.target == device_tickets::target(device_tickets::REVOKE))
             .unwrap();
         assert_eq!(revoke.confirmation, Some(Confirmation::Confirmed));
         assert!(
-            host.asked_at(&identity_admin::target(identity_admin::DEVICES))
+            host.asked_at(&device_tickets::target(device_tickets::LIST))
                 .len()
                 > listed_before,
             "the list is read again after the removal"
@@ -515,7 +515,7 @@ tilo_test_env::scenario! {
             .unwrap();
         model.poll(&remote);
         let revoked: Vec<serde_json::Value> = host
-            .asked_at(&identity_admin::target(identity_admin::REVOKE))
+            .asked_at(&device_tickets::target(device_tickets::REVOKE))
             .into_iter()
             .map(|argument| argument["device"].clone())
             .collect();
@@ -953,7 +953,7 @@ fn agent_row_id() -> String {
 }
 
 fn revoke() -> ui::tilo_actions::remote::RemoteActionTarget {
-    identity_admin::target(identity_admin::REVOKE)
+    device_tickets::target(device_tickets::REVOKE)
 }
 
 fn object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -1219,8 +1219,7 @@ tilo_test_env::scenario! {
         agree(&mut app, &host, &computer_row_id(), "revoke-device");
         assert_eq!(
             asked_at_last(&mut app, &host, &revoke()),
-            [object(serde_json::json!({"device": OTHER_COMPUTER, "reason": "retired",
-                "confirm": true}))]
+            [object(serde_json::json!({"device": OTHER_COMPUTER, "reason": "retired"}))]
         );
         let sent = host
             .asked()
@@ -1244,10 +1243,8 @@ tilo_test_env::scenario! {
         assert_eq!(
             host.asked_at(&revoke()),
             [
-                object(serde_json::json!({"device": key(0x31), "reason": "retired",
-                    "confirm": true})),
-                object(serde_json::json!({"device": key(0x32), "reason": "retired",
-                    "confirm": true})),
+                object(serde_json::json!({"device": key(0x31), "reason": "retired"})),
+                object(serde_json::json!({"device": key(0x32), "reason": "retired"})),
             ]
         );
     }
@@ -1268,8 +1265,7 @@ tilo_test_env::scenario! {
         .expect("a reason of the choices, confirmed, is carried out");
         assert_eq!(
             asked_at_last(&mut app, &host, &revoke()),
-            [object(serde_json::json!({"device": OTHER_COMPUTER, "reason": "stolen",
-                "confirm": true}))]
+            [object(serde_json::json!({"device": OTHER_COMPUTER, "reason": "stolen"}))]
         );
     }
 
@@ -1393,7 +1389,7 @@ fn a_list_kept_current(now: i64) -> std::sync::Arc<RecordingHost> {
 
 /// How often the host was asked for the person's devices.
 fn times_listed(host: &RecordingHost) -> usize {
-    host.asked_at(&identity_admin::target(identity_admin::DEVICES))
+    host.asked_at(&device_tickets::target(device_tickets::LIST))
         .len()
 }
 

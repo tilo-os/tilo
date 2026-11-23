@@ -792,7 +792,7 @@ mod identity_admin_tests {
 
     fn contract(step: &str) -> tilo_actions::ActionContract {
         match step {
-            identity_admin::LIST | identity_admin::DEVICES => tilo_actions::ActionContract::view(),
+            identity_admin::LIST => tilo_actions::ActionContract::view(),
             _ => tilo_actions::ActionContract {
                 kind: tilo_actions::ActionKind::Outside,
                 risk: tilo_actions::RiskLevel::Privileged,
@@ -1331,7 +1331,6 @@ mod identity_admin_tests {
                 identity_admin::ACTIVATE,
                 identity_admin::REMOVE,
                 identity_admin::PROTECT,
-                identity_admin::REVOKE,
             ] {
                 assert_eq!(
                     invoked(&state, &person, &request(step, None)),
@@ -1403,7 +1402,6 @@ mod identity_admin_tests {
                 identity_admin::ACTIVATE,
                 identity_admin::PROTECT,
                 identity_admin::REMOVE,
-                identity_admin::REVOKE,
             ] {
                 assert!(
                     invoked(

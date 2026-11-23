@@ -1,10 +1,12 @@
-//! Serving a ticket for a new computer: what Settings' "Add a device" and `tilo machine add` ask
-//! for, answered by the daemon this desktop is, through the one ticket server every device of
-//! the person's runs ([`tilo_workspace_service::device_tickets`]).
+//! The person's devices on this desktop: a ticket for a new computer (Settings' "Add a device",
+//! `tilo machine add`), and the list Settings' devices page shows, names and revokes from,
+//! answered through the one ticket server every device of the person's runs
+//! ([`tilo_workspace_service::device_tickets`]).
 //!
 //! The desktop supplies what is its own: the endpoint and device action service its network
-//! binds, its identity, the person's root from its fleet store, and the workspace service that
-//! holds the person's Servers workspace, where a planned machine's plan and ticket are kept.
+//! binds, its identity, the person's root from its fleet store, the workspace service that holds
+//! the person's Servers workspace, where a planned machine's plan and ticket are kept, and its
+//! sessions with the person's hosts, which keep their list of devices.
 //!
 //! The issue answers at once and the certification happens over the network, so a caller never
 //! waits on the new computer.
@@ -21,11 +23,12 @@ use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices
 use tilo_device_identity::login::{Entry, Reached};
 use tilo_peer_state::actions::ActionService;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::device_tickets::{Issuer, Role, Root, TicketServer};
+use tilo_workspace_service::device_tickets::{Issuer, PersonHost, Role, Root, TicketServer};
 use tilo_workspace_service::service::ServiceSlot;
 use tilo_workspace_service::workspaces::Workspaces;
 
 use crate::device_actions::DeviceActions;
+use crate::hosted_workspaces::HostedWorkspaces;
 
 /// The application whose window adds a device here.
 const APP_ID: &str = "so.tilo.settings";
@@ -43,12 +46,14 @@ impl DeviceTickets {
         endpoint: Option<Arc<OnceLock<iroh::Endpoint>>>,
         actions: Option<Arc<OnceLock<DeviceActions>>>,
         service: ServiceSlot,
+        hosting: Option<HostedWorkspaces>,
     ) -> Self {
         Self {
             tickets: TicketServer::new(Arc::new(Desktop {
                 endpoint,
                 actions,
                 service: service.clone(),
+                hosting,
             })),
             service,
         }
@@ -83,6 +88,8 @@ struct Desktop {
     actions: Option<Arc<OnceLock<DeviceActions>>>,
     /// The workspace service this device holds its workspaces in.
     service: ServiceSlot,
+    /// The person's hosts this desktop is with, which keep their list of devices.
+    hosting: Option<HostedWorkspaces>,
 }
 
 impl Desktop {
@@ -165,49 +172,125 @@ impl Issuer for Desktop {
             .service()
             .map(|service| service.workspaces().clone())
     }
+
+    fn hosts(&self) -> Vec<Arc<dyn PersonHost>> {
+        self.hosting
+            .as_ref()
+            .map(HostedWorkspaces::person_hosts)
+            .unwrap_or_default()
+    }
+
+    /// The fleet store keeps what this desktop's root revoked, which refuses the key here from
+    /// then on.
+    fn keep_revocation(&self, entry: &tilo_user_identity::RevocationEntry) {
+        let kept = crate::identity_admin::fleet_store().and_then(|fleets| {
+            fleets
+                .record_revocation(&hex::encode(entry.user_public_key), entry)
+                .map_err(|error| error.to_string())
+        });
+        if let Err(error) = kept {
+            tracing::warn!(%error, "this desktop does not keep the revocation it signed");
+        }
+    }
 }
 
-/// The step's one action, as the catalogue lists it.
-fn descriptor() -> ActionDescriptor {
+/// One of the device actions, as the catalogue lists it.
+fn descriptor(action: &str) -> ActionDescriptor {
+    use tilo_actions::{ActionParam, ConfirmationPolicy, ParamType, RiskLevel};
+    let object = |required: &[&str]| ResultSpec::Json {
+        schema: serde_json::json!({ "type": "object", "required": required }),
+    };
+    let device = ActionParam::required(
+        "device",
+        ParamType::Text,
+        "The device's key, 64 hexadecimal characters, as the list of devices answers it.",
+    );
+    let (label, description, kind, contract, params) = match action {
+        wire::LIST => (
+            "Your devices",
+            "List your devices: which is this one, which are online, and which you took back.",
+            OperationKind::View,
+            ActionContract {
+                result: object(&["devices"]),
+                ..ActionContract::view()
+            },
+            Vec::new(),
+        ),
+        wire::RENAME => (
+            "Rename a device",
+            "Name one of your devices in every list of them.",
+            OperationKind::Effect,
+            ActionContract {
+                kind: ActionKind::Outside,
+                result: object(&["device", "name"]),
+                ..ActionContract::default()
+            },
+            vec![
+                device,
+                ActionParam::required("name", ParamType::Text, "What the device is called."),
+            ],
+        ),
+        wire::REVOKE => (
+            "Revoke a device",
+            "Take one of your devices back for good: every device of yours refuses it from now on.",
+            OperationKind::Effect,
+            ActionContract {
+                kind: ActionKind::Outside,
+                risk: RiskLevel::Privileged,
+                confirmation: ConfirmationPolicy::Confirm,
+                result: object(&["device", "revoked"]),
+                ..ActionContract::default()
+            },
+            vec![
+                device,
+                ActionParam::optional(
+                    "reason",
+                    ParamType::Text,
+                    "lost, stolen, retired or compromised (retired when none is given).",
+                ),
+            ],
+        ),
+        _ => (
+            "Add a device",
+            "Print a one-use code for a new computer to join as one of this person's devices.",
+            OperationKind::Effect,
+            ActionContract {
+                kind: ActionKind::Outside,
+                result: object(&["ticket"]),
+                ..ActionContract::default()
+            },
+            vec![ActionParam::optional(
+                "plan",
+                ParamType::Text,
+                "The planned machine's entry in your Servers workspace, which the computer's \
+                 certification takes into its own.",
+            )],
+        ),
+    };
     ActionDescriptor {
         did: None,
         semantic_identity: None,
-        address: wire::target(wire::ISSUE).address,
+        address: wire::target(action).address,
         resource_kind: wire::RESOURCE.to_owned(),
         resource_label: "Devices".to_owned(),
-        action_label: "Add a device".to_owned(),
+        action_label: label.to_owned(),
         keywords: Vec::new(),
         state: tilo_actions::ActionState::default(),
         icon: None,
-        description: Some(
-            "Print a one-use code for a new computer to join as one of this person's devices."
-                .to_owned(),
-        ),
+        description: Some(description.to_owned()),
         locus: ExecutionLocus::ClientLocal,
-        kind: OperationKind::Effect,
-        contract: ActionContract {
-            kind: ActionKind::Outside,
-            result: ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["ticket"],
-                    "properties": { "ticket": { "type": "string" } }
-                }),
-            },
-            ..ActionContract::default()
-        },
+        kind,
+        contract,
         input: tilo_actions::InputSpec::None,
-        params: vec![tilo_actions::ActionParam::optional(
-            "plan",
-            tilo_actions::ParamType::Text,
-            "The planned machine's entry in your Servers workspace, which the computer's \
-             certification takes into its own.",
-        )],
+        params,
         view: None,
     }
 }
 
-/// What a refused or failed issue answers.
+/// The device actions this desktop answers.
+const ACTIONS: [&str; 4] = [wire::ISSUE, wire::LIST, wire::RENAME, wire::REVOKE];
+
+/// What a refused or failed device action answers.
 fn refused(message: impl Into<String>) -> tilo_actions::ActionFailure {
     tilo_actions::ActionFailure {
         code: "device-ticket-refused".to_owned(),
@@ -227,40 +310,63 @@ impl HostStepServices for DeviceTickets {
     }
 
     fn descriptors(&self) -> Vec<ActionDescriptor> {
-        vec![descriptor()]
+        ACTIONS.into_iter().map(descriptor).collect()
     }
 
     fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        if request.address.action != wire::ISSUE {
-            return Err("no such device action".to_owned());
-        }
-        let plan = match InvokeArgument::from_slot(request.argument) {
-            InvokeArgument::None => None,
-            InvokeArgument::Json(args) => args
-                .get("plan")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|plan| !plan.is_empty())
-                .map(str::to_owned),
+        let action = ACTIONS
+            .into_iter()
+            .find(|action| request.address.action == *action)
+            .ok_or("no such device action")?;
+        let args = match InvokeArgument::from_slot(request.argument) {
+            InvokeArgument::None => serde_json::Value::Object(serde_json::Map::new()),
+            InvokeArgument::Json(args) => serde_json::Value::Object(args),
             InvokeArgument::Text(_) => {
-                return Err("a ticket is asked for with its arguments as an object".to_owned());
+                return Err("a device action is asked with its arguments as an object".to_owned());
             }
         };
+        // What names and revokes the person's devices is theirs alone to ask: an agent or an app
+        // acting for nobody never does it through here.
+        if action == wire::RENAME || action == wire::REVOKE {
+            request
+                .actor
+                .direct_person()
+                .ok_or("only you name or revoke your devices")?;
+        }
+        // A step asked from the session's own thread runs on the app's runtime, as the restore
+        // of tickets does; one asked from a runtime's task runs on that runtime.
         let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| "this computer cannot serve a ticket right now".to_owned())?;
+            .unwrap_or_else(|_| tilo_rt::app().handle().clone());
         let (done, asked) = tilo_actions::remote::pending();
         let tickets = self.tickets.clone();
         runtime.spawn(async move {
-            // A planned machine's ticket lasts as long as its medium may sit on a shelf, and is
-            // served beside the ticket printed last; the machine takes the plan's entry.
-            let answer = tickets
-                .issue(plan.map(Role::Plan))
-                .await
-                .map(|ticket| ActionOutput {
-                    value: Some(serde_json::json!({ "ticket": ticket.encode() })),
-                    resources: Vec::new(),
-                });
-            done.complete(answer.map_err(|message| Box::new(refused(message))));
+            let answer = match action {
+                wire::LIST => tickets.list().await,
+                wire::RENAME => tickets.rename(&args).await,
+                wire::REVOKE => tickets.revoke(&args).await,
+                // A planned machine's ticket lasts as long as its medium may sit on a shelf, and
+                // is served beside the ticket printed last; the machine takes the plan's entry.
+                _ => {
+                    let plan = args
+                        .get("plan")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|plan| !plan.is_empty())
+                        .map(|plan| Role::Plan(plan.to_owned()));
+                    tickets
+                        .issue(plan)
+                        .await
+                        .map(|ticket| serde_json::json!({ "ticket": ticket.encode() }))
+                }
+            };
+            done.complete(
+                answer
+                    .map(|value| ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    })
+                    .map_err(|message| Box::new(refused(message))),
+            );
         });
         Ok(asked)
     }
@@ -280,6 +386,7 @@ mod tests {
             None,
             None,
             tilo_workspace_service::service::ServiceSlot::default(),
+            None,
         );
         // The ticket is issued on a worker, as the broker's own runtime does it: the test
         // thread only waits for the answer.
@@ -307,6 +414,7 @@ mod tests {
             tickets.descriptors()[0].address,
             wire::target(wire::ISSUE).address
         );
+        assert_eq!(tickets.descriptors().len(), ACTIONS.len());
         let asked = tickets.start(&request).unwrap();
         // The issue runs on the runtime's worker, which holds what it needs.
         drop(tickets);

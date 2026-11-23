@@ -648,8 +648,8 @@ enum Managing {
     Status(String),
     /// A new name for it (`server.rename`).
     Rename(String, String),
-    /// The revocation of its key the person's root signs (the identity step
-    /// `revoke`), which retires it next.
+    /// The revocation of its key the person's root signs (`devices#revoke`),
+    /// which retires it next.
     Revoke(String),
     /// Taking it out of service with that revocation (`server.retire`).
     Retire(String),
@@ -1131,16 +1131,15 @@ impl DeviceMeshModel {
     /// Remove `peer`: the person's root signs the revocation of its key here,
     /// and its entry in their Servers workspace is retired with it.
     fn start_home_peer_removal(&mut self, peer: &tilo_server_protocol::servers::PersonServer) {
-        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
+        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_tickets};
         if self.management_call.is_some() {
             return;
         }
         let mut arguments = serde_json::Map::new();
         arguments.insert("device".into(), peer.device.clone().into());
         arguments.insert("reason".into(), "retired".into());
-        arguments.insert("confirm".into(), true.into());
         let call = self.remote.invoke(
-            identity_admin::target(identity_admin::REVOKE),
+            device_tickets::target(device_tickets::REVOKE),
             InvokeArgument::Json(arguments),
             Some(Confirmation::Confirmed),
         );
@@ -2384,7 +2383,7 @@ mod tests {
         phase a_server_removal_signs_its_revocation_and_retires_it;
         {
             use ui::tilo_actions::remote::{
-                Confirmation, InvokeArgument, RemoteActionTarget, identity_admin, machines,
+                Confirmation, InvokeArgument, RemoteActionTarget, device_tickets, machines,
             };
             let dir = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -2415,7 +2414,7 @@ mod tests {
             );
             let revoke = asked
                 .iter()
-                .find(|call| call.target == identity_admin::target(identity_admin::REVOKE))
+                .find(|call| call.target == device_tickets::target(device_tickets::REVOKE))
                 .expect("the root signs a revocation");
             let retire = asked
                 .iter()
@@ -2434,7 +2433,6 @@ mod tests {
                     serde_json::json!({
                         "device": NEARBY_DEVICE,
                         "reason": "retired",
-                        "confirm": true,
                     })
                     .as_object()
                     .unwrap()
@@ -2541,7 +2539,7 @@ mod tests {
     const NEARBY_DEVICE: &str = "aa00000000000000000000000000000000000000000000000000000000000001";
     const THIS_DEVICE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const PHONE: &str = "2222222222222222222222222222222222222222222222222222222222222222";
-    /// The revocation the identity step answers, as the pane passes it on.
+    /// The revocation `devices#revoke` answers, as the pane passes it on.
     const SIGNED_REVOCATION: &str = "{\"signed\":true}";
 
     /// The server the person's workspace names for the nearby device.
@@ -2601,7 +2599,7 @@ mod tests {
         > {
             use ui::tilo_actions::remote::device_tickets;
             let invocation = request.invocation;
-            let is_ticket = request.target.provider == device_tickets::PROVIDER;
+            let is_ticket = request.target == device_tickets::target(device_tickets::ISSUE);
             let value = if is_ticket {
                 serde_json::json!({ "ticket": TICKET })
             } else {

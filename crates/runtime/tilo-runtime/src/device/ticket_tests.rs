@@ -24,7 +24,7 @@ use super::first_workspace::FirstWorkspace;
 use super::ticket::{RootSource, Tickets};
 
 /// A device `root` certified, and its key.
-fn enrol(
+pub(super) fn enrol(
     root: &SigningKey,
     label: &str,
     capabilities: DeviceCapabilities,

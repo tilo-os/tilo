@@ -36,9 +36,6 @@ pub trait Whereabouts: Send + Sync {
     /// The workspaces this device holds, whose rosters name the person's devices.
     fn workspaces(&self) -> Vec<String>;
 
-    /// Whether `device` of `workspace` is connected here now.
-    fn reachable(&self, workspace: &str, device: [u8; 32]) -> bool;
-
     /// Where the device `id` is reached.
     fn addr(&self, id: EndpointId) -> EndpointAddr {
         EndpointAddr::new(id)
@@ -118,7 +115,6 @@ impl OtherDevices {
             return;
         }
         let person = self.0.whose.0;
-        let directory = Arc::new(self.clone()) as Arc<dyn tilo_mcp::devices::DeviceDirectory>;
         let served = tilo_mcp::session_api::serve_as(stream, None, |hello, _| {
             let client = hello.client_name.clone();
             let agent = tilo_actions::remote::device_agent_id(&person, &client);
@@ -144,8 +140,7 @@ impl OtherDevices {
                 &agent,
                 &hex::encode(person),
             )
-            .agent_named(&client)
-            .with_devices(Some(directory));
+            .agent_named(&client);
             Ok(server)
         });
         if let Err(error) = served {
@@ -261,7 +256,7 @@ impl OtherDevices {
         let mut found = Vec::new();
         let mut known = std::collections::BTreeSet::new();
         for workspace in workspaces {
-            for device in self.devices_in(&workspace, false) {
+            for device in self.others_in(&workspace) {
                 let name = tilo_mcp::devices::device_name(&device);
                 if key == Some(device.device_public_key) || name.eq_ignore_ascii_case(asked) {
                     found.push((device.device_public_key, workspace.clone()));
@@ -289,55 +284,17 @@ impl OtherDevices {
         }
     }
 
-    /// The person's devices in `workspace`'s roster as this device holds it, this one among them
-    /// when `with_this`.
-    fn devices_in(&self, workspace: &str, with_this: bool) -> Vec<DeviceCert> {
+    /// The person's other devices in `workspace`'s roster as this device holds it.
+    fn others_in(&self, workspace: &str) -> Vec<DeviceCert> {
         let (person, this) = self.0.whose;
         self.0
             .places
             .devices(workspace)
             .into_iter()
             .filter(|device| {
-                device.user_public_key == person && (with_this || device.device_public_key != this)
+                device.user_public_key == person && device.device_public_key != this
             })
             .collect()
-    }
-}
-
-impl tilo_mcp::devices::DeviceDirectory for OtherDevices {
-    fn reach(
-        &self,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Vec<tilo_mcp::devices::Reach>> + Send + '_>> {
-        Box::pin(async move {
-            use tilo_mcp::devices::Reach;
-            let this = self.0.whose.1;
-            let mut reach: BTreeMap<[u8; 32], Reach> = BTreeMap::new();
-            for workspace in self.0.places.workspaces() {
-                for device in self.devices_in(&workspace, true) {
-                    let key = device.device_public_key;
-                    let answer = if key == this || self.0.places.reachable(&workspace, key) {
-                        Ok(())
-                    } else {
-                        Err(t("other-devices-not-connected"))
-                    };
-                    match reach.get_mut(&key) {
-                        Some(known) if known.answer.is_err() => known.answer = answer,
-                        Some(_) => {}
-                        None => {
-                            reach.insert(
-                                key,
-                                Reach {
-                                    device,
-                                    this: key == this,
-                                    answer,
-                                },
-                            );
-                        }
-                    }
-                }
-            }
-            reach.into_values().collect()
-        })
     }
 }
 
@@ -665,7 +622,7 @@ fn unexpected() -> ActionCallError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_mcp::devices::{Forward, Reach, agent_id, forward_request, listing};
+    use tilo_mcp::devices::{Forward, agent_id, forward_request};
 
     fn certificate(label: &str, key: u8) -> DeviceCert {
         DeviceCert {
@@ -720,40 +677,6 @@ mod tests {
             assert!(!tilo_mcp::session_api::is_control_request(
                 br#"{"forward":{"device":"studio"}}"#
             ));
-        }
-
-        phase the_listing_says_which_device_answers;
-        {
-            let text = listing(&[
-                Reach {
-                    device: certificate("Here", 1),
-                    this: true,
-                    answer: Ok(()),
-                },
-                Reach {
-                    device: certificate("Build box", 2),
-                    this: false,
-                    answer: Ok(()),
-                },
-                Reach {
-                    device: certificate("Phone", 3),
-                    this: false,
-                    answer: Err("it does not answer".into()),
-                },
-            ]);
-            let lines: Vec<&str> = text.lines().collect();
-            assert_eq!(lines.len(), 3, "{text}");
-            assert!(lines[0].starts_with("Here  ") && lines[0].ends_with("this device"));
-            assert!(lines[1].contains(&hex::encode([2_u8; 32])) && lines[1].ends_with("reachable"));
-            assert!(lines[2].ends_with("not reachable: it does not answer"));
-            assert!(
-                listing(&[Reach {
-                    device: certificate("Here", 1),
-                    this: true,
-                    answer: Ok(()),
-                }])
-                .starts_with("No other device")
-            );
         }
     }
 }

@@ -413,10 +413,6 @@ search-action-identity-remove = Identität von diesem Gerät entfernen
 search-action-identity-remove-subtitle = Eine Identität, die du hier nicht mehr nutzt, samt ihrem Schlüssel löschen
 search-action-identity-protect = Schlüssel einer Identität schützen
 search-action-identity-protect-subtitle = Den Schlüssel einer Identität aus einer einfachen Datei in geschützten Speicher verschieben
-search-action-identity-devices-list = Vertrauenswürdige Geräte anzeigen
-search-action-identity-devices-list-subtitle = Die Geräte zeigen, denen die Identität dieses Arbeitsbereichs vertraut, und welche widerrufen sind
-search-action-identity-device-revoke = Gerät einer Identität widerrufen
-search-action-identity-device-revoke-subtitle = Einem verlorenen, ausgemusterten oder kompromittierten Gerät dauerhaft nicht mehr vertrauen
 
 # Ein neues Gerät, das ein anderes deiner Geräte gefunden hat: die Mitteilung,
 # die hier die Person fragt.

@@ -1,15 +1,13 @@
-//! Administering the person's identities and the devices trusted under
-//! them, run by the session that keeps the identity store.
+//! Administering the person's identities, run by the session that keeps the
+//! identity store.
 //!
 //! The store — each identity record, the fallback root secrets, the active
 //! selector and the device fleets under the person's identity directory — is
 //! the session's. Settings used to edit it in its own process, which meant
 //! binding it into the app's sandbox, root secret included. Every step now
 //! runs here and answers in JSON without a secret: listing, activating,
-//! removing and protecting an identity; listing the devices trusted under the
-//! workspace's identity and root-signing a revocation, which it answers so a
-//! server of the person's is retired with it (`server.retire` on their Servers
-//! workspace).
+//! removing and protecting an identity. The person's devices are the
+//! `devices` actions ([`crate::device_tickets`]).
 //!
 //! Who may take a step is decided at the API, before it reaches this engine:
 //! only a person who administers the workspace's identity, and every change
@@ -26,7 +24,7 @@ use tilo_identity::store::IdentityProfile;
 pub(crate) type Answer = Result<serde_json::Value, String>;
 
 pub(crate) use tilo_actions::remote::identity_admin::{
-    ACTIVATE, DEVICES, LIST, PROTECT, REMOVE, RENAME, RESOURCE, REVOKE, STEPS,
+    ACTIVATE, LIST, PROTECT, REMOVE, RESOURCE, STEPS,
 };
 
 const IDENTITY: ActionParam = ActionParam::required(
@@ -60,32 +58,12 @@ pub(crate) const PROTECT_PARAMS: &[ActionParam] = &[
         "Explicit confirmation that this identity's key moves into protected storage.",
     ),
 ];
-pub(crate) const DEVICES_PARAMS: &[ActionParam] = &[];
-pub(crate) const REVOKE_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "device",
-        ParamType::Text,
-        "The enrolled device's 64-character public-key fingerprint.",
-    ),
-    ActionParam::optional(
-        "reason",
-        ParamType::Text,
-        "lost, stolen, retired, or compromised (defaults to retired).",
-    ),
-    ActionParam::required(
-        "confirm",
-        ParamType::Boolean,
-        "Explicit confirmation that this permanent administrative revocation should run.",
-    ),
-];
 /// What `step` takes.
 pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     match step {
         ACTIVATE => ACTIVATE_PARAMS,
         REMOVE => REMOVE_PARAMS,
         PROTECT => PROTECT_PARAMS,
-        DEVICES => DEVICES_PARAMS,
-        REVOKE => REVOKE_PARAMS,
         _ => LIST_PARAMS,
     }
 }
@@ -100,16 +78,6 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
     match step {
         LIST => ActionContract {
             result: json(serde_json::json!({ "type": "array", "items": { "type": "object" } })),
-            ..ActionContract::view()
-        },
-        DEVICES => ActionContract {
-            result: json(serde_json::json!({
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["label", "key_hex", "fingerprint", "current", "revoked"]
-                }
-            })),
             ..ActionContract::view()
         },
         ACTIVATE | PROTECT => ActionContract {
@@ -179,21 +147,13 @@ pub(crate) fn fleet_stamps(person: &[u8; 32]) -> Option<tilo_identity::device_fl
 }
 
 /// Take `step` with `args`, which the API bound to [`params`] after it
-/// decided the caller administers `identity`, the identity the caller's
-/// workspace selected, in `store`. `announce` tells the people's hosts of a
-/// revocation this device's root signs, which is how the key is refused
-/// beyond this device.
+/// decided the caller administers the identity the caller's workspace
+/// selected, in `store`.
 ///
 /// # Errors
 ///
 /// Why the step did not happen.
-pub(crate) fn start(
-    step: &str,
-    args: &ActionArgs,
-    identity: &IdentityProfile,
-    store: &Store,
-    announce: &dyn Fn(&tilo_user_identity::RevocationEntry),
-) -> Answer {
+pub(crate) fn start(step: &str, args: &ActionArgs, store: &Store) -> Answer {
     match step {
         LIST => list(store),
         ACTIVATE => {
@@ -207,20 +167,6 @@ pub(crate) fn start(
         PROTECT => {
             confirmed(args, "protect this identity's key")?;
             protect(store, identity_id(args)?)
-        }
-        DEVICES => devices(store, identity),
-        // A device's name is kept where the person's record is, on the host
-        // their page reads it from; this device's own store keeps none.
-        RENAME => Err(
-            "a device's name is kept on the host that holds your record: name it from your Tilo page"
-                .into(),
-        ),
-        REVOKE => {
-            confirmed(args, "revoke this device")?;
-            let (device, entry) = revoke(store, identity, args)?;
-            announce(&entry);
-            let revocation = serde_json::to_string(&entry).map_err(|error| error.to_string())?;
-            Ok(serde_json::json!({ "device": device, "revoked": true, "revocation": revocation }))
         }
         _ => Err(format!("`{step}` is not an identity step")),
     }
@@ -277,60 +223,6 @@ pub(crate) fn root_certificates(person: &[u8; 32]) -> Vec<tilo_user_identity::De
         .unwrap_or_default()
 }
 
-/// The devices this device's fleet trusts under `identity`, this one marked
-/// current.
-fn fleet_devices(
-    store: &Store,
-    identity: &IdentityProfile,
-) -> Result<Vec<tilo_actions::remote::identity_admin::FleetDevice>, String> {
-    tilo_identity::device_admin::trusted_devices(
-        &store.fleets(),
-        &store.device,
-        &identity.id,
-        identity.user_public_key,
-    )
-}
-
-/// The devices trusted under `identity` , this one marked current.
-pub(crate) fn devices(store: &Store, identity: &IdentityProfile) -> Answer {
-    serde_json::to_value(fleet_devices(store, identity)?).map_err(|error| error.to_string())
-}
-
-/// The devices trusted under `identity`, and the keys `record` adds: the
-/// person's record on their hosts lists the keys their root certified on
-/// every device of theirs, so a device paired on another of their devices,
-/// or a browser certified in its own tab, is listed here too.
-pub(crate) fn devices_with_record(
-    store: &Store,
-    identity: &IdentityProfile,
-    record: tilo_identity::device_admin::Record,
-) -> Answer {
-    let listed = tilo_identity::device_admin::with_record(fleet_devices(store, identity)?, record);
-    serde_json::to_value(listed).map_err(|error| error.to_string())
-}
-
-/// Root-sign the permanent revocation of the device `args` names under
-/// `identity`, for the reason it gives (retired when none). The root key is
-/// opened here, in the session, and nowhere else. Answers the entry the root
-/// signed, which is announced to the hosts the person keeps their record on.
-///
-/// # Errors
-///
-/// Why the device was not revoked.
-pub(crate) fn revoke(
-    store: &Store,
-    identity: &IdentityProfile,
-    args: &ActionArgs,
-) -> Result<(String, tilo_user_identity::RevocationEntry), String> {
-    let entry = tilo_identity::device_admin::revoke(
-        &store.fleets(),
-        &identity.id,
-        args.text("device").unwrap_or_default(),
-        args.text("reason").unwrap_or("retired"),
-    )?;
-    Ok((hex::encode(entry.revoked_device_public_key), entry))
-}
-
 /// Refuse unless `person` administers `workspace`'s identity: they may grant
 /// in the workspace, and it has an identity selected, which is answered.
 ///
@@ -383,17 +275,9 @@ pub(crate) fn copy_keys(step: &str) -> (&'static str, &'static str) {
             "search-action-identity-remove",
             "search-action-identity-remove-subtitle",
         ),
-        PROTECT => (
+        _ => (
             "search-action-identity-protect",
             "search-action-identity-protect-subtitle",
-        ),
-        DEVICES => (
-            "search-action-identity-devices-list",
-            "search-action-identity-devices-list-subtitle",
-        ),
-        _ => (
-            "search-action-identity-device-revoke",
-            "search-action-identity-device-revoke-subtitle",
         ),
     }
 }
@@ -414,7 +298,7 @@ fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
         icon: None,
         description: Some(t(description)),
         locus: tilo_actions::ExecutionLocus::default(),
-        kind: if matches!(step, LIST | DEVICES) {
+        kind: if step == LIST {
             tilo_actions::OperationKind::View
         } else {
             tilo_actions::OperationKind::Effect
@@ -460,18 +344,10 @@ pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcom
 }
 
 /// The broker's API to identity administration: how Settings lists and
-/// changes the person's identities and devices, as the person using it,
-/// without the identity store entering its sandbox.
-///
-/// The devices are the person's record, not this device's fleet alone:
-/// `hosting` is where their list is kept, and where the devices of it are
-/// read back from, so a device paired on another of their devices, or a
-/// browser certified in its own tab, is listed here too. `engine` is the
-/// workspaces whose hosts answer it.
+/// changes the person's identities, as the person using it, without the
+/// identity store entering its sandbox.
 pub(crate) struct BrokerApi {
     pub(crate) layout: Arc<crate::app_wire::LayoutAuthority>,
-    pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
-    pub(crate) engine: Option<Arc<crate::engine::Engine>>,
 }
 
 impl tilo_broker_core::steps::HostStepServices for BrokerApi {
@@ -502,37 +378,15 @@ impl tilo_broker_core::steps::HostStepServices for BrokerApi {
             .find(|step| request.address.resource == RESOURCE && request.address.action == *step)
             .ok_or("unknown identity step")?;
         let args = bind_slot(params(step), request.argument)?;
-        let identity = authorize(&self.layout, request.workspace, person)?;
+        authorize(&self.layout, request.workspace, person)?;
         let store = Store::from_env()?;
-        // A device the person's root certified elsewhere is in their record on the host that
-        // keeps it, and in no fleet of this one's: the list is read where it is kept, and the
-        // host's answer joins what this device knows.
-        if step == DEVICES
-            && let (Some(hosting), Some(engine)) = (&self.hosting, &self.engine)
-        {
-            return Ok(hosting
-                .record_devices(engine)
-                .map(move |record| outcome(devices_with_record(&store, &identity, record))));
-        }
-        let announce = |entry: &tilo_user_identity::RevocationEntry| {
-            if let (Some(hosting), Some(engine)) = (&self.hosting, &self.engine) {
-                hosting.announce_revocation(engine, entry);
-            }
-        };
-        Ok(Pending::ready(outcome(Ok(start(
-            step, &args, &identity, &store, &announce,
-        )?))))
+        Ok(Pending::ready(outcome(Ok(start(step, &args, &store)?))))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::remote::identity_admin::FleetDevice;
-
-    /// A device holding no workspace on a host: nothing hears of a revocation
-    /// here, and the store's own record is what a step's answer reads.
-    fn quiet(_: &tilo_user_identity::RevocationEntry) {}
 
     /// An identity store provisioned the way first boot does, in files, with the identity its
     /// workspace selects.
@@ -586,7 +440,7 @@ mod tests {
             identity,
         } = provisioned();
 
-        let listed = answered(start(LIST, &ActionArgs::none(), &identity, &store, &quiet));
+        let listed = answered(start(LIST, &ActionArgs::none(), &store));
         let entries = listed.as_array().expect("a list");
         assert_eq!(entries.len(), 1, "{listed}");
         let entry = &entries[0];
@@ -612,9 +466,7 @@ mod tests {
                         ("confirm", serde_json::Value::Bool(false))
                     ]
                 ),
-                &identity,
                 &store,
-                &quiet,
             )
             .is_err(),
             "using an identity needs the person's confirmation"
@@ -623,18 +475,14 @@ mod tests {
             answered(start(
                 ACTIVATE,
                 &args(ACTIVATE, &[("id", id.clone()), ("confirm", yes.clone())]),
-                &identity,
                 &store,
-                &quiet
             )),
             serde_json::json!({ "id": summary.id, "active": true })
         );
         let protected = answered(start(
             PROTECT,
             &args(PROTECT, &[("id", id.clone()), ("confirm", yes)]),
-            &identity,
             &store,
-            &quiet,
         ));
         assert_eq!(protected["id"], summary.id.as_str());
 
@@ -649,9 +497,7 @@ mod tests {
                     ("confirm", serde_json::Value::Bool(false)),
                 ],
             ),
-            &identity,
             &store,
-            &quiet,
         );
         assert!(
             matches!(&unconfirmed, Err(reason) if reason.contains("confirmation")),
@@ -665,9 +511,7 @@ mod tests {
                     REMOVE,
                     &[("id", id), ("confirm", serde_json::Value::Bool(true))]
                 ),
-                &identity,
                 &store,
-                &quiet,
             )
             .is_err(),
             "the active, final identity stays"
@@ -678,122 +522,6 @@ mod tests {
                 .len(),
             1
         );
-    }
-
-    /// Enroll a phone under `identity` in `store` ; its key, in hex.
-    fn enroll_phone(store: &Store, identity: &IdentityProfile) -> String {
-        let fleets = store.fleets();
-        let issued_at_ns = fleets.load(&identity.id).expect("fleet").certificates[0].issued_at_ns;
-        let phone = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
-        fleets
-            .certify_device(
-                &identity.id,
-                phone.verifying_key().to_bytes(),
-                "Phone",
-                tilo_user_identity::DeviceCapabilities::member(),
-                issued_at_ns,
-            )
-            .expect("enrolled");
-        hex::encode(phone.verifying_key().to_bytes())
-    }
-
-    #[test]
-    fn devices_are_listed_and_revoked_by_the_host_root_key() {
-        // The temporary root is bound, not dropped with `..` : it holds the store.
-        let Provisioned {
-            _root,
-            store,
-            identity,
-        } = provisioned();
-
-        let devices: Vec<FleetDevice> = serde_json::from_value(answered(start(
-            DEVICES,
-            &ActionArgs::none(),
-            &identity,
-            &store,
-            &quiet,
-        )))
-        .expect("devices");
-        assert_eq!(devices.len(), 1, "{devices:?}");
-        assert!(devices[0].current && !devices[0].revoked, "{devices:?}");
-
-        // Enroll a phone, then revoke it through the step.
-        let phone_hex = enroll_phone(&store, &identity);
-
-        let device = serde_json::Value::String(phone_hex.clone());
-        assert!(
-            start(
-                REVOKE,
-                &args(
-                    REVOKE,
-                    &[
-                        ("device", device.clone()),
-                        ("confirm", serde_json::Value::Bool(false))
-                    ]
-                ),
-                &identity,
-                &store,
-                &quiet,
-            )
-            .is_err(),
-            "revocation needs the person's confirmation"
-        );
-        assert!(
-            start(
-                REVOKE,
-                &args(
-                    REVOKE,
-                    &[
-                        ("device", device.clone()),
-                        ("reason", serde_json::Value::String("misplaced".into())),
-                        ("confirm", serde_json::Value::Bool(true)),
-                    ],
-                ),
-                &identity,
-                &store,
-                &quiet,
-            )
-            .is_err(),
-            "an unknown reason is refused"
-        );
-        let revoked = answered(start(
-            REVOKE,
-            &args(
-                REVOKE,
-                &[
-                    ("device", device),
-                    ("reason", serde_json::Value::String("lost".into())),
-                    ("confirm", serde_json::Value::Bool(true)),
-                ],
-            ),
-            &identity,
-            &store,
-            &quiet,
-        ));
-        assert_eq!(revoked["device"], phone_hex.as_str());
-        assert_eq!(revoked["revoked"], true);
-        // The answer carries the entry the root signed, which retires a server
-        // of the person's with it.
-        let entry: tilo_user_identity::RevocationEntry =
-            serde_json::from_str(revoked["revocation"].as_str().expect("the revocation"))
-                .expect("a revocation entry");
-        tilo_user_identity::verify_revocation_entry(&entry).expect("signed by the root");
-        assert_eq!(hex::encode(entry.revoked_device_public_key), phone_hex);
-        assert_eq!(entry.user_public_key, identity.user_public_key);
-        let devices: Vec<FleetDevice> = serde_json::from_value(answered(start(
-            DEVICES,
-            &ActionArgs::none(),
-            &identity,
-            &store,
-            &quiet,
-        )))
-        .expect("devices");
-        let phone = devices
-            .iter()
-            .find(|device| device.key_hex == phone_hex)
-            .expect("the phone is listed");
-        assert!(phone.revoked && !phone.current, "{devices:?}");
-        assert_eq!(phone.label, "Phone");
     }
 
     /// A session hosting `workspace` , with nothing else on it.
