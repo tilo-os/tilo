@@ -113,19 +113,8 @@ impl Todo {
     }
 }
 
-fn of_kind<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-    let mut out = Vec::new();
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        out.extend(of_kind(child, kind));
-    }
-    out
-}
-
 fn titles(tree: &UiNode) -> Vec<String> {
-    of_kind(tree, "ui.Checkbox")
+    tree.of_kind("ui.Checkbox")
         .iter()
         .map(|checkbox| match checkbox.props.get("label") {
             Some(Value::Text(text)) => String::from(&**text),
@@ -135,7 +124,7 @@ fn titles(tree: &UiNode) -> Vec<String> {
 }
 
 fn heading(tree: &UiNode) -> String {
-    of_kind(tree, "ui.Text")
+    tree.of_kind("ui.Text")
         .into_iter()
         .find(|text| text.props.get("role") == Some(&Value::text("title")))
         .and_then(|text| match text.props.get("value") {
@@ -195,12 +184,12 @@ fn a_bound_name_and_checkbox_write_through_the_view() {
     let t = Todo::new();
     let milk = t.add("milk");
     let mut view = t.view();
-    let input = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+    let input = view.tree().of_kind("ui.TextInput")[0].key.clone();
     for text in ["Errands", "Chores today"] {
         view.edit(&input, &Value::text(text)).unwrap();
         assert_eq!(t.rt.read(&t.list, "name").unwrap(), Value::text(text));
     }
-    let checkbox = of_kind(view.tree(), "ui.Checkbox")[0].key.clone();
+    let checkbox = view.tree().of_kind("ui.Checkbox")[0].key.clone();
     view.edit(&checkbox, &Value::Bool(true)).unwrap();
     assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(true));
     view.poll_patches().unwrap();

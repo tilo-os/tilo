@@ -3,7 +3,7 @@
 //! the library's own function.
 
 use crate::fixtures::Workspace;
-use tilolang_runtime::{UiNode, Value, ViewInstance};
+use tilolang_runtime::{Value, ViewInstance};
 
 use crate::fixtures::{Replica, button_key, field_id};
 
@@ -96,17 +96,11 @@ const USER: &str = "test.notes";
 
 /// What the view shows as text, in order.
 fn texts(view: &ViewInstance) -> Vec<Option<&Value>> {
-    fn walk<'a>(node: &'a UiNode, out: &mut Vec<Option<&'a Value>>) {
-        if node.kind == "ui.Text" {
-            out.push(node.props.get("value"));
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(view.tree(), &mut out);
-    out
+    crate::fixtures::nodes(view.tree())
+        .into_iter()
+        .filter(|node| node.kind == "ui.Text")
+        .map(|node| node.props.get("value"))
+        .collect()
 }
 
 #[test]

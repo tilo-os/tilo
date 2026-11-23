@@ -31,23 +31,15 @@ const IDS: &str = include_str!("../../../../apps/tl/gallery/app.ids");
 const APP: &str = "so.tilo.lang.gallery";
 
 /// Every word the window shows.
-fn words(node: &UiNode, out: &mut Vec<String>) {
-    out.extend(node.props.values().filter_map(|value| match value {
-        Value::Text(text) => Some(text.clone()),
-        _ => None,
-    }));
-    for child in &node.children {
-        words(child, out);
-    }
-}
-
-/// How many nodes of `kind` stand under `node`.
-fn counted(node: &UiNode, kind: &str) -> usize {
-    let mut found = usize::from(node.kind == kind);
-    for child in &node.children {
-        found = found.saturating_add(counted(child, kind));
-    }
-    found
+fn words(node: &UiNode) -> Vec<String> {
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn shows(shown: &[String], word: &str) -> bool {
@@ -90,8 +82,7 @@ fn window(ids: &str) -> Replica {
 fn a_store_with_nothing_in_it_shows_every_group_filled() {
     let mut replica = window(IDS);
     let view = replica.view(APP);
-    let mut first = Vec::new();
-    words(view.tree(), &mut first);
+    let first = words(view.tree());
     for group in [
         "Everyday parts",
         "Collections",
@@ -136,7 +127,7 @@ fn a_store_with_nothing_in_it_shows_every_group_filled() {
             .host
             .open_resource(&root, Some(&id))
             .unwrap_or_else(|error| panic!("`{view}` opens: {error}"));
-        let shown = counted(page.tree(), kind);
+        let shown = page.tree().of_kind(kind).len();
         assert!(
             shown >= count,
             "`{view}`: {what}, {shown} of {kind} stand in the page"
@@ -158,8 +149,7 @@ fn a_store_with_nothing_in_it_shows_every_group_filled() {
             .host
             .open_resource(&root, Some(&id))
             .unwrap_or_else(|error| panic!("`{view}` opens: {error}"));
-        let mut words_on_the_page = Vec::new();
-        words(page.tree(), &mut words_on_the_page);
+        let words_on_the_page = words(page.tree());
         assert!(
             shows(&words_on_the_page, word),
             "`{view}` shows its `{word}`: {words_on_the_page:?}"

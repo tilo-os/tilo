@@ -321,15 +321,15 @@ fn catalogue_directories(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
 
 /// The words a drawn window shows, in the order the tree holds them: every text of a node and of
 /// its children, whatever prop carries it.
-fn drawn(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
-    for value in node.props.values() {
-        if let tilolang_runtime::Value::Text(text) = value {
-            out.push(text.clone());
-        }
-    }
-    for child in &node.children {
-        drawn(child, out);
-    }
+fn drawn(node: &tilolang_runtime::UiNode) -> Vec<String> {
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            tilolang_runtime::Value::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A German desktop's counter window draws German: its catalogue reaches what the window shows,
@@ -356,8 +356,7 @@ fn a_german_counter_window_draws_german() {
     let view = host
         .open_main("so.tilo.lang.counter")
         .expect("its window opens");
-    let mut words = Vec::new();
-    drawn(view.tree(), &mut words);
+    let words = drawn(view.tree());
     for word in ["Zähler", "Anzahl", "Erhöhen", "Verringern"] {
         assert!(
             words.iter().any(|said| said == word),
