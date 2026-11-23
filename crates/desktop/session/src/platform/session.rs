@@ -980,8 +980,13 @@ impl Session {
                 std::sync::Arc::clone(&session_services),
             ));
         let task_programs = Some(std::sync::Arc::new(
-            crate::task_programs::TaskPrograms::new(std::sync::Arc::clone(&task_program_host)
-                as std::sync::Arc<dyn crate::platform::programs::Programs>),
+            tilo_workspace_service::workspaces::task_programs::TaskPrograms::new(
+                std::sync::Arc::clone(&task_program_host)
+                    as std::sync::Arc<
+                        dyn tilo_workspace_service::workspaces::task_programs::Programs,
+                    >,
+                ui::i18n::preferred_language,
+            ),
         ));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // layout, its undo, the windows and the notices, which the REPL already calls.
@@ -993,7 +998,9 @@ impl Session {
         let session_actions = std::sync::Arc::new(crate::session_actions::SessionActions::new(
             std::sync::Arc::clone(&steps),
             Some(std::sync::Arc::clone(&task_program_host)
-                as std::sync::Arc<dyn crate::platform::programs::Programs>),
+                as std::sync::Arc<
+                    dyn tilo_workspace_service::workspaces::task_programs::Programs,
+                >),
         ));
         session_services.keep_actions(std::sync::Arc::clone(&session_actions));
         if engine.is_some() {

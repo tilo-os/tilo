@@ -54,6 +54,8 @@ mod shell;
 pub mod shortcuts;
 pub mod take_work;
 #[cfg(target_os = "linux")]
+mod task_programs;
+#[cfg(target_os = "linux")]
 pub mod tasks;
 #[cfg(target_os = "linux")]
 pub(crate) mod terminal;

@@ -66,6 +66,7 @@ mod follow;
 mod founding;
 pub mod providers;
 mod removals;
+pub mod task_programs;
 #[cfg(test)]
 mod work_tests;
 pub use follow::ResourceWrite;

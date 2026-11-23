@@ -311,6 +311,9 @@ fn serve_device(
         // nothing is admitted to the workspace before then. The endpoint admits each connection as
         // it comes, and host search starts once the workspace is here, rather than the daemon
         // ending before it could take the workspace in.
+        // The person's and their agents' task programs run here, in this daemon's processes.
+        #[cfg(target_os = "linux")]
+        session.serve_task_programs();
         let search = Arc::new(OnceLock::new());
         search_once_held(&session, &search)?;
         // A person who signs in from now on has their workspace here (the one their desktop

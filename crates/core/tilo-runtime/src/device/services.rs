@@ -1331,6 +1331,28 @@ impl Daemon {
         )))
     }
 
+    /// What the person's own programs call through in `workspace`: this daemon's API for them,
+    /// and the caller it admitted them as.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn person_programs_api(
+        &self,
+        workspace: &str,
+    ) -> Result<(Arc<dyn ActionProvider + Send + Sync>, Caller), String> {
+        let provider = self
+            .provider_for(workspace)
+            .map_err(|error| error.to_string())?;
+        let caller = provider
+            .admission_caller()
+            .ok_or_else(|| "the person's run was not admitted".to_owned())?;
+        Ok((Arc::new(provider), caller))
+    }
+
+    /// The person this daemon serves.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn persons_id(&self) -> &str {
+        &self.actor
+    }
+
     /// A task's programs run on Linux alone.
     #[cfg(not(target_os = "linux"))]
     #[expect(

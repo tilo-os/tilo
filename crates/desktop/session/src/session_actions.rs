@@ -17,7 +17,7 @@
 //!
 //! One step is not on the loop: the person's own tilolang line (`session:programs#run-line`,
 //! [`wire::RUN_LINE`]). It runs in the session's program host as the person
-//! ([`Programs`](crate::platform::programs::Programs)), so it makes no frame wait, and the
+//! ([`Programs`]), so it makes no frame wait, and the
 //! person may stop it while it runs.
 #![cfg_attr(
     target_arch = "wasm32",
@@ -40,8 +40,8 @@ use tilo_broker_core::BrokerActor;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
-use crate::platform::programs::{ProgramCaller, ProgramRequest, Programs};
 use crate::platform::steps::SessionSteps;
+use tilo_workspace_service::workspaces::task_programs::{ProgramCaller, ProgramRequest, Programs};
 
 /// The session's own actions, as the broker's catalogue names them.
 pub(crate) struct SessionActions {
@@ -259,7 +259,10 @@ impl SessionActions {
         programs.run(ProgramRequest {
             workspace,
             provider: None,
-            caller: ProgramCaller::Person { person },
+            caller: ProgramCaller::Person {
+                person,
+                session: None,
+            },
             group: request
                 .context
                 .as_ref()
@@ -277,6 +280,7 @@ impl SessionActions {
             confirm: false,
             this: None,
             stop: Some(Arc::clone(&admitted.stop)),
+            asked_in: None,
         })
     }
 }

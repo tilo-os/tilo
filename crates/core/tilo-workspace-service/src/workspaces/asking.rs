@@ -241,7 +241,8 @@ impl Workspaces {
     /// back to the dispatch that keeps it.
     pub fn keep_asked_in(&self, store: &Arc<AskedStore>) {
         let _ = self.inner.asked_store.set(Arc::clone(store));
-        self.action_service().admit_approvals_from(Arc::clone(store));
+        self.action_service()
+            .admit_approvals_from(Arc::clone(store));
         self.link_asked();
     }
 

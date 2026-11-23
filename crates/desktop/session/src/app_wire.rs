@@ -478,7 +478,8 @@ pub struct Hosted {
     pub tools: Option<crate::tools::Handle>,
     /// The programs the agents working this session's tasks write, which this
     /// session's links runs as steps of their runs.
-    pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
+    pub task_programs:
+        Option<std::sync::Arc<tilo_workspace_service::workspaces::task_programs::TaskPrograms>>,
     /// The session's own actions — the layout, its undo, the windows and the
     /// notices — offered to a turn's agent as the broker's steps, so it arranges the
     /// screen as the REPL does.
@@ -1033,7 +1034,7 @@ impl tilo_workspace_service::apps::services::WorkspaceGrants for SessionGrants {
 /// The steps an agent session takes here, registered: the programs its task writes, and the
 /// workspace's tools an agent in a process of its own calls.
 fn agent_session_steps(
-    programs: std::sync::Arc<crate::task_programs::TaskPrograms>,
+    programs: std::sync::Arc<tilo_workspace_service::workspaces::task_programs::TaskPrograms>,
     providers: &Providers,
 ) {
     programs.register(providers);
