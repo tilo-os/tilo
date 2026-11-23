@@ -118,6 +118,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
                     tilo_actions::MemberId::person(original.admitted.actor_key.clone())
                 )],
             );
+            let started_before = started.lock().unwrap().len();
             *env.authority.certificate.lock().unwrap() = None;
             let mut request = local_host_request(false);
             request.target = identity_admin::target(identity_admin::LIST);
@@ -126,7 +127,11 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
                     .await
                     .is_err()
             );
-            assert_eq!(started.lock().unwrap().len(), 2);
+            assert_eq!(
+                started.lock().unwrap().len(),
+                started_before,
+                "a call refused once the certificate is withdrawn starts no host step"
+            );
             rig.stop().await;
         })
         .await;
