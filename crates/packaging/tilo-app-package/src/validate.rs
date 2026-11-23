@@ -1268,32 +1268,23 @@ mode = "off"
             );
         }
 
-        phase calendar_runtime_version_accepted;
+        phase an_apps_runtime_reference_parses_before_its_entrypoint_is_checked;
         {
-            let mut m = minimal_runtime_manifest();
-            m.package.kind = Kind::App;
-            m.package.runtime = Some("tilo-runtime/2025.06".into());
-            // Will still fail because no entrypoint is set, but the
-            // runtime-version parse should pass before that — make sure the
-            // error is App-specific, not runtime-version.
-            let e = validate_manifest(&m).unwrap_err();
-            assert!(
-                matches!(e, ManifestError::AppMissingEntrypoint),
-                "expected app-entrypoint error, got {e:?}"
-            );
-        }
-
-        phase an_app_names_the_exact_runtime_build;
-        {
-            let mut m = minimal_runtime_manifest();
-            m.package.kind = Kind::App;
-            m.package.runtime =
-                Some("tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef".into());
-            let e = validate_manifest(&m).unwrap_err();
-            assert!(
-                matches!(e, ManifestError::AppMissingEntrypoint),
-                "expected app-entrypoint error, got {e:?}"
-            );
+            // Both spellings a runtime reference has are accepted: a calendar
+            // release, and the exact native build a device session produced.
+            for runtime in [
+                "tilo-runtime/2025.06",
+                "tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef",
+            ] {
+                let mut m = minimal_runtime_manifest();
+                m.package.kind = Kind::App;
+                m.package.runtime = Some(runtime.into());
+                let e = validate_manifest(&m).unwrap_err();
+                assert!(
+                    matches!(e, ManifestError::AppMissingEntrypoint),
+                    "{runtime}: expected app-entrypoint error, got {e:?}"
+                );
+            }
         }
 
         phase a_native_runtime_package_provides_one_build;
@@ -1655,7 +1646,7 @@ mode = "off"
     tilo_test_env::scenario! {
         fn continuity_declarations_are_validated;
 
-        phase semantic_continuity_requires_presentation;
+        phase continuity_facets_are_dependent_unique_and_never_absent_from_an_app;
         {
             let mut m = minimal_runtime_manifest();
             m.continuity.required = vec![ContinuityFacet::Semantic];
@@ -1663,21 +1654,13 @@ mode = "off"
                 validate_manifest(&m),
                 Err(ManifestError::SemanticContinuityWithoutPresentation)
             );
-        }
 
-        phase semantic_continuity_requires_a_signed_portable_schema;
-        {
-            let mut m = minimal_runtime_manifest();
             m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic];
             assert_eq!(
                 validate_manifest(&m),
                 Err(ManifestError::SemanticContinuityWithoutSchema)
             );
-        }
 
-        phase continuity_facets_cannot_be_repeated;
-        {
-            let mut m = minimal_runtime_manifest();
             m.continuity.required =
                 vec![ContinuityFacet::Presentation, ContinuityFacet::Presentation];
             assert_eq!(

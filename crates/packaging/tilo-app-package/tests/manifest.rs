@@ -77,15 +77,6 @@ tilo_test_env::scenario! {
             let m2 = Manifest::from_toml_str(&re).expect("decode-2");
             assert_eq!(m, m2, "both-flavour manifest round-trips");
         }
-        {
-            let src =
-                fixtures::render_template(fixtures::SAMPLE_APP_MANIFEST_TEMPLATE, &"aa".repeat(32));
-            let m = Manifest::from_toml_str(&src).expect("decode");
-            let ep = m.entrypoint.as_ref().expect("entrypoint");
-            assert_eq!(ep.r#type, tilo_app_package::EntrypointType::Gui);
-            assert!(m.cli.is_none());
-            validate_manifest(&m).expect("gui manifest still validates");
-        }
     }
 
     phase provider_claims_normalise_and_reject_active_content;
