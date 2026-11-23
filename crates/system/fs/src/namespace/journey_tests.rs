@@ -741,6 +741,7 @@ fn a_lease_has_one_holder_whose_fence_and_replicas_agree() {
     for ns in [&a, &b] {
         assert_eq!(ns.write_lease(record), Some(granted));
         assert_eq!(ns.lease_holder(record, 1), Some([1; 32]));
+        assert_eq!(ns.write_leases().len(), 1, "one record, one lease");
     }
 
     // A fence binds a version to one holder's epoch, and a different version or holder gets none.
