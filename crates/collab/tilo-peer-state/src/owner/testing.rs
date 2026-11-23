@@ -45,7 +45,6 @@ pub fn own_host_hint(
         runs_work: false,
         label: String::new(),
         cloud: false,
-        moderates: false,
         origin: None,
         workspace_id: workspace,
         endpoint_addr: endpoint,
@@ -295,7 +294,6 @@ fn seeded(now: SystemTime) -> Seeded {
         runs_work: false,
         label: String::new(),
         cloud: false,
-        moderates: false,
         origin: None,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
@@ -631,5 +629,6 @@ pub fn shortcut(id: &str) -> Shortcut {
         triggers: Vec::new(),
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }

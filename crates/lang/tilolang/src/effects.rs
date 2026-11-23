@@ -27,6 +27,9 @@ pub enum Effect {
     /// An image's pixels: its container's metadata, the crop, turn, resize and encode a program
     /// applies, and the preview cache this device keeps. Decoded and encoded off the frame.
     Image,
+    /// The page the window shows: what it reads and what was done in it, which a replay cannot
+    /// compute again.
+    Page,
 }
 
 impl Effect {
@@ -37,6 +40,7 @@ impl Effect {
         Self::Notify,
         Self::Clipboard,
         Self::Image,
+        Self::Page,
     ];
 
     pub const fn word(self) -> &'static str {
@@ -47,6 +51,7 @@ impl Effect {
             Self::Notify => "notify",
             Self::Clipboard => "clipboard",
             Self::Image => "image",
+            Self::Page => "page",
         }
     }
 
@@ -58,6 +63,7 @@ impl Effect {
             Self::Notify => "telling a person something",
             Self::Clipboard => "the person's clipboard",
             Self::Image => "the device's image decoders and its preview cache",
+            Self::Page => "the page this window shows",
         }
     }
 

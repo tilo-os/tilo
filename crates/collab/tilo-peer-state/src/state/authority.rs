@@ -96,27 +96,16 @@ fn access_of(
 }
 
 /// What [`StatePeer::authorize_document`] decided of a change.
-// On the page's target the variants are near enough in size that the lint holds nothing back.
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    expect(
-        clippy::large_enum_variant,
-        reason = "matched where it is decided, never kept or moved far"
-    )
-)]
 pub(super) enum Authorized {
     /// It is its author's to make, under `member`. `history` when its
     /// author's device was removed since and the cut of the removal keeps
     /// the change ([`crate::removals`]). `by_governor` when its author wrote
     /// it as one of the workspace's governors ([`StatePeer::wrote_as_governor`]),
-    /// and `shows` the bot it may show other names as
-    /// ([`StatePeer::appearance_author`]): both as the governance it was
-    /// judged by says.
+    /// as the governance it was judged by says.
     Admit {
         member: MemberAccess,
         history: bool,
         by_governor: bool,
-        shows: Option<collab_types::MemberId>,
     },
     /// Not decided until what it waits for is here.
     Hold(crate::MissingPrerequisite),
@@ -1046,30 +1035,6 @@ impl StatePeer {
         backend::member::role(&self.core, source, now).map(|(role, _)| role)
     }
 
-    /// The bot actor `source` may show other names as: a bot device that
-    /// acts in the workspace now (live delegation, live installation, installer
-    /// still a member) and whose installation allows `Personas`.
-    pub(super) fn appearance_author(
-        &self,
-        source: &[u8; 32],
-        now: SystemTime,
-        history: bool,
-    ) -> Option<collab_types::MemberId> {
-        // A change that is history of a device removed since showed what the
-        // device could show when the workspace took it.
-        if history {
-            self.permissions_in_history(source, now).ok()?;
-        } else {
-            self.permissions(*source, now).ok()?;
-        }
-        let doc = self.core.workspace_doc.as_ref()?;
-        let bytes = doc.policy().identities.get(&hex::encode(source))?.clone();
-        let identity = GovernedIdentity::decode(&bytes).ok()?;
-        let installation = identity.delegate?.installation?;
-        (installation.appearance == crate::installation::AppearancePolicy::Personas)
-            .then(|| collab_types::MemberId::bot(installation.id))
-    }
-
     /// What the keys their people approved for this workspace, and the agent
     /// devices they delegated, may do at
     /// `now`, as grants naming each key's agent
@@ -1353,7 +1318,6 @@ impl StatePeer {
         match decided {
             Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit {
                 by_governor: self.wrote_as_governor(source, history),
-                shows: self.appearance_author(source, authorization_time, history),
                 member,
                 history,
             }),

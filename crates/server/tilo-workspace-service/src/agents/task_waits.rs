@@ -1,13 +1,13 @@
 //! An automation a task waits for tells that task to go on.
 //!
 //! A task that waits names what can end its wait early: one of its person's automations, by
-//! its id ([`tasks_model::WaitFor::event`]). When that automation reaches the step that hands
-//! its instruction over, the server looks first whether a task of the workspace waits for it
-//! ([`tasks_model::waiting_for`]): an open issue with an agent, given for the automation's own
-//! person. It then writes Tasks' `resume` on that issue for the person, with what the
-//! automation hands over as what lets it go on, and the step is answered. The task's agent is
-//! asked again from the issue itself, with those words, and no turn of its person's own
-//! conversation is spent on waking it.
+//! its id ([`tasks_model::WaitFor::event`]). When that automation hands its instruction to its
+//! person's assistant, the turn it asks for looks first whether a task of the workspace waits
+//! for it ([`tasks_model::waiting_for`]): an open issue with an agent, given for the
+//! automation's own person. It then writes Tasks' `resume` on that issue for the person, with
+//! what the automation handed over as what lets it go on, and the turn ends there. The task's
+//! agent is asked again from the issue itself, with those words, and no model of its person's
+//! own conversation is spent on waking it.
 //!
 //! An automation of one person never tells a task given for another to go on, whatever id that
 //! task's wait names.
@@ -21,40 +21,6 @@ const TASKS: &str = "so.tilo.tasks";
 /// The most of what an automation hands over that a task is told as what lets it go on, in
 /// characters.
 const MOST_CAUSE_CHARS: usize = 400;
-
-/// Tell every task of `workspace` that waits for `person`'s automation `automation` to go on,
-/// with `words` (what the automation hands over) as what lets it. Whether one was told: none
-/// waits for most automations, and then whoever takes instructions takes this one.
-pub(super) fn told(
-    workspaces: &Workspaces,
-    workspace: &str,
-    person: &str,
-    automation: &str,
-    words: &str,
-) -> bool {
-    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-        return false;
-    };
-    // The thread that asks is driving the automation and cannot wait on the runtime a second
-    // time: the issues are read and written on a thread of this step's own.
-    let told = std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .name("task-wait".into())
-            .spawn_scoped(scope, || {
-                runtime.block_on(go_on(workspaces, workspace, person, automation, words))
-            })
-            .ok()
-            .and_then(|waited| waited.join().ok())
-    });
-    match told {
-        Some(Ok(told)) => told > 0,
-        Some(Err(error)) => {
-            tracing::warn!(%workspace, %automation, %error, "the tasks that wait for an automation are not read");
-            false
-        }
-        None => false,
-    }
-}
 
 /// Whether `document` is a part of the tracker's issues.
 fn keeps_issues(document: &str) -> bool {
@@ -72,8 +38,13 @@ fn cause_of(words: &str) -> String {
     line.chars().take(MOST_CAUSE_CHARS).collect()
 }
 
-/// [`told`], on the runtime: how many tasks were told to go on.
-async fn go_on(
+/// Tell every task of `workspace` that waits for `person`'s automation `automation` to go on,
+/// with `words` (what the automation handed over) as what lets it: how many were told. None
+/// waits for most automations.
+///
+/// # Errors
+/// The workspace's issues could not be read.
+pub(super) async fn go_on(
     workspaces: &Workspaces,
     workspace: &str,
     person: &str,

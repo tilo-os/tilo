@@ -726,6 +726,15 @@ impl AppActionBroker {
             .start_triggered_shortcut_run(caller, workspace, shortcut, trigger, invocation, inputs)
     }
 
+    /// How the run `invocation` of `shortcut` ended, once it has and while this broker keeps it.
+    pub fn shortcut_run_report(
+        &self,
+        invocation: tilo_automation::AutomationInvocationId,
+        shortcut: &str,
+    ) -> Option<tilo_automation::InvocationReport> {
+        self.state.shortcut_run_report(invocation, shortcut)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn record_completion_for_test(
         &self,

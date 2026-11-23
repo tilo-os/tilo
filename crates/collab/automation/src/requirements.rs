@@ -102,6 +102,7 @@ mod tests {
             triggers,
             saved_by: None,
             saved_proof: None,
+            paused: false,
         }
     }
 

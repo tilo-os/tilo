@@ -193,6 +193,16 @@ pub enum Turn {
         /// What runs.
         run: Box<InvokeRequest>,
     },
+    /// Sending one entry an app's record queued for its connector: once workspace-wide, by a
+    /// device that runs the connector.
+    Send {
+        /// The connector's app.
+        app: String,
+        /// The record that queued it.
+        record: String,
+        /// The entry.
+        entry: String,
+    },
     /// An action that runs once in the workspace, whichever device runs it:
     /// the same action on the same inputs is the same turn on every device.
     Once {
@@ -215,6 +225,12 @@ pub enum Turn {
     },
 }
 
+/// The lease ids of every turn that runs `address` once all start with this.
+#[must_use]
+pub fn once_leases(address: &str) -> String {
+    format!("once/{address}/")
+}
+
 /// Who a turn that runs once acts as: a device takes it only where it can act as them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Actor {
@@ -231,11 +247,12 @@ impl Turn {
         match self {
             Self::Invocation { id, .. } => format!("invocation/{}", id.0),
             Self::Linux { id, .. } => format!("linux/{}", id.0),
+            Self::Send { app, record, entry } => format!("send/{app}/{record}/{entry}"),
             Self::Once {
                 address, inputs, ..
             } => {
                 let inputs = serde_json::to_vec(&canonical(inputs)).unwrap_or_default();
-                format!("once/{address}/{}", blake3::hash(&inputs).to_hex())
+                format!("{}{}", once_leases(address), blake3::hash(&inputs).to_hex())
             }
         }
     }
@@ -295,6 +312,7 @@ impl Turn {
         match self {
             Self::Invocation { requester, .. } | Self::Linux { requester, .. } => Some(*requester),
             Self::Once { starter, .. } => *starter,
+            Self::Send { .. } => None,
         }
     }
 
@@ -308,7 +326,7 @@ impl Turn {
     /// this device now.
     const fn came_up_ms(&self) -> Option<i64> {
         match self {
-            Self::Invocation { .. } | Self::Linux { .. } => None,
+            Self::Invocation { .. } | Self::Linux { .. } | Self::Send { .. } => None,
             Self::Once { came_up_ms, .. } => *came_up_ms,
         }
     }
@@ -545,6 +563,12 @@ async fn turn_comes(
     Some(came_up.saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX)))
 }
 
+/// Whether this device runs the shortcuts of every member of the workspaces it keeps: it is one
+/// of its person's always-on servers and offers them compute.
+pub async fn hosts_shortcuts(workspaces: &Workspaces) -> bool {
+    offers_compute(workspaces).await
+}
+
 /// Whether this device is one of its person's always-on servers: it has an
 /// entry among their servers that was not retired.
 async fn always_on(workspaces: &Workspaces) -> bool {
@@ -652,6 +676,9 @@ async fn eligibility(
                 None => Err(Ineligible::NoRoomForLinux),
             }
         }
+        // The device that drains the queue runs the connector; what it sends is what a run of
+        // the saver's queued in a record it could write.
+        Turn::Send { .. } => Ok(()),
         Turn::Once {
             address,
             actor,
@@ -666,9 +693,11 @@ async fn eligibility(
                 return Err(Ineligible::CannotOpen);
             }
             match actor {
+                // The workspace's host runs a member's shortcuts for them, as their saved proof
+                // says, so a member's automations go on while none of their own devices is up.
                 Some(Actor::Person(person)) => {
                     let serving = hex::encode(workspaces.serving_certificate().user_public_key);
-                    if *person != serving {
+                    if *person != serving && !hosts_shortcuts(workspaces).await {
                         return Err(Ineligible::CannotActAs);
                     }
                     Ok(())
@@ -746,6 +775,21 @@ pub trait AgentEngine: Send + Sync {
         Pending::ready(Err(
             "this device's agent engine answers no trigger".to_owned()
         ))
+    }
+
+    /// Sign `shortcut` as saved in `workspace` by `agent`, acting for the person whose root is
+    /// `acts_for`, with the agent's own key this device holds.
+    fn sign_shortcut<'a>(
+        &'a self,
+        workspace: &'a str,
+        agent: &'a str,
+        acts_for: &'a [u8; 32],
+        shortcut: &'a mut tilo_automation::Shortcut,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        let _ = (workspace, agent, acts_for, shortcut);
+        Box::pin(std::future::ready(Err(
+            "this device's agent engine signs no shortcut".to_owned(),
+        )))
     }
 }
 

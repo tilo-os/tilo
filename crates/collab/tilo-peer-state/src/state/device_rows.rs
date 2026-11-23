@@ -74,6 +74,24 @@ pub(super) fn rows_of(doc: Option<&AutoCommit>, map: &str, scope: &str) -> Vec<(
         .collect()
 }
 
+/// Every row of `map` whose scope starts with `prefix`, as its scope, its device and its text.
+pub(super) fn rows_under(
+    doc: Option<&AutoCommit>,
+    map: &str,
+    prefix: &str,
+) -> Vec<(String, [u8; 32], String)> {
+    let Some(doc) = doc else {
+        return Vec::new();
+    };
+    texts(doc, map, prefix)
+        .into_iter()
+        .filter_map(|(rest, text)| {
+            let (scope, device) = rest.rsplit_once('/')?;
+            Some((format!("{prefix}{scope}"), device_of(device)?, text))
+        })
+        .collect()
+}
+
 /// Every row in `map`, as its scope, its device and its text.
 pub(super) fn all_rows(doc: Option<&AutoCommit>, map: &str) -> Vec<(String, [u8; 32], String)> {
     let Some(doc) = doc else {

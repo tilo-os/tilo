@@ -455,6 +455,28 @@ impl AppBrokerState {
                     Ok(crate::apps::automation::stopped_output(&stopped)),
                 );
             }
+            crate::apps::automation::LibraryPlan::Count { id, every } => {
+                let counted = self
+                    .membership
+                    .as_ref()
+                    .map(|membership| {
+                        membership
+                            .done_under(&workspace_id, &crate::apps::automation::firings_of(&id))
+                    })
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|answer| {
+                        answer
+                            .get("counted")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                    })
+                    .count();
+                return self.finish_framework_action(
+                    admitted,
+                    Ok(crate::apps::automation::count_output(counted, every)),
+                );
+            }
             crate::apps::automation::LibraryPlan::Change { change, output } => (change, output),
         };
         let failed = |message: String| {
@@ -475,6 +497,7 @@ impl AppBrokerState {
         let stored = library.store(crate::apps::services::ShortcutLibraryRequest {
             workspace: workspace_id,
             actor: actor.member().clone(),
+            acting_for: caller.acting_for_person().map(str::to_owned),
             change,
             context: request
                 .context

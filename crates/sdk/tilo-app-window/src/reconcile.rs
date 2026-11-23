@@ -117,6 +117,9 @@ pub struct Reconciler {
     /// renders in, which holds the view's root, so a call's `fill` reaches that root through each
     /// fragment between ([`fragment_fill`]).
     filling: HashMap<String, f32>,
+    /// The page engine this window shows a `ui.WebView` with, made when one is first built: one
+    /// page per window, so the window holds it and not the app whose view it draws.
+    page_engine: Rc<RefCell<Option<ui::webview::SharedEngine>>>,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -495,6 +498,7 @@ impl Reconciler {
             rows: None,
             broken: Rc::default(),
             filling: HashMap::new(),
+            page_engine: Rc::default(),
         }
     }
 
@@ -513,6 +517,7 @@ impl Reconciler {
             rows: other.rows.clone(),
             broken: Rc::clone(&other.broken),
             filling: HashMap::new(),
+            page_engine: Rc::clone(&other.page_engine),
         }
     }
 
@@ -697,6 +702,14 @@ impl Reconciler {
             self.note_broken(node, &ui::component::Error::unknown(&node.kind));
             return self.text_of(node, "", TextRole::Caption);
         };
+        // A page is shown with the window's engine: the window holds it, and hands it to the
+        // view while the view is built.
+        let outer = ui::webview::window_engine();
+        if description.name == "WebView" {
+            let mut held = self.page_engine.borrow_mut();
+            let engine = held.get_or_insert_with(ui::webview::new_page_engine).clone();
+            ui::webview::set_window_engine(Some(engine));
+        }
         let built = {
             let mut source = NodeSource::new(node, description, self);
             // The control says what it does, where it is built (`Registry::build`): the window
@@ -704,6 +717,7 @@ impl Reconciler {
             // the window in another language, and what it does stays what it does.
             crate::adapter::components().build(&description.name, &mut source)
         };
+        ui::webview::set_window_engine(outer);
         built.unwrap_or_else(|error| {
             self.note_broken(node, &error);
             self.text_of(node, "", TextRole::Caption)

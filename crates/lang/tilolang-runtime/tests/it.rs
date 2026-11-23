@@ -66,6 +66,7 @@ mod image;
 mod interpolation;
 #[path = "json.rs"]
 mod json;
+mod page;
 #[path = "list.rs"]
 mod list;
 #[path = "members.rs"]

@@ -600,34 +600,9 @@ pub(super) fn start_sealed(
     publish_changes(candidate, Some(keys), (app, record), changes, key, now)
 }
 
-/// Publish `changes` a bot's device `bot` made to a sealed record into
-/// `candidate`: decided as the bot's own sealed write, sealed with `keys`
-/// and published under the governor's `key`, which the workspace's members take
-/// it from, as they take a bot's changes to a record in the clear from the
-/// governor's checkpoint.
-#[cfg(feature = "agents")]
-pub(super) fn publish_changes_for(
-    candidate: &mut StatePeer,
-    keys: &DocumentKeys,
-    bot: &SigningKey,
-    route: (&str, &str),
-    changes: Vec<u8>,
-    key: &SigningKey,
-    now: SystemTime,
-) -> Result<NeighbourMsg, String> {
-    candidate.publication_mut().publish_sealed_incremental_for(
-        bot,
-        route,
-        changes,
-        &mut keys.seal(ContentRetention::Delta),
-        key,
-        now,
-    )
-}
-
 impl Workspaces {
     /// The content keys of `route`'s workspace, for the workspace service's endpoints
-    /// (workspace actions for members' pages and bots), as this device holds them.
+    /// (workspace actions for members' pages), as this device holds them.
     /// `create` opens the key group for the documents the
     /// writes are about to start, and otherwise only an existing key group is
     /// read. A document that needs keys of its own has one opened for it when

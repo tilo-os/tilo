@@ -261,20 +261,6 @@ pub mod governance {
     /// Remove an earlier change from the workspace's history.
     pub const REDACT: &str = "redact";
 
-    /// Install a bot, or update an installed bot's program: its row, its
-    /// grants and its device in one governed change.
-    pub const INSTALL_BOT: &str = "install-bot";
-    /// Withdraw a bot and revoke its grants; its row stays so its history
-    /// stays attributed.
-    pub const UNINSTALL_BOT: &str = "uninstall-bot";
-    /// Change whether a bot may post under other names.
-    pub const SET_BOT_APPEARANCE: &str = "set-bot-appearance";
-    /// Stop a bot from starting runs.
-    pub const PAUSE_BOT: &str = "pause-bot";
-    /// Let a paused bot start runs again.
-    pub const RESUME_BOT: &str = "resume-bot";
-    /// Become a bot's installer, after reviewing its grant.
-    pub const ADOPT_BOT: &str = "adopt-bot";
     /// Choose the version of an app every member of the workspace runs: a
     /// registry release, or a developer's own signed build. Every member's
     /// desktop is to run it, and changes made with another version wait
@@ -290,7 +276,7 @@ pub mod governance {
     /// grant gives, so it is not among [`ALL`].
     pub const TRANSFER_OWNERSHIP: &str = "transfer-ownership";
 
-    pub const ALL: [&str; 22] = [
+    pub const ALL: [&str; 16] = [
         INVITE,
         ADD_MEMBER,
         REMOVE_MEMBER,
@@ -305,27 +291,14 @@ pub mod governance {
         RENAME,
         COMPACT,
         REDACT,
-        INSTALL_BOT,
-        UNINSTALL_BOT,
-        SET_BOT_APPEARANCE,
-        PAUSE_BOT,
-        RESUME_BOT,
-        ADOPT_BOT,
         INSTALL_APP,
         CALL,
     ];
 
     /// Actions that exercise authority over the workspace or others in it. The
     /// person's own grants must allow them: an Ask there is no authority the
-    /// person's confirmation could supply. Pausing is not among them, so a
-    /// moderator can stop a misbehaving bot without being able to widen it.
-    pub const PRIVILEGED: [&str; 5] = [
-        INSTALL_BOT,
-        UNINSTALL_BOT,
-        SET_BOT_APPEARANCE,
-        ADOPT_BOT,
-        INSTALL_APP,
-    ];
+    /// person's confirmation could supply.
+    pub const PRIVILEGED: [&str; 1] = [INSTALL_APP];
 
     #[must_use]
     pub fn is_privileged(action: &str) -> bool {
@@ -723,17 +696,14 @@ pub fn restriction_grant(
 }
 
 /// The governance a Moderator may exercise: removing, banning and
-/// restricting members, which the workspace keeps its owner through, stopping
-/// or restarting a bot, so a misbehaving bot can be halted without the authority to widen
-/// it, and naming the workspace, which is what people find it by.
-pub const MODERATOR_GOVERNANCE: [&str; 8] = [
+/// restricting members, which the workspace keeps its owner through, and
+/// naming the workspace, which is what people find it by.
+pub const MODERATOR_GOVERNANCE: [&str; 6] = [
     governance::REMOVE_MEMBER,
     governance::BAN,
     governance::UNBAN,
     governance::RESTRICT,
     governance::UNRESTRICT,
-    governance::PAUSE_BOT,
-    governance::RESUME_BOT,
     governance::RENAME,
 ];
 
@@ -857,7 +827,7 @@ impl Preset {
 /// | Viewer | Read: Allow |
 /// | Commenter | Read: Allow; comments, reactions: Allow (Undoable) |
 /// | Editor | Read, Undoable: Allow; Outside: Ask; governance, moderation, people's views of the layout: Deny |
-/// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `restrict`, `unrestrict`, `pause-bot`, `resume-bot`, `rename`: Allow |
+/// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `restrict`, `unrestrict`, `rename`: Allow |
 /// | Owner | everything: Allow |
 #[must_use]
 pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {

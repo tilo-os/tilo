@@ -1153,6 +1153,12 @@ impl Runtime {
         *self.core.web.borrow_mut() = Some(Box::new(transport));
     }
 
+    /// Where `page.call` reaches: the page the app's window shows. Each call is journaled as
+    /// the run makes it, so a run that replays asks the page no second time.
+    pub fn set_page(&self, host: impl crate::page::PageHost + 'static) {
+        *self.core.page.borrow_mut() = Some(Box::new(host));
+    }
+
     /// The device's files ([`crate::blob`]): the content store a chosen file's bytes are kept
     /// in, what it holds, and the chooser a person picks with. Until it is set, the runtime
     /// holds no files: a chooser offers nothing and `.text()` says the content is not here.

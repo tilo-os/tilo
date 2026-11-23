@@ -19,6 +19,8 @@ const FILE: &str = "file";
 
 const CLIPBOARD: &str = "clipboard";
 
+const PAGE: &str = "page";
+
 impl Checker<'_> {
     pub(super) fn call(
         &mut self,
@@ -85,6 +87,13 @@ impl Checker<'_> {
                     && self.env.find_import("web").is_none()
                 {
                     return self.builtin_web(name, args, span);
+                }
+                // `page.call(request)`: the page the window shows, which only an action acts on.
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == PAGE)
+                    && self.lookup(PAGE).is_none()
+                    && self.env.find_import(PAGE).is_none()
+                {
+                    return self.builtin_page(name, args, span);
                 }
                 // `json.parse`, `json.decode<T>`, `json.encode`: JSON text, which is no effect.
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == "json")
@@ -1935,6 +1944,53 @@ impl Checker<'_> {
     /// `web.get(url, headers:, if_none_match:)` and `web.post(url, body:, headers:)`: a request to
     /// a service outside Tilo, which the invocation makes once, records, and replays from the
     /// record.
+    /// `page.call(request)`: the page the app's window shows does what the request says, and
+    /// answers what it found as JSON text. Only an action acts on the page: a view is drawn
+    /// again from what it is shown, and reading a page is not that.
+    fn builtin_page(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        if name.name != "call" {
+            self.err(
+                "E022",
+                name.span,
+                format!("`page` has `call`; not `{}`", name.name),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        if self.st.ctx != Ctx::Action {
+            let who = self.st.ctx.word();
+            self.err(
+                "E047",
+                span,
+                format!("`page.call` acts on the page, and only an action may; {who} may not"),
+            );
+            return Ex::error();
+        }
+        let Some(request) = args.first().filter(|a| a.name.is_none()) else {
+            self.err(
+                "E022",
+                span,
+                "`page.call` takes the request first: `page.call(\"{\\\"request\\\": \\\"outline\\\"}\")`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if args.len() > 1 {
+            self.err(
+                "E022",
+                span,
+                "`page.call` takes one argument, the request as JSON text",
+            );
+        }
+        let request = self.expr_as(&request.value, &Ty::Text);
+        self.reads(crate::effects::Effect::Page, span, "`page.call`");
+        Ex::host(Imp::PageCall, vec![Self::handle_of(request)], Ty::Text)
+    }
+
     fn builtin_web(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let get = match name.name.as_str() {
             "get" => true,

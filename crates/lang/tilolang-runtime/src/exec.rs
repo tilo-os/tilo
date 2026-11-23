@@ -36,6 +36,7 @@ use crate::run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Step, S
 use crate::store::{Applied, ChangeNote, Mutation, Txn};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 
+mod page;
 mod web;
 
 /// Calls into other packages' `fn`s deeper than this are refused: each one is a fresh instance

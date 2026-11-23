@@ -12,10 +12,16 @@
 //! the workspace ([`tilo_peer_state::trigger_mark`]), and a firing that started is kept done
 //! there ([`keep_done`]), so a device that takes over carries on from what was written.
 //!
-//! A watch the runner has more of later (a source that changed, a time a resource names) is one
-//! more kind of [`Event`] it hands the dispatcher, placed the same way.
+//! A source that changed outside the workspace and a time a resource holds are two more kinds of
+//! [`Event`] it hands the dispatcher, placed the same way. So are the events a connector on this
+//! device reports ([`ConnectorEvents`]): each is a firing of every armed shortcut whose connector
+//! trigger names its app, source and matching fields.
 
 pub mod folders;
+#[cfg(feature = "agents")]
+mod outside;
+#[cfg(feature = "agents")]
+mod times;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -24,14 +30,17 @@ use std::time::Duration;
 use automerge::{AutoCommit, ChangeHash};
 use serde_json::{Map, Value};
 use tilo_actions::ActionContext;
-use tilo_actions::remote::Caller;
+use tilo_actions::remote::{ActionCallError, Caller};
+use tilo_automation::dispatch::retry;
 use tilo_automation::dispatch::{
-    self, AppEvent, DocumentEvent, Event, Firer, ScheduleEvent, event_of,
+    self, AppEvent, ConnectorEvent, DocumentEvent, Event, Firer, ScheduleEvent, event_of,
 };
 use tilo_automation::schedule::{SchedulePlan, Timed, plan};
-use tilo_automation::{AutomationInvocationId, Shortcut, TriggerSpec};
+#[cfg(feature = "agents")]
+use tilo_automation::source_change;
+use tilo_automation::{AutomationInvocationId, InvocationReport, Shortcut, TriggerSpec};
 
-use crate::work::{Actor, NotTaken, Order, Turn, keep_done, takes_turn_in};
+use crate::work::{Actor, Claim, NotTaken, Order, Turn, keep_done, takes_turn_in};
 use crate::workspaces::Workspaces;
 use folders::{FolderChange, FolderWatch};
 
@@ -42,53 +51,74 @@ const TICK: Duration = Duration::from_secs(1);
 /// How often the shortcuts are armed again although no workspace's governance said it changed.
 const REARM: Duration = Duration::from_secs(30);
 
+/// How long a firing's claim goes between renewals while its run goes or waits to go again.
+const RENEW: Duration = Duration::from_secs(20);
+
+/// The input a shortcut declares to be handed which firing started it: the same on every
+/// device and every attempt, so a step can name it.
+pub const FIRING_INPUT: &str = "firing";
+
 /// Where a firing's run starts: the device's action broker, which checks again that the
 /// shortcut still exists and that its saver may still run it.
 pub trait StartRun: Send + Sync {
-    /// Start `firing`'s run as its saver: the broker job it reports on, or why it did not start.
+    /// Start `firing`'s run as its saver, as the invocation `run`: the broker job it reports on,
+    /// or why it did not start.
     ///
     /// # Errors
     /// Why the run did not start: the shortcut is gone, lost the trigger, or reaches past what
     /// its saver may do now.
-    fn start(&self, firing: &Firing) -> Result<u64, String>;
+    fn start(&self, firing: &Firing, run: AutomationInvocationId) -> Result<u64, ActionCallError>;
+
+    /// How the run `run` of `firing` ended, once it has.
+    fn ended(&self, firing: &Firing, run: AutomationInvocationId) -> Option<InvocationReport>;
 }
 
 impl StartRun for crate::apps::collab_broker::AppActionBroker {
-    fn start(&self, firing: &Firing) -> Result<u64, String> {
-        let caller = Caller::local_person(firing.saver.clone()).in_workspace(&firing.workspace);
+    fn start(&self, firing: &Firing, run: AutomationInvocationId) -> Result<u64, ActionCallError> {
+        let caller = firing.caller();
         self.start_triggered_shortcut_run(
             &caller,
             &firing.workspace,
             &firing.shortcut,
             &firing.trigger,
-            firing.invocation,
+            run,
             firing.inputs.clone(),
         )
-        .map_err(|error| error.to_string())
+    }
+
+    fn ended(&self, firing: &Firing, run: AutomationInvocationId) -> Option<InvocationReport> {
+        self.shortcut_run_report(run, &firing.shortcut)
     }
 }
 
-/// A shortcut this device's person saved, armed in a workspace this device keeps.
+/// A shortcut armed in a workspace this device keeps: one its person saved, or, on a device that
+/// runs every member's shortcuts, one any member saved.
 #[derive(Clone, Debug)]
 pub struct Armed {
     pub workspace: String,
     pub shortcut: Shortcut,
-    /// Who saved it, by their device's proof: its triggers fire on their behalf only.
+    /// Who saved it, by their device's proof: its triggers fire on their behalf only, bounded by
+    /// its grant.
     pub saver: String,
+    /// The agent of theirs that saved it with its own key, and that key: its runs act as that
+    /// agent, held to the agent's grants as well as its own.
+    pub agent: Option<(String, [u8; 32])>,
     /// The device that saved it: the one its firings start on.
     pub starter: [u8; 32],
     /// The workspace as its governance describes it.
     pub described: tilo_desktop_model::Workspace,
 }
 
-/// Every shortcut with triggers in `workspaces` that the person this device acts for in its
-/// workspace (`person`) saved, by the proof of a device of theirs ([`tilo_peer_state::workspace::proven_saver`]) that is valid at `now_ns` against the
-/// revocations the workspace records.
+/// Every shortcut with triggers in `workspaces` saved by the proof of a member's device
+/// ([`tilo_peer_state::workspace::proven_saver`]) that is valid at `now_ns` against the
+/// revocations the workspace records: those the person this device acts for in its workspace
+/// (`person`) saved, or every member's when this device runs them all (`hosts`).
 #[must_use]
 pub fn armed(
     workspaces: &[tilo_desktop_model::Workspace],
     revocations: impl Fn(&str) -> Option<tilo_user_identity::RevocationList>,
     person: impl Fn(&str) -> String,
+    hosts: bool,
     now_ns: u64,
 ) -> Vec<Armed> {
     let mut armed = Vec::new();
@@ -115,19 +145,20 @@ pub fn armed(
         };
         let person = person(&id);
         for shortcut in triggered {
-            if tilo_peer_state::workspace::proven_saver(&id, &shortcut, &revocations, now_ns)
-                .as_ref()
-                != Some(&person)
-            {
+            let Some(proven) =
+                tilo_peer_state::workspace::proven(&id, &shortcut, &revocations, now_ns)
+                    .filter(|saver| hosts || saver.person == person)
+            else {
                 continue;
-            }
+            };
             let Some(starter) = saving_device(&shortcut) else {
                 continue;
             };
             armed.push(Armed {
                 workspace: id.clone(),
                 shortcut,
-                saver: person.clone(),
+                agent: proven.agent.map(|agent| (agent, proven.key)),
+                saver: proven.person,
                 starter,
                 described: workspace.clone(),
             });
@@ -136,11 +167,19 @@ pub fn armed(
     armed
 }
 
+/// A person's root, from its hex.
+fn person_key(person: &str) -> Option<[u8; 32]> {
+    hex::decode(person).ok()?.try_into().ok()
+}
+
 /// The device whose proof says it saved `shortcut`.
 fn saving_device(shortcut: &Shortcut) -> Option<[u8; 32]> {
     let proof = shortcut.saved_proof.as_ref()?;
-    let device: tilo_user_identity::DeviceCert =
-        serde_json::from_value(proof.device_cert.clone()).ok()?;
+    let device: tilo_user_identity::DeviceCert = serde_json::from_value(proof.device_cert.clone())
+        .or_else(|_| {
+            serde_json::from_value(proof.device_cert.get("grant").cloned().unwrap_or_default())
+        })
+        .ok()?;
     Some(device.device_public_key)
 }
 
@@ -154,6 +193,8 @@ pub struct Firing {
     /// The trigger's payload, as values for the shortcut's inputs.
     pub inputs: Map<String, Value>,
     pub saver: String,
+    /// The agent of the saver's it acts as, by its id and its grant's key, where one saved it.
+    pub agent: Option<(String, [u8; 32])>,
     /// For a schedule's fire time: the progress kept once it ran.
     pub answers: Option<Answer>,
 }
@@ -167,11 +208,23 @@ pub struct Answer {
 }
 
 impl Firing {
+    /// Who its run is started as: its saver, or the agent of theirs that saved it.
+    #[must_use]
+    pub fn caller(&self) -> Caller {
+        let caller = match (&self.agent, person_key(&self.saver)) {
+            (Some((agent, key)), Some(person)) => {
+                Caller::delegated_agent(agent.clone(), person, *key)
+            }
+            _ => Caller::local_person(self.saver.clone()),
+        };
+        caller.in_workspace(&self.workspace)
+    }
+
     /// The turn of work this firing is, started on `starter` at `came_up_ms`.
     #[must_use]
     pub fn turn(&self, starter: [u8; 32], came_up_ms: i64) -> Turn {
         Turn::once(
-            format!("shortcuts.shortcut:{}#run", self.shortcut),
+            crate::apps::automation::run_address(&self.shortcut),
             serde_json::json!({ "invocation": self.invocation.0.to_string() }),
         )
         .acting_as(Actor::Person(self.saver.clone()))
@@ -186,14 +239,49 @@ struct Waiting {
     turn: Turn,
 }
 
+/// A firing this device took: its claim is kept until its run ends for good.
+struct Going {
+    firing: Firing,
+    turn: Turn,
+    claim: Claim,
+    /// The attempt running or next, 1 for the first.
+    attempt: u32,
+    /// The run going, or `None` while the next attempt waits for `again_at_ms`.
+    run: Option<AutomationInvocationId>,
+    again_at_ms: i64,
+    renewed_ms: i64,
+}
+
+/// One event a connector on this device reported: what fired it and what it carried.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportedEvent {
+    /// Its place in the connector's log, so the next look asks for what follows it.
+    pub seq: u64,
+    /// The source the connector declared it under (`message-created`).
+    pub source: String,
+    /// The service's id for it, which tells it from a replay of itself.
+    pub id: String,
+    /// When the service said it happened, ms since the epoch.
+    pub at_ms: i64,
+    /// What it carried, which a trigger's filter narrows and its run reads.
+    pub payload: Map<String, Value>,
+}
+
+/// What the connectors this device runs reported, as the trigger runner reads them.
+pub trait ConnectorEvents: Send + Sync {
+    /// The events the connector `app` reported after `cursor`, oldest first.
+    fn since(&self, app: &str, cursor: u64) -> Vec<ReportedEvent>;
+}
+
 /// The firings `event` causes among `armed`, through the dispatcher every automation fires
 /// through.
 fn dispatched(armed: &[Armed], event: Event<'_>, came_up_ms: i64) -> Vec<Waiting> {
     let mut firings = Vec::new();
-    for armed in armed {
+    // A paused shortcut takes in what happens and answers none of it.
+    for armed in armed.iter().filter(|armed| !armed.shortcut.paused) {
         let fired = dispatch::dispatch(
             &[dispatch::Armed {
-                firer: Firer::Shortcut {
+                firer: Firer {
                     shortcut: &armed.shortcut.id,
                     saver: &armed.saver,
                 },
@@ -209,6 +297,7 @@ fn dispatched(armed: &[Armed], event: Event<'_>, came_up_ms: i64) -> Vec<Waiting
                 invocation: fired.invocation,
                 inputs: fired.inputs,
                 saver: armed.saver.clone(),
+                agent: armed.agent.clone(),
                 answers: None,
             };
             Waiting {
@@ -247,6 +336,7 @@ pub fn seen_here(armed: &Armed, trigger: &TriggerSpec, payload: &[(&str, Value)]
         invocation: AutomationInvocationId::new(),
         inputs,
         saver: armed.saver.clone(),
+        agent: armed.agent.clone(),
         answers: None,
     }
 }
@@ -410,6 +500,23 @@ pub struct Runner {
     joined: Option<BTreeSet<String>>,
     /// Firings waiting for their turn, by their turn's lease.
     pending: BTreeMap<String, Waiting>,
+    /// Firings this device took whose run has not ended for good, by their turn's lease.
+    going: BTreeMap<String, Going>,
+    /// What this device's connectors report, when it runs any.
+    connectors: Option<Arc<dyn ConnectorEvents>>,
+    /// How far each connector app's event log was read, by app id.
+    reported: BTreeMap<String, u64>,
+    /// What each trigger at a time a resource holds has answered, by workspace, shortcut and
+    /// trigger (`times`).
+    #[cfg(feature = "agents")]
+    times: BTreeMap<(String, String, usize), times::Progress>,
+    /// What the looks at each source outside took in, by workspace, shortcut and trigger
+    /// (`outside`).
+    #[cfg(feature = "agents")]
+    looks: BTreeMap<(String, String, usize), source_change::Seen>,
+    /// The client the looks at sources outside go through.
+    #[cfg(feature = "agents")]
+    outside: outside::Outside,
 }
 
 impl Runner {
@@ -427,7 +534,24 @@ impl Runner {
             folders: FolderWatch::default(),
             joined: None,
             pending: BTreeMap::new(),
+            going: BTreeMap::new(),
+            connectors: None,
+            reported: BTreeMap::new(),
+            #[cfg(feature = "agents")]
+            times: BTreeMap::new(),
+            #[cfg(feature = "agents")]
+            looks: BTreeMap::new(),
+            #[cfg(feature = "agents")]
+            outside: outside::Outside::default(),
         }
+    }
+
+    /// Fire the triggers on what the connectors this device runs report, read
+    /// through `connectors`.
+    #[must_use]
+    pub fn watching_connectors(mut self, connectors: Arc<dyn ConnectorEvents>) -> Self {
+        self.connectors = Some(connectors);
+        self
     }
 
     /// Read schedules' fire times in `zone`.
@@ -472,9 +596,11 @@ impl Runner {
         }
     }
 
-    /// Arm the shortcuts this device's person saved in the workspaces it keeps now.
+    /// Arm the shortcuts this device's person saved in the workspaces it keeps now, and every
+    /// member's on a device that runs them all ([`crate::work::hosts_shortcuts`]).
     pub async fn arm(&mut self) {
         let person = hex::encode(self.workspaces.serving_certificate().user_public_key);
+        let hosts = crate::work::hosts_shortcuts(&self.workspaces).await;
         let described = self.workspaces.described().await;
         let mut revocations = BTreeMap::new();
         for workspace in &described {
@@ -489,6 +615,7 @@ impl Runner {
             &described,
             |workspace| revocations.get(workspace).cloned(),
             |_| person.clone(),
+            hosts,
             tilo_clock::unix_now_ns(),
         );
         let now_s = tilo_clock::unix_now_i64();
@@ -525,8 +652,51 @@ impl Runner {
             self.offer(firings);
         }
         self.schedules(now_ms).await;
+        #[cfg(feature = "agents")]
+        self.moments(now_ms).await;
+        #[cfg(feature = "agents")]
+        self.outside_changes(now_ms).await;
         self.files(now_ms);
+        self.connector_events(now_ms);
         self.take_turns().await;
+        self.tend(now_ms).await;
+    }
+
+    /// Fire the triggers on every event the connectors this device runs reported
+    /// after the last look, each read once: a firing kept done in the workspace
+    /// stops a replay of the same event from starting it again.
+    fn connector_events(&mut self, now_ms: i64) {
+        let Some(connectors) = self.connectors.clone() else {
+            return;
+        };
+        let watched: BTreeSet<String> = self
+            .armed
+            .iter()
+            .flat_map(|armed| armed.shortcut.triggers.iter())
+            .filter_map(|trigger| match trigger {
+                TriggerSpec::Connector { app_id, .. } => Some(app_id.clone()),
+                _ => None,
+            })
+            .collect();
+        self.reported.retain(|app, _| watched.contains(app));
+        let mut firings = Vec::new();
+        for app in watched {
+            let cursor = self.reported.get(&app).copied().unwrap_or(0);
+            let mut last = cursor;
+            for reported in connectors.since(&app, cursor) {
+                last = last.max(reported.seq);
+                let event = ConnectorEvent {
+                    app_id: app.clone(),
+                    source: reported.source,
+                    id: reported.id,
+                    at_ms: reported.at_ms,
+                    payload: reported.payload,
+                };
+                firings.extend(dispatched(&self.armed, Event::Connector(&event), now_ms));
+            }
+            self.reported.insert(app, last);
+        }
+        self.offer(firings);
     }
 
     /// The events of the records `written`, in the workspaces whose records an armed shortcut
@@ -610,9 +780,10 @@ impl Runner {
                 };
                 match plan(timed, answered, now_ms, &self.zone) {
                     SchedulePlan::Waiting { answered_ms } => {
-                        // A schedule seen first keeps when it was seen: a fire time before then
-                        // is no missed one.
-                        if answered.is_none() {
+                        // A schedule seen first keeps when it was seen, so a fire time before
+                        // then is no missed one; a missed time it skips moves its progress past
+                        // that time, so it waits for the next.
+                        if answered.is_none_or(|answered| answered_ms > answered) {
                             self.answer(
                                 &armed.workspace,
                                 &armed.shortcut.id,
@@ -622,6 +793,17 @@ impl Runner {
                             )
                             .await;
                         }
+                    }
+                    // A paused shortcut's fire time passes unanswered: it is not run later.
+                    SchedulePlan::Fire { answered_ms, .. } if armed.shortcut.paused => {
+                        self.answer(
+                            &armed.workspace,
+                            &armed.shortcut.id,
+                            index,
+                            &mark,
+                            answered_ms,
+                        )
+                        .await;
                     }
                     SchedulePlan::Fire {
                         due_ms,
@@ -666,7 +848,7 @@ impl Runner {
             for armed in self
                 .armed
                 .iter()
-                .filter(|armed| armed.workspace == change.workspace)
+                .filter(|armed| armed.workspace == change.workspace && !armed.shortcut.paused)
             {
                 for trigger in &armed.shortcut.triggers {
                     if matches!(trigger, TriggerSpec::FileChanged { capability } if *capability == change.capability)
@@ -701,7 +883,7 @@ impl Runner {
         let now_ms = tilo_clock::unix_now_ms_i64();
         let mut firings = Vec::new();
         for (workspace, name) in names.iter().filter(|(id, _)| !before.contains(*id)) {
-            for armed in &self.armed {
+            for armed in self.armed.iter().filter(|armed| !armed.shortcut.paused) {
                 for trigger in &armed.shortcut.triggers {
                     if matches!(trigger, TriggerSpec::WorkspaceJoined { workspace: wanted }
                         if wanted.as_ref().is_none_or(|wanted| wanted == workspace))
@@ -735,17 +917,37 @@ impl Runner {
     /// Take each waiting firing whose turn is this device's, and start it.
     async fn take_turns(&mut self) {
         let pending = std::mem::take(&mut self.pending);
+        let now_ms = tilo_clock::unix_now_ms_i64();
         for (lease, waiting) in pending {
-            let Waiting { firing, turn } = &waiting;
-            match takes_turn_in(&self.workspaces, &firing.workspace, turn, self.order).await {
+            if self.going.contains_key(&lease) {
+                continue;
+            }
+            let Waiting { firing, turn } = waiting;
+            match takes_turn_in(&self.workspaces, &firing.workspace, &turn, self.order).await {
                 Ok(claim) => {
-                    self.started(firing, turn).await;
-                    claim.release().await;
+                    if self.answered_elsewhere(&firing, &turn).await {
+                        claim.release().await;
+                        continue;
+                    }
+                    let mut going = Going {
+                        firing,
+                        turn,
+                        claim,
+                        attempt: 1,
+                        run: None,
+                        again_at_ms: now_ms,
+                        renewed_ms: now_ms,
+                    };
+                    if let Some(ended) = self.begin(&mut going).await {
+                        self.finish(going, ended).await;
+                    } else {
+                        self.going.insert(lease, going);
+                    }
                 }
                 // Another device may yet start it, or the one that claimed it may go quiet: it
                 // waits here meanwhile, however long no device can start it.
                 Err(NotTaken::Waiting { .. } | NotTaken::TakenBy(_) | NotTaken::Unwritten(_)) => {
-                    self.pending.insert(lease, waiting);
+                    self.pending.insert(lease, Waiting { firing, turn });
                 }
                 Err(NotTaken::Done(_)) => {}
                 Err(NotTaken::Ineligible(why)) => {
@@ -755,65 +957,169 @@ impl Runner {
         }
     }
 
-    /// Start `firing`, this device's turn, once: a schedule's progress or the firing kept done in
-    /// the workspace says it started, for every device.
-    async fn started(&self, firing: &Firing, turn: &Turn) {
-        let Turn::Once {
-            came_up_ms: Some(came_up_ms),
-            ..
-        } = turn
+    /// Whether another device answered `firing`'s fire time while this one waited its turn.
+    async fn answered_elsewhere(&self, firing: &Firing, turn: &Turn) -> bool {
+        let (
+            Some(answer),
+            Turn::Once {
+                came_up_ms: Some(came_up_ms),
+                ..
+            },
+        ) = (&firing.answers, turn)
         else {
-            return;
+            return false;
         };
-        if let Some(answer) = &firing.answers {
-            // Another device may have answered the fire time while this one waited its turn.
-            let answered = self
-                .workspaces
-                .schedule_answered(
-                    &firing.workspace,
-                    &firing.shortcut,
-                    answer.trigger,
-                    &answer.mark,
-                )
-                .await
-                .ok()
-                .flatten();
-            if answered.is_some_and(|answered| answered >= *came_up_ms) {
-                return;
-            }
-        }
-        let start = Arc::clone(&self.start);
-        let starting = firing.clone();
-        let started = tokio::task::spawn_blocking(move || start.start(&starting))
+        self.workspaces
+            .schedule_answered(
+                &firing.workspace,
+                &firing.shortcut,
+                answer.trigger,
+                &answer.mark,
+            )
             .await
-            .unwrap_or_else(|error| Err(error.to_string()));
-        let kept = match &started {
-            Ok(run) => serde_json::json!({ "run": run }),
+            .ok()
+            .flatten()
+            .is_some_and(|answered| answered >= *came_up_ms)
+    }
+
+    /// Start `going`'s next attempt: `None` while it runs or waits to go again, or how the
+    /// firing ended when it did not start and will not.
+    async fn begin(&self, going: &mut Going) -> Option<Ended> {
+        // The first attempt is the firing's own invocation, the same on every device; each one
+        // after it is a run of its own.
+        let run = if going.attempt == 1 {
+            going.firing.invocation
+        } else {
+            AutomationInvocationId::new()
+        };
+        let mut firing = going.firing.clone();
+        firing.inputs = completed(&self.armed, &firing, &going.turn.lease());
+        let start = Arc::clone(&self.start);
+        let started = tokio::task::spawn_blocking(move || start.start(&firing, run))
+            .await
+            .unwrap_or_else(|error| {
+                Err(ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })
+            });
+        match started {
+            Ok(_) => {
+                going.run = Some(run);
+                None
+            }
             Err(error) => {
                 // A shortcut deleted or changed elsewhere, or one whose saver may not run it
-                // here: nothing started, and it is not tried again for this firing.
-                tracing::info!(shortcut = %firing.shortcut, trigger = firing.trigger.kind(), %error, "a shortcut trigger fired but the shortcut did not start");
-                serde_json::json!({ "error": error })
-            }
-        };
-        match &firing.answers {
-            Some(answer) => {
-                self.answer(
-                    &firing.workspace,
-                    &firing.shortcut,
-                    answer.trigger,
-                    &answer.mark,
-                    answer.answered_ms,
+                // here, did not start, and will not for this firing; one that could not start
+                // for now goes again later.
+                tracing::info!(shortcut = %going.firing.shortcut, trigger = going.firing.trigger.kind(), %error, "a shortcut trigger fired but the shortcut did not start");
+                let transient = matches!(error, ActionCallError::Unavailable { .. });
+                self.after(
+                    going,
+                    retry::after_failure(
+                        transient,
+                        error.to_string(),
+                        None,
+                        going.attempt,
+                        tilo_clock::unix_now_ms_i64(),
+                    ),
+                    None,
                 )
-                .await;
             }
-            None => {
-                if let Err(error) = keep_done(&self.workspaces, &firing.workspace, turn, kept).await
-                {
-                    tracing::warn!(shortcut = %firing.shortcut, %error, "a started firing was not kept done");
+        }
+    }
+
+    /// Whether `next` ends `going`: how, or `None` when it waits to go again.
+    fn after(
+        &self,
+        going: &mut Going,
+        next: retry::Next,
+        report: Option<&InvocationReport>,
+    ) -> Option<Ended> {
+        match next {
+            retry::Next::Done { ended, step, why } => Some(Ended {
+                run: going.run,
+                at_ms: tilo_clock::unix_now_ms_i64(),
+                ended,
+                step,
+                why,
+                counted: report.is_some_and(|report| {
+                    self.armed
+                        .iter()
+                        .find(|armed| {
+                            armed.workspace == going.firing.workspace
+                                && armed.shortcut.id == going.firing.shortcut
+                        })
+                        .is_some_and(|armed| counted(&armed.shortcut, report))
+                }),
+            }),
+            retry::Next::Again { at_ms } => {
+                going.run = None;
+                going.again_at_ms = at_ms;
+                going.attempt = going.attempt.saturating_add(1);
+                None
+            }
+        }
+    }
+
+    /// Look after every firing this device took: keep its claim, read how its run ended, start
+    /// its next attempt when its wait is over, and keep it done once it ended for good.
+    async fn tend(&mut self, now_ms: i64) {
+        let going = std::mem::take(&mut self.going);
+        for (lease, mut going) in going {
+            if now_ms.saturating_sub(going.renewed_ms)
+                >= i64::try_from(RENEW.as_millis()).unwrap_or(i64::MAX)
+            {
+                if !going.claim.renew().await {
+                    // Two devices claimed it at once and the other one has it now.
+                    tracing::info!(shortcut = %going.firing.shortcut, "another device took a firing this one was running");
+                    continue;
+                }
+                going.renewed_ms = now_ms;
+            }
+            let ended = match going.run {
+                Some(run) => match self.start.ended(&going.firing, run) {
+                    Some(report) => {
+                        let next = retry::after_run(&report, going.attempt, now_ms);
+                        self.after(&mut going, next, Some(&report))
+                    }
+                    None => None,
+                },
+                None if now_ms >= going.again_at_ms => self.begin(&mut going).await,
+                None => None,
+            };
+            match ended {
+                Some(ended) => self.finish(going, ended).await,
+                None => {
+                    self.going.insert(lease, going);
                 }
             }
         }
+    }
+
+    /// Keep `going` done as it `ended`, for every device, and let go of it. A run that failed for
+    /// good keeps its failed invocation record, which this row names.
+    async fn finish(&self, going: Going, ended: Ended) {
+        let Going {
+            firing,
+            turn,
+            claim,
+            ..
+        } = going;
+        if let Some(answer) = &firing.answers {
+            self.answer(
+                &firing.workspace,
+                &firing.shortcut,
+                answer.trigger,
+                &answer.mark,
+                answer.answered_ms,
+            )
+            .await;
+        }
+        let kept = serde_json::to_value(&ended).unwrap_or_default();
+        if let Err(error) = keep_done(&self.workspaces, &firing.workspace, &turn, kept).await {
+            tracing::warn!(shortcut = %firing.shortcut, %error, "an ended firing was not kept done");
+        }
+        claim.release().await;
     }
 
     /// Keep that the schedule at `trigger` of `shortcut` was answered through `answered_ms`.
@@ -842,6 +1148,68 @@ impl Runner {
             .map(|waiting| &waiting.firing)
             .collect()
     }
+
+    /// The firings this device took whose run has not ended for good.
+    #[must_use]
+    pub fn going(&self) -> Vec<&Firing> {
+        self.going.values().map(|going| &going.firing).collect()
+    }
+}
+
+/// How a firing ended for good, as its done row keeps it: every device reads it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Ended {
+    /// The last run it started, whose invocation record says what it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<AutomationInvocationId>,
+    /// When it ended, ms since the epoch.
+    #[serde(default)]
+    pub at_ms: i64,
+    pub ended: retry::Ended,
+    /// The step it stopped at, when it did not run to its end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Whether its run took the shortcut's count step ([`crate::apps::automation::COUNT_ACTION`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub counted: bool,
+}
+
+/// `firing`'s inputs, with each the shortcut declares and the trigger left out given its
+/// default, and the [`FIRING_INPUT`] given the firing's `lease`.
+fn completed(armed: &[Armed], firing: &Firing, lease: &str) -> Map<String, Value> {
+    let mut inputs = firing.inputs.clone();
+    let Some(armed) = armed
+        .iter()
+        .find(|armed| armed.workspace == firing.workspace && armed.shortcut.id == firing.shortcut)
+    else {
+        return inputs;
+    };
+    for input in &armed.shortcut.inputs {
+        let name: &str = input.name.as_ref();
+        if inputs.contains_key(name) {
+            continue;
+        }
+        if name == FIRING_INPUT && input.ty == tilo_actions::params::ParamType::Text {
+            inputs.insert(name.to_owned(), Value::from(lease));
+        } else if let Some(default) = input
+            .schema
+            .as_deref()
+            .and_then(|schema| schema.get("default"))
+        {
+            inputs.insert(name.to_owned(), default.clone());
+        }
+    }
+    inputs
+}
+
+/// Whether `report`'s run took `shortcut`'s count step.
+fn counted(shortcut: &Shortcut, report: &InvocationReport) -> bool {
+    report.steps.iter().any(|entry| {
+        matches!(entry.status, tilo_automation::StepStatus::Succeeded { .. })
+            && crate::apps::automation::counts(shortcut, &entry.step)
+    })
 }
 
 /// Whether `trigger` fires on changes to records.
@@ -854,13 +1222,26 @@ const fn watches_records(trigger: &TriggerSpec) -> bool {
     )
 }
 
-/// Run the triggers of the shortcuts this device's person saved, starting each firing that is
-/// this device's turn through `broker`, until the workspaces' service stops.
+/// Run the triggers of the shortcuts this device arms, starting each firing that is this
+/// device's turn through `broker`, until the workspaces' service stops.
 pub async fn run_on_device(
     workspaces: Workspaces,
     broker: Arc<crate::apps::collab_broker::AppActionBroker>,
 ) {
     Runner::new(workspaces, broker, Order::WORKSPACE)
+        .run()
+        .await;
+}
+
+/// [`run_on_device`], firing the triggers on what the connectors this device runs report, read
+/// through `connectors`: the device that runs a connector is the one its events start runs on.
+pub async fn run_on_device_with_connectors(
+    workspaces: Workspaces,
+    starts: Arc<crate::apps::collab_broker::AppActionBroker>,
+    connectors: Arc<dyn ConnectorEvents>,
+) {
+    Runner::new(workspaces, starts, Order::WORKSPACE)
+        .watching_connectors(connectors)
         .run()
         .await;
 }

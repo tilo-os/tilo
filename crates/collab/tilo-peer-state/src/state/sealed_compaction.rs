@@ -3,7 +3,7 @@
 //! the writes it covers, and never opens it.
 use super::{
     AutoCommit, DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, PeerPublication,
-    PeerPublicationMut, Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
+    PeerPublicationMut, Route, SignedOp, StatePeer, SystemTime, err, peer_handle,
 };
 use collab_types::signer::DeviceSigner;
 use collab_types::{
@@ -1573,39 +1573,6 @@ impl PeerPublicationMut<'_> {
             readers: None,
             envelope: Box::new(op),
         })
-    }
-
-    /// [`Self::publish_sealed_incremental`] for `changes` a device this
-    /// state's authority signs for made, such as a bot it installed
-    /// (`delegate`): the workspace decides them as `delegate`'s own sealed write
-    /// (its grants over the claims they name, and the name they show), and
-    /// the authority's `key` publishes them, as the authority's checkpoint
-    /// carries such a device's changes to a record written in the clear.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::publish_sealed_incremental`], and when the workspace would
-    /// refuse `delegate`'s own write of `changes`; this peer is unchanged
-    /// then.
-    pub fn publish_sealed_incremental_for(
-        self,
-        delegate: &SigningKey,
-        (app, record): (&str, &str),
-        changes: Vec<u8>,
-        seal: &mut SealCheckpoint<'_>,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        let author = delegate.verifying_key().to_bytes();
-        let parsed = collab_types::parse_changes(&changes).map_err(err)?;
-        let shows = self.peer.appearance_author(&author, now, false);
-        collab_types::check_appearances(&parsed, shows.as_ref())
-            .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
-        self.peer
-            .clone()
-            .publication_mut()
-            .publish_sealed_incremental(app, record, changes.clone(), seal, delegate, now)?;
-        self.publish_sealed_incremental(app, record, changes, seal, key, now)
     }
 }
 

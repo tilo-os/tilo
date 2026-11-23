@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The Lounge image's build context (os/containers/tilo-lounge): the programs
-# (lounge-binaries.sh), the bot programs the workspace installs by path, and
+# (lounge-binaries.sh) and
 # the product font catalog its app components lay text out from, since a
 # container has no system fonts. usage: lounge-context.sh OUT BINARIES FONTS
 set -euo pipefail
@@ -13,10 +13,9 @@ cd "$repo_root"
 [[ -x $binaries/tilo-server && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
 [[ -f $fonts/manifest.toml ]] || die "no product font catalog in $fonts"
 rm -rf "$out"
-mkdir -p "$out/bin" "$out/bots" "$out/fonts"
+mkdir -p "$out/bin" "$out/fonts"
 cp "$binaries/tilo-server" "$binaries/discord-worker" "$out/bin/"
 cp -a "$fonts/." "$out/fonts/"
-cp apps/discord/bridge/program.json "$out/bots/discord-bridge.json"
 # Every version of each built-in app's surface.toml the apps' history holds, one
 # file per version: the server publishes them into its content store at start, so
 # a change written by an older version than this build runs is decided without

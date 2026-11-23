@@ -513,6 +513,7 @@ fn build_meta(
         profile_resources: module.app.profile_resources,
         web: module.app.web.clone(),
         schemes: module.app.schemes.clone(),
+        engine: module.app.engine.clone(),
         ..PackageMeta::default()
     };
     let type_id =

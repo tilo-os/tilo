@@ -539,44 +539,6 @@ tilo_test_env::scenario! {
         assert!(!overlay.focus_order().contains(&PeopleHit::JoinCall(1)));
     }
 
-    phase a_workspaces_bot_is_tagged_as_a_bot_never_as_a_person;
-    {
-        use tilo_desktop_model::{Workspace, WorkspaceBot, WorkspaceId};
-
-        let device = "ab".repeat(32);
-        let installation = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".to_owned();
-        let mut workspace = Workspace::new(WorkspaceId::from_u128(72), "Lounge");
-        workspace.bots.push(WorkspaceBot {
-            name: "Standup".into(),
-            installation: Some(installation.clone()),
-            device: Some(device.clone()),
-            entry: Some("so.tilo.bots.standup".into()),
-            version: Some("1.2.0".into()),
-            added_by: "owner".into(),
-            requested: true,
-            paused: false,
-        });
-        let bot = Member::of_software(collab_types::MemberId::bot(installation), "Standup");
-        workspace.member_here(bot.clone());
-        workspace.place_presence(Present {
-            device: device.clone(),
-            ..Present::of(bot.id)
-        });
-        let ada = Member::named(collab_types::MemberId::person("ada"), "Ada");
-        workspace.member_here(ada);
-        let desktop = Layout {
-            active: workspace.id(),
-            workspaces: vec![workspace],
-            ..Layout::default()
-        };
-
-        let rows = roster_rows(&desktop);
-        let bot = rows.iter().find(|row| row.id == device).unwrap();
-        assert!(bot.member.is_bot() && bot.is_agent(), "a bot is software, tagged Bot");
-        let ada = rows.iter().find(|row| row.id == "ada").unwrap();
-        assert!(!ada.member.is_bot() && !ada.is_agent());
-    }
-
     phase agent_classification_uses_stable_identity_not_display_label;
     {
         use tilo_desktop_model::{Workspace, WorkspaceId};

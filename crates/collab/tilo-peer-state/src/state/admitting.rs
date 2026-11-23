@@ -211,7 +211,7 @@ impl StatePeer {
         } else {
             now
         };
-        let (member, by_owner, shows) = match self
+        let (member, by_owner) = match self
             .authorize_document(
                 &source,
                 &app_id,
@@ -246,9 +246,8 @@ impl StatePeer {
             super::authority::Authorized::Admit {
                 member,
                 by_governor,
-                shows,
                 ..
-            } => (member, by_governor, shows),
+            } => (member, by_governor),
             super::authority::Authorized::Hold(prerequisite) => {
                 return self.defer(
                     source,
@@ -488,7 +487,7 @@ impl StatePeer {
         if let DocumentMutation::Incremental(bytes) = &mutation {
             let changes =
                 collab_types::parse_changes(bytes).map_err(crate::AdmissionError::malformed)?;
-            collab_types::check_appearances(&changes, shows.as_ref())
+            collab_types::check_appearances(&changes, None)
                 .map_err(|refusal| format!("document change forbidden: {refusal}"))
                 .map_err(crate::AdmissionError::malformed)?;
         }

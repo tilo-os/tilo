@@ -257,6 +257,34 @@ impl AgentSessions {
         Ok(())
     }
 
+    /// Sign `shortcut` as saved in `workspace` by `agent`, with the key of `device`'s session
+    /// while it is open here: what the agent saves acts as the agent.
+    ///
+    /// # Errors
+    ///
+    /// No session of `device` is open here, or its key is no grant of `agent` there.
+    pub fn sign_shortcut_as(
+        &self,
+        device: &[u8; 32],
+        workspace: WorkspaceId,
+        agent: &str,
+        shortcut: &mut tilo_automation::Shortcut,
+    ) -> Result<(), String> {
+        let (cert, key) = self
+            .links
+            .lock_recover()
+            .get(device)
+            .map(|session| session.signer.clone())
+            .ok_or("the agent's signing session is not open here")?;
+        tilo_peer_state::workspace::sign_saved_shortcut_as_agent(
+            &workspace.to_string(),
+            shortcut,
+            agent,
+            &cert,
+            &key,
+        )
+    }
+
     /// Agent `device`'s session ended.
     pub(crate) fn left(&self, device: &[u8; 32]) {
         self.links.lock_recover().remove(device);

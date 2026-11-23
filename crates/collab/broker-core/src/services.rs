@@ -114,6 +114,13 @@ pub trait WorkspaceAuthority: Send + Sync {
     ) -> Option<tilo_user_identity::RevocationList> {
         None
     }
+
+    /// What was kept of the work done once in `workspace` under every lease whose id starts
+    /// with `prefix`, as each lease's answer. Empty when this host holds no document of the
+    /// workspace.
+    fn done_under(&self, _workspace: &str, _prefix: &str) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
 }
 
 const UNANSWERED: &str = "workspace authority did not answer";

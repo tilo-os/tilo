@@ -735,13 +735,10 @@ impl ActionService {
             refusal_of(&error)
         })?;
         // The device is its own actor when its person delegated it: an
-        // agent is the agent, a bot the bot, never the person.
+        // agent is the agent, never the person.
         let caller = match &authority.acting.by {
             Actor::Member(MemberId::Agent(agent)) => {
                 Caller::delegated_agent(agent.clone(), certificate.user_public_key, source)
-            }
-            Actor::Member(MemberId::Bot(installation)) => {
-                Caller::bot(installation.clone(), certificate.user_public_key, source)
             }
             _ => Caller::authenticated(certificate.user_public_key, source),
         };

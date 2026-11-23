@@ -46,9 +46,7 @@ use tilo_automation::{
 };
 use tilo_desktop_model::Workspace;
 
-/// The resource carrying the shortcut library's actions.
-pub const LIBRARY_RESOURCE: &str = "shortcuts";
-pub const LIBRARY_RESOURCE_KIND: &str = "shortcuts.library";
+pub use tilo_automation::{COUNT_ACTION, LIBRARY_RESOURCE, LIBRARY_RESOURCE_KIND};
 /// Save a new shortcut.
 pub const CREATE_ACTION: &str = "create";
 /// Replace a saved shortcut.
@@ -61,6 +59,10 @@ pub const LIST_ACTION: &str = "list";
 pub const STOP_ACTION: &str = "stop";
 /// Stop every run going in the workspace.
 pub const STOP_ALL_ACTION: &str = "stop-all";
+/// Keep a saved shortcut's triggers from firing it, until it is resumed.
+pub const PAUSE_ACTION: &str = "pause";
+/// Let a paused shortcut's triggers fire it again.
+pub const RESUME_ACTION: &str = "resume";
 
 /// How long a running step is left before it is observed again, when its
 /// host cannot say when it changes. The broker's own api can, so this is
@@ -82,6 +84,9 @@ pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
         LIST_ACTION,
         STOP_ACTION,
         STOP_ALL_ACTION,
+        PAUSE_ACTION,
+        RESUME_ACTION,
+        COUNT_ACTION,
     ]
     .into_iter()
     .filter_map(library_descriptor)
@@ -157,6 +162,48 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
             ActionKind::Read,
             ResultSpec::Json {
                 schema: serde_json::json!({"type": "object"}),
+            },
+        ),
+        PAUSE_ACTION | RESUME_ACTION => (
+            if action == PAUSE_ACTION {
+                "Pause shortcut"
+            } else {
+                "Resume shortcut"
+            },
+            if action == PAUSE_ACTION {
+                "Keep a saved shortcut's triggers from running it; what happens meanwhile is not run later"
+            } else {
+                "Let a paused shortcut's triggers run it again"
+            },
+            vec![ActionParam::required(
+                "id",
+                ParamType::Text,
+                "Id of the shortcut",
+            )],
+            ActionKind::Undoable,
+            saved,
+        ),
+        COUNT_ACTION => (
+            "Count a run",
+            "How many of a shortcut's triggered runs counted, this one included, and whether that reached a multiple of every",
+            vec![
+                ActionParam::required("id", ParamType::Text, "Id of the shortcut"),
+                ActionParam::required(
+                    "every",
+                    ParamType::Integer,
+                    "Reached at every this many runs",
+                ),
+            ],
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["count", "reached"],
+                    "properties": {
+                        "count": {"type": "integer"},
+                        "reached": {"type": "boolean"}
+                    }
+                }),
             },
         ),
         STOP_ALL_ACTION => (
@@ -508,6 +555,16 @@ pub enum LibraryOperation {
     /// Stop every run going in the workspace.
     StopAll,
     List,
+    /// Pause shortcut `id`, or resume it.
+    Pause {
+        id: String,
+        paused: bool,
+    },
+    /// Count a run of shortcut `id`, reached at every `every` runs.
+    Count {
+        id: String,
+        every: u64,
+    },
 }
 
 /// Decode an invocation of library action `action` from its argument slot.
@@ -554,6 +611,27 @@ pub fn decode_library(action: &str, argument: Option<&str>) -> Result<LibraryOpe
                 .to_string(),
         ),
         STOP_ALL_ACTION => LibraryOperation::StopAll,
+        PAUSE_ACTION | RESUME_ACTION => LibraryOperation::Pause {
+            id: bound
+                .text("id")
+                .ok_or("`id` is required")?
+                .trim()
+                .to_string(),
+            paused: action == PAUSE_ACTION,
+        },
+        COUNT_ACTION => LibraryOperation::Count {
+            id: bound
+                .text("id")
+                .ok_or("`id` is required")?
+                .trim()
+                .to_string(),
+            every: bound
+                .to_json()
+                .get("every")
+                .and_then(Value::as_u64)
+                .filter(|every| *every > 0)
+                .ok_or("`every` is a whole number above zero")?,
+        },
         _ => LibraryOperation::List,
     })
 }
@@ -579,6 +657,8 @@ pub enum LibraryPlan {
     Answer(ActionOutput),
     /// Stop the runs the operation names, then answer.
     Stop(StopRequest),
+    /// Count a run of shortcut `id` from the firings kept done in the workspace, then answer.
+    Count { id: String, every: u64 },
     /// Store `change`, then answer with `output`.
     Change {
         change: ShortcutChange,
@@ -626,6 +706,30 @@ pub fn plan_library(
             return Ok(LibraryPlan::Stop(StopRequest::Shortcut(id)));
         }
         LibraryOperation::StopAll => return Ok(LibraryPlan::Stop(StopRequest::All)),
+        LibraryOperation::Count { id, every } => {
+            if !saved.iter().any(|shortcut| shortcut.id == id) {
+                return Err(format!("there is no shortcut `{id}`"));
+            }
+            return Ok(LibraryPlan::Count { id, every });
+        }
+        LibraryOperation::Pause { id, paused } => {
+            let mut shortcut = saved
+                .iter()
+                .find(|shortcut| shortcut.id == id)
+                .cloned()
+                .ok_or_else(|| format!("there is no shortcut `{id}`"))?;
+            // Pausing changes nothing the saver's proof covers: the proof stays, and so does
+            // whose shortcut it is.
+            shortcut.paused = paused;
+            let resource = shortcut_resource_id(&shortcut.id);
+            return Ok(LibraryPlan::Change {
+                change: ShortcutChange::Save(Box::new(shortcut)),
+                output: ActionOutput {
+                    value: None,
+                    resources: vec![resource],
+                },
+            });
+        }
         LibraryOperation::Create(shortcut) => (shortcut, false),
         LibraryOperation::Update(shortcut) => (shortcut, true),
     };
@@ -659,6 +763,59 @@ pub fn plan_library(
             value: None,
             resources: vec![resource],
         },
+    })
+}
+
+/// What the count step answers for the run counted: `counted` earlier runs counted before it.
+#[must_use]
+pub fn count_output(counted: usize, every: u64) -> ActionOutput {
+    let count = u64::try_from(counted).unwrap_or(u64::MAX).saturating_add(1);
+    ActionOutput {
+        value: Some(serde_json::json!({"count": count, "reached": count % every == 0})),
+        resources: Vec::new(),
+    }
+}
+
+/// The action a firing of shortcut `id` runs once ([`crate::work::Turn::once`]).
+#[must_use]
+pub fn run_address(id: &str) -> String {
+    format!("shortcuts.shortcut:{id}#run")
+}
+
+/// The lease ids of the firings of shortcut `id` all start with this.
+#[must_use]
+pub fn firings_of(id: &str) -> String {
+    let leases = crate::work::once_leases(&run_address(id));
+    debug_assert!(
+        leases.starts_with(tilo_automation::FIRING_PREFIX),
+        "a firing's lease starts with what the automation crate reads it by"
+    );
+    leases
+}
+
+/// Whether the step `step` of `shortcut` is its count step: one that invokes
+/// [`COUNT_ACTION`].
+#[must_use]
+pub fn counts(shortcut: &Shortcut, step: &str) -> bool {
+    fn find<'a>(steps: &'a [tilo_automation::Step], id: &str) -> Option<&'a tilo_automation::Step> {
+        steps.iter().find_map(|step| {
+            if step.id == id {
+                return Some(step);
+            }
+            match &step.kind {
+                tilo_automation::StepKind::If {
+                    then, otherwise, ..
+                } => find(then, id).or_else(|| find(otherwise, id)),
+                tilo_automation::StepKind::ForEach { body, .. } => find(body, id),
+                _ => None,
+            }
+        })
+    }
+    find(&shortcut.steps, step).is_some_and(|step| {
+        matches!(&step.kind, tilo_automation::StepKind::Invoke { action, .. }
+            if action.app == SHORTCUTS_APP_ID
+                && action.kind == LIBRARY_RESOURCE_KIND
+                && action.action == COUNT_ACTION)
     })
 }
 
@@ -1242,21 +1399,68 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         TriggerSpec::AppEvent { kind, .. } if kind.trim().is_empty() => {
             Err("an app-event trigger names the event the application declares".into())
         }
-        TriggerSpec::Connector { .. } => Err(
-            "connector triggers run only bots, on the workspace's host; a Shortcut cannot watch one"
-                .into(),
-        ),
-        TriggerSpec::AppOpened { .. }
+        TriggerSpec::Connector { app_id, .. } if app_id.trim().is_empty() => {
+            Err("a connector trigger names the app whose connector reports the event".into())
+        }
+        TriggerSpec::Connector { source, .. } if source.trim().is_empty() => {
+            Err("a connector trigger names the source the event comes from".into())
+        }
+        TriggerSpec::ResourceTime {
+            kind,
+            field,
+            offset_secs,
+            ..
+        } => match tilo_automation::resource_time::refusal(kind, field, *offset_secs) {
+            Some(why) => Err(why),
+            // The times of a person's calendars are read where their accounts are kept; no other
+            // resource's are yet.
+            None if kind != tilo_automation::resource_time::PERSON_CALENDARS => Err(format!(
+                "a moment is counted from the start or the end of an entry in its person's \
+                 calendars: `15 minutes before \"{}\" in a \"{}\"`",
+                tilo_automation::resource_time::CALENDAR_START,
+                tilo_automation::resource_time::PERSON_CALENDARS
+            )),
+            None => Ok(()),
+        },
+        TriggerSpec::SourceChanged {
+            kind,
+            at,
+            every_secs,
+            ..
+        } => {
+            use tilo_automation::source_change::{self, PERSON_MAIL, WEB_FEED, WEB_PAGE};
+            match source_change::refusal(kind, at)
+                .or_else(|| source_change::look_refusal(kind, at, *every_secs))
+            {
+                Some(why) => Err(why),
+                // Mail is heard as the workspace's mailbox takes it in, as any record's change.
+                None if kind == PERSON_MAIL => Err(
+                    "mail is heard as it arrives in the workspace's mailbox: `when a \
+                     \"tl.so.tilo.mail.Message\" changes where incoming_message is yes`"
+                        .to_owned(),
+                ),
+                // A feed or a page on the web is looked at on a clock; no other source is read.
+                None if !source_change::looked_at(kind) => Err(format!(
+                    "something new is found in a feed on the web (`when something new is in \
+                     \"{WEB_FEED}\" at \"https://example.org/feed.xml\"`) or on a page there \
+                     (`when something new is in \"{WEB_PAGE}\" at \"https://example.org/prices\"`)"
+                )),
+                None => Ok(()),
+            }
+        }
+        TriggerSpec::Once { .. }
+        | TriggerSpec::AppOpened { .. }
         | TriggerSpec::WorkspaceJoined { .. }
         | TriggerSpec::FileChanged { .. }
         | TriggerSpec::FocusMode { .. }
         | TriggerSpec::ResourceChanged { .. }
         | TriggerSpec::IncomingMessage { .. }
-        | TriggerSpec::AppEvent { .. } => Ok(()),
+        | TriggerSpec::AppEvent { .. }
+        | TriggerSpec::Connector { .. } => Ok(()),
         other => Err(format!(
-            "`{}` triggers cannot be saved yet; keyboard, schedule, app-opened, \
-             workspace-joined, file-changed, focus-mode, record-changed, \
-             incoming-message and app-event triggers can",
+            "`{}` triggers cannot be saved yet; keyboard, schedule, moment, calendar-time, \
+             app-opened, workspace-joined, file-changed, focus-mode, record-changed, \
+             incoming-message, app-event, connector, feed and page triggers can",
             other.kind()
         )),
     }
@@ -1586,7 +1790,7 @@ mod tests {
             );
         }
 
-        phase a_persons_shortcut_may_watch_records_and_messages_but_not_connectors;
+        phase a_persons_shortcut_may_watch_records_messages_and_connectors;
         {
             use tilo_automation::ActorFilter;
             assert!(
@@ -1617,13 +1821,32 @@ mod tests {
                 .unwrap_err()
                 .contains("names the record kind")
             );
-            let refused = validate_trigger(&TriggerSpec::Connector {
-                app_id: "so.tilo.discord".into(),
-                source: "message-created".into(),
-                filter: serde_json::Map::new(),
-            })
-            .unwrap_err();
-            assert!(refused.contains("only bots"), "{refused}");
+            assert!(
+                validate_trigger(&TriggerSpec::Connector {
+                    app_id: "so.tilo.discord".into(),
+                    source: "message-created".into(),
+                    filter: serde_json::Map::new(),
+                })
+                .is_ok()
+            );
+            assert!(
+                validate_trigger(&TriggerSpec::Connector {
+                    app_id: " ".into(),
+                    source: "message-created".into(),
+                    filter: serde_json::Map::new(),
+                })
+                .unwrap_err()
+                .contains("names the app")
+            );
+            assert!(
+                validate_trigger(&TriggerSpec::Connector {
+                    app_id: "so.tilo.discord".into(),
+                    source: " ".into(),
+                    filter: serde_json::Map::new(),
+                })
+                .unwrap_err()
+                .contains("names the source")
+            );
         }
     }
 }

@@ -1423,7 +1423,7 @@ impl Workspaces {
 
     /// Write `change` into `workspace`'s own state as `device`, this host's
     /// own device, and publish it to the workspace's members. A lease or a
-    /// bot's schedule progress belongs there: it is the workspace's state
+    /// schedule's progress belongs there: it is the workspace's state
     /// whichever key holder holds the workspace, so a group of desktops with
     /// no server keeps it as a hosted workspace does. The receiver decides the
     /// change against `device`'s grants as any member's write; a governor's
@@ -1516,6 +1516,29 @@ impl Workspaces {
             .map(|done| done.answer))
     }
 
+    /// What the devices of `workspace` kept of the work done under every lease whose id starts
+    /// with `prefix`, by lease id, each the answer of the device that did it first.
+    ///
+    /// # Errors
+    /// The workspace is not kept here.
+    pub async fn leases_done_under(
+        &self,
+        workspace: &str,
+        prefix: &str,
+    ) -> Result<std::collections::BTreeMap<String, serde_json::Value>, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .workspace()
+            .done_under(prefix)
+            .into_iter()
+            .map(|(id, done)| (id, done.answer))
+            .collect())
+    }
+
     /// The latest fire time a device of `workspace` answered for the
     /// schedule at `trigger` of the automation `automation`, marked `mark`
     /// ([`tilo_peer_state::trigger_mark`]); `None` when none has.
@@ -1537,105 +1560,6 @@ impl Workspaces {
             .peer()
             .workspace()
             .schedule_answered(automation, trigger, mark))
-    }
-
-    /// Install a bot as a governed member of `workspace`, update its program,
-    /// renew its delegation or uninstall it
-    /// ([`WorkspaceMembershipCommand::InstallBot`],
-    /// [`WorkspaceMembershipCommand::RenewBot`], `UninstallBot`), as the
-    /// workspace's administrator. Every member reads and enforces the result, so it is
-    /// a governed change rather than this host's own state.
-    ///
-    /// # Errors
-    /// Refuses non-administrators and anything else; the peer refuses an
-    /// install or renewal its rules do not admit.
-    ///
-    /// [`WorkspaceMembershipCommand::InstallBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallBot
-    /// [`WorkspaceMembershipCommand::RenewBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RenewBot
-    pub async fn govern_bot(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        if !matches!(
-            command,
-            Command::InstallBot(_) | Command::RenewBot(_) | Command::UninstallBot { .. }
-        ) {
-            return Err(CollaborationError::new(
-                "only installing, renewing or uninstalling a bot governs a bot",
-            ));
-        }
-        let now = tilo_clock::unix_now_ns();
-        command.validate()?;
-        // The command names itself: the same install or renewal sent again
-        // is the same administration request.
-        let digest = request_digest(&("bot.govern", &command))?;
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        self.authorize(
-            administrator,
-            Some(&workspace),
-            WorkspaceOp::Govern(governance::GRANT),
-            now,
-        )?;
-        let key = self.inner.host.key.clone();
-        workspace
-            .peer()
-            .clone()
-            .workspace_mut()
-            .apply_workspace_membership_command(administrator, &command, &key, system_time(now))?;
-        self.administer(
-            &mut workspace,
-            digest,
-            digest,
-            |peer| {
-                peer.workspace_mut().apply_workspace_membership_command(
-                    administrator,
-                    &command,
-                    &key,
-                    system_time(now),
-                )
-            },
-            now,
-        )
-        .await
-    }
-
-    /// Ask `workspace`'s host to run a bot from the directory, or take the
-    /// request back ([`WorkspaceMembershipCommand::RequestBot`],
-    /// [`WorkspaceMembershipCommand::WithdrawBotRequest`]), as a member the
-    /// workspace lets install (or uninstall) bots: any such member of a workspace this
-    /// host governs, not only its administrators. The request is a governed
-    /// change every member reads; [`Self::bot_requests`] is what the host
-    /// follows.
-    ///
-    /// # Errors
-    /// Refuses another command, a malformed request, and a member the workspace
-    /// does not let install (or uninstall) bots.
-    ///
-    /// [`WorkspaceMembershipCommand::RequestBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RequestBot
-    /// [`WorkspaceMembershipCommand::WithdrawBotRequest`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::WithdrawBotRequest
-    pub async fn ask_for_bot(
-        &self,
-        workspace: &str,
-        member: &DeviceCert,
-        request_id: [u8; 32],
-        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        let check = match &command {
-            Command::RequestBot(_) => governance::INSTALL_BOT,
-            Command::WithdrawBotRequest { .. } => governance::UNINSTALL_BOT,
-            _ => {
-                return Err(CollaborationError::new(
-                    "only asking for a bot or taking the request back asks for a bot",
-                ));
-            }
-        };
-        self.govern_as_member(workspace, member, request_id, command, check, "bot.request")
-            .await
     }
 
     /// Choose the version of an app `workspace` runs for every member, or take
@@ -1802,40 +1726,6 @@ impl Workspaces {
             now,
         )
         .await
-    }
-
-    /// The bots `workspace` asks its host to run, as its governance records
-    /// them now.
-    pub async fn bot_requests(
-        &self,
-        workspace: &str,
-    ) -> Result<Vec<tilo_peer_state::RequestedBot>, CollaborationError> {
-        Ok(self
-            .workspace(workspace)
-            .await?
-            .lock()
-            .await
-            .peer()
-            .governance()
-            .bot_requests())
-    }
-
-    /// Installation `id` of `workspace` as its governance records it now: the
-    /// live row, else the last withdrawn one.
-    pub async fn installed_bot(
-        &self,
-        workspace: &str,
-        id: &str,
-    ) -> Result<Option<tilo_peer_state::InstalledBot>, CollaborationError> {
-        let now = system_time(tilo_clock::unix_now_ns());
-        Ok(self
-            .workspace(workspace)
-            .await?
-            .lock()
-            .await
-            .peer()
-            .governance()
-            .installation(id, now))
     }
 
     pub(super) async fn administer(

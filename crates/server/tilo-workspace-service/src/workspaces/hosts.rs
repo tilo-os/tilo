@@ -1687,7 +1687,6 @@ impl Workspaces {
             runs_work: holds_keys && !host.work.takes_nothing(),
             label: claim.label,
             cloud: claim.cloud,
-            moderates: claim.moderates.contains(workspace.workspace()),
             origin: claim.origin,
             workspace_id: workspace.workspace_id(),
             endpoint_addr,
@@ -1714,14 +1713,6 @@ impl Workspaces {
             true
         })
         .await;
-    }
-
-    /// Say among `workspace`'s holders that this keeper has a moderation
-    /// agent for it, which its signed address carries from now on: what lets
-    /// a person who governs the workspace turn it on.
-    pub async fn offer_moderation(&self, workspace: &str) {
-        self.claim(|claim| claim.moderates.insert(workspace.to_owned()))
-            .await;
     }
 
     /// Change what this keeper says of itself among the holders with

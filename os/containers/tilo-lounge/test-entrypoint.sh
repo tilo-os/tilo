@@ -61,9 +61,6 @@ lounge
 /run/secrets/workspace-root-lounge
 --workspace-id-file
 --workspace-documents
---public-avatars
---public-avatars-url
-https://eu1.tilo.sh/avatars
 --listing-description
 Coffee and tea, and whatever is being made
 --default-role
@@ -87,6 +84,8 @@ https://eu1.tilo.sh
 --fetch-proxy
 --chat-channel
 general
+--seed-app
+so.tilo.chat
 EXPECTED
 lounge >"$work/args" || fail "the plain deployment did not start"
 subsequence "$work/want" "$work/args" || fail "the plain deployment maps other arguments"
@@ -95,7 +94,6 @@ subsequence "$work/want" "$work/args" || fail "the plain deployment maps other a
 grep -Fqx -- "--state" "$work/args" || fail "no state flag"
 grep -Fqx -- "$work/state/lounge/server" "$work/args" || fail "the server state is not under the workspace"
 grep -Fqx -- "$work/state/lounge/workspace-id" "$work/args" || fail "the workspace id is not kept with the workspace"
-grep -Fqx -- "$work/state/lounge/avatars" "$work/args" || fail "the avatars are not published from the workspace"
 # The packet relay binds where the ingress forwards; without a named origin the
 # host advertises the address it bound.
 grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was announced without one set"
@@ -109,9 +107,9 @@ lounge \
   TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh, https://tilo.so' \
   TILO_WORKSPACES_SERVER_ORIGINS_ALSO='https://eu1.wifi.example:9780, https://lounge.example/' \
   TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
-  TILO_WORKSPACES_SEED_APPS='so.tilo.board' \
+  TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
+  TILO_WORKSPACES_SEED_APPS='so.tilo.chat,so.tilo.board' \
   TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
-  TILO_WORKSPACES_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
   TILO_WORKSPACES_OWNERS='0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0, 8a7b6c5d4e3f2a1908172635445362718a7b6c5d4e3f2a190817263544536271' \
   TILO_WORKSPACES_IROH_LISTEN=0.0.0.0:7704 \
@@ -121,11 +119,6 @@ lounge \
   TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
   TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
   TILO_WORKSPACES_HTTP=0.0.0.0:8890 \
-  TILO_WORKSPACES_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
-  TILO_WORKSPACES_MODERATION_MODEL=claude-test \
-  TILO_WORKSPACES_DISCORD_CLIENT_ID=1559266815148953650 \
-  TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
-  TILO_WORKSPACES_DISCORD_API_BASE=http://127.0.0.1:9090 \
   >"$work/args" || fail "the populated deployment did not start"
 cat > "$work/want" <<'EXPECTED'
 --workspace-name
@@ -153,16 +146,7 @@ pair --chat-channel feedback || fail "a chat channel did not reach the host"
 pair --seed-app so.tilo.board || fail "a seeded app did not reach the host"
 pair --refound so.tilo.browser-desktop/desktop || fail "a refounded record did not reach the host"
 pair --refound so.tilo.chat/ || fail "a refounded record of the app's primary did not reach the host"
-pair --bot '/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes' \
-  || fail "the bridge's bot spec did not reach the host"
-pair --bot '/opt/echo.json a=b' || fail "a bot spec did not reach the host"
-pair --moderation-key-file /run/secrets/moderation-model-key || fail "the moderation key did not reach the host"
-pair --moderation-model claude-test || fail "the moderation model did not reach the host"
-pair --discord-client-id 1559266815148953650 || fail "the Discord client id did not reach the host"
-pair --discord-client-secret-file /run/secrets/discord-client-secret || fail "the Discord secret did not reach the host"
-pair --discord-redirect-url https://eu1.tilo.sh/discord/callback || fail "the Discord callback did not reach the host"
-pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the Discord consent page did not reach the host"
-pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did not reach the host"
+pair --feedback-channel feedback || fail "the feedback channel did not reach the host"
 pair --operator-socket "$work/state/lounge/operator.sock" || fail "the operator socket did not reach the host"
 pair --person-storage-gb 10 || fail "the per-person storage did not reach the host"
 pair --owner 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0 \
@@ -179,14 +163,6 @@ grep -Fqx -- personal "$work/args" && fail "a layout setting reached the host"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
 grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was not replaced"
 
-# Where Discord's API is reaches the host on its own, without a sign-in set
-# up: the bridge's worker is pointed at it too, so one test server serves both.
-lounge \
-  TILO_WORKSPACES_DISCORD_API_BASE=http://127.0.0.1:9090 \
-  >"$work/args" || fail "a deployment naming Discord's API does not start"
-pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did not reach the host"
-grep -Fqx -- --discord-client-id "$work/args" && fail "an API base asked for a sign-in"
-
 # eu1's own environment, unchanged but for the image: it takes people by
 # invitation, and names no description. The workspace stays listed, its entry
 # admits only people invited, and the description is the name people know it
@@ -202,6 +178,7 @@ eu1() {
     TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh \
     TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
     TILO_WORKSPACES_SITE_ORIGINS=https://tilo.sh,https://tilo.so \
+    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
     TILO_WORKSPACES_STATE="$work/state" \
     sh "$here/entrypoint.sh"
 }
@@ -281,13 +258,12 @@ if [[ -n $server ]] && "$server" --version >/dev/null 2>&1; then
     TILO_WORKSPACES_NAME=Lounge \
     TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh,https://tilo.so' \
     TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
+    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
+    TILO_WORKSPACES_SEED_APPS='so.tilo.chat' \
     TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop' \
     TILO_WORKSPACES_LAYOUT=shared \
     TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
     TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
-    TILO_WORKSPACES_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
-    TILO_WORKSPACES_DISCORD_CLIENT_ID=1559266815148953650 \
-    TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
     >"$work/real-args" || fail "the deployment did not start against the real server"
   # Every argument that is a flag (starts with `--`) must be one `workspace --help`
   # lists.

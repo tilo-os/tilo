@@ -47,6 +47,9 @@ pub enum JournalEntry {
         request: WebRequest,
         response: WebResponse,
     },
+    /// A request to the page this window shows, and the answer it got: what the page's actions
+    /// read and did, which a replay answers from here instead of acting on the page again.
+    Page { request: String, answer: String },
     /// A write the run made, and the item it made, when it made one. A run that waited is run
     /// again after the change it made before the call is already in the record: replay answers
     /// the write from the journal and makes it no more, so it neither doubles what it wrote nor
@@ -68,6 +71,7 @@ impl JournalEntry {
             Self::Clock(_)
                 | Self::Random { .. }
                 | Self::Web { .. }
+                | Self::Page { .. }
                 | Self::Model { .. }
                 | Self::Notified
         )

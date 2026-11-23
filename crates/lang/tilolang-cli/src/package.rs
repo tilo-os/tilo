@@ -103,14 +103,27 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
     origins
 }
 
-/// A package's `[sandbox]`: the capabilities, namespaces and
-/// network mode of a package holding the outside `origins`.
-fn sandbox(origins: &[&str]) -> (&'static str, &'static str, &'static str) {
+/// A package's `[sandbox]`: the capabilities, namespaces, network mode and confinement of a
+/// package holding the outside `origins`, and showing a web page with `engine`.
+fn sandbox(origins: &[&str], engine: Option<&str>) -> (&'static str, &'static str, &'static str, &'static str) {
+    if engine.is_some() {
+        // A page runs in this device's engine, which keeps its own processes and speaks to
+        // the web: the launcher grants it the web engine's confinement, which is the JIT a
+        // renderer needs and nothing more than the engine's own sandbox around it.
+        return (
+            "required = [\"network.http\", \"webview\"]\noptional = []",
+            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
+            "# The engine reaches the web itself, in the sandbox the launcher runs the app in.\n\
+             mode = \"host\"",
+            "tilo-web-engine",
+        );
+    }
     if origins.is_empty() {
         return (
             "optional = []",
             "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]",
             "mode = \"off\"",
+            "tilo-default",
         );
     }
     // The mail origin signs in to the workspace's accounts (`ACCOUNT_SIGN_INS`); the others don't.
@@ -124,6 +137,7 @@ fn sandbox(origins: &[&str]) -> (&'static str, &'static str, &'static str) {
         "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
         "# Each origin's connector speaks to the hosts its service names, in the sandbox\n\
          # the launcher runs it in.\nmode = \"host\"",
+        "tilo-default",
     )
 }
 
@@ -177,7 +191,14 @@ pub fn manifest_text(
         .collect();
     let providers_ext: Vec<String> = providers_ext.iter().map(|ext| toml_string(ext)).collect();
     let origins = origins_of(meta);
-    let (capabilities, namespaces, net) = sandbox(&origins);
+    let (capabilities, namespaces, net, seccomp) = sandbox(&origins, meta.engine.as_deref());
+    // The runtimes the package needs beside the language's own: the app's page engine, which
+    // installing the app installs in the same step or not at all.
+    let mut runtimes = vec![toml_string(&options.tilolang_runtime)];
+    if let Some(engine) = &meta.engine {
+        runtimes.push(toml_string(engine));
+    }
+    let runtimes = runtimes.join(", ");
     let mut extra = if meta.icon.is_some() {
         format!("icon = {}\n", toml_string(ICON_FILE))
     } else {
@@ -218,7 +239,7 @@ version = {version}
 kind = "app"
 platforms = {platforms}
 runtime = {runtime}
-{extra}optional-runtimes = [{tilolang}]
+{extra}optional-runtimes = [{runtimes}]
 {names}
 {keywords}
 
@@ -240,7 +261,7 @@ signature = ""
 # Without the mail origin no `net` namespace: the app opens no socket of its own. Collaboration reaches the
 # broker over a service descriptor.
 namespaces = {namespaces}
-seccomp = "tilo-default"
+seccomp = {seccomp}
 landlock = "strict"
 
 [sandbox.net]
@@ -270,7 +291,8 @@ schemes = [{providers_schemes}]
         // Where the app runs: where its runtime runs.
         platforms = PLATFORMS,
         runtime = toml_string(&options.tilo_runtime),
-        tilolang = toml_string(&options.tilolang_runtime),
+        runtimes = runtimes,
+        seccomp = toml_string(seccomp),
         // The app's workspace record, and the workspace's record of each person's own state of it,
         // which every app of the language opens.
         resource_types = [

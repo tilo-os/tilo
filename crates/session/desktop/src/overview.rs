@@ -117,7 +117,7 @@ pub struct ShownPerson {
     pub kind: HolderKind,
 }
 
-/// What holds a share: a person, an agent acting in the workspace, or a bot of its server's.
+/// What holds a share: a person, an agent acting in the workspace, or a bot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HolderKind {
     #[default]
@@ -273,8 +273,7 @@ fn is_role(id: &tilo_action_policy::GrantId) -> bool {
 }
 
 /// The member `holder` as a share row shows them, as what they are: a person by the name they go
-/// by, an agent or a bot by the name the workspace gives it (its server's moderation by what it
-/// does), a person nobody named as a guest.
+/// by, an agent by the name the workspace gives it, a person nobody named as a guest.
 fn shown_member(holder: &tilo_action_policy::MemberId, ws: &Workspace) -> ShownPerson {
     use tilo_action_policy::MemberId;
     let named = || {
@@ -292,20 +291,7 @@ fn shown_member(holder: &tilo_action_policy::MemberId, ws: &Workspace) -> ShownP
         },
         MemberId::Bot(bot) => ShownPerson {
             id: bot.clone(),
-            name: named()
-                .or_else(|| {
-                    ws.bots
-                        .iter()
-                        .find(|known| known.installation.as_deref() == Some(bot.as_str()))
-                        .and_then(|known| ui::presence::shown_name(&known.name).map(str::to_owned))
-                })
-                .unwrap_or_else(|| {
-                    if bot == tilo_action_policy::bot::MODERATION {
-                        t("workspace-settings-moderation")
-                    } else {
-                        ui::presence::unnamed_label(holder)
-                    }
-                }),
+            name: named().unwrap_or_else(|| ui::presence::unnamed_label(holder)),
             kind: HolderKind::Bot,
         },
     }
@@ -977,24 +963,8 @@ mod workspace_tests {
             );
         }
 
-        fn the_servers_moderation_holds_chat_as_itself() {
-            let mut w = ws("Lounge");
-            let workspace = w.policy.workspace.clone();
-            w.grant(tilo_action_policy::bot::moderation_grant(&workspace, ME));
-            let tree = tree_with(vec![w]);
-            let card = &workspace_cards(&tree)[0];
-            assert_eq!(card.shares.len(), 1, "{:?}", card.shares);
-            let holder = &card.shares[0].with[0];
-            assert_eq!(holder.kind, HolderKind::Bot, "a bot wears its own face");
-            assert_eq!(
-                holder.name, "Moderation",
-                "the server's moderation goes by what it does, never its grant's id"
-            );
-        }
-
         a_workspace_only_you_own_reads_as_private();
         a_person_not_here_goes_by_the_name_they_gave_themselves();
-        the_servers_moderation_holds_chat_as_itself();
         an_administrator_is_a_role_not_a_share();
         an_agent_holding_part_of_the_workspace_is_named_and_you_are_not_a_share();
         a_member_makes_the_workspace_read_as_shared_with_them();

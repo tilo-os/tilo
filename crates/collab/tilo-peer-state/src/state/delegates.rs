@@ -24,13 +24,13 @@ use collab_types::signer::DeviceSigner;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::agent_policy;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_join::delegation::{Delegate, Delegation};
+use tilo_workspace_join::delegation::Delegation;
 
 use super::{GovernedIdentity, SystemTime, err, now_ns, workspace};
 use crate::join::WorkspaceId;
 
 /// What a governed identity carries when its device is a delegate of its
-/// person: an agent, or an installed bot.
+/// person: an agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernedDelegateRow {
     /// The person's root-signed delegation naming this device.
@@ -38,8 +38,6 @@ pub struct GovernedDelegateRow {
     /// When the governor withdrew it; it acts on nothing from then on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withdrawn_at_ns: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub installation: Option<crate::installation::Installation>,
 }
 
 /// Why an agent identity does not act at a given time.
@@ -58,13 +56,6 @@ pub enum DelegateInactive {
     /// The delegation does not name this workspace.
     #[error("the delegate is not delegated this workspace")]
     OtherWorkspace,
-    /// A bot row without its installation, an installation that is not the
-    /// delegation's, or an agent row carrying one.
-    #[error("the delegation does not match its installation")]
-    Mismatch,
-    /// The installation names another installer than the delegation's root.
-    #[error("the bot's installer did not sign its delegation")]
-    InstallerMismatch,
 }
 
 impl GovernedDelegateRow {
@@ -90,16 +81,7 @@ impl GovernedDelegateRow {
         if !delegation.permits_workspace(workspace) {
             return Err(DelegateInactive::OtherWorkspace);
         }
-        match (&delegation.delegate, &self.installation) {
-            (Delegate::Agent { .. }, None) => Ok(()),
-            (Delegate::Bot { installation }, Some(row)) if row.id.as_str() == installation => {
-                if row.installed_by != hex::encode(delegation.user_public_key) {
-                    return Err(DelegateInactive::InstallerMismatch);
-                }
-                Ok(())
-            }
-            _ => Err(DelegateInactive::Mismatch),
-        }
+        Ok(())
     }
 }
 
@@ -238,7 +220,6 @@ impl PeerGovernanceMut<'_> {
         let row = GovernedDelegateRow {
             delegation,
             withdrawn_at_ns: None,
-            installation: None,
         };
         row.acting(&cert, &self.peer.core.workspace, now_ns(now))
             .map_err(|reason| reason.to_string())?;
@@ -269,12 +250,6 @@ impl PeerGovernanceMut<'_> {
             }
             Some(GovernedIdentity { delegate: None, .. }) => {
                 return Err("the device is a member, not an agent".into());
-            }
-            Some(GovernedIdentity {
-                delegate: Some(ref known),
-                ..
-            }) if known.installation.is_some() => {
-                return Err("the device is a bot, not an agent".into());
             }
             Some(GovernedIdentity {
                 delegate:
@@ -332,9 +307,6 @@ impl PeerGovernanceMut<'_> {
         let Some(agent) = identity.delegate.as_mut() else {
             return Err("the device is a member, not an agent".into());
         };
-        if agent.installation.is_some() {
-            return Err("the device is a bot, not an agent".into());
-        }
         if agent.withdrawn_at_ns.is_some() {
             return Ok(false);
         }

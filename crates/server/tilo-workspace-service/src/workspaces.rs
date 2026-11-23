@@ -991,8 +991,6 @@ pub(crate) struct HolderClaim {
     /// Whether the machine under it is rented from a cloud provider, whose operator can read
     /// what it holds.
     pub(crate) cloud: bool,
-    /// The workspaces it runs a moderation agent for.
-    pub(crate) moderates: std::collections::BTreeSet<String>,
     /// The web origin its site answers at, when it serves one.
     pub(crate) origin: Option<String>,
 }

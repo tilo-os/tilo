@@ -1,10 +1,13 @@
 //! [`WebView`] as a described component: a page shown in a view.
 //!
 //! The widget shows the live output of a page engine and forwards input to it; navigation
-//! state belongs to the app's record, not this widget. A view that shows a page gives it the
-//! engine its app has, so `ui.WebView` is the surface, never a second engine.
-
+//! state belongs to the app's record, not this widget. The engine is the window's: the window
+//! that draws the view holds one page engine per window ([`crate::webview::window_engine`]) and
+//! hands it to every `ui.WebView` it builds, so the address a view names (`uri`) is the only
+//! thing that crosses the wire and no live engine does. An app that draws its own page hands
+//! its engine in, and reads that engine's events itself.
 use crate::component::{Component, Described, Event};
+use crate::webview::SharedEngine;
 
 use super::WebView;
 
@@ -25,9 +28,10 @@ pub struct WebViewProps {
     /// The page could not load: carries what the engine said.
     #[component(event(value = String))]
     pub fail: Event,
-    /// The page's engine, which its app builds and hands in.
+    /// The page's engine. A live engine is not a value: it never crosses from an app to the
+    /// window, and the window that draws the view holds the one it hands in here.
     #[component(skip)]
-    pub engine: Option<tilo_webview::SharedEngine>,
+    pub engine: Option<SharedEngine>,
 }
 
 impl Described for WebView {
@@ -41,26 +45,37 @@ impl Described for WebView {
             fail,
             engine,
         } = props;
-        let engine = engine.unwrap_or_else(|| {
-            tilo_webview::chromium::UnavailableEngine::new(crate::i18n::I18nManager::lookup_plain(
-                "webview-unavailable",
-            )) as tilo_webview::SharedEngine
-        });
+        // The window's page reports its navigation to the app; an app's own engine is read by
+        // the app, so this view takes nothing from it.
+        let window_page = engine.is_none() && crate::webview::window_engine().is_some();
+        let engine = engine
+            .or_else(crate::webview::window_engine)
+            .unwrap_or_else(|| {
+                let missing: SharedEngine = tilo_webview::chromium::UnavailableEngine::new(
+                    crate::i18n::I18nManager::lookup_plain("webview-unavailable"),
+                );
+                missing
+            });
         let mut view = Self::new(engine);
+        if window_page {
+            view = view.reporting(navigate, fail);
+        } else {
+            view = view.keeping_events(navigate, fail);
+        }
         if let Some(title) = title {
             view = view.with_accessible_name(title);
         }
-        if let Some(uri) = uri {
-            let _ = uri;
-        }
-        let _ = (&navigate, &fail);
+        view.open_at(uri);
         view
     }
 
     /// The title a page is named by changes where the view stands: the page it shows is the
-    /// engine's, and keeps showing.
+    /// engine's, and keeps showing. The events a host attached and the page it opens at are
+    /// its own from one build to the next.
     fn set_props(&mut self, props: WebViewProps) -> bool {
         self.set_accessible_name(props.title.unwrap_or_default());
+        self.update_events(props.navigate, props.fail);
+        self.open_at(props.uri);
         true
     }
 }

@@ -145,6 +145,7 @@ imports! {
     (ActorName, "actor_name", "i", "i"),
     (ActorId, "actor_id", "i", "i"),
     (Now, "now", "", "i"),
+    (PageCall, "page_call", "i", "i"),
     (WebGet, "web_get", "iii", "i"),
     (WebPost, "web_post", "iii", "i"),
     (WebOk, "web_ok", "i", "i"),

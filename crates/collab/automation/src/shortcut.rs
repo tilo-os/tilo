@@ -64,6 +64,12 @@ pub struct Shortcut {
     /// runs by hand but never arms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved_proof: Option<SavedProof>,
+    /// Whether it is paused: a paused shortcut fires nothing, and what comes while it is paused
+    /// is never answered later. It is no part of what its saver signed
+    /// ([`Self::saved_signing_digest`]), so pausing and resuming it keeps its saver's proof, and
+    /// a build that does not know it reads the same proof.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
 }
 
 /// A device's signature over one saved shortcut in one workspace.
@@ -630,9 +636,10 @@ pub enum TriggerSpec {
         #[serde(default, skip_serializing_if = "ChangeFilter::is_empty")]
         filter: ChangeFilter,
     },
-    /// An event from a connector's declared trigger source on the
-    /// workspace's host. Only a bot can carry one: a person's devices see no
-    /// connector.
+    /// An event from a connector's declared trigger source, reported by the
+    /// device that runs the connector: the app the connector belongs to, the
+    /// source it named, and equality on top-level payload fields to narrow
+    /// which events fire it.
     Connector {
         app_id: String,
         source: String,

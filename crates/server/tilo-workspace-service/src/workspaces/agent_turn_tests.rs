@@ -30,6 +30,18 @@ impl AgentEngine for Keys {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
         Box::pin(std::future::ready(self.0))
     }
+
+    fn sign_shortcut<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: &'a [u8; 32],
+        _: &'a mut tilo_automation::Shortcut,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(std::future::ready(Err(
+            "this fixture's agents save no shortcuts".to_owned(),
+        )))
+    }
 }
 
 /// The root of the person both devices are of: the one the first device's fixture is

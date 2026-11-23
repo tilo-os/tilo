@@ -641,6 +641,11 @@ and screen share only, never documents, and stays as it is.
   extends this API; it gets no call of its own. The session's own engine
   (`EngineRecords`, `settings_sync`) goes, and settings are records read and
   written like any other.
+- **Fixtures write like everyone else**: a test seed, a demo or a scenario
+  writes through the seeded app's declared actions on the one dispatch, so the
+  store's schema check applies to it unchanged. A seed gets no store command,
+  verb or write path of its own, and a store that knows no schema refuses
+  every write.
 - **Files are resources.** The tree syncs as ordinary records through
   `tree_sync` only. Bytes go through one content store, moved by
   `RouteContent`, with keys from `workspace-keys`. A person sees it as one

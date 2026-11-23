@@ -1,7 +1,7 @@
 #!/bin/sh
-# The Lounge's host: tilo-server's persistent public workspace, the deployment
-# routes beside it (/mode, /avatars/<name>, /discord/callback) and the Discord
-# bridge, all in one process, read from the TILO_WORKSPACES_* the deployment sets.
+# The Lounge's host: tilo-server's persistent public workspace and the
+# deployment's /mode route beside it, in one process, read from the
+# TILO_WORKSPACES_* the deployment sets.
 #
 # Required:
 #   TILO_WORKSPACES_PERSISTENT     the workspace's name; its state lives in
@@ -9,7 +9,7 @@
 #   TILO_WORKSPACES_ROOT_FILE      its owner root, 64 hex characters, mounted from
 #                             the operator's secrets
 #   TILO_WORKSPACES_SERVER_ORIGIN   the https:// origin the ingress publishes for the
-#                             relay: its pages, its avatars and the callback
+#                             relay: its pages
 #   TILO_WORKSPACES_DESCRIPTION    what the public directory says the workspace is;
 #                             listed, anyone joins through its entry at
 #                             TILO_WORKSPACES_DEFAULT_ROLE
@@ -85,8 +85,8 @@ known='TILO_WORKSPACES_PERSISTENT TILO_WORKSPACES_NAME TILO_WORKSPACES_DESCRIPTI
 TILO_WORKSPACES_WAIT_LIST_MAX TILO_WORKSPACES_CONTACT TILO_WORKSPACES_LOCAL
 TILO_WORKSPACES_MAIL_FROM TILO_WORKSPACES_RESEND_KEY_FILE TILO_WORKSPACES_RESEND_URL TILO_WORKSPACES_MAIL_TEMPLATES
 TILO_WORKSPACES_PUBLIC_API TILO_WORKSPACES_LIVE_ORIGIN
-TILO_WORKSPACES_DEFAULT_ROLE TILO_WORKSPACES_CHAT_CHANNELS
-TILO_WORKSPACES_SEED_APPS TILO_WORKSPACES_REFOUND TILO_WORKSPACES_BOTS TILO_WORKSPACES_LAYOUT
+TILO_WORKSPACES_DEFAULT_ROLE TILO_WORKSPACES_CHAT_CHANNELS TILO_WORKSPACES_FEEDBACK_CHANNEL
+TILO_WORKSPACES_SEED_APPS TILO_WORKSPACES_REFOUND TILO_WORKSPACES_LAYOUT
 TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_OPERATOR_SOCKET
 TILO_WORKSPACES_PERSON_STORAGE_GB TILO_WORKSPACES_IROH_LISTEN TILO_WORKSPACES_HOLD_FOR TILO_WORKSPACES_CALL_OWN_NETWORK TILO_WORKSPACES_OWNERS
 TILO_WORKSPACES_OPENAI_SIGN_IN TILO_WORKSPACES_CHATGPT_BACKEND TILO_WORKSPACES_OPENAI_API
@@ -96,11 +96,7 @@ TILO_WORKSPACES_SERVER_ORIGINS_ALSO
 TILO_WORKSPACES_SERVER_PLAIN TILO_WORKSPACES_LIVE TILO_WORKSPACES_LIVE_ORIGIN TILO_WORKSPACES_WEB
 TILO_WORKSPACES_TLS_CERT TILO_WORKSPACES_TLS_KEY
 TILO_WORKSPACES_LINK TILO_WORKSPACES_LINK_ORIGIN
-TILO_WORKSPACES_HTTP TILO_WORKSPACES_FETCH_PROXY
-TILO_WORKSPACES_MODERATION_KEY_FILE TILO_WORKSPACES_MODERATION_MODEL
-TILO_WORKSPACES_DISCORD_CLIENT_ID TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE
-TILO_WORKSPACES_DISCORD_REDIRECT_URL TILO_WORKSPACES_DISCORD_AUTHORIZE_URL
-TILO_WORKSPACES_DISCORD_API_BASE TILO_WORKSPACES_DISCORD_TOKEN_FILE'
+TILO_WORKSPACES_HTTP TILO_WORKSPACES_FETCH_PROXY'
 known=$(printf '%s' "$known" | tr '\n' ' ')
 for variable in $(env | sed -n 's/^\(TILO_WORKSPACES_[A-Za-z0-9_]*\)=.*/\1/p'); do
   case " $known " in
@@ -170,8 +166,6 @@ set -- workspace \
   --root-file "$root" \
   --workspace-id-file "$dir/workspace-id" \
   --workspace-documents \
-  --public-avatars "$dir/avatars" \
-  --public-avatars-url "$origin/avatars" \
   --listing-description "$description" \
   --default-role "${TILO_WORKSPACES_DEFAULT_ROLE:-editor}" \
   --web "${TILO_WORKSPACES_WEB:-127.0.0.1:9781}" \
@@ -264,11 +258,10 @@ set -- "$@" $(comma_flags "${TILO_WORKSPACES_OWNERS-}" --owner)
 # a stdin to write to.
 set -- "$@" --operator-socket "${TILO_WORKSPACES_OPERATOR_SOCKET:-$dir/operator.sock}"
 
-# A chat with no channel has nowhere for a visitor's first message to go. Chat
-# is a tilolang app whose record its first change founds, so no app is seeded
-# unless the deployment names one.
+# A chat with no channel has nowhere for a visitor's first message to go, and
+# the workspace's apps are its Chat unless the deployment says otherwise.
 set -- "$@" $(comma_flags "${TILO_WORKSPACES_CHAT_CHANNELS-general}" --chat-channel)
-set -- "$@" $(comma_flags "${TILO_WORKSPACES_SEED_APPS-}" --seed-app)
+set -- "$@" $(comma_flags "${TILO_WORKSPACES_SEED_APPS-so.tilo.chat}" --seed-app)
 # Records whose retained history lost the base its deltas were written over:
 # founded again at start from what the workspace still reads, their old
 # history archived beside the replay, never deleted. Named as
@@ -288,55 +281,8 @@ while [ -n "$refound" ]; do
 done
 set -- "$@" $(comma_flags "${TILO_WORKSPACES_SITE_ORIGINS:-}" --allowed-origin)
 set -- "$@" $(comma_flags "${TILO_WORKSPACES_SERVER_ORIGINS_ALSO:-}" --public-origin-also)
-
-# Bot programs the workspace installs at its first start, each a directory
-# entry or a program on this host with its inputs: `<source> key=value …`,
-# separated by `;` (spaces are part of a spec, so these do not word-split).
-bots=${TILO_WORKSPACES_BOTS:-}
-while [ -n "$bots" ]; do
-  case $bots in
-    *';'*) spec=${bots%%;*}; bots=${bots#*;} ;;
-    *) spec=$bots; bots= ;;
-  esac
-  spec=$(printf '%s' "$spec" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-  [ -z "$spec" ] || set -- "$@" --bot "$spec"
-done
-
-# The moderation agent runs only with a key; the model is the server's unless
-# the deployment names one.
-moderation=${TILO_WORKSPACES_MODERATION_KEY_FILE:-}
-if [ -z "$moderation" ] && [ -r /run/secrets/moderation-model-key ]; then
-  moderation=/run/secrets/moderation-model-key
-fi
-if [ -n "$moderation" ]; then
-  set -- "$@" --moderation-key-file "$moderation"
-  if [ -n "${TILO_WORKSPACES_MODERATION_MODEL:-}" ]; then
-    set -- "$@" --moderation-model "$TILO_WORKSPACES_MODERATION_MODEL"
-  fi
-fi
-
-# "Connect Discord": the app's client id and secret, the callback this host's
-# --http answers at, and Discord's own API unless the deployment names another.
-if [ -n "${TILO_WORKSPACES_DISCORD_CLIENT_ID:-}" ]; then
-  set -- "$@" \
-    --discord-client-id "$TILO_WORKSPACES_DISCORD_CLIENT_ID" \
-    --discord-client-secret-file "${TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE:-/run/secrets/discord-client-secret}" \
-    --discord-redirect-url "${TILO_WORKSPACES_DISCORD_REDIRECT_URL:-$origin/discord/callback}" \
-    --discord-authorize-url "${TILO_WORKSPACES_DISCORD_AUTHORIZE_URL:-https://discord.com/oauth2/authorize}"
-fi
-
-# Where Discord's API is: Discord's own unless the deployment names another,
-# which the bridge's worker is pointed at too, so a test server serves both the
-# sign-in and the bridge.
-if [ -n "${TILO_WORKSPACES_DISCORD_API_BASE:-}" ]; then
-  set -- "$@" --discord-api-base "$TILO_WORKSPACES_DISCORD_API_BASE"
-fi
-
-# The bridge's bot token matters only while bots run; without the mounted file
-# the host is left alone rather than handed a path that does not open.
-token=${TILO_WORKSPACES_DISCORD_TOKEN_FILE:-/run/secrets/discord-bot-token}
-if [ -r "$token" ]; then
-  set -- "$@" --discord-token-file "$token"
+if [ -n "${TILO_WORKSPACES_FEEDBACK_CHANNEL:-}" ]; then
+  set -- "$@" --feedback-channel "$TILO_WORKSPACES_FEEDBACK_CHANNEL"
 fi
 
 exec tilo-server "$@"

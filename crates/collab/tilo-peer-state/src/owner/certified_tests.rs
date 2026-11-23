@@ -59,7 +59,6 @@ fn actual_redemption_at(
         runs_work: false,
         label: String::new(),
         cloud: false,
-        moderates: false,
         origin: None,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(

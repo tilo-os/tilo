@@ -602,6 +602,14 @@ impl AppWindow {
         let mut opened_for_input = false;
         for message in messages {
             if self.refuses_while_failed(&message) {
+                // A page that cannot be shown still answers, so an action waiting on it is
+                // never left waiting.
+                if let ToUi::Page { request_id, .. } = message {
+                    self.out.push(ToApp::PageAnswer {
+                        request_id,
+                        answer: Vec::new(),
+                    });
+                }
                 continue;
             }
             match message {
@@ -610,6 +618,12 @@ impl AppWindow {
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
                 ToUi::Speak(language) => ui::i18n::I18nManager::set_locale(&language),
                 ToUi::Kept(kept) => self.kept(kept),
+                // No page engine runs in this window yet: the answer says so, empty, and the
+                // action that asked says why in words.
+                ToUi::Page { request_id, .. } => self.out.push(ToApp::PageAnswer {
+                    request_id,
+                    answer: Vec::new(),
+                }),
                 // Its page goes back to what the window shows ([`Self::compose`]).
                 ToUi::History(shown) => content |= self.shows_history(shown),
                 // What the window shows of people never stops it showing the app.

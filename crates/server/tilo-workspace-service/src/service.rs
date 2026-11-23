@@ -333,7 +333,6 @@ impl ServiceSessions {
             holder: Arc::new(std::sync::RwLock::new(crate::workspaces::HolderClaim {
                 label: cfg.label.clone(),
                 cloud: cfg.rented,
-                moderates: std::collections::BTreeSet::new(),
                 origin: cfg.origin.clone(),
             })),
             member: cfg.member.clone(),
@@ -785,6 +784,46 @@ impl ServiceSlot {
             // The sender lives as long as this slot, which this call borrows.
             let _ = installs.changed().await;
         }
+    }
+}
+
+/// Where a device's workspaces are: held now, as a daemon's are when it starts its broker, or in
+/// the device's own workspace service once it opens, as a desktop session's are after it starts
+/// its broker. What needs them waits for the service rather than failing on that order.
+#[derive(Clone)]
+pub enum WorkspacesAt {
+    Held(crate::workspaces::Workspaces),
+    Opening(ServiceSlot),
+}
+
+impl WorkspacesAt {
+    /// The workspaces, waiting for this device's service to open where it has not.
+    pub async fn get(&self) -> crate::workspaces::Workspaces {
+        match self {
+            Self::Held(workspaces) => workspaces.clone(),
+            Self::Opening(service) => service.installed().await.workspaces().clone(),
+        }
+    }
+
+    /// The workspaces, where they are open now.
+    #[must_use]
+    pub fn now(&self) -> Option<crate::workspaces::Workspaces> {
+        match self {
+            Self::Held(workspaces) => Some(workspaces.clone()),
+            Self::Opening(service) => Some(service.service()?.workspaces().clone()),
+        }
+    }
+}
+
+impl From<crate::workspaces::Workspaces> for WorkspacesAt {
+    fn from(workspaces: crate::workspaces::Workspaces) -> Self {
+        Self::Held(workspaces)
+    }
+}
+
+impl From<ServiceSlot> for WorkspacesAt {
+    fn from(service: ServiceSlot) -> Self {
+        Self::Opening(service)
     }
 }
 

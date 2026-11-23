@@ -47,8 +47,10 @@
 //! A record the host cannot open yet — its workspace's channels hand it the
 //! keys after it joins them — is read again in a moment, further apart each
 //! time. A person's private record is theirs: the host keeps its ciphertext and
-//! never reads it. The shared desktop's record is left alone: its layout names
-//! no content and is written with every window moved.
+//! never reads it. Two records are left to the
+//! keepers that own them: the shared desktop, whose layout names no content
+//! and is written with every window moved, and Chat's, whose members' files
+//! are kept within a quota ([`crate::chat_attachments`]).
 //!
 //! What it keeps goes into the workspace's store ([`crate::content`]), from
 //! where the host answers members asking for content
@@ -169,11 +171,12 @@ fn now_ms() -> u64 {
     tilo_clock::unix_now_ns() / 1_000_000
 }
 
-/// Whether the content a record of `app` names is not this keeper's: the
+/// Whether the content a record of `app` names is kept by another keeper: the
 /// shared desktop's layout, which names none and is written with every window
-/// moved.
+/// moved, and Chat's, whose members' files are kept within a quota
+/// ([`crate::chat_attachments`]).
 fn another_keeper(app: &str) -> bool {
-    app == tilo_desktop_model::ownership::DESKTOP_APP
+    app == tilo_desktop_model::ownership::DESKTOP_APP || app == tilo_app_id::apps::CHAT
 }
 
 /// How many blobs of the content the records of `workspace` name its host

@@ -7,8 +7,9 @@
 //! already said were due. The first look only notes where everything
 //! stands, as a bot starts at a document's heads: the workspace's past is
 //! not news. What the assistant did itself is not news to it either: its
-//! own changes, the look-round's own asks, and what the server
-//! keeps about the workspace's agents (what each spent, how each stands).
+//! own changes, the look-round's own asks, what is said in its own thread
+//! with its person, and what the server keeps about the workspace's agents
+//! (what each spent, how each stands).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,6 +27,9 @@ const TASKS: &str = "so.tilo.tasks";
 const DUE_WITHIN_MS: i64 = 24 * 60 * 60 * 1000;
 /// The most documents and the most tasks a look names; the rest it counts.
 const MAX_NAMED: usize = 20;
+/// What Chat calls the conversation a message is in, as a verb's argument and on the
+/// message itself.
+const CONVERSATION: &str = "channel";
 
 /// Where a look left the workspace, for the next to compare with.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,20 +55,36 @@ pub(super) struct Own {
     /// The assistant's id among the workspace's agents, where the person
     /// keeps one.
     pub assistant: Option<String>,
-    /// The look-round's own event.
+    /// The look-round's own event, which asks as itself.
     pub event: String,
+    /// The conversation of the person and their assistant.
+    pub thread: Option<String>,
 }
 
 impl Own {
     /// Whether `event` is the assistant's own doing: a change it or its
-    /// look-round made. What a look asks is written as its person, in a run
-    /// of the look-round, which the change carries.
+    /// look-round made, or something said in its own thread.
     fn made(&self, event: &DocumentEvent) -> bool {
         let by_own = event
             .actor
             .agent_id()
             .is_some_and(|agent| self.assistant.as_deref() == Some(agent) || agent == self.event);
-        by_own || event.shortcut.as_deref() == Some(self.event.as_str())
+        by_own || self.in_thread(event)
+    }
+
+    /// Whether `event` is something said in the assistant's own thread: the
+    /// conversation its verb names (what a post or an ask carries), or the
+    /// one the message it changed is in.
+    fn in_thread(&self, event: &DocumentEvent) -> bool {
+        let Some(thread) = &self.thread else {
+            return false;
+        };
+        let names = |value: Option<&Value>| value.and_then(Value::as_str) == Some(thread.as_str());
+        names(event.arguments.get(CONVERSATION))
+            || [&event.before, &event.after]
+                .into_iter()
+                .flatten()
+                .any(|item| names(item.get(CONVERSATION)))
     }
 }
 
@@ -158,15 +178,7 @@ pub(super) async fn gather(
             None => None,
         };
         if let Some(since) = since.filter(|since| *since != heads.as_slice())
-            && let Some(named) = changes_in(
-                workspaces,
-                workspace,
-                (&app, &document),
-                &mut doc,
-                since,
-                own,
-            )
-            .await
+            && let Some(named) = changes_in(workspace, (&app, &document), &mut doc, since, own)
         {
             found.changed = found.changed.saturating_add(1);
             if changed.len() < MAX_NAMED {
@@ -174,9 +186,21 @@ pub(super) async fn gather(
             }
         }
         next.documents.insert(key, heads);
-        tasks_of(
-            &app, &document, &mut doc, &against, &mut found, &mut due, &mut next,
-        );
+        let tasks_part = app == TASKS
+            && collab_types::document::DocumentId::parse(&document)
+                .and_then(|id| id.chain_part())
+                .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
+        if tasks_part
+            && let Ok(part) = crate::agents::opened::<tasks::issue_list::IssueList>(&mut doc)
+        {
+            tasks_in(
+                part.issues.iter(),
+                &against,
+                &mut found,
+                &mut due,
+                &mut next,
+            );
+        }
     }
     // The first look starts at the newest arrival: mail from before it is
     // where the inbox stands.
@@ -213,64 +237,19 @@ pub(super) async fn gather(
 /// What the changes of one document since `since` say, where anybody but the
 /// assistant made one: where it changed, how often and by whom, never what
 /// the change says.
-async fn changes_in(
-    workspaces: &Workspaces,
+fn changes_in(
     workspace: &str,
     (app, document): (&str, &str),
     doc: &mut AutoCommit,
     since: &[String],
     own: &Own,
 ) -> Option<Value> {
-    let (kind, events) = match crate::tl_records::built_in(app) {
-        // A tilolang record is a document of the workspace's resource store: what changed in
-        // it is read from the store's versions, through its app's package.
-        Ok(Some(packages)) => {
-            let (at, record) = (workspace.to_owned(), document.to_owned());
-            let since = since.to_vec();
-            let mut held = doc.clone();
-            let viewer = crate::tl_records::runtime::Actor::App(app.into());
-            let events = workspaces
-                .with_tl_record(workspace, &packages, viewer, move |opened| {
-                    Ok(opened.events_since(&at, &record, held.document(), &since))
-                })
-                .await;
-            let events = tilo_failure::ignored!(
-                "a record its app's package cannot open is left out, as one not read here is",
-                events
-            )
-            .ok()?;
-            // What it is, is what its changes were of.
-            let kind = events
-                .first()
-                .map(|(event, _)| event.kind.clone())
-                .unwrap_or_default();
-            (kind, events)
-        }
-        Err(error) => {
-            tracing::warn!(
-                app,
-                %error,
-                "the app's package does not compile; its record is left out"
-            );
-            return None;
-        }
-        Ok(None) => {
-            let kind = collaboration::resource::identity(doc)
-                .map(|checkout| checkout.kind.as_str().to_owned())
-                .unwrap_or_default();
-            let events = tilo_agent_session::bot::events_since(
-                workspace,
-                document,
-                &kind,
-                doc.document(),
-                since,
-            );
-            (kind, events)
-        }
-    };
+    let kind = collaboration::resource::identity(doc)
+        .map(|checkout| checkout.kind.as_str().to_owned())
+        .unwrap_or_default();
+    let events = events_since(workspace, document, &kind, doc.document(), since);
     let theirs: Vec<&DocumentEvent> = events
         .iter()
-        .map(|(event, _)| event)
         .filter(|event| !event.housekeeping && !own.made(event))
         .collect();
     if theirs.is_empty() {
@@ -286,6 +265,41 @@ async fn changes_in(
     }))
 }
 
+/// The changes of `doc` after `since` (hex heads), as the events their recorded entries
+/// describe. A change that carries no entry (a genesis, a merge with no action) is none.
+fn events_since(
+    workspace: &str,
+    record: &str,
+    kind: &str,
+    doc: &automerge::Automerge,
+    since: &[String],
+) -> Vec<DocumentEvent> {
+    let since: Vec<automerge::ChangeHash> = since
+        .iter()
+        .filter_map(|hex| {
+            tilo_failure::ignored!(
+                "a head that does not parse names no change, so the changes are read from before it, none skipped",
+                hex.parse().ok()
+            )
+        })
+        .collect();
+    doc.get_changes(&since)
+        .into_iter()
+        .filter_map(|change| {
+            let context = change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)?;
+            Some(tilo_automation::dispatch::event_of(
+                workspace,
+                record,
+                kind,
+                &change.hash().to_string(),
+                &context,
+            ))
+        })
+        .collect()
+}
+
 /// What a look holds a tracker's tasks against.
 struct Against<'a> {
     own: &'a Own,
@@ -293,26 +307,6 @@ struct Against<'a> {
     assistant: Option<String>,
     seen: &'a Seen,
     now_ms: i64,
-}
-
-/// Count what `document` of `app` holds into `found`, `due` and `next` when it is one of the
-/// tracker's issues parts.
-fn tasks_of(
-    app: &str,
-    document: &str,
-    doc: &mut AutoCommit,
-    against: &Against<'_>,
-    found: &mut Found,
-    due: &mut Vec<Value>,
-    next: &mut Seen,
-) {
-    let tasks_part = app == TASKS
-        && collab_types::document::DocumentId::parse(document)
-            .and_then(|id| id.chain_part())
-            .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
-    if tasks_part && let Ok(part) = crate::agents::opened::<tasks::issue_list::IssueList>(doc) {
-        tasks_in(part.issues.iter(), against, found, due, next);
-    }
 }
 
 /// The open tasks among `issues`: those that are the person's or their

@@ -75,6 +75,7 @@ pub mod value;
 pub mod view;
 pub mod view_instance;
 pub mod view_state;
+pub mod page;
 pub mod web;
 pub mod words;
 mod written;

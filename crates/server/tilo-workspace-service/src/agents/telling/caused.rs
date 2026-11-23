@@ -1,39 +1,100 @@
-//! How a turn that an event of a person's started ended, told to that person.
+//! How a turn that a cause started ended, told to the person it was for.
 //!
 //! An agent a person keeps on this server works when they write to it, and
-//! when an event of theirs asks it for them: an event that fired, a moment
-//! they asked to be told at. Its instruction is an ask made from the event
-//! ([`crate::agents::ask_for_event`]). They read the answer to
-//! their own words where they wrote them. Nobody is looking when an event
-//! asks, so how its turn ended joins their log by itself: what the agent
-//! answered, or the sentence its reply carries where the turn could not
-//! work. Their own rule marks it there, and what is to reach them is told
-//! them wherever they are ([`Workspaces::tell`]).
+//! when something else asks for them through Chat's `ask-agent`: an event
+//! of theirs that fired, a moment they asked to be told at, work started
+//! for them that has news. They read the answer to their own words where
+//! they wrote them. Nobody is looking when a cause asks, so how its turn
+//! ended joins their log by itself: what the agent answered, or the
+//! sentence its reply carries where the turn could not work. Their own
+//! rule marks it there, and what is to reach them is told them wherever
+//! they are ([`Workspaces::tell`]).
 //!
-//! Only the person the turn was for is told, and only the words the ask's
-//! reply holds. What kind of thing it is comes from the event the ask is
-//! made from, where that event is one this person keeps on this server: a
-//! reminder is one because they set it up. An ask made from any other event
-//! makes news of the answer, as what an agent tells is news.
+//! Only the person the turn was for is told, and only the words that are
+//! in their conversation already. What kind of thing it is comes from its
+//! cause only where an event of that person's own asked, as a firing of the
+//! shortcut it is ([`tilo_automation::FIRING_INPUT`]): a reminder is one
+//! because they set it up. Whatever else names a cause makes news of the
+//! answer, whatever kind it says it is, as what an agent tells is news.
 
-use tilo_actions::remote::person_telling::{
-    About, CAUSE_BRIEF, CAUSE_EVENT, CAUSE_REMINDER, Cause, Kind, Tell, Teller,
-};
+use tilo_actions::remote::person_telling::{Cause, Kind, Tell, Teller};
+use tilo_resource::Id;
 
-use crate::agents::events::{WorkspaceEvents, event_named};
+use super::questions::at_message;
 use crate::agents::{Ask, Outcome, Turn};
 use crate::workspaces::{ToTell, Workspaces};
 
-/// Tell the person `turn` was for how it ended as `outcome`, where an event
-/// asked for it. `person` is that person as the turn acted for them in
-/// `workspace`, and `events` what this server carries out for its people.
+/// The app that keeps the conversations.
+const CHAT: &str = "so.tilo.chat";
+
+/// What asked with `message`, and whether the person's own event asked it.
+type Asked = (Cause, bool);
+
+/// What asked with `message` in the part of Chat's messages `bytes` hold,
+/// where it was a cause asking for `person`: the cause as a thing told
+/// keeps it, and whether a firing of one of the person's own shortcuts wrote
+/// the message. None for their own words, and for a message that is not
+/// there.
+///
+/// # Errors
+/// The part does not read.
+fn asked_by(bytes: &[u8], message: &Id, person: &str) -> Result<Option<Asked>, String> {
+    let mut doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+    let part = crate::agents::opened::<chat::parts::ChatMessages>(&mut doc)?;
+    Ok(part.messages.get(message).and_then(|held| {
+        let cause = held
+            .cause
+            .as_ref()
+            .filter(|cause| !cause.by_person() && cause.person.person_id() == Some(person))?;
+        Some((
+            Cause {
+                kind: cause.kind.0.clone(),
+                label: cause.label.clone(),
+                key: cause.key.0.clone(),
+            },
+            held.author.person_id() == Some(person)
+                && cause.key.0.starts_with(tilo_automation::FIRING_PREFIX),
+        ))
+    }))
+}
+
+/// The firing of its person's own event that asked for `turn` in `workspace`, by the key it
+/// asked under ([`tilo_automation::FIRING_PREFIX`]). None for every other turn.
+pub(crate) async fn firing(
+    workspaces: &Workspaces,
+    workspace: &str,
+    turn: &Turn,
+) -> Option<String> {
+    if turn.typed || turn.line.is_some() {
+        return None;
+    }
+    let Ask::Message { part, message, .. } = &turn.ask else {
+        return None;
+    };
+    let bytes = workspaces
+        .resource_document(workspace, CHAT, part)
+        .await
+        .ok()
+        .flatten()?;
+    let message = Id::from_raw(message.as_str());
+    match asked_by(&bytes, &message, &turn.person) {
+        Ok(Some((cause, true))) => Some(cause.key),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(%workspace, %message, %error, "what asked for a turn could not be read");
+            None
+        }
+    }
+}
+
+/// Tell the person `turn` was for how it ended as `outcome`, where a cause
+/// started it. `person` is that person, in `workspace`.
 ///
 /// A turn its person wrote for themselves tells nothing, nor one they
 /// stopped, nor one that left no words. A sub-agent's turn tells nothing
 /// either: it answers the agent that started it, whose own turn tells.
 pub(crate) async fn turn_ended(
     workspaces: &Workspaces,
-    events: Option<&WorkspaceEvents>,
     person: &[u8; 32],
     workspace: &str,
     turn: &Turn,
@@ -42,13 +103,10 @@ pub(crate) async fn turn_ended(
     if turn.typed || turn.line.is_some() {
         return;
     }
-    let Ask::Asked {
-        app,
-        ask,
-        ty,
-        key,
+    let Ask::Message {
+        part,
+        message,
         attempt,
-        ..
     } = &turn.ask
     else {
         return;
@@ -61,46 +119,36 @@ pub(crate) async fn turn_ended(
     if words.trim().is_empty() {
         return;
     }
-    let from = match crate::agents::made_from(workspaces, workspace, (ask, ty)).await {
-        Ok(Some(from)) => from,
+    let message = Id::from_raw(message.as_str());
+    let read = match workspaces.resource_document(workspace, CHAT, part).await {
+        Ok(Some(bytes)) => asked_by(&bytes, &message, &turn.person),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    };
+    let (cause, their_event) = match read {
+        Ok(Some(asked)) => asked,
         Ok(None) => return,
         Err(error) => {
-            tracing::warn!(%workspace, %ask, %error, "what asked for a turn could not be read, so its person is not told how it ended");
+            tracing::warn!(%workspace, %message, %error, "what asked for a turn could not be read, so its person is not told how it ended");
             return;
         }
     };
-    let Some(event) = event_named(&from) else {
-        return;
-    };
-    // What it is, is the event's to say only where it is one its person keeps.
-    let (kind, label) = events
-        .and_then(|events| events.told_as(workspace, event, &turn.person))
-        .map_or((Kind::News, String::new()), |(name, kind)| (kind, name));
-    let cause = Cause {
-        kind: match kind {
-            Kind::Reminder => CAUSE_REMINDER,
-            Kind::Brief => CAUSE_BRIEF,
-            Kind::Question | Kind::News | Kind::Mention => CAUSE_EVENT,
-        }
-        .to_owned(),
-        label: label.clone(),
-        key: key.clone(),
+    // What it is, is its cause's to say only for an event its person keeps.
+    let kind = if their_event {
+        Kind::of_cause(Some(&cause))
+    } else {
+        Kind::News
     };
     let telling = ToTell {
         // One thing for each time the ask was worked on: handed over again,
         // it is told once.
-        id: Some(format!("turn:{workspace}:{ask}:{attempt}")),
+        id: Some(format!("turn:{workspace}:{message}:{attempt}")),
         kind,
         tell: Tell {
             words: words.clone(),
-            title: label,
+            title: cause.label.clone(),
             cause: Some(cause),
-            about: Some(About {
-                workspace: workspace.to_owned(),
-                app: app.clone(),
-                record: String::new(),
-                resource: ask.clone(),
-            }),
+            about: Some(at_message(workspace, &message)),
             ..Tell::default()
         },
         from: Some(Teller {
@@ -111,6 +159,6 @@ pub(crate) async fn turn_ended(
         ..ToTell::default()
     };
     if let Err(error) = workspaces.tell(&theirs, telling).await {
-        tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "a person was not told how a turn that an event started ended");
+        tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "a person was not told how a turn that a cause started ended");
     }
 }

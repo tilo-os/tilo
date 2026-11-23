@@ -240,6 +240,8 @@ impl Automation {
                 // workspace it keeps says otherwise.
                 |workspace| Some(revocations.of(workspace).unwrap_or_default()),
                 |workspace| crate::identity::person_in(workspace, person),
+                // A desktop session runs its own person's shortcuts only.
+                false,
                 tilo_clock::unix_now_ns(),
             )
         });
@@ -273,7 +275,7 @@ impl Automation {
             return;
         };
         for firing in firings {
-            if let Err(error) = broker.start(&firing) {
+            if let Err(error) = broker.start(&firing, firing.invocation) {
                 // A shortcut deleted or changed elsewhere, or one whose saver may not run it here:
                 // nothing started, and the next arming drops it.
                 tracing::info!(

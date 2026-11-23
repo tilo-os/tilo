@@ -876,8 +876,8 @@ tilo_test_env::scenario! {
     }
 
     phase a_persons_change_showing_another_name_is_refused;
-    // A person's device that writes a change showing another name, as only a
-    // bot allowed it may, is refused by every receiver.
+    // A device that writes a change showing another name is refused by every
+    // receiver: no author may show one.
     {
         let (mut peer, key, guest) = workspace_with(Role::Editor);
         // The change names the person whose device signed it: an invoker this
@@ -904,70 +904,6 @@ tilo_test_env::scenario! {
             tilo_actions::ActionInvoker::person(guest_person),
         );
         receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
-    }
-
-    phase a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may;
-    // The bot device whose installation allows Personas may show another
-    // name; the same bot installed with its own appearance only may not.
-    {
-        use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
-        let edit = Rule::new(
-            TreePath::root()
-                .any(Level::Workspace)
-                .app(APP)
-                .kind(KIND)
-                .resource(RECORD)
-                .field("value")
-                .action("field-edit"),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-        );
-        let program = crate::state::bot_members_tests::program_invoking(
-            ActionKey::new(APP, KIND, "field-edit"),
-            vec![edit],
-        );
-        for (policy, admitted) in [
-            (crate::AppearancePolicy::Personas, true),
-            (crate::AppearancePolicy::Own, false),
-        ] {
-            let (mut peer, _, _) = workspace_with(Role::Viewer);
-            let owner_key = SigningKey::from_bytes(&[2; 32]);
-            let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
-            let (key, device) = crate::state::bot_members_tests::installed_bot(
-                &mut peer,
-                &owner_key,
-                &owner,
-                &program,
-                policy,
-                now(),
-            );
-            let invoker = |appearance: Option<tilo_actions::Appearance>| {
-                tilo_actions::ActionInvoker::bot(crate::state::bot_members_tests::BOT)
-                    .with_appearance(appearance)
-            };
-            let shown = guest_write_by(
-                &peer,
-                &key,
-                |doc| doc.put(ROOT, "value", "hi").unwrap(),
-                edit_value(),
-                invoker(Some(
-                    tilo_actions::Appearance::new("alice", None, None).unwrap(),
-                )),
-            );
-            assert_eq!(
-                receive(&mut peer.clone(), &device, shown).is_ok(),
-                admitted,
-                "{policy:?}"
-            );
-            let plain = guest_write_by(
-                &peer,
-                &key,
-                |doc| doc.put(ROOT, "value", "own name").unwrap(),
-                edit_value(),
-                invoker(None),
-            );
-            receive(&mut peer, &device, plain).expect("a bot writes under its own name");
-        }
     }
 
     phase a_change_made_with_another_version_than_the_workspace_runs_waits_for_its_author_to_update;

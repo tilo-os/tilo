@@ -19,7 +19,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (`--workspace-documents`):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
-agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
+agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:collaboration", "dep:chat", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-sheets"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 [[bin]]
@@ -126,8 +126,6 @@ tilo-rollback = { path = "../../system/tilo-rollback" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-crypto = { path = "../../system/tilo-crypto", default-features = false }
 uuid.workspace = true
-# A bot's calendar schedules fire on this host's wall clock.
-jiff.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
@@ -183,23 +181,10 @@ tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 # The shared question sheet's words and pictures: a page draws an agent's
 # question in the same words a native session's sheet does.
 tilo-sheets = { path = "../../session/sheets", optional = true }
-# The persistent workspace's moderation agent and its model provider.
-tilo-moderation = { path = "../../collab/moderation", features = ["host"], optional = true }
 # A persistent public workspace's chat opens with the operator's channels.
-discord = { path = "../../../apps/discord", optional = true }
-tilo-connector = { path = "../../agent/connector", optional = true }
-tilo-automation = { path = "../../collab/automation", optional = true }
-# A source outside that an event waits on is read through the one fetch an
-# agent's own read of a page goes through, and a feed's entries by the parser
-# the Feeds app reads them with.
-tilo-web-search = { path = "../../platform/tilo-web-search", optional = true }
-feed-rs = { version = "2.4", optional = true }
-tilo-bot-directory = { path = "../../packaging/bot-directory", optional = true }
-app-cli = { path = "../../packaging/app-cli", optional = true }
+chat = { path = "../../../apps/chat", optional = true, default-features = false }
 # The admin workspace's record of the person's servers, and its actions.
 tilo-resource = { path = "../../sdk/tilo-resource" }
-# The workspace's emoji, which a bot's program may be told of.
-tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional = true }
 # Who the agents a workspace's host runs are (the workspace's record of its agents), and the
 # tools an agent on a machine of the workspace acts through (the MCP server's agent surface).
 tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent", optional = true }
@@ -288,6 +273,7 @@ install-plan = { path = "../../session/install-plan" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 # Text a test lays out uses the pinned catalog, never the fonts the machine
 # running it has installed.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
@@ -311,9 +297,6 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 hyper = { version = "1", features = ["client", "http1"] }
 # The fetch proxy test's target.
 test-http = { path = "../../../tools/test-http" }
-# The sources a test has an event look at are servers the test starts, which
-# the fetch reaches only through its fixture entry.
-tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
 # Nearby pairing redeems enrollment tokens through the identity host's one
 # redemption, and the machine tests mint their tokens with the identity crate.
 tilo-enrollment = { path = "../../collab/tilo-enrollment" }

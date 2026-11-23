@@ -39,12 +39,17 @@ use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::agents::events::WorkspaceEvents;
+use tilo_workspace_service::agents::initiative::Initiative;
 use tilo_workspace_service::apps::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::{BrokerChannels, BrokerSealChecks},
     collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
-    services::{LauncherServices, ProcessServices, ShortcutLibraryServices, WorkspaceAuthority},
+    services::{
+        HostStepServices, LauncherServices, ProcessServices, ShortcutLibraryServices,
+        WorkspaceAuthority,
+    },
 };
 use tilo_workspace_service::service::ServiceConfig;
 use tilo_workspace_service::workspaces::Refusal;
@@ -501,7 +506,7 @@ impl Daemon {
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &root.join(BLOB_SOCKET))?;
         stage("starting the collaboration broker");
-        let (policy_origin, broker) = start_broker(
+        let (policy_origin, broker, initiative) = start_broker(
             BrokerParts {
                 root,
                 apps: &apps,
@@ -528,7 +533,7 @@ impl Daemon {
                 &policy_origin,
             )?;
         }
-        start_agents(&broker, &workspaces);
+        start_agents(&broker, &workspaces, &initiative);
         start_triggers(&broker, &workspaces);
         let replicas = take_work_files(
             &TakenFiles {
@@ -757,8 +762,10 @@ fn start_broker(
 ) -> io::Result<(
     tilo_workspace_service::apps::policy_clock::PolicyOrigin,
     BrokerHandle,
+    Initiative,
 )> {
     let (policy_origin, policy_time) = execution_policy_clock()?;
+    let (services, initiative) = broker_services(parts, policy_time)?;
     let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
         parts.root.join(COLLAB_SOCKET),
         Some(Arc::clone(parts.workspaces) as Arc<dyn WorkspaceAuthority>),
@@ -768,20 +775,21 @@ fn start_broker(
                 as Arc<dyn OwnerCommitService>,
         ),
         None,
-        broker_services(parts, policy_time)?,
+        services,
         channels,
         fanout,
     )?;
-    Ok((policy_origin, broker))
+    Ok((policy_origin, broker, initiative))
 }
 
 /// The services the collaboration broker runs with, including the person's
 /// own store: the records of their own scope are kept in it as well as here,
-/// so their other devices have them.
+/// so their other devices have them. With them the workspaces' look-round, which acts through
+/// the broker once it serves.
 fn broker_services(
     parts: BrokerParts<'_>,
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
-) -> io::Result<ProcessServices> {
+) -> io::Result<(ProcessServices, Initiative)> {
     let document_content =
         super::content::document_content(parts.workspaces, &parts.root.join(BLOB_SOCKET));
     // Where this workspace's offloadable actions may run instead of here: the
@@ -821,7 +829,31 @@ fn broker_services(
                 ),
             )));
     }
-    Ok(ProcessServices {
+    // The person's shortcuts, saved into the workspaces this device holds and run here: the
+    // same store the trigger runner arms them from, so a computer keeps its shortcuts with no
+    // desktop session open on it.
+    let shortcuts: Arc<dyn ShortcutLibraryServices> = Arc::new(super::shortcuts::Shortcuts::new(
+        parts.workspaces.copies().clone(),
+        parts.workspaces.device_cert().clone(),
+        parts.workspaces.signer(),
+    )?);
+    // The workspaces' events and their assistants' look-rounds, each a shortcut of its person's
+    // saved through that library.
+    let held = parts.workspaces.copies().clone();
+    let events = Arc::new(WorkspaceEvents::new(held.clone(), Arc::clone(&shortcuts)));
+    let initiative = Initiative::new(held, Arc::clone(&events));
+    // The model a shortcut's AI step asks: the one the workspace linked, answered here.
+    let service = tilo_workspace_service::service::ServiceSlot::default();
+    service.install(Arc::clone(parts.workspaces.service()));
+    let host_steps: Vec<Arc<dyn HostStepServices>> = vec![
+        Arc::new(tilo_workspace_service::agents::assistant::Transforms::new(
+            service,
+            tilo_rt::app().handle().clone(),
+        )),
+        events,
+        Arc::new(initiative.clone()),
+    ];
+    let services = ProcessServices {
         native_certificates: Some(Arc::new(Certificates {
             policy_time,
             workspaces: Arc::downgrade(parts.workspaces),
@@ -837,14 +869,8 @@ fn broker_services(
         })),
         journal_root: Some(parts.root.join(INVOCATION_JOURNAL)),
         document_content: Some(document_content),
-        // The person's shortcuts, saved into the workspaces this device holds and run here: the
-        // same store the trigger runner arms them from, so a computer keeps its shortcuts with
-        // no desktop session open on it.
-        shortcut_library: Some(Arc::new(super::shortcuts::Shortcuts::new(
-            parts.workspaces.copies().clone(),
-            parts.workspaces.device_cert().clone(),
-            parts.workspaces.signer(),
-        )?) as Arc<dyn ShortcutLibraryServices>),
+        shortcut_library: Some(shortcuts),
+        host_steps,
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
@@ -869,7 +895,8 @@ fn broker_services(
         // it through the same registry and admission as another device's call.
         providers: Some(parts.workspaces.copies().providers()),
         ..ProcessServices::default()
-    })
+    };
+    Ok((services, initiative))
 }
 
 fn execution_policy_clock() -> io::Result<(
@@ -1912,12 +1939,17 @@ impl Daemon {
 }
 
 /// Run the agents of the workspaces this device's service holds, in this daemon: the one engine
-/// a workspace's host runs, each turn's calls decided by `broker` as the person's own calls are.
-fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
+/// a workspace's host runs, each turn's calls decided by `broker` as the person's own calls are,
+/// and `initiative`'s proposals filed through it.
+fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces, initiative: &Initiative) {
     let Some(broker) = broker.app_action_broker() else {
         tracing::warn!("this device's broker is not up, so it runs no agents of its workspaces");
         return;
     };
+    // What an assistant proposes is filed in the workspace's tracker through the broker.
+    if let Some(actions) = tilo_workspace_service::agents::device_actions(broker.device_host()) {
+        initiative.act_through(actions);
+    }
     tilo_rt::app()
         .handle()
         .spawn(tilo_workspace_service::agents::run_on_device(
@@ -1926,19 +1958,33 @@ fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
         ));
 }
 
-/// Run the triggers of the shortcuts the person saved in this device's workspaces: each firing
-/// that is this device's turn starts on `broker`.
+/// Run the triggers of the shortcuts this device arms in its workspaces, firing them also on
+/// what the connectors it runs report: each firing that is this device's turn starts on
+/// `broker`. What a run queues for one of those connectors is sent from here too, and settled
+/// through `broker`.
 fn start_triggers(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
     let Some(broker) = broker.app_action_broker() else {
         tracing::warn!("this device's broker is not up, so it starts no shortcut's trigger");
         return;
     };
-    tilo_rt::app()
-        .handle()
-        .spawn(tilo_workspace_service::apps::triggers::run_on_device(
-            workspaces.copies().clone(),
+    let connectors = tilo_workspace_service::agents::connectors::Connectors::new();
+    let held = workspaces.copies().clone();
+    let drain = connectors.drain(
+        held.clone(),
+        std::sync::Arc::new(tilo_workspace_service::agents::connectors::DeviceRecords {
+            workspaces: held.clone(),
+            actions: broker.device_host(),
+        }),
+    );
+    let runtime = tilo_rt::app().handle();
+    runtime.spawn(drain.run());
+    runtime.spawn(
+        tilo_workspace_service::apps::triggers::run_on_device_with_connectors(
+            held,
             std::sync::Arc::new(broker),
-        ));
+            std::sync::Arc::new(connectors),
+        ),
+    );
 }
 
 /// Answer the record actions of the workspace founded here (`workspace`, as

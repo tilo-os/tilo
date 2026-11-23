@@ -458,7 +458,6 @@ impl AppBrokerState {
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
         clear!(self.stable_invocation_subscribers);
-        clear!(self.workspace_membership_peers);
         clear!(self.workspace_governance_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
@@ -794,7 +793,6 @@ impl AppBrokerState {
                 committing_invocations: Mutex::new(HashSet::new()),
                 local_report_receipts: Mutex::default(),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
-                workspace_membership_peers: Mutex::new(HashMap::new()),
                 workspace_governance_peers: Mutex::new(HashMap::new()),
                 membership_surface_waiters: Mutex::new(Vec::new()),
                 completed_invocations: Mutex::new(HashMap::new()),

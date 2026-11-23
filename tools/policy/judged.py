@@ -111,6 +111,10 @@ class Judged:
         found = git(
             self.root,
             "grep",
+            # A thread per core by default: on a machine of many cores that are
+            # busy, the threads spend the search contending in the kernel (over a
+            # minute of wall time where eight threads answer in two seconds).
+            "--threads=8",
             "-l",
             "-E",
             *(("--cached",) if self.staged else ()),

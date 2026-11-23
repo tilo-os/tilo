@@ -18,7 +18,9 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::control_size::ControlSize;
-use tilo_webview::{KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand};
+use tilo_webview::{
+    KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand, WebViewEvent,
+};
 
 /// Pixels scrolled per mouse-wheel line tick, in logical units (scaled
 /// by the display factor before being sent to the engine).
@@ -106,6 +108,15 @@ pub struct WebView {
     painted_seq: u64,
     test_id: String,
     accessible_name: String,
+    /// What this view reports the page's navigation and failure through, when its window holds
+    /// the engine (`crate::webview::window_engine`).
+    navigate: crate::component::Event,
+    fail: crate::component::Event,
+    /// Whether this view is the one that reads the engine's events: a window's page, not an
+    /// app's view whose own code polls the engine it passed in.
+    reports_events: bool,
+    /// The address this view last told the engine to open.
+    opened_at: Option<String>,
 }
 
 #[derive(Clone)]
@@ -202,6 +213,79 @@ impl WebView {
             painted_seq: 0,
             test_id: "webview".to_string(),
             accessible_name: "Web content".to_string(),
+            navigate: crate::component::Event::None,
+            fail: crate::component::Event::None,
+            reports_events: false,
+            opened_at: None,
+        }
+    }
+
+    /// Open the address the view names, once: a page already at it stays where it is.
+    pub fn open_at(&mut self, uri: Option<String>) {
+        let Some(uri) = uri.filter(|uri| !uri.is_empty()) else {
+            return;
+        };
+        if self.opened_at.as_deref() == Some(uri.as_str()) {
+            return;
+        }
+        self.engine.send(WebViewCommand::Navigate(uri.clone()));
+        self.opened_at = Some(uri);
+    }
+
+    /// Take the events a host attached to this view, without reading the engine's: an app that
+    /// passed its own engine polls that engine itself.
+    #[must_use]
+    pub fn keeping_events(
+        mut self,
+        navigate: crate::component::Event,
+        fail: crate::component::Event,
+    ) -> Self {
+        self.navigate = navigate;
+        self.fail = fail;
+        self
+    }
+
+    /// The events the host attaches to the view now.
+    pub fn update_events(
+        &mut self,
+        navigate: crate::component::Event,
+        fail: crate::component::Event,
+    ) {
+        self.navigate = navigate;
+        self.fail = fail;
+    }
+
+    /// Report the page's navigation and failure through these events, and read the engine's
+    /// events here: the window that holds the engine hands them to its page, and nothing else
+    /// takes them.
+    #[must_use]
+    pub fn reporting(mut self, navigate: crate::component::Event, fail: crate::component::Event) -> Self {
+        self.navigate = navigate;
+        self.fail = fail;
+        self.reports_events = true;
+        self
+    }
+
+    /// Tell the events what became of the page.
+    fn report_page_events(&self) {
+        if !self.reports_events {
+            return;
+        }
+        let fire = |event: &crate::component::Event, value: crate::component::Value| {
+            if let crate::component::Event::View(intent) = event {
+                intent.fire(Some(value));
+            }
+        };
+        for event in self.engine.drain_events() {
+            match event {
+                WebViewEvent::LoadFinishedAt { uri } | WebViewEvent::UriChanged(uri) => {
+                    fire(&self.navigate, crate::component::Value::Text(uri));
+                }
+                WebViewEvent::LoadFailed { error, .. } => {
+                    fire(&self.fail, crate::component::Value::Text(error));
+                }
+                _ => {}
+            }
         }
     }
 
@@ -735,6 +819,8 @@ impl Widget for WebView {
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        // The page's navigation and failure, which the window's page reports as its events.
+        self.report_page_events();
         // The engine's events were just taken: what they changed of a watched page goes to
         // its share now, whether or not a frame is drawn for it.
         self.share_page();

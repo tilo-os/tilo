@@ -56,6 +56,30 @@ pub trait AgentKeys: Send + Sync {
     /// The certificate of `key`, a key [`Self::grant`] gave, and the key itself: what signs, as
     /// the agent, the invocations a connection carries to another device.
     fn made(&self, key: &[u8; 32]) -> Option<(DeviceCert, SigningKey)>;
+
+    /// Sign `shortcut` as saved in `workspace` by `agent`, with the agent key `key`, a key
+    /// [`Self::grant`] gave: what the agent saves acts as the agent.
+    ///
+    /// # Errors
+    /// `key` is no key this device made, or it does not sign.
+    fn sign_shortcut(
+        &self,
+        workspace: WorkspaceId,
+        key: &[u8; 32],
+        agent: &str,
+        shortcut: &mut tilo_automation::Shortcut,
+    ) -> Result<(), String> {
+        let (cert, agent_key) = self
+            .made(key)
+            .ok_or("the agent's key was not made on this device")?;
+        tilo_peer_state::workspace::sign_saved_shortcut_as_agent(
+            &workspace.to_string(),
+            shortcut,
+            agent,
+            &cert,
+            &agent_key,
+        )
+    }
 }
 
 /// What separates the statement an agent's key is made from from anything else a root signs.

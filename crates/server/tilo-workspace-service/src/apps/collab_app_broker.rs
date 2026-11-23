@@ -467,8 +467,6 @@ pub struct AppBrokerState {
     committing_invocations: Mutex<HashSet<u64>>,
     local_report_receipts: Mutex<local_document_action::ReceiptCache>,
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
-    /// Broker-owned governed membership surface per native workspace.
-    workspace_membership_peers: Mutex<HashMap<String, u64>>,
     /// The workspace's governance surface per native workspace: the changes to
     /// its people, published under the provider clients name.
     workspace_governance_peers: Mutex<HashMap<String, u64>>,

@@ -1,8 +1,8 @@
 //! One current-member algorithm over actual admitted workspace data.
 use super::{PeerCore, Role, SystemTime};
+use crate::state::DelegateInactive;
 use crate::state::MembershipError;
 use tilo_action_policy::MemberId;
-use tilo_workspace_join::delegation::Delegate;
 
 /// The role `person` acts with in `workspace` under `policy`: none for a
 /// stranger or a blocked member.
@@ -87,27 +87,26 @@ fn current(
     let role =
         role_in(policy, &peer.workspace, person.as_str()).ok_or(MembershipError::NoMembership)?;
     // A delegate acts with its person's authority bounded by its own: an
-    // agent by the agent preset, a bot by its derived grant in the workspace's
-    // policy. Neither governs the workspace, and neither rises above an Editor.
-    let delegate = identity
-        .delegate
-        .as_ref()
-        .map(|row| match &row.delegation.delegate {
-            Delegate::Agent { agent_id } => crate::state::ActingAs {
-                actor: tilo_action_policy::Actor::Member(MemberId::agent(agent_id.clone())),
+    // agent by the agent preset. It does not govern the workspace, and never
+    // rises above an Editor.
+    let delegate = match identity.delegate.as_ref() {
+        None => None,
+        Some(row) => {
+            // An active delegation names an agent: a retired bot's never verifies.
+            let agent_id = row
+                .delegation
+                .delegate
+                .agent_id()
+                .ok_or(MembershipError::Delegate(DelegateInactive::Delegation))?;
+            Some(crate::state::ActingAs {
+                actor: tilo_action_policy::Actor::Member(MemberId::agent(agent_id.to_owned())),
                 // Its person handed it the delegation its root-signed
                 // certificate names.
-                grants: tilo_action_policy::Acting::handed_agent(
-                    agent_id.as_str(),
-                    person.as_str(),
-                )
-                .handed_preset(&peer.workspace),
-            },
-            Delegate::Bot { installation } => crate::state::ActingAs {
-                actor: tilo_action_policy::Actor::Member(MemberId::bot(installation.clone())),
-                grants: Vec::new(),
-            },
-        });
+                grants: tilo_action_policy::Acting::handed_agent(agent_id, person.as_str())
+                    .handed_preset(&peer.workspace),
+            })
+        }
+    };
     let role = if delegate.is_some() {
         tilo_action_policy::roles::agent_policy::role(role)
     } else {

@@ -9,12 +9,12 @@
 //! nod. Both are the person's to take back. The rule is kept here, in what
 //! the server answers, and not in what a model was told.
 
+use crate::agents::events::{Definition, told_as_of};
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::workspace_events::SetUp;
 use tilo_actions::remote::workspace_initiative::{
     self, Proposal, Proposals, Propose, ProposedTask, State,
 };
-use tilo_agent_session::bot::event::{Definition, told_as_of};
 
 /// The most proposals kept for a person. Past it the oldest that were
 /// decided go; what still waits is never dropped.

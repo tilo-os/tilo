@@ -738,17 +738,15 @@ pub(super) fn session_caller(
         .get(&peer.device_public_key)
         .cloned();
     let caller = match agent {
-        Some(Some(delegation)) => match delegation.delegate {
-            // An agent goes by the name its person approved it under: what History and the
-            // questions put to its person name it by.
-            tilo_server_protocol::delegation::Delegate::Agent { agent_id } => {
-                Caller::delegated_agent(agent_id, peer.user_public_key, peer.device_public_key)
-                    .named(&delegation.label)
-            }
-            tilo_server_protocol::delegation::Delegate::Bot { installation } => {
-                Caller::bot(installation, peer.user_public_key, peer.device_public_key)
-            }
-        },
+        // An agent goes by the name its person approved it under: what History and the
+        // questions put to its person name it by.
+        Some(Some(delegation)) => {
+            let Some(agent_id) = delegation.delegate.agent_id() else {
+                return Err(Refusal::NotAMember("the delegation names no agent".into()));
+            };
+            Caller::delegated_agent(agent_id, peer.user_public_key, peer.device_public_key)
+                .named(&delegation.label)
+        }
         Some(None) => {
             return Err(Refusal::NotAMember("the agent was withdrawn".into()));
         }

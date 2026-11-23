@@ -201,16 +201,6 @@ pub enum ReplicaActor {
         /// What its person calls it, as its delegation says.
         name: String,
     },
-    /// An installed bot: its installer's access bounded by the bot's
-    /// grants, built by the host from the workspace's policy before each run.
-    Bot {
-        /// The installation the bot runs as.
-        installation: String,
-        /// The person who installed it, whom its invocations are for.
-        installer: String,
-        /// The installer's access bounded by the bot's grants.
-        access: policy::MemberAccess,
-    },
     /// A person whose action the host runs for them, or an agent acting for
     /// them: their own current access and the workspace's sandbox, as the
     /// workspace's policy gave them to the host, bounded as the host reads
@@ -281,15 +271,11 @@ pub struct Replica {
     view: AttachedView,
     /// Where its last operation left it.
     place: Option<Place>,
-    /// It also runs the record's effects that answer ([`offered_to_agents`]),
-    /// waiting for what they end as: whoever the host runs a record for, a
-    /// person or an agent acting for one, has no window of it there (a
-    /// script, an agent's session, a key), and is offered what a window
-    /// offers them, as the desktop's broker does. The answer is the same as
-    /// a window's. A bot's steps read through [`Self::offers_reads`] instead.
-    runs_effects: bool,
-    /// An agent's or a bot's: offered only what reaches agents. An agent's
-    /// also runs the effects its host renders.
+    /// An agent's: offered only what reaches agents, and also runs the effects its host
+    /// renders. Every replica runs the record's effects that answer ([`offered_to_agents`]),
+    /// waiting for what they end as: whoever the host runs a record for, a person or an agent
+    /// acting for one, has no window of it there (a script, an agent's session, a key), and is
+    /// offered what a window offers them, as the desktop's broker does.
     automated: bool,
     /// It also runs the record's views that answer: for whoever has no
     /// window of the record there, an agent or a member reaching the host
@@ -516,9 +502,7 @@ impl Replica {
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
         let for_agent =
             matches!(&actor, ReplicaActor::Member { access, .. } if access.acting.is_agent());
-        let runs_effects = !matches!(actor, ReplicaActor::Bot { .. });
-        let automated =
-            for_agent || matches!(actor, ReplicaActor::Agent { .. } | ReplicaActor::Bot { .. });
+        let automated = for_agent || matches!(actor, ReplicaActor::Agent { .. });
         let runs_views = matches!(
             actor,
             ReplicaActor::Agent { .. } | ReplicaActor::Member { .. }
@@ -527,14 +511,6 @@ impl Replica {
         // change is the agent's, the document the person's.
         let acted_for = match &actor {
             ReplicaActor::Agent { person, .. } => Some(person.clone()),
-            _ => None,
-        };
-        // A bot's installed grant is what bounds it: the workspace's bots call their replicas
-        // directly, not through the device's dispatch, so the replica holds them to the grant.
-        let bot_grant = match &actor {
-            ReplicaActor::Bot { access, .. } => Some(
-                ui::permissions::PermissionContext::from_access(access.clone()),
-            ),
             _ => None,
         };
         let invoker = invoker_of(actor, member);
@@ -549,9 +525,7 @@ impl Replica {
         let (checkout, bytes, created) = seeded(definition, kind, workspace, &creator, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
             .for_invoker(&invoker)
-            .with_permissions(
-                bot_grant.unwrap_or_else(ui::permissions::PermissionContext::permissive),
-            )
+            .with_permissions(ui::permissions::PermissionContext::permissive())
             .created(created);
         let opening = if asks_workspace {
             opening.asking_the_workspace()
@@ -569,27 +543,18 @@ impl Replica {
             kind,
             view,
             place: None,
-            runs_effects,
             automated,
             runs_views,
             walked: std::cell::RefCell::new(None),
         })
     }
 
-    /// Whether an agent or a bot holds it, so it is offered only what
+    /// Whether an agent holds it, so it is offered only what
     /// reaches agents. The host acting for a person (the owner's workspace
     /// actions, a member's comment) is offered what people are,
     /// `audience = "people"` included.
     const fn automated(&self) -> bool {
         self.automated
-    }
-
-    /// Whether it offers the record's read effects (a workspace digest, a
-    /// route plan): a bot's, held by something automated that runs no
-    /// effects. A bot's steps read through them, where a person's reads go
-    /// through the record's mounted component or the effects it runs.
-    const fn offers_reads(&self) -> bool {
-        self.automated && !self.runs_effects
     }
 
     #[must_use]
@@ -1490,11 +1455,11 @@ impl Replica {
             return None;
         }
         if !(self.offers_in(&descriptor, all_chained, in_chains)
-            || (self.runs_effects && self.automated && offered_when_host_renders(&descriptor)))
+            || (self.automated && offered_when_host_renders(&descriptor)))
         {
             return None;
         }
-        if self.runs_effects && descriptor.kind != tilo_actions::OperationKind::Document {
+        if descriptor.kind != tilo_actions::OperationKind::Document {
             descriptor.params.retain(|param| param.name != PATH_PARAM);
         }
         Some(descriptor)
@@ -1533,9 +1498,7 @@ impl Replica {
                 true
             }
             tilo_actions::OperationKind::Effect => {
-                member_own(descriptor)
-                    || (self.offers_reads() && descriptor.contract.kind == policy::ActionKind::Read)
-                    || (self.runs_effects && offered_to_agents(descriptor))
+                member_own(descriptor) || offered_to_agents(descriptor)
             }
             // The read of what the app keeps for its whole workspace moves no window: the
             // server's own person, who has no window of it there either, is offered it too.
@@ -1569,9 +1532,6 @@ impl Replica {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<bool, ApiError> {
-        if !self.runs_effects {
-            return Ok(false);
-        }
         // The one action, resolved by its address: never every resource the
         // record publishes, which grows with everything it holds.
         let Some(descriptor) = self.view.descriptor(address) else {
@@ -2260,7 +2220,6 @@ fn invoker_of(actor: ReplicaActor, member: &MemberId) -> tilo_actions::ActionInv
                 .named(Some(name).filter(|name| !name.trim().is_empty()));
         }
         ReplicaActor::Owner => {}
-        ReplicaActor::Bot { installer, .. } => invoker = invoker.acting_for(installer),
         ReplicaActor::Member {
             access,
             agent_name,
