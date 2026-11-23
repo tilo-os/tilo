@@ -47,7 +47,6 @@ tilolang = { path = "../../crates/lang/tilolang" }
 # content store.
 mail-engine = { path = "../../crates/platform/mail-engine", features = ["test-support"] }
 tilo-account-probe = { path = "../../crates/platform/account-probe", features = ["test-support"] }
-tilo-net = { path = "../../crates/platform/tilo-net" }
 tilo-content = { path = "../../crates/system/content" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`),

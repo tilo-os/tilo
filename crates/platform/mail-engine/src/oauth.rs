@@ -5,7 +5,7 @@
 //! Mail owns none of the machinery: the client registration and mail scopes come from Tilo's
 //! one client table ([`account_credentials::ClientTable`], `oauth-clients.toml`). The grant is
 //! an entry of the workspace's vault, renewed where the vault is; Mail is handed only a current
-//! access token, which it presents as `XOAUTH2`.
+//! access token, which the mail client presents as `XOAUTH2`.
 
 use account_credentials::{ClientTable, OAuthIssuer, OAuthUse};
 
@@ -52,24 +52,6 @@ impl OAuthProvider {
 
     pub fn is_configured(self) -> bool {
         ClientTable::defaults().is_configured(self.oauth_use())
-    }
-}
-
-pub fn xoauth2_response(user: &str, access_token: &str) -> String {
-    format!("user={user}\x01auth=Bearer {access_token}\x01\x01")
-}
-
-#[cfg(feature = "live")]
-pub struct XOAuth2 {
-    pub user: String,
-    pub token: String,
-}
-
-#[cfg(feature = "live")]
-impl async_imap::Authenticator for XOAuth2 {
-    type Response = String;
-    fn process(&mut self, _challenge: &[u8]) -> Self::Response {
-        xoauth2_response(&self.user, &self.token)
     }
 }
 
@@ -153,18 +135,6 @@ mod tests {
             assert_eq!(
                 OAuthProvider::for_account("ada@example.org", "mail.example.org"),
                 None
-            );
-        }
-
-        phase xoauth2_response_matches_google_documentation_vector;
-        {
-            use base64::Engine as _;
-            assert_eq!(
-                base64::engine::general_purpose::STANDARD.encode(xoauth2_response(
-                    "someuser@example.com",
-                    "ya29.vF9dft4qmTc2Nvb3RlckBhdHRhdmlzdGEuY29tCg"
-                )),
-                "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
             );
         }
     }

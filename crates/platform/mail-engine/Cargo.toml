@@ -45,17 +45,14 @@ serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 
-# Live IMAP and SMTP for the engine. These are optional and guarded by
-# `live`; the default build uses the offline backend.
-async-imap = { workspace = true, optional = true }
+# Live IMAP and SMTP for the engine, guarded by `live`: Tilo's one mail client,
+# which a workspace's host runs too. The default build without it uses the
+# offline backend.
+tilo-mail-session = { path = "../mail-session", optional = true }
+# The delivery envelope a send is handed over in, and the certificates an engine
+# is told to trust.
 lettre = { version = "0.11.24", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
-# Async runtime and rustls backend used by the live engine; roots come from the
-# Tilo system bundle through `tilo-net`, never OpenSSL.
-tokio = { workspace = true, optional = true, features = ["rt", "net", "io-util", "time", "macros"] }
-tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
-tilo-net = { path = "../tilo-net", optional = true, features = ["blocking"] }
-futures-util = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -67,7 +64,7 @@ workspace-hack = { version = "0.1" }
 default = ["live"]
 # Compile the IMAP/SMTP backend; requires a TLS/async stack and a configured
 # account at runtime.
-live = ["account-credentials/store", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util", "mail-builder/gethostname"]
+live = ["account-credentials/store", "dep:tilo-mail-session", "dep:lettre", "dep:rustls", "mail-builder/gethostname"]
 # The constructors a dependent's tests build with, such as an engine that
 # trusts a test server's certificate. Never in a release.
 test-support = ["live"]
@@ -77,11 +74,7 @@ test-support = ["live"]
 tilo-account-probe = { path = "../account-probe", features = ["test-support"] }
 # A separate config directory keeps tests away from the user's account store.
 tempfile.workspace = true
-# The base64 encodings XOAUTH2 tests read.
-base64.workspace = true
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
-# Paused time for the connection race and lookup deadlines.
-tokio = { workspace = true, features = ["test-util"] }
 # The fake authorization server and browser for the Gmail and Outlook
 # sign-in tests.
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }

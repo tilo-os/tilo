@@ -14,7 +14,7 @@ use accounts::email::Security;
 use tilo_net::address::Lookup;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use web_time::{Duration, Instant};
+use web_time::Duration;
 
 /// A connection to an IMAP server once it is secure.
 pub type SecureStream = tokio_rustls::client::TlsStream<TcpStream>;
@@ -175,29 +175,73 @@ pub async fn reach(
     if addresses.is_empty() {
         return Err("server name returned no address".into());
     }
-    let deadline = Instant::now().checked_add(step);
-    let mut last_error = None;
-    for address in addresses {
-        let Some(remaining) =
-            deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now()))
-        else {
-            break;
-        };
-        match timeout(
-            remaining,
-            TcpStream::connect(SocketAddr::new(address, port)),
-        )
+    let addresses = addresses
+        .into_iter()
+        .map(|address| SocketAddr::new(address, port))
+        .collect();
+    race(addresses, step, TcpStream::connect)
         .await
-        {
-            Ok(Ok(stream)) => return Ok(stream),
-            Ok(Err(error)) => last_error = Some(unreached(&error)),
-            Err(_) => last_error = None,
+        .map_err(|why| format!("could not reach {named}:{port}: {why}"))
+}
+
+/// How long one address of several is given before the race counts it lost, and how long the
+/// next one waits before it starts (RFC 8305).
+const ATTEMPT: Duration = Duration::from_secs(6);
+const STAGGER: Duration = Duration::from_millis(250);
+
+/// `addresses` with their families taking turns, IPv6 first, each family in the order it was
+/// answered in.
+fn interleaved(addresses: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let (v6, v4): (Vec<_>, Vec<_>) = addresses.into_iter().partition(SocketAddr::is_ipv6);
+    let (mut v6, mut v4) = (v6.into_iter(), v4.into_iter());
+    let mut ordered = Vec::new();
+    loop {
+        let (six, four) = (v6.next(), v4.next());
+        if six.is_none() && four.is_none() {
+            return ordered;
         }
+        ordered.extend(six);
+        ordered.extend(four);
     }
-    Err(format!(
-        "could not reach {named}:{port}: {}",
-        last_error.unwrap_or(TIMED_OUT)
-    ))
+}
+
+/// Connect to the first of `addresses` that answers within `step`. A host often answers with
+/// both families, and on a network that silently drops one, trying them one after another
+/// costs the whole wait per dead address: they race instead, the next starting a moment after
+/// the one before, and where there are several each has a deadline of its own.
+async fn race<T, F, Fut>(
+    addresses: Vec<SocketAddr>,
+    step: Duration,
+    connect: F,
+) -> Result<T, &'static str>
+where
+    F: Fn(SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    let each = if addresses.len() > 1 { ATTEMPT } else { step };
+    let mut attempts = tokio::task::JoinSet::new();
+    for (index, address) in interleaved(addresses).into_iter().enumerate() {
+        let wait = STAGGER.saturating_mul(u32::try_from(index).unwrap_or(u32::MAX));
+        let connecting = connect(address);
+        attempts.spawn(async move {
+            tokio::time::sleep(wait).await;
+            timeout(each, connecting).await
+        });
+    }
+    let raced = timeout(step, async {
+        let mut last_error = None;
+        while let Some(attempt) = attempts.join_next().await {
+            match attempt {
+                Ok(Ok(Ok(stream))) => return Ok(stream),
+                Ok(Ok(Err(error))) => last_error = Some(unreached(&error)),
+                Ok(Err(_)) | Err(_) => {}
+            }
+        }
+        Err(last_error.unwrap_or(TIMED_OUT))
+    })
+    .await;
+    raced.unwrap_or(Err(TIMED_OUT))
 }
 
 /// What a person reads for a server that did not answer in time.
@@ -435,6 +479,97 @@ mod tests {
             assert!(reach(&to, NAMED, port, STEP).await.is_err());
             assert_eq!(connections(&listener), 0, "nothing is connected to");
         });
+    }
+
+    /// The bearer token is written as Google's documentation writes it.
+    #[test]
+    fn an_xoauth2_response_matches_the_documented_vector() {
+        use base64::Engine as _;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.encode(super::xoauth2_token(
+                "someuser@example.com",
+                "ya29.vF9dft4qmTc2Nvb3RlckBhdHRhdmlzdGEuY29tCg"
+            )),
+            "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
+        );
+    }
+
+    fn address(text: &str) -> std::net::SocketAddr {
+        text.parse().expect("an address")
+    }
+
+    #[test]
+    fn address_families_take_turns_starting_with_ipv6() {
+        let ordered = super::interleaved(vec![
+            address("192.0.2.1:993"),
+            address("192.0.2.2:993"),
+            address("[2001:db8::1]:993"),
+            address("[2001:db8::2]:993"),
+            address("[2001:db8::3]:993"),
+        ]);
+        assert_eq!(
+            ordered,
+            [
+                address("[2001:db8::1]:993"),
+                address("192.0.2.1:993"),
+                address("[2001:db8::2]:993"),
+                address("192.0.2.2:993"),
+                address("[2001:db8::3]:993"),
+            ]
+        );
+    }
+
+    /// An address that never answers, as a network that drops one family leaves it.
+    async fn silent<T>() -> std::io::Result<T> {
+        std::future::pending().await
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_silent_address_does_not_hold_up_a_live_one() {
+        let (dropped, live) = (address("[2001:db8::1]:25"), address("192.0.2.1:25"));
+        let started = tokio::time::Instant::now();
+        let won = super::race(vec![dropped, live], STEP, move |at| async move {
+            if at == dropped {
+                silent::<()>().await?;
+            }
+            Ok(at)
+        })
+        .await;
+        assert_eq!(won, Ok(live));
+        assert_eq!(started.elapsed(), super::STAGGER);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn silent_addresses_time_out_at_their_deadline_in_words_a_person_acts_on() {
+        let started = tokio::time::Instant::now();
+        let lost = super::race(
+            vec![address("[2001:db8::1]:25"), address("192.0.2.1:25")],
+            STEP,
+            |_| silent::<()>(),
+        )
+        .await;
+        assert_eq!(lost, Err(super::TIMED_OUT));
+        assert_eq!(started.elapsed(), super::STAGGER + super::ATTEMPT);
+    }
+
+    #[test]
+    fn a_refused_port_says_what_to_check() {
+        let port = {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
+            listener.local_addr().expect("its address").port()
+        };
+        let asking = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("sockets and a clock");
+        let refused = asking.block_on(reach(&Reach::any(), "127.0.0.1", port, STEP));
+        assert_eq!(
+            refused.map(drop),
+            Err(format!(
+                "could not reach 127.0.0.1:{port}: nothing answers on that port. Check the \
+                 server name and port"
+            ))
+        );
     }
 
     #[test]

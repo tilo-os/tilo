@@ -316,8 +316,8 @@ impl Drop for Running {
     }
 }
 
-/// A stand-in that listens: where, the certificate both servers present, and the TLS they speak
-/// it with (the autoconfig document, where one is served, presents the same). Both servers
+/// A stand-in that listens: where, the certificate what both servers present is signed by
+/// ([`authority`]), and the TLS they speak it with (the autoconfig document, where one is served, presents the same). Both servers
 /// answer while a copy of this is held.
 #[derive(Clone)]
 pub struct Started {
@@ -330,7 +330,8 @@ pub struct Started {
 }
 
 impl Started {
-    /// A client configuration that trusts this stand-in's certificate and nothing else.
+    /// A client configuration that trusts the stand-ins' authority ([`authority`]) and nothing
+    /// else.
     ///
     /// # Errors
     /// The certificate is no root a client can trust.
@@ -479,15 +480,61 @@ fn arrived_at(uid: u32) -> String {
     format!("01-Jan-2026 09:{:02}:00 +0000", uid % 60)
 }
 
+/// The authority every stand-in's certificate is signed by, one a process: what a client
+/// trusts to reach any stand-in, also one started after the client.
+struct Authority {
+    issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
+    certificate: CertificateDer<'static>,
+}
+
+fn authority_of() -> Result<&'static Authority, String> {
+    static AUTHORITY: std::sync::OnceLock<Result<Authority, String>> = std::sync::OnceLock::new();
+    AUTHORITY
+        .get_or_init(|| {
+            let failed = |error: rcgen::Error| format!("no stand-in authority: {error}");
+            let key = rcgen::KeyPair::generate().map_err(failed)?;
+            let mut params = rcgen::CertificateParams::default();
+            params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            params.key_usages = vec![
+                rcgen::KeyUsagePurpose::KeyCertSign,
+                rcgen::KeyUsagePurpose::DigitalSignature,
+            ];
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, "Mail stand-in authority");
+            let certificate = params.self_signed(&key).map_err(failed)?.der().clone();
+            Ok(Authority {
+                issuer: rcgen::Issuer::new(params, key),
+                certificate,
+            })
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+/// The certificate every stand-in's is signed by: trusting it trusts each stand-in this
+/// process starts, before or after.
+///
+/// # Errors
+/// No authority could be made.
+pub fn authority() -> Result<CertificateDer<'static>, String> {
+    authority_of().map(|authority| authority.certificate.clone())
+}
+
 /// Start both servers. They answer while the [`Started`] is held.
 ///
 /// # Errors
 /// No certificate could be made for the names, or an address could not be listened on.
 pub fn started(serving: Serving) -> Result<Started, String> {
-    let certified = rcgen::generate_simple_self_signed(serving.names.clone())
-        .map_err(|error| format!("no certificate for {:?}: {error}", serving.names))?;
-    let certificate = certified.cert.der().clone();
-    let key = rustls::pki_types::PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
+    let authority = authority_of()?;
+    let no_certificate =
+        |error: rcgen::Error| format!("no certificate for {:?}: {error}", serving.names);
+    let signing_key = rcgen::KeyPair::generate().map_err(no_certificate)?;
+    let leaf = rcgen::CertificateParams::new(serving.names.clone())
+        .and_then(|params| params.signed_by(&signing_key, &authority.issuer))
+        .map_err(no_certificate)?;
+    let certificate = authority.certificate.clone();
+    let key = rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der());
     let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -495,7 +542,7 @@ pub fn started(serving: Serving) -> Result<Started, String> {
     .map_err(|error| error.to_string())?
     .with_no_client_auth()
     .with_single_cert(
-        vec![certificate.clone()],
+        vec![leaf.der().clone()],
         rustls::pki_types::PrivateKeyDer::Pkcs8(key),
     )
     .map_err(|error| error.to_string())?;
@@ -1058,6 +1105,13 @@ fn answer(
                 .copied()
                 .unwrap_or_default()
                 .to_ascii_uppercase();
+            // What a store changes is named as RFC 3501 names it: `[+|-]FLAGS[.SILENT]`.
+            if !matches!(
+                modes.trim_start_matches(['+', '-']),
+                "FLAGS" | "FLAGS.SILENT"
+            ) {
+                return Some(format!("{tag} BAD STORE names FLAGS or FLAGS.SILENT\r\n"));
+            }
             let adding = modes.starts_with('+');
             let silent = modes.contains("SILENT");
             let flags: Vec<String> = rest

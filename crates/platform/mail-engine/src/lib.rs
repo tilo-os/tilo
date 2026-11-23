@@ -1,7 +1,7 @@
 //! Mail's model and its engine, without a window: the accounts, folders and messages a mailbox
 //! holds ([`model`]), what one folder's sync asks of its server and brings back ([`sync`]), and
 //! the worker that reaches IMAP and SMTP servers off the event loop, keeping the mailbox in step
-//! ([`engine`]).
+//! ([`engine`]) through Tilo's one mail client (`tilo-mail-session`).
 //!
 //! The Mail app draws these values; the tilolang Mail origin runs the same engine for a hosted
 //! instance. Account identities, endpoints and credentials are device-local: the shared account
@@ -29,14 +29,9 @@
 
 pub mod account;
 pub mod attachment_store;
-#[cfg(feature = "live")]
-pub mod connect;
 pub mod engine;
 pub mod model;
 pub mod oauth;
 pub mod store;
 pub mod sync;
 pub mod transport;
-/// What a failed connection's words mean: kept out of `live`, so a window that reaches no server
-/// reads a device's failure the same way.
-pub mod validate;

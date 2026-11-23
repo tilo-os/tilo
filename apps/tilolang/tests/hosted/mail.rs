@@ -169,9 +169,9 @@ impl MailConnector {
             let engine = ::mail_engine::engine::live::LiveEngine::trusting(
                 tilo_content::ContentStore::memory(),
                 Arc::clone(&wake),
-                // Each account's stand-in signs with a certificate of its own, made when it
-                // starts, after the connector: the connector takes whichever it is shown.
-                Arc::new(tilo_net::pinned_client_config(|_| true).expect("a client")),
+                // Each account's stand-in starts after the connector, signed by the one
+                // authority every stand-in is.
+                vec![tilo_account_probe::stand_in::authority().expect("the authority")],
             )
             .expect("the engine starts");
             let (requests, events) = ::mail_engine::engine::spawn_waking(Box::new(engine), wake);
