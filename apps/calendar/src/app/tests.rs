@@ -3334,6 +3334,30 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
     }
 }
 
+/// A title typed in one burst and the sheet closed at once: the event keeps every character,
+/// and the burst made no second event on the way.
+#[test]
+fn a_title_typed_in_a_burst_and_closed_at_once_keeps_every_character() {
+    let mut h = Harness::new(1280, 800);
+    h.app.show_calendar();
+    h.relayout();
+    let before = h.app.model.events.len();
+    h.press_bar_action("New event");
+    let id = selected_event_id(&h.app);
+    type_words(&mut h, "Walks walk");
+    h.press_named(winit::keyboard::NamedKey::Escape);
+    assert_eq!(
+        h.app.model.events.len(),
+        before + 1,
+        "the burst made one event, never a second"
+    );
+    assert_eq!(
+        h.app.model.event(id).unwrap().title,
+        "Walks walk",
+        "every character typed is the event's title"
+    );
+}
+
 fn pinned_afternoon() -> Harness {
     let mut app = CalendarApp::new_demo();
     app.pin_now(Date::new(2026, 10, 28).unwrap_or_default().at(14, 7, 0, 0));

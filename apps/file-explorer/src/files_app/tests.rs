@@ -2193,7 +2193,39 @@ mod command_path_tests {
         exported_rename_changes_case_without_overwriting_another_entry();
         new_folder_creates_the_folder_and_opens_inline_rename();
         new_from_template_creates_the_file_and_opens_rename();
+        new_folders_name_typed_in_a_burst_keeps_every_character();
         super::headless_f2_renames_fixture_without_opening_a_file();
+    }
+
+    fn new_folders_name_typed_in_a_burst_keeps_every_character() {
+        let d = tempfile::tempdir().unwrap();
+        let widget = FileExplorerWidget::new();
+        widget.state().navigate(d.path().to_path_buf());
+        assert!(
+            widget.state().apply_command(FileCommand::NewFolder),
+            "New folder runs"
+        );
+        assert!(
+            widget.state().is_renaming(),
+            "the new folder asks for its name"
+        );
+        let mut driver =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
+        // The name typed as one burst, Enter in the same breath.
+        driver.type_text("Walks");
+        driver.key("Enter");
+        let names: Vec<String> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            d.path().join("Walks").is_dir(),
+            "the folder takes every character typed: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name == "New folder"),
+            "the proposed name is not what is kept: {names:?}"
+        );
     }
 
     fn rename_flow_renames_the_selected_file_on_disk() {

@@ -46,7 +46,16 @@ impl crate::Session {
             }
             LivenessChoice::ForceQuit => {
                 if let Some(pid) = self.compositor.force_quit_window(window) {
-                    end_app(pid);
+                    // The person quit it: their end, so no notice says it stopped working. A
+                    // launch this session did not start is ended here directly.
+                    let quit = self
+                        .shared
+                        .launch
+                        .as_ref()
+                        .is_some_and(|apps| apps.end_by_pid(pid));
+                    if !quit {
+                        end_app(pid);
+                    }
                 }
             }
         }

@@ -343,6 +343,52 @@ fn typing_held_for_a_press_lands_after_what_was_typed_before_it_whatever_the_app
     );
 }
 
+/// A burst of typing and the action that saves it, before a frame carried the typing: every
+/// character is sent before the invocation, so the app saves the title the person typed rather
+/// than the one it held before the last key.
+#[test]
+fn a_burst_typed_then_its_action_reaches_the_app_before_the_action_runs() {
+    let (mut app, mut window) = window();
+    send(&mut app, &titled_page());
+    window.receive();
+    sent(&mut app);
+    // The person types the title in a burst: each key is a whole value, as the field reports them.
+    for typed in ["Q3 p", "Q3 pl", "Q3 pla", "Q3 plan"] {
+        window.act(UiEvent::Edit("title".to_owned(), typed.to_owned()));
+    }
+    // And saves it before a frame carried any of that.
+    window.invoke_action(tilo_actions::ActionAddress::new("notes:1", "save"), None);
+    window.flush();
+    let messages = sent(&mut app);
+    let invoke = messages
+        .iter()
+        .position(|message| matches!(message, ToApp::Invoke { .. }))
+        .expect("the save is invoked");
+    let splices: Vec<&ToApp> = messages
+        .iter()
+        .filter(|message| matches!(message, ToApp::Splice { .. }))
+        .collect();
+    assert!(
+        !splices.is_empty()
+            && messages[..invoke]
+                .iter()
+                .any(|m| matches!(m, ToApp::Splice { .. })),
+        "the typing goes before the action that reads it: {messages:?}"
+    );
+    // What the app holds once it took them all is every character typed, in order.
+    let mut text = "Q3".to_owned();
+    for message in &messages[..invoke] {
+        if let ToApp::Splice {
+            at, delete, insert, ..
+        } = message
+        {
+            let at = *at as usize;
+            text.replace_range(at..at + *delete as usize, insert);
+        }
+    }
+    assert_eq!(text, "Q3 plan", "the save reads the whole burst");
+}
+
 fn note(id: &str) -> ResourceRef {
     ResourceRef {
         id: id.to_owned(),

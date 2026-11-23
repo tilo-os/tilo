@@ -502,6 +502,10 @@ impl AppWindow {
             self.flush();
             return;
         }
+        // What the person typed since the last batch goes out first: an action that reads the field
+        // it was asked for (a save, a send) reads every character typed before it, never the text
+        // as it stood before the last key of a burst.
+        self.take_events();
         // A press like any other: what the person types while the app runs it goes where it leaves
         // the keyboard, and what it makes opens as their input.
         self.fired = self.fired.saturating_add(1);

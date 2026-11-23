@@ -1025,6 +1025,8 @@ impl FilesState {
                         self.selection.select_only(i);
                         self.retain_shown_selection();
                         self.begin_rename();
+                        self.rename_input
+                            .set_accessible_name(t("files-tree-new-folder-name"));
                     }
                 }
                 Some(error) => {
@@ -5516,6 +5518,9 @@ impl FilesState {
         if let Some(i) = self.selection.primary()
             && let Some(e) = disp.get(i)
         {
+            // A name already there is renamed under its own words, unless the caller says this
+            // is a new entry whose name is being given (`files-tree-new-folder-name`).
+            self.rename_input.set_accessible_name(String::new());
             self.renaming = Some(i);
             e.name.clone_into(&mut self.rename_buffer);
             self.rename_seed_pending = true;

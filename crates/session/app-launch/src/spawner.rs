@@ -830,6 +830,17 @@ impl Spawner {
         }
     }
 
+    /// End the launch whose app runs as the process `pid`, as the person's own quit does: the end
+    /// is theirs, so no notice says it stopped working. Whether a launch of this session runs it.
+    pub fn end_pid(&self, pid: u32) -> bool {
+        let running = running(&self.running);
+        let Some(app) = running.values().find(|app| app.pid == pid) else {
+            return false;
+        };
+        app.end(false);
+        true
+    }
+
     /// The launch of the kept app `id`, which ended while no desktop was there: one that ended by
     /// itself or one whose keeper was killed outright. Taken once.
     pub fn ended_away(&mut self, id: u64) -> Option<tilo_app_keeper::registry::KeptLaunch> {

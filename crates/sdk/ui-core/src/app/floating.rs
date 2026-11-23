@@ -432,7 +432,7 @@ impl App {
     }
 
     #[cfg(feature = "native")]
-    fn pump_floating_surface_service(&mut self) -> bool {
+    pub(super) fn pump_floating_surface_service(&mut self) -> bool {
         let active_ids = self
             .root_widget
             .active_floating_surface_ids()

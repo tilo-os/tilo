@@ -370,6 +370,9 @@ impl super::FilesState {
             Then::Rename(path) => {
                 if self.select_shown(&path) {
                     self.begin_rename();
+                    // The entry was just made: what is typed is its name, and a reader is told so.
+                    self.rename_input
+                        .set_accessible_name(t("files-tree-new-file-name"));
                 }
             }
         }

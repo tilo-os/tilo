@@ -296,6 +296,16 @@ impl AppTabs {
         })
     }
 
+    /// Write what the person just pressed in a window's bar or content to the app that declared
+    /// it, before the loop serves anything else: a press a control socket made is in its app
+    /// ahead of the input the person makes after it, so a bar's New event whose field the typing
+    /// goes into has run before the first key is served, never a frame behind it.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn deliver_presses_now(&self, desktop: &ShellDesktop) {
+        write_bar_events(desktop, &self.links);
+        write_target_presses(desktop, &self.links);
+    }
+
     /// End the loop's wait when an app connects, so its window's first ask is
     /// answered on the pass that follows.
     ///
@@ -1375,24 +1385,7 @@ impl Answers<'_> {
     /// Write what the person did in the windows' bars to the app whose connection declared the
     /// parts there.
     fn deliver_bar_events(&self) {
-        let events = self
-            .desktop
-            .with_policy(|policy| policy.handle().take_bar_events());
-        for (connection, event) in events {
-            let Some(link) = self.links.get(&connection) else {
-                continue;
-            };
-            // The app had been sent no input of this session's when the person used its bar: it
-            // runs the event with the next input it reads.
-            tell(
-                &link.writer,
-                &FloatingSurfaceHostMessage::ToolbarEvent {
-                    event,
-                    after_input: None,
-                },
-                &link.app,
-            );
-        }
+        write_bar_events(self.desktop, self.links);
     }
 
     /// Write the controls pressed in the windows' own content to the apps
@@ -1400,24 +1393,49 @@ impl Answers<'_> {
     /// ([`ui::floating_surface::FloatingSurfaceClientMessage::WindowTargets`]),
     /// which answer as an assistive technology's activation does.
     fn deliver_target_presses(&self) {
-        let presses = self
-            .desktop
-            .with_policy(|policy| policy.handle().take_target_presses());
-        for press in presses {
-            let Some(link) = self.links.get(&press.connection) else {
-                continue;
-            };
-            tell(
-                &link.writer,
-                &FloatingSurfaceHostMessage::PressTarget {
-                    name: press.name,
-                    role: press.role,
-                    identity: press.identity,
-                    action: press.action,
-                },
-                &link.app,
-            );
-        }
+        write_target_presses(self.desktop, self.links);
+    }
+}
+
+/// Write what the person did in the windows' bars to the app whose connection declared the parts
+/// there.
+fn write_bar_events(desktop: &ShellDesktop, links: &BTreeMap<u64, Link>) {
+    let events = desktop.with_policy(|policy| policy.handle().take_bar_events());
+    for (connection, event) in events {
+        let Some(link) = links.get(&connection) else {
+            continue;
+        };
+        // The app had been sent no input of this session's when the person used its bar: it
+        // runs the event with the next input it reads.
+        tell(
+            &link.writer,
+            &FloatingSurfaceHostMessage::ToolbarEvent {
+                event,
+                after_input: None,
+            },
+            &link.app,
+        );
+    }
+}
+
+/// Write the controls pressed in the windows' own content to the apps whose connections described
+/// them, which answer as an assistive technology's activation does.
+fn write_target_presses(desktop: &ShellDesktop, links: &BTreeMap<u64, Link>) {
+    let presses = desktop.with_policy(|policy| policy.handle().take_target_presses());
+    for press in presses {
+        let Some(link) = links.get(&press.connection) else {
+            continue;
+        };
+        tell(
+            &link.writer,
+            &FloatingSurfaceHostMessage::PressTarget {
+                name: press.name,
+                role: press.role,
+                identity: press.identity,
+                action: press.action,
+            },
+            &link.app,
+        );
     }
 }
 

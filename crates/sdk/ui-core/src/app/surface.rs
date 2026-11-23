@@ -66,6 +66,37 @@ impl App {
         event: WindowEvent,
         synthesized_touch: bool,
     ) -> bool {
+        // What the shell wrote into this window since the last frame (a press in its bar, a
+        // control of its content a tool or an assistive technology pressed) is run before the
+        // input that follows it: what a bar's New event opens is where the person's typing lands,
+        // in the order they made them, never a frame behind.
+        #[cfg(feature = "native")]
+        if matches!(
+            &event,
+            WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            } | WindowEvent::Ime(winit::event::Ime::Commit(_))
+                | WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+                | WindowEvent::Touch(winit::event::Touch {
+                    phase: winit::event::TouchPhase::Started,
+                    ..
+                })
+        ) && self.floating.client.is_some()
+            && self.pump_floating_surface_service()
+        {
+            self.invalidate_widget_resource_cache();
+            self.layout.layout_dirty = true;
+            // The press's own work (its part event, an opened sheet) waits for the app's sync as
+            // it would in a frame: take it now.
+            self.sync_model(false);
+        }
         // A key typed before the window's content arrived waits for it ([`super::held_input`]).
         let Some(event) = self.queue_behind_held_input(event) else {
             return true;

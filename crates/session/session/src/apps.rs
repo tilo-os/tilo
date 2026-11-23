@@ -996,6 +996,13 @@ impl Apps {
         }
     }
 
+    /// End the app whose process is `pid`, as the person's own quit does, when one of this
+    /// session's launches runs it: its end is theirs, so no notice says it stopped working.
+    /// Whether one did.
+    pub(crate) fn end_by_pid(&self, pid: u32) -> bool {
+        self.state.borrow().spawner.end_pid(pid)
+    }
+
     /// Tell each kept window's keeper the tab it stands in now (`placements`), where that changed:
     /// what the run after an in-place restart puts it back in.
     #[cfg(target_os = "linux")]

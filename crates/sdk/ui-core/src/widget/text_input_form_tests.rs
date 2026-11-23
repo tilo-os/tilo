@@ -717,3 +717,48 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     assert!(!french.personal_word("Élodie"));
     assert!(french.spell_dictionary.as_ref().unwrap().is_empty());
 }
+
+tilo_test_env::scenario! {
+    /// A burst typed and Enter in the same breath: the field submits every character typed, never
+    /// the text as it stood before the last key.
+    fn a_field_submits_a_burst_typed_before_enter;
+
+    phase a_burst_then_enter_keeps_every_character;
+    {
+        let _settled = crate::motion::testing::settled();
+        let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = std::rc::Rc::clone(&submitted);
+        let mut ti =
+            TextInput::local().on_submit_view(move |text| sink.borrow_mut().push(text.to_owned()));
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+        for ch in "Walks walk".chars() {
+            let key = char_key(&ch.to_string());
+            assert!(
+                drive(&mut ti, &mut doc, &key, mods(false, false)),
+                "{ch:?} is typed"
+            );
+        }
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key(NamedKey::Enter),
+            mods(false, false)
+        ));
+        assert_eq!(
+            crate::testing::answer_controls(&mut ti),
+            1,
+            "the submit is answered"
+        );
+        assert_eq!(
+            ti.value(),
+            "Walks walk",
+            "the field holds every character of the burst"
+        );
+        assert_eq!(
+            submitted.borrow().as_slice(),
+            ["Walks walk"],
+            "Enter hands on every character typed before it"
+        );
+    }
+}

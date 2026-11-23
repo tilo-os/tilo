@@ -415,6 +415,13 @@ impl Session {
         // What `tilo-control` asks of the frame just drawn.
         let session = session(&self.shared, &self.compositor);
         self.control.serve(&mut self.compositor, &session);
+        // A control the socket pressed in a window's bar or content is written to its app now:
+        // the input the person makes after it is served into what the press opened, never ahead
+        // of it.
+        #[cfg(target_os = "linux")]
+        if let Some(tabs) = &self.tabs {
+            tabs.deliver_presses_now(&self.shared.desktop);
+        }
         let answered = answering.elapsed();
         self.compositor
             .mark_testctl(answered.saturating_add(self.tool_input));
