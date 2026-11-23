@@ -7,10 +7,10 @@
 //! expands them. They are read for the shortcut's saver, and only where that person keeps an
 //! assistant in the workspace, since what an entry holds is handed to that assistant.
 //!
-//! What each trigger answered is kept in this device's memory, by workspace, shortcut and
-//! trigger. A moment this device answered is not answered again while it runs, and the turn's
-//! lease keeps it answered workspace-wide even where another device reads the same moment: its
-//! invocation id is derived from the event ([`super::dispatched`]), so both devices name one
+//! What each trigger answered is kept in the workspace ([`super::keep_progress`]), so a moment
+//! answered is not answered again after a restart, and the device that looks next carries on
+//! from it. Where two devices read the same moment at once, the turn's lease keeps it answered
+//! once: its invocation id is derived from the event ([`super::dispatched`]), so both name one
 //! firing.
 
 use std::collections::BTreeSet;
@@ -21,7 +21,7 @@ use tilo_automation::TriggerSpec;
 use tilo_automation::dispatch::{Event, TimeEvent};
 use tilo_automation::resource_time::{self, Answered, Held};
 
-use super::{Armed, Runner, dispatched, person_key};
+use super::{Armed, Runner, dispatched, keep_progress, kept_progress, person_key};
 
 /// The longest the times wait before they are read again, so a time another client moved or
 /// added is found within it: as often as the runner looks by itself.
@@ -138,18 +138,32 @@ impl Runner {
                 }
                 let key = (armed.workspace.clone(), armed.shortcut.id.clone(), index);
                 let mark = tilo_peer_state::trigger_mark(trigger);
-                let read = {
-                    let progress = self
-                        .times
-                        .entry(key.clone())
-                        .or_insert_with(|| Progress::starting(&mark, now_ms));
-                    // Another trigger in this one's place starts over.
-                    if progress.answered.mark != mark {
-                        *progress = Progress::starting(&mark, now_ms);
-                    }
-                    now_ms >= progress.read_at_ms
-                };
-                if !read {
+                // A trigger first seen here, or another trigger in this one's place, carries on
+                // from what the workspace kept of it, and starts over where nothing was.
+                if self
+                    .times
+                    .get(&key)
+                    .is_none_or(|progress| progress.answered.mark != mark)
+                {
+                    let kept = kept_progress::<Answered>(&self.workspaces, armed, index, &mark)
+                        .await
+                        .filter(|answered| answered.mark == mark);
+                    self.times.insert(
+                        key.clone(),
+                        kept.map_or_else(
+                            || Progress::starting(&mark, now_ms),
+                            |answered| Progress {
+                                answered,
+                                read_at_ms: now_ms,
+                            },
+                        ),
+                    );
+                }
+                if self
+                    .times
+                    .get(&key)
+                    .is_some_and(|progress| now_ms < progress.read_at_ms)
+                {
                     continue;
                 }
                 let (from_ms, to_ms) = resource_time::window(*offset_secs, now_ms);
@@ -157,6 +171,7 @@ impl Runner {
                 let Some(progress) = self.times.get_mut(&key) else {
                     continue;
                 };
+                let before = progress.answered.clone();
                 match times {
                     Ok(times) => {
                         let due = resource_time::due(
@@ -196,6 +211,12 @@ impl Runner {
                         tracing::warn!(%error, shortcut = %armed.shortcut.id, "the times a shortcut waits on could not be read; it looks again");
                         progress.read_at_ms = now_ms.saturating_add(look_again_ms());
                     }
+                }
+                // What was answered is kept in the workspace, so a moment answered here is not
+                // answered again after a restart or on the device that looks next.
+                if progress.answered != before {
+                    let answered = progress.answered.clone();
+                    keep_progress(&self.workspaces, armed, index, &mark, &answered).await;
                 }
             }
         }

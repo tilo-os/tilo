@@ -117,6 +117,9 @@ pub mod this_computer;
 mod mail_watch;
 #[cfg(not(target_arch = "wasm32"))]
 pub use mail_watch::MailListening;
+/// The mail servers a test stands in for, for the tests of what hears the mail.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use mail_watch::testing as mail_testing;
 // A person's own model, asked for whatever this host runs for them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_model;

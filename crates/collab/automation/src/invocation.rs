@@ -31,7 +31,9 @@ use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_actions::context::{ActionContext, ActionFacet};
 use tilo_actions::contract::{ConfirmationPolicy, ResultSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId as ActionInvocationId};
-use tilo_actions::params::{ActionArgs, ActionParam, ParamType, validate_json_schema};
+use tilo_actions::params::{
+    ActionArgs, ActionParam, FROM_ARGUMENT, ParamType, validate_json_schema,
+};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, Confirmation,
     InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, RESOURCE_READS_UNAVAILABLE,
@@ -1876,6 +1878,17 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 supplied.insert(name.clone(), value);
             }
         }
+        // A firing on an item kept elsewhere (a message in a person's own account) names that
+        // item instead of carrying it: each step is made from it, so the host runs a step only
+        // for a caller who may read it.
+        if !supplied.contains_key(FROM_ARGUMENT)
+            && let Some(from) = self
+                .inputs
+                .get(crate::EVENT_INPUT)
+                .and_then(|event| event.get(FROM_ARGUMENT))
+        {
+            supplied.insert(FROM_ARGUMENT.to_owned(), from.clone());
+        }
         let granted = self.granted(app_id, action, descriptor, &supplied)?;
         if let tilo_actions::contract::Availability::Unavailable { code, reason } =
             &descriptor.contract.availability
@@ -1901,6 +1914,10 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
             .confirmation(step, path, app_id, descriptor, &bound, &granted)
             .await?;
         let context = self.context(app_id, &row, descriptor, path);
+        let mut arguments = bound.to_json();
+        if let Some(from) = bound.from() {
+            arguments.insert(FROM_ARGUMENT.to_owned(), from.to_json());
+        }
         Ok(Prepared {
             request: InvokeRequest {
                 on_behalf_of: None,
@@ -1912,10 +1929,10 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                         descriptor.address.action.clone(),
                     ),
                 },
-                argument: if bound.is_empty() {
+                argument: if arguments.is_empty() {
                     InvokeArgument::None
                 } else {
-                    InvokeArgument::Json(bound.to_json())
+                    InvokeArgument::Json(arguments)
                 },
                 context: Some(context),
                 confirmation,

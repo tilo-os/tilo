@@ -82,6 +82,7 @@ impl AppBrokerState {
             }
             WorkspaceMembershipCommand::Lease { .. }
             | WorkspaceMembershipCommand::AnswerSchedule { .. }
+            | WorkspaceMembershipCommand::KeepTriggerProgress { .. }
             | WorkspaceMembershipCommand::KeepDone { .. } => {
                 return Err("a lease is claimed by the device that does the work".into());
             }

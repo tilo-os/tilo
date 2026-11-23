@@ -55,6 +55,23 @@ impl StatePeer {
                     now,
                 )
             }
+            WorkspaceMembershipCommand::KeepTriggerProgress {
+                automation,
+                trigger,
+                mark,
+                kept_ms,
+                progress,
+            } => {
+                own(caller)?;
+                self.workspace_mut().keep_trigger_progress(
+                    caller,
+                    automation,
+                    usize::try_from(*trigger).map_err(|error| error.to_string())?,
+                    mark,
+                    (progress, *kept_ms),
+                    now,
+                )
+            }
             WorkspaceMembershipCommand::KeepDone { id, answer } => {
                 own(caller)?;
                 self.workspace_mut()

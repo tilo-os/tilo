@@ -1539,6 +1539,29 @@ impl Workspaces {
             .collect())
     }
 
+    /// What the device that last looked kept of `trigger` of the automation
+    /// `automation` in `workspace`, the trigger marked `mark`
+    /// ([`tilo_peer_state::trigger_mark`]); `None` when no device kept any.
+    ///
+    /// # Errors
+    /// The workspace is not kept here.
+    pub async fn trigger_progress(
+        &self,
+        workspace: &str,
+        automation: &str,
+        trigger: usize,
+        mark: &str,
+    ) -> Result<Option<serde_json::Value>, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .workspace()
+            .trigger_progress(automation, trigger, mark))
+    }
+
     /// The latest fire time a device of `workspace` answered for the
     /// schedule at `trigger` of the automation `automation`, marked `mark`
     /// ([`tilo_peer_state::trigger_mark`]); `None` when none has.

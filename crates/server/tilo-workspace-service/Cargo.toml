@@ -17,7 +17,7 @@ test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-accou
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]).
-agents = ["device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
+agents = ["device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -43,6 +43,9 @@ tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-clock = { path = "../../platform/tilo-clock" }
+# Where the desktop service keeps its key, and where a workspace's files appear in the Files
+# mount, which its access list names.
+tilo-paths.workspace = true
 web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
@@ -191,6 +194,8 @@ tilo-formats = { path = "../../ui/tilo-formats" }
 tilo-mcp = { path = "../../runtime/tilo-mcp", optional = true }
 tilo-agent-turn = { path = "../../integrations/agent-turn", optional = true }
 tilo-web-search = { path = "../../integrations/tilo-web-search", optional = true }
+# A feed a trigger waits on, read by the parser the Feeds app reads it with.
+feed-rs = { version = "2.4", optional = true }
 jiff = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]

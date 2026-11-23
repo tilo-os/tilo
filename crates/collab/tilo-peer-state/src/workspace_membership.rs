@@ -200,6 +200,19 @@ pub enum WorkspaceMembershipCommand {
         channel: String,
         change: collab_types::calls::CallChange,
     },
+    /// Keep what the caller's device made of `trigger` of the automation
+    /// `automation` at its last look, the trigger marked `mark`
+    /// ([`crate::state::schedules`]): what a feed's or a page's looks took in,
+    /// which moments of a calendar were answered. Whichever device looks next
+    /// carries on from it, written from a member device as any member's
+    /// change.
+    KeepTriggerProgress {
+        automation: String,
+        trigger: u32,
+        mark: String,
+        kept_ms: i64,
+        progress: serde_json::Value,
+    },
 }
 
 /// Where [`WorkspaceMembershipCommand::Place`] puts a person.
@@ -315,6 +328,9 @@ impl WorkspaceMembershipCommand {
             return Ok(());
         }
         if let Self::AnswerSchedule {
+            automation, mark, ..
+        }
+        | Self::KeepTriggerProgress {
             automation, mark, ..
         } = self
         {

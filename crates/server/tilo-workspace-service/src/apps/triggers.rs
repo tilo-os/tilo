@@ -19,6 +19,8 @@
 
 pub mod folders;
 #[cfg(feature = "agents")]
+mod mail;
+#[cfg(feature = "agents")]
 mod outside;
 #[cfg(feature = "agents")]
 mod times;
@@ -165,6 +167,58 @@ pub fn armed(
         }
     }
     armed
+}
+
+/// What a device kept in the workspace of `trigger` of `armed`, marked `mark`, at its last
+/// look, read back as the progress its runner holds; `None` where none was kept, or none that
+/// reads.
+#[cfg(feature = "agents")]
+async fn kept_progress<T: serde::de::DeserializeOwned>(
+    workspaces: &Workspaces,
+    armed: &Armed,
+    trigger: usize,
+    mark: &str,
+) -> Option<T> {
+    let kept = workspaces
+        .trigger_progress(&armed.workspace, &armed.shortcut.id, trigger, mark)
+        .await
+        .inspect_err(|error| {
+            tracing::warn!(shortcut = %armed.shortcut.id, %error, "a trigger's kept progress could not be read; it starts over");
+        })
+        .ok()??;
+    tilo_failure::ignored!(
+        "progress another build kept that this one cannot read starts over",
+        serde_json::from_value(kept).ok()
+    )
+}
+
+/// Keep `progress` in the workspace as what this device made of `trigger` of `armed`, marked
+/// `mark`: whichever device looks next, this one after a restart too, carries on from it.
+#[cfg(feature = "agents")]
+async fn keep_progress(
+    workspaces: &Workspaces,
+    armed: &Armed,
+    trigger: usize,
+    mark: &str,
+    progress: &impl serde::Serialize,
+) {
+    let kept = match serde_json::to_value(progress) {
+        Ok(progress) => {
+            workspaces
+                .keep_trigger_progress(
+                    &armed.workspace,
+                    &armed.shortcut.id,
+                    trigger,
+                    mark,
+                    progress,
+                )
+                .await
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    if let Err(error) = kept {
+        tracing::warn!(shortcut = %armed.shortcut.id, %error, "a trigger's progress was not kept");
+    }
 }
 
 /// A person's root, from its hex.
@@ -517,6 +571,9 @@ pub struct Runner {
     /// The client the looks at sources outside go through.
     #[cfg(feature = "agents")]
     outside: outside::Outside,
+    /// What is heard of the mail arriving in the accounts of the shortcuts' savers (`mail`).
+    #[cfg(feature = "agents")]
+    heard: mail::Heard,
 }
 
 impl Runner {
@@ -543,6 +600,8 @@ impl Runner {
             looks: BTreeMap::new(),
             #[cfg(feature = "agents")]
             outside: outside::Outside::default(),
+            #[cfg(feature = "agents")]
+            heard: mail::Heard::default(),
         }
     }
 
@@ -656,6 +715,8 @@ impl Runner {
         self.moments(now_ms).await;
         #[cfg(feature = "agents")]
         self.outside_changes(now_ms).await;
+        #[cfg(feature = "agents")]
+        self.mail(now_ms).await;
         self.files(now_ms);
         self.connector_events(now_ms);
         self.take_turns().await;

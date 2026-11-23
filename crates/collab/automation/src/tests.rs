@@ -1421,6 +1421,53 @@ tilo_test_env::scenario! {
             assert_eq!(request.context.unwrap().caused_by, Some(cause.clone()));
         }
     }
+
+    phase every_step_of_a_firing_on_an_item_is_made_from_it;
+    {
+        let message = tilo_actions::params::MadeFrom {
+            resource: "ada@example.test:7:4".into(),
+            kind: "tl.tilo.accounts.Message".into(),
+        };
+        let host = FakeHost::new();
+        let mut tidy = shortcut("tidy", vec![list()]);
+        tidy.inputs = crate::TriggerSpec::IncomingMessage {
+            app_id: None,
+            from: None,
+        }
+        .payload()
+        .to_vec();
+        let inputs = serde_json::Map::from_iter([(
+            crate::EVENT_INPUT.to_owned(),
+            json!({"item": message.resource, "$from": message.to_json()}),
+        )]);
+        let report = block_on(run(
+            &host,
+            &Hooks::default(),
+            InvocationRequest {
+                shortcut: &tidy,
+                invocation: AutomationInvocationId::new(),
+                caller: caller(),
+                mode: InvocationMode::Unattended,
+                trigger: InvocationTrigger::Manual,
+                inputs,
+                caused_by: None,
+                parent: None,
+                chain: Vec::new(),
+                resume: None,
+                from: None,
+            },
+        ));
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
+        let started = host.started();
+        assert!(!started.is_empty());
+        for request in started {
+            assert_eq!(
+                request.made_from(),
+                Some(message.clone()),
+                "the host decides each step on a read of the message"
+            );
+        }
+    }
 }
 
 /// The workspace's records as the fake host reads them: record `private` is

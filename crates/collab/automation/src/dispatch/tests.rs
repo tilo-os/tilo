@@ -96,6 +96,7 @@ fn a_trigger_saved_under_an_apps_earlier_kind_fires_after_the_rename() {
         actions: vec![],
         fields: vec![],
         by: ActorFilter::Anyone,
+        filter: crate::shortcut::ChangeFilter::default(),
     };
     let shortcut = program(vec![saved]);
     let mut event = post(person("bob"), &"b".repeat(64), None);
@@ -113,6 +114,7 @@ fn a_trigger_saved_under_an_apps_earlier_kind_fires_after_the_rename() {
         actions: vec![],
         fields: vec![],
         by: ActorFilter::Anyone,
+        filter: crate::shortcut::ChangeFilter::default(),
     };
     let shortcut = program(vec![other]);
     let out = dispatch(&as_shortcut(&shortcut), Event::Record(&event));

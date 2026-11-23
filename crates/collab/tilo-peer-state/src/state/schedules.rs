@@ -16,6 +16,13 @@
 //! is the latest row. A program updated to another trigger starts its own
 //! times: rows name the trigger they answered, and one that does not match the
 //! installed trigger is not an answer to it.
+//!
+//! A trigger that is no schedule keeps its progress in the same rows
+//! ([`PeerWorkspace::trigger_progress`]): what the looks at a feed or a page
+//! took in, which moments of a calendar were answered. It is whatever its
+//! trigger makes of it, kept whole by the device that last looked, and the
+//! latest row is what the next device to look carries on from. A schedule's
+//! answer and a trigger's progress never read as each other.
 
 use super::SystemTime;
 use super::device_rows;
@@ -34,6 +41,15 @@ pub const SCHEDULES_KEY: &str = "bot_schedules_v1";
 struct StoredAnswer {
     trigger: String,
     answered_ms: i64,
+}
+
+/// What one device kept of a trigger's progress: which trigger it is the
+/// progress of, when the device kept it, and the progress itself.
+#[derive(Serialize, Deserialize)]
+struct StoredProgress {
+    trigger: String,
+    kept_ms: i64,
+    progress: serde_json::Value,
 }
 
 /// The mark of `trigger`, as a schedule's answer names the trigger it belongs
@@ -80,9 +96,69 @@ impl PeerWorkspace<'_> {
             mark,
         )
     }
+
+    /// The progress the device that last kept one kept for `trigger` of
+    /// `automation`, `mark` being its [`trigger_mark`]; `None` when no device
+    /// kept one for that trigger.
+    #[must_use]
+    pub fn trigger_progress(
+        self,
+        automation: &str,
+        trigger: usize,
+        mark: &str,
+    ) -> Option<serde_json::Value> {
+        device_rows::rows_of(
+            self.peer.core.workspace_doc.as_deref(),
+            SCHEDULES_KEY,
+            &scope(automation, trigger),
+        )
+        .into_iter()
+        .filter_map(|(device, json)| {
+            let kept: StoredProgress = serde_json::from_str(&json).ok()?;
+            (kept.trigger == mark).then_some((kept.kept_ms, device, kept.progress))
+        })
+        .max_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)))
+        .map(|(_, _, progress)| progress)
+    }
 }
 
 impl PeerWorkspaceMut<'_> {
+    /// Keep `progress` as what `device`, a member's device whose exact
+    /// current certificate this workspace holds and who may change it, made
+    /// of `trigger` of `automation`, marked `mark`, at `kept_ms`. Answers
+    /// whether the workspace changed.
+    ///
+    /// # Errors
+    ///
+    /// `device` is not allowed to change this workspace, or the progress
+    /// cannot be written.
+    pub fn keep_trigger_progress(
+        &mut self,
+        device: &tilo_user_identity::DeviceCert,
+        automation: &str,
+        trigger: usize,
+        mark: &str,
+        (progress, kept_ms): (&serde_json::Value, i64),
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.check_writer(device, now)?;
+        let json = serde_json::to_string(&StoredProgress {
+            trigger: mark.to_owned(),
+            kept_ms,
+            progress: progress.clone(),
+        })
+        .map_err(|error| error.to_string())?;
+        let key = device_rows::row_key(&scope(automation, trigger), &device.device_public_key);
+        self.write_row(
+            SCHEDULES_KEY,
+            &key,
+            &device.device_public_key,
+            Some(&json),
+            now,
+        )?;
+        Ok(true)
+    }
+
     /// Record that `device`, a member's device whose exact current
     /// certificate this workspace holds and who may change it, answered
     /// through `answered_ms` for the schedule at `trigger` of `automation`'s

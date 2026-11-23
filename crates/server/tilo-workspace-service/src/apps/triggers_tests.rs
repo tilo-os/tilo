@@ -2457,8 +2457,8 @@ async fn source_runner(workspaces: &Workspaces, started: &Arc<Started>, fixtures
 }
 
 /// A feed that did not change fires nothing and asks nobody anything; an entry it lists anew
-/// fires its shortcut once, with what it says as data; and a runner that starts over fires
-/// nothing it fired before.
+/// fires its shortcut once, with what it says as data; and a runner that starts over carries on
+/// from what the workspace kept, so it fires nothing it fired before.
 #[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -2536,13 +2536,30 @@ async fn a_feed_that_did_not_change_fires_nothing_and_a_new_entry_fires_its_shor
     assert_eq!(source.looks(), 5);
     assert_eq!(fired_events(&started).len(), 1);
 
-    // A runner that starts over keeps no progress of its own, so it looks at once and takes in
-    // the list as its first look: nothing it fired before fires again.
+    // A runner that starts over carries on from what the workspace kept of its looks: it looks
+    // no sooner than the last look said, and nothing it fired before fires again.
     drop(runner);
     let mut runner = source_runner(workspaces, &started, true).await;
     pass_at_ms(&clock, &mut runner, SOURCE_START + 4 * every_ms + 60_000).await;
-    assert_eq!(source.looks(), 6, "a device that starts over looks at once");
+    assert_eq!(
+        source.looks(),
+        5,
+        "a restart looks no sooner than the last look said"
+    );
+    pass_at_ms(&clock, &mut runner, SOURCE_START + 5 * every_ms).await;
+    assert_eq!(source.looks(), 6);
     assert_eq!(fired_events(&started).len(), 1, "nothing is fired twice");
+    // What the feed lists anew after the restart fires, and only that.
+    source.says(&feed(&[
+        ("4", "Fourth post"),
+        ("3", "Third post"),
+        ("2", "Second post"),
+        ("1", "First post"),
+    ]));
+    pass_at_ms(&clock, &mut runner, SOURCE_START + 6 * every_ms).await;
+    let events = fired_events(&started);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[1]["item"], "urn:example:4");
     host.shutdown().await;
 }
 
@@ -2776,5 +2793,109 @@ async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
         sent.len()
     );
     assert_eq!(source.looks(), 1, "the source itself was asked");
+    host.shutdown().await;
+}
+
+/// Mail arriving in the saver's own account fires their shortcut once for each message. The
+/// firing names the message as what its run is made from and carries its envelope, never its
+/// words. Mail arriving in another account the workspace keeps, which the trigger is not kept to,
+/// fires nothing, and a runner that starts over carries on from what the workspace kept.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+async fn mail_in_the_savers_own_account_fires_once_and_names_the_message() {
+    use crate::workspaces::mail_testing::{Watched, keep, told};
+    use tilo_mail_session::InboxSeen;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Mail").await.unwrap().workspace;
+    let servers = Arc::new(Watched::default());
+    workspaces.carry_mail_through(servers.clone());
+    keep(workspaces, &workspace, "ada@example.test", "adas-password").await;
+    keep(
+        workspaces,
+        &workspace,
+        "team@example.test",
+        "teams-password",
+    )
+    .await;
+    keeps_an_assistant(workspaces, &workspace, &cert).await;
+    save_signed(
+        workspaces,
+        &workspace,
+        shortcut(
+            "my-mail",
+            TriggerSpec::SourceChanged {
+                kind: tilo_automation::source_change::PERSON_MAIL.into(),
+                at: "ada@example.test".into(),
+                every_secs: None,
+                filter: serde_json::Map::new(),
+            },
+            Vec::new(),
+        ),
+        (&key, &cert),
+    )
+    .await;
+    let clock = Pinned::at(SOURCE_START);
+    let started = Arc::new(Started::default());
+    let seen = |uid| InboxSeen {
+        uid_validity: 7,
+        uid,
+    };
+
+    // The first pass listens for the workspace's mail and takes the log as it stands.
+    let mut runner = source_runner(workspaces, &started, false).await;
+    pass_at_ms(&clock, &mut runner, SOURCE_START).await;
+    workspaces.mail_watches_settled().await;
+    for account in ["ada@example.test", "team@example.test"] {
+        servers.heard(account).arrived(Vec::new(), seen(3));
+    }
+    servers.heard("ada@example.test").arrived(
+        vec![told(4, "bo@example.test", "Lunch", "Friday at one?")],
+        seen(4),
+    );
+    servers.heard("team@example.test").arrived(
+        vec![told(4, "cy@example.test", "Invoice", "Attached.")],
+        seen(4),
+    );
+    pass_at_ms(&clock, &mut runner, SOURCE_START + 1_000).await;
+    let events = fired_events(&started);
+    assert_eq!(events.len(), 1, "only the saver's own account: {events:?}");
+    assert_eq!(events[0]["kind"], "tilo.accounts.mail");
+    assert_eq!(events[0]["item"], "ada@example.test:7:4");
+    assert_eq!(events[0]["facts"]["from"], "bo@example.test");
+    assert_eq!(events[0]["facts"]["subject"], "Lunch");
+    assert_eq!(
+        events[0]["$from"],
+        json!({"ref": "ada@example.test:7:4", "ty": "tl.tilo.accounts.Message"}),
+        "the run is made from the message in the account"
+    );
+    let held = serde_json::to_string(&events[0]).unwrap();
+    assert!(
+        !held.contains("Friday at one?"),
+        "the words stay in the account: {held}"
+    );
+
+    // A runner that starts over carries on from what the workspace kept: what it fired is not
+    // fired again, and what arrives next fires once.
+    drop(runner);
+    let mut runner = source_runner(workspaces, &started, false).await;
+    pass_at_ms(&clock, &mut runner, SOURCE_START + 2_000).await;
+    workspaces.mail_watches_settled().await;
+    assert_eq!(fired_events(&started).len(), 1, "nothing is fired twice");
+    servers.heard("ada@example.test").arrived(
+        vec![told(5, "bo@example.test", "Re: Lunch", "One works.")],
+        seen(5),
+    );
+    pass_at_ms(&clock, &mut runner, SOURCE_START + 3_000).await;
+    let events = fired_events(&started);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[1]["item"], "ada@example.test:7:5");
     host.shutdown().await;
 }

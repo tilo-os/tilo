@@ -1084,6 +1084,31 @@ impl super::Workspaces {
         .await
     }
 
+    /// Keep `progress` as what this device made of `trigger` of the automation
+    /// `automation`, marked `mark`, at its last look: what whichever device
+    /// looks next carries on from.
+    #[cfg(feature = "apps")]
+    pub(crate) async fn keep_trigger_progress(
+        &self,
+        workspace: &str,
+        automation: &str,
+        trigger: usize,
+        mark: &str,
+        progress: serde_json::Value,
+    ) -> Result<(), String> {
+        self.write_own_row(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::KeepTriggerProgress {
+                automation: automation.to_owned(),
+                trigger: u32::try_from(trigger).map_err(|error| error.to_string())?,
+                mark: mark.to_owned(),
+                kept_ms: tilo_clock::unix_now_ms_i64(),
+                progress,
+            },
+        )
+        .await
+    }
+
     /// Keep that this device did the work of the lease `id`, and what it
     /// answered: no device of the workspace takes it again.
     pub(crate) async fn write_done(

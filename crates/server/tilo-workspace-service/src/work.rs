@@ -215,6 +215,12 @@ pub enum Turn {
     },
 }
 
+/// The lease ids of every turn that runs `address` once all start with this.
+#[must_use]
+pub fn once_leases(address: &str) -> String {
+    format!("once/{address}/")
+}
+
 /// Who a turn that runs once acts as: a device takes it only where it can act as them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Actor {
@@ -235,7 +241,7 @@ impl Turn {
                 address, inputs, ..
             } => {
                 let inputs = serde_json::to_vec(&canonical(inputs)).unwrap_or_default();
-                format!("once/{address}/{}", blake3::hash(&inputs).to_hex())
+                format!("{}{}", once_leases(address), blake3::hash(&inputs).to_hex())
             }
         }
     }
@@ -545,6 +551,12 @@ async fn turn_comes(
     Some(came_up.saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX)))
 }
 
+/// Whether this device runs the shortcuts of every member of the workspaces it keeps: it is one
+/// of its person's always-on servers and offers them compute.
+pub async fn hosts_shortcuts(workspaces: &Workspaces) -> bool {
+    offers_compute(workspaces).await
+}
+
 /// Whether this device is one of its person's always-on servers: it has an
 /// entry among their servers that was not retired.
 async fn always_on(workspaces: &Workspaces) -> bool {
@@ -666,9 +678,11 @@ async fn eligibility(
                 return Err(Ineligible::CannotOpen);
             }
             match actor {
+                // The workspace's host runs a member's shortcuts for them, as their saved proof
+                // says, so a member's automations go on while none of their own devices is up.
                 Some(Actor::Person(person)) => {
                     let serving = hex::encode(workspaces.serving_certificate().user_public_key);
-                    if *person != serving {
+                    if *person != serving && !hosts_shortcuts(workspaces).await {
                         return Err(Ineligible::CannotActAs);
                     }
                     Ok(())

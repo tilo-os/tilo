@@ -95,6 +95,10 @@ pub const SAVE_DRAFT: &str = "save-draft";
 /// from the first time it is asked, the host watches the person's inboxes
 /// for as long as it runs, with no window open anywhere.
 pub const ARRIVED: &str = "arrived";
+/// The kind a message in one of the person's accounts is named by where something is made from
+/// it ([`crate::params::FROM_ARGUMENT`]): `tl.<app>.<Type>` under [`PROVIDER`], so a read of it is
+/// decided at that app's node, as every read of the person's accounts is.
+pub const MESSAGE: &str = "tl.tilo.accounts.Message";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -656,6 +660,16 @@ pub struct MailArrival {
 }
 
 impl MailArrival {
+    /// The message this arrival tells of, as what an invocation is made from: named by the
+    /// arrival's id, which stays the same for the same message, and never copied.
+    #[must_use]
+    pub fn made_from(&self) -> crate::params::MadeFrom {
+        crate::params::MadeFrom {
+            resource: self.id.clone(),
+            kind: MESSAGE.to_owned(),
+        }
+    }
+
     /// The arrival as plain facts, each under one name, for whoever
     /// compares them: a trigger's filter, a step's input. `id`, `account`,
     /// `folder`, `uid`, `uidValidity`, `from` (the address), `fromName`,

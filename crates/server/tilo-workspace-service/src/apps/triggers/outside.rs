@@ -12,6 +12,9 @@
 //! left alone, and when it counts as gone. What is new goes with the firing as data. An address
 //! is never written to the log: it may carry a key of its person's.
 //!
+//! What the looks took in is kept in the workspace ([`super::keep_progress`]): a restart looks
+//! no sooner and hands nothing over twice, and the device that looks next carries on from it.
+//!
 //! A source that arrived in the workspace's mail is another matter: a message that arrives is
 //! reported as a change of the workspace's records, and a shortcut waiting on it fires there.
 
@@ -23,7 +26,7 @@ use tilo_automation::dispatch::{Event, SourceEvent};
 use tilo_automation::source_change::{self, Failure, Found, Seen};
 use tilo_web_search::{FetchError, FetchLimits};
 
-use super::{Armed, Runner, dispatched};
+use super::{Runner, dispatched, keep_progress, kept_progress};
 
 /// The most one look downloads: a fifth of what an agent's read of a page may.
 const LOOK_BYTES: usize = 1024 * 1024;
@@ -219,14 +222,21 @@ impl Runner {
                 let every = source_change::look_secs(*every_secs);
                 let key = (armed.workspace.clone(), armed.shortcut.id.clone(), index);
                 let mark = tilo_peer_state::trigger_mark(trigger);
-                let due = {
-                    let seen = self
-                        .looks
-                        .entry(key.clone())
-                        .or_insert_with(|| Seen::starting(&mark, now_ms));
+                // A trigger first seen here, or another trigger in this one's place, carries on
+                // from what the workspace kept of it, and starts over where nothing was.
+                if self.looks.get(&key).is_none_or(|seen| seen.mark != mark) {
+                    let kept = kept_progress::<Seen>(&self.workspaces, armed, index, &mark)
+                        .await
+                        .filter(|seen| seen.mark == mark);
+                    self.looks.insert(
+                        key.clone(),
+                        kept.unwrap_or_else(|| Seen::starting(&mark, now_ms)),
+                    );
+                }
+                let due = self.looks.get_mut(&key).is_some_and(|seen| {
                     seen.follow(&mark, now_ms);
                     seen.due(now_ms)
-                };
+                });
                 if !due {
                     continue;
                 }
@@ -234,6 +244,7 @@ impl Runner {
                 let Some(seen) = self.looks.get_mut(&key) else {
                     continue;
                 };
+                let before = seen.clone();
                 let mut found = Vec::new();
                 match read {
                     Ok(Read::Entries(entries)) => {
@@ -248,6 +259,12 @@ impl Runner {
                         tracing::info!(%kind, ?failure, shortcut = %armed.shortcut.id, "a look at a source outside did not read it");
                         found.extend(seen.failed(at, &why, failure, every, now_ms));
                     }
+                }
+                // What the look took in is kept in the workspace, so nothing found is handed over
+                // twice and a restart looks no sooner.
+                if *seen != before {
+                    let seen = seen.clone();
+                    keep_progress(&self.workspaces, armed, index, &mark, &seen).await;
                 }
                 for one in found {
                     let event = SourceEvent {
