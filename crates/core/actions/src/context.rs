@@ -105,6 +105,12 @@ pub struct ActionContext {
     /// by the context it is applied with.
     #[serde(skip_serializing_if = "ChangeKind::is_content")]
     pub change: ChangeKind,
+    /// The facts an ask shows, as the calling runtime evaluated them, when
+    /// caller and callee are one app: values only that app can read (a
+    /// draft's subject). Taken only from that app's own call; any other
+    /// caller's are ignored and admission reads them from the arguments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shows: Vec<crate::remote::asked::Fact>,
 }
 
 read_through_json_value!(ActionContext);
@@ -162,6 +168,7 @@ impl Clone for ActionContext {
             compensation: self.compensation.clone(),
             gesture: self.gesture,
             change: self.change,
+            shows: self.shows.clone(),
         }
     }
 }
@@ -837,6 +844,8 @@ mod wire {
         gesture: Option<String>,
         #[serde(rename = "c", skip_serializing_if = "ChangeKind::is_content")]
         change: ChangeKind,
+        #[serde(rename = "sh", default, skip_serializing_if = "Vec::is_empty")]
+        shows: Vec<crate::remote::asked::Fact>,
     }
 
     /// The fields of an [`Entry`] an index keeps of every change, each left
@@ -1262,6 +1271,7 @@ mod wire {
                     .gesture
                     .map(|gesture| gesture.0.simple().to_string()),
                 change: context.change,
+                shows: context.shows.clone(),
             }
         }
 
@@ -1302,6 +1312,7 @@ mod wire {
                     .and_then(|gesture| uuid::Uuid::try_parse(&gesture).ok())
                     .map(crate::ActionId),
                 change: self.change,
+                shows: self.shows,
                 action,
             }
         }

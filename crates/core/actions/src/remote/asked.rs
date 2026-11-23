@@ -94,6 +94,38 @@ impl Fact {
     }
 }
 
+/// One argument an action shows the person before they answer its ask, as
+/// its declaration names it: the parameter, optionally one field of it, and
+/// how its value reads. Admission fills the ask's [`Fact`]s from the call's
+/// arguments with these, so the card shows what the call would do without
+/// asking the app.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Shown {
+    /// The parameter, by its declared name; it is also the fact's label.
+    pub param: String,
+    /// One field of the parameter's value, when only that field is shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(default)]
+    pub render: ShownAs,
+}
+
+/// How a shown value reads on the card.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShownAs {
+    /// Plain text, cut when long.
+    #[default]
+    Text,
+    /// A list of addresses (mail recipients, members), each its own line.
+    Addresses,
+    /// A long value (a message body) shown folded, opened on request.
+    Long,
+    /// A value the person must not read on the card: shown withheld.
+    Secret,
+}
+
 /// Who a member is, by id and by the name the person knows them under.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -687,6 +719,7 @@ mod tests {
             record: RecordRef {
                 workspace: "acme".into(),
                 record: "invocations/7".into(),
+                device: None,
             },
             workspace: "acme".into(),
             workspace_name: "Acme".into(),

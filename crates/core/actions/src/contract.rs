@@ -831,6 +831,11 @@ pub struct ActionContract {
     /// needs no item, or one already bound to its item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
+    /// The arguments the person reads before answering, when the action
+    /// asks first ([`ConfirmationPolicy::Confirm`]): what admission shows on
+    /// its ask, read from the call itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shows: Vec<crate::remote::asked::Shown>,
 }
 
 /// Largest CPU time an [`Offload`] may declare: a compute job's ceiling.
@@ -925,6 +930,7 @@ impl Default for ActionContract {
             step: None,
             creates: None,
             item: None,
+            shows: Vec::new(),
         }
     }
 }
