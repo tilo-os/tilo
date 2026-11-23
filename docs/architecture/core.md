@@ -313,6 +313,13 @@ view in the bar, quick settings and the lock screen, on every device. Media
 keys and the lock screen's controls call the type's actions. No app calls a
 shell interface to start or end one.
 
+A window's own state (a calculator's mode, a book's open panels, a list's
+filter) is declared in its view and kept in that window's entry in the
+workspace layout. That way it follows the window to another device. Each
+declared field gets a typed action on the window, so an agent, the palette
+or a script can set it like any other action. Apps declare the state and
+never store it themselves.
+
 ## The rule for every piece
 
 - One type, one store, one protocol for each concept. A second copy is a
