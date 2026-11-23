@@ -349,14 +349,13 @@ impl Mirror {
     /// The person here is done with the notification the app sent under `daemon_id`: the other
     /// devices take its copy away.
     fn retire(&self, daemon_id: u32) {
-        let id = {
-            let mut state = self.state.lock_recover();
-            let Some(projected) = state.out.remove(&daemon_id) else {
-                return;
-            };
-            state.by_id.remove(&projected.id);
-            projected.id
+        let mut state = self.state.lock_recover();
+        let Some(projected) = state.out.remove(&daemon_id) else {
+            return;
         };
+        state.by_id.remove(&projected.id);
+        drop(state);
+        let id = projected.id;
         if self.switches.notifications_permitted() {
             self.send("retired", Retired { id });
         }
@@ -367,16 +366,17 @@ impl Mirror {
     fn answered(&self, id: &NotificationId, action: Option<&str>) -> Option<(u32, Option<String>)> {
         let state = self.state.lock_recover();
         let daemon_id = *state.by_id.get(id)?;
-        match action {
-            None => Some((daemon_id, None)),
-            Some(key) => {
-                let offered = state.out.get(&daemon_id)?;
-                offered
-                    .action_keys
-                    .iter()
-                    .any(|offered| offered == key)
-                    .then(|| (daemon_id, Some(key.to_owned())))
-            }
+        let offered = action.map(|key| {
+            state
+                .out
+                .get(&daemon_id)
+                .is_some_and(|out| out.action_keys.iter().any(|offered| offered == key))
+        });
+        drop(state);
+        match (action, offered) {
+            (Some(key), Some(true)) => Some((daemon_id, Some(key.to_owned()))),
+            (None, _) => Some((daemon_id, None)),
+            _ => None,
         }
     }
 
@@ -421,7 +421,7 @@ impl Mirror {
     fn show(
         &self,
         from: &DeviceId,
-        notification: ContinuityNotificationProjection,
+        notification: &ContinuityNotificationProjection,
     ) -> Result<(), ActionCallError> {
         self.permitted()?;
         if !notification.validate_at(tilo_clock::unix_now_ms()) {
@@ -457,7 +457,7 @@ impl Mirror {
     }
 
     /// Another device took a projection away: the session forgets every copy of it here.
-    fn retired(&self, from: &DeviceId, id: NotificationId) -> Result<(), ActionCallError> {
+    fn retired(&self, from: &DeviceId, id: NotificationId) {
         self.state
             .lock_recover()
             .shown
@@ -468,7 +468,6 @@ impl Mirror {
             json!({ "source": from, "id": id }),
         );
         spend(answer, "a mirrored notification here");
-        Ok(())
     }
 
     /// The person chose on another device on a notification this device projected: the app here
@@ -553,7 +552,7 @@ impl Mirror {
                 Asker::Device,
                 {
                     let mirror = at();
-                    move |who, show: Show| mirror.show(asking_device(who)?, show.notification)
+                    move |who, show: Show| mirror.show(asking_device(who)?, &show.notification)
                 },
             )
             .act(
@@ -563,7 +562,10 @@ impl Mirror {
                 Asker::Device,
                 {
                     let mirror = at();
-                    move |who, retired: Retired| mirror.retired(asking_device(who)?, retired.id)
+                    move |who, retired: Retired| {
+                        mirror.retired(asking_device(who)?, retired.id);
+                        Ok(())
+                    }
                 },
             )
             .act(

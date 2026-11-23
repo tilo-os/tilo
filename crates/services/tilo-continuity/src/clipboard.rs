@@ -213,7 +213,7 @@ impl Clipboard {
     /// The clipboard of the device `fabric` is: it offers its copies to each of the person's
     /// devices as it arrives.
     #[must_use]
-    pub fn new(fabric: Fabric) -> Self {
+    pub fn new(fabric: &Fabric) -> Self {
         let clipboard = Self {
             fabric: fabric.clone(),
             state: Arc::default(),
@@ -254,17 +254,17 @@ impl Clipboard {
 
     /// The session here offers its shareable copies: the person's devices here are told when
     /// they changed.
-    fn offer(&self, entries: Vec<ClipboardEntry>) -> Result<(), ActionCallError> {
-        checked(self.fabric.local(), &entries).map_err(invalid)?;
+    fn offer(&self, entries: &[ClipboardEntry]) -> Result<(), ActionCallError> {
+        checked(self.fabric.local(), entries).map_err(|error| invalid(&error))?;
         {
             let mut state = self.state.lock_recover();
             if state.own == entries {
                 return Ok(());
             }
-            state.own.clone_from(&entries);
+            state.own = entries.to_vec();
         }
         for device in self.fabric.online() {
-            self.tell(&device, entries.clone());
+            self.tell(&device, entries.to_vec());
         }
         Ok(())
     }
@@ -275,12 +275,13 @@ impl Clipboard {
         from: &DeviceId,
         entries: Vec<ClipboardEntry>,
     ) -> Result<(), ActionCallError> {
-        checked(from, &entries).map_err(invalid)?;
+        checked(from, &entries).map_err(|error| invalid(&error))?;
         let changed = {
             let mut state = self.state.lock_recover();
             let kept = state.theirs.entry(from.clone()).or_default();
             let changed = *kept != entries;
             *kept = entries;
+            drop(state);
             changed
         };
         if changed {
@@ -318,7 +319,7 @@ impl Clipboard {
                 Asker::Here,
                 {
                     let clipboard = at();
-                    move |_, copies: Copies| clipboard.offer(copies.entries)
+                    move |_, copies: Copies| clipboard.offer(&copies.entries)
                 },
             )
             .act(
@@ -337,7 +338,7 @@ impl Clipboard {
     }
 }
 
-fn invalid(error: FabricError) -> ActionCallError {
+fn invalid(error: &FabricError) -> ActionCallError {
     ActionCallError::InvalidRequest {
         reason: error.to_string(),
     }

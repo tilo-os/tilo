@@ -1,6 +1,13 @@
 //! The person's devices driven through the fabric's published actions, each device's providers
 //! wired to the others by the in-memory link: the device list, the lock that follows the person,
 //! waking a sleeping device, and unlocking and enrolling a disk at boot.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::time::Instant;
 
@@ -74,9 +81,7 @@ fn the_device_list_is_this_device_first_then_online_then_by_name() {
     tower.interfaces.set(vec![route(3, "10.0.0.3/24")]);
     Person::connect(&[&laptop, &tower, &tv]);
     tick(&[&laptop, &tower, &tv]);
-    laptop
-        .fabric
-        .heard_nearby([tower.id.clone()].into_iter().collect());
+    laptop.fabric.heard_nearby([tower.id].into_iter().collect());
 
     let listed: Vec<ListedDevice> = laptop.read(PROVIDER, "devices");
     let labels: Vec<&str> = listed.iter().map(|row| row.label.as_str()).collect();
@@ -302,7 +307,7 @@ impl Boot {
         .unwrap()
     }
 
-    fn frame(packed: Packed) -> SiblingFrame {
+    fn frame(packed: &Packed) -> SiblingFrame {
         unpack(&packed.frame).unwrap()
     }
 
@@ -315,7 +320,7 @@ impl Boot {
     ) -> (SiblingFrame, BootRequest, UnlockRequest) {
         let boot = self.key.verifying_key().to_bytes();
         let challenge = match Self::frame(
-            uncertified(
+            &uncertified(
                 link,
                 boot,
                 &sibling.id,
@@ -343,7 +348,7 @@ impl Boot {
         .unwrap();
         let asked = self.request_with(Some(&request));
         let frame = Self::frame(
-            uncertified(
+            &uncertified(
                 link,
                 boot,
                 &sibling.id,
@@ -384,7 +389,7 @@ impl Boot {
     ) -> SiblingFrame {
         let boot = self.key.verifying_key().to_bytes();
         Self::frame(
-            uncertified(
+            &uncertified(
                 link,
                 boot,
                 &sibling.id,

@@ -1,6 +1,13 @@
 //! What continues across the person's devices, driven through each service's published actions,
 //! with each device's providers wired to the others by the fabric's in-memory link and the
 //! session on each device a recorder.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -141,7 +148,7 @@ fn texts(copies: &Copies) -> Vec<String> {
 }
 
 fn clipboard_on(device: &TestDevice) {
-    let service = Clipboard::new(device.fabric.clone());
+    let service = Clipboard::new(&device.fabric);
     device
         .link
         .mount(&device.id, clipboard::PROVIDER, service.provider());
