@@ -7,9 +7,9 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use super::state::{Journal, Place, RunState};
-use super::workspace::{Answer, Invocation, Refused, Workspace};
-use super::{Lander, Stopped, thunderbird};
+use super::super::state::{Journal, Place, RunState};
+use super::super::workspace::{Answer, Invocation, Refused, Workspace};
+use super::super::{Lander, Stopped, thunderbird};
 
 /// What the person was told and asked during a migration, and whether they said yes.
 #[derive(Default)]

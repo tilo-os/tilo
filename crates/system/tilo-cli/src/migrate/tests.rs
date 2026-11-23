@@ -8,9 +8,12 @@ use anyhow::Result;
 
 use super::Stopped;
 use super::state::{Journal, Place, RunState};
-use super::test_env::{Recorded, Told, land_as};
 use super::thunderbird;
 use super::workspace::{Call, Invocation, Status, Workspace};
+
+pub(super) mod test_env;
+
+use self::test_env::{Recorded, Told, land_as};
 
 fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result<Journal> {
     migrate_saying(home, place, workspace, true, &mut Told::default())

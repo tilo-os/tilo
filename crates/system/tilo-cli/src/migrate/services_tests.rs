@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use super::services::{self as services_source, LINEAR};
 use super::state::Place;
-use super::test_env::{Told, land_as};
+use super::tests::test_env::{Told, land_as};
 use super::workspace::{Answer, Invocation, Refused, Workspace};
 
 /// An issue as the fake Tasks keeps it.

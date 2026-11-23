@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::files::{self, Sink};
 use super::state::{Item, Journal, Place, Review};
-use super::test_env::{Recorded, Told, land_as};
+use super::tests::test_env::{Recorded, Told, land_as};
 use super::workspace::{Invocation, Workspace};
 use super::{Lander, clouds, registry};
 

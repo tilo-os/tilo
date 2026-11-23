@@ -43,8 +43,6 @@ mod files_tests;
 #[cfg(test)]
 mod services_tests;
 #[cfg(test)]
-mod test_env;
-#[cfg(test)]
 mod tests;
 
 use std::fmt::Write as _;
