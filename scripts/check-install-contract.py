@@ -56,7 +56,7 @@ assert any(
 t_checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
 release_check = (ROOT / "tools/ci/imager-release/assets.sh").read_text()
 for host in ("linux", "windows", "macos"):
-    assert t_checks[f"package/{host}-{{arch}}"]["matrix"]["arch"] == ["x86_64", "aarch64"]
+    assert set(t_checks[f"package/{host}-{{arch}}"]["matrix"]["arch"]) == {"x86_64", "aarch64"}
 assert 'tilo-installer-linux-$arch.img.zst' in release_check
 assert 'tilo-imager-setup-windows-$arch.exe' in release_check
 assert 'apps/imager/packaging/generate-winget.py' in release_check
@@ -64,20 +64,18 @@ windows_host = next(host for host in contract["imager"]["hosts"] if host["os"].s
 assert windows_host["architectures"] == ["x86_64", "aarch64"]
 
 # People follow the Homebrew commands the landing page prints, so those commands
-# have to name the tap the release workflow actually publishes. The contract is
-# the copy the site consumes; derive every field in it from the publisher here
-# instead of restating a destination by hand in a second place.
-def workflow_env_value(text: str, name: str) -> str:
-    """The literal value of a workflow env entry, or of its `||` fallback."""
-    match = re.search(
-        rf"^  {name}: (?:\$\{{\{{[^}}]*\|\|\s*'([^']+)'\s*\}}\}}|(\S+))$", text, re.M
-    )
-    assert match, f"release workflow has no literal value for {name}"
-    return match.group(1) or match.group(2)
+# have to name the tap the release actually publishes. The contract is the copy
+# the site consumes; derive every field in it from the publishers here instead of
+# restating a destination by hand in a second place.
+def script_default(path: str, name: str) -> str:
+    """The value a publisher script takes for `name` when the release sets none."""
+    match = re.search(rf'"\$\{{{name}:-([^}}"]+)\}}"', (ROOT / path).read_text())
+    assert match, f"{path} has no default for {name}"
+    return match.group(1)
 
-homebrew_tap_repository = workflow_env_value(imager_workflow, "TILO_HOMEBREW_TAP_REPOSITORY")
-homebrew_tap_name = workflow_env_value(imager_workflow, "TILO_HOMEBREW_TAP_NAME")
-release_server = workflow_env_value(imager_workflow, "TILO_RELEASE_SERVER")
+homebrew_tap_repository = script_default("apps/imager/packaging/publish-homebrew-tap.sh", "TILO_HOMEBREW_TAP_REPOSITORY")
+homebrew_tap_name = script_default("apps/imager/packaging/publish-homebrew-tap.sh", "TILO_HOMEBREW_TAP_NAME")
+release_server = script_default("apps/imager/packaging/build-release-catalog.sh", "TILO_RELEASE_SERVER")
 assert re.fullmatch(r"[A-Za-z0-9_.-]+/homebrew-[A-Za-z0-9_.-]+", homebrew_tap_repository)
 assert re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", homebrew_tap_name)
 homebrew = contract["imager"]["homebrew"]
@@ -125,19 +123,21 @@ assert "grep -R -h -o -- 'brew tap" in site_publisher
 assert "'brew install --cask tilo-imager' 'brew install tilo-imager'" in site_publisher
 
 # The install tests run the same tap people get told to run.
-assert imager_workflow.count('brew tap "$TILO_HOMEBREW_TAP_NAME"') == 2
-assert "brew tap tilo/" not in imager_workflow
+t_text = (ROOT / "t.toml").read_text()
+assert 'brew tap "$TILO_HOMEBREW_TAP_NAME"' in t_text
+assert "brew tap tilo/" not in t_text
 
-# Every host/architecture the install contract declares is one the release
-# workflow builds and requires, and every download it declares is a file the
-# publication check carries and the landing-page promotion links. A host whose
+# Every host/architecture the install contract declares is one a package check
+# builds and the release check requires, and every download it declares is a
+# file the release carries and the landing-page promotion links. A host whose
 # artifacts are declared and built but never mapped is how Windows ARM64 stayed
 # declared, built, and absent from the download matrix.
-required_matrix = imager_workflow.split("          required=(\n", 1)[1].split("          )\n", 1)[0]
 required_assets = {
-    line.strip() for line in required_matrix.splitlines() if line.strip()
+    name.replace("$arch", architecture)
+    for name in re.findall(r'"(tilo-[A-Za-z0-9._$-]+)"', release_check.split("required() {", 1)[1].split("\n}", 1)[0])
+    for architecture in ("x86_64", "aarch64")
 }
-assert required_assets, "the publication check requires no artifact"
+assert required_assets, "the release check requires no artifact"
 
 declared_entries = {}
 for host in contract["imager"]["hosts"]:
@@ -150,14 +150,8 @@ for host in contract["imager"]["hosts"]:
         for architecture in host["architectures"]:
             release_file = download["asset"].replace("{arch}", architecture)
             assert release_file in required_assets, f"{release_file} is not a release prerequisite"
-            runner = "windows" if host["os"].startswith("Windows") else host["os"].lower()
-            if runner == "linux":
-                # The Linux jobs come from the plan's native runner matrix,
-                # not a per-host label.
-                job = {"x86_64": "runner-release", "aarch64": "runner-large-arm64"}[architecture]
-                assert f'"arch":"{architecture}","runner":"{job}"' in imager_workflow, release_file
-            else:
-                assert f"runner: imager-{runner}-{architecture}" in imager_workflow, release_file
+            platform = "windows" if host["os"].startswith("Windows") else host["os"].lower()
+            assert architecture in t_checks[f"package/{platform}-{{arch}}"]["matrix"]["arch"], release_file
             arch_key = "X64" if architecture == "x86_64" else "Arm64"
             entry = download["pageKey"].replace("{archKey}", arch_key)
             assert entry not in declared_entries, f"{entry} is declared twice"

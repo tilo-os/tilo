@@ -25,6 +25,8 @@ class CaptureBuildScript(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=self.root) as scratch:
             root = Path(scratch)
             (root / 'capture-service.json').write_text(default)
+            # The build script also embeds the reviewed media catalogue beside the crate.
+            (root / 'release-catalog.json').write_text('{}\n')
             out = root / 'out'
             out.mkdir()
             env = {key: value for key, value in os.environ.items()

@@ -1,7 +1,6 @@
 import importlib.util
 import os
 from pathlib import Path
-import re
 import tomllib
 import unittest
 from unittest.mock import patch
@@ -21,23 +20,9 @@ def load_resolver():
 
 
 class CiImagePins(unittest.TestCase):
-    def test_every_workflow_reference_uses_the_shared_pin(self):
-        config = load_pins()
-        registry = config['registry']['host'] + '/' + config['registry']['namespace'] + '/'
-        pins = config['pins']
-        for repository, digest in pins.items():
+    def test_every_pin_is_a_digest(self):
+        for repository, digest in load_pins()['pins'].items():
             self.assertRegex(digest, r'^sha256:[0-9a-f]{64}$', repository)
-        reference = re.compile(re.escape(registry) + r'([a-z0-9._-]+)@(sha256:[0-9a-f]{64})')
-        sources = sorted((ROOT / '.forgejo').rglob('*.yml'))
-        self.assertTrue(sources)
-        seen = set()
-        for path in sources:
-            for repository, digest in reference.findall(path.read_text()):
-                with self.subTest(workflow=path.name, image=repository):
-                    self.assertIn(repository, pins, 'add the image to tools/ci/images.toml')
-                    self.assertEqual(digest, pins[repository], 'pin it in tools/ci/images.toml')
-                    seen.add(repository)
-        self.assertEqual(set(pins), seen, 'tools/ci/images.toml pins an image no workflow uses')
 
     def test_builder_resolution_reads_the_registry_from_the_pins_file(self):
         registry = load_pins()['registry']

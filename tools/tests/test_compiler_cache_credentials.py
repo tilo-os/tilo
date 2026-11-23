@@ -1,7 +1,6 @@
-"""Workflows carry no compiler-cache bucket or credential.
+"""Checks carry no compiler-cache bucket or credential.
 
-The runners give every job its compiler cache (sccache over the job's
-Actions cache, infra docs/ci-caching.md). A workflow that names a bucket or
+t gives every job its compiler cache. A check of t.toml that names a bucket or
 binds an S3 key would bypass the per-repository scoping.
 """
 from pathlib import Path
@@ -16,12 +15,8 @@ FORBIDDEN = re.compile(
 
 
 class CompilerCacheCredentialTests(unittest.TestCase):
-    def test_workflows_do_not_bind_a_compiler_cache(self):
-        paths = sorted((ROOT / ".forgejo").rglob("*.y*ml"))
-        self.assertTrue(paths)
-        for path in paths:
-            with self.subTest(path.relative_to(ROOT)):
-                self.assertIsNone(FORBIDDEN.search(path.read_text()))
+    def test_checks_do_not_bind_a_compiler_cache(self):
+        self.assertIsNone(FORBIDDEN.search((ROOT / "t.toml").read_text()))
 
 
 if __name__ == "__main__":

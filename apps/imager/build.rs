@@ -5,8 +5,8 @@ mod capture_build;
 use std::{env, fs, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    release_catalog()?;
-    capture_build::main()
+    capture_build::main()?;
+    release_catalog()
 }
 
 /// The catalogue of media the installer offers: the reviewed one beside the crate, or a release
