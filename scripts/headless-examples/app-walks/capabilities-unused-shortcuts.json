@@ -37,6 +37,19 @@
       "budget_ms": 15000
     },
     {
+      "id": "set-a-trigger",
+      "said": "Start a new shortcut when an app opens, set in the trigger form",
+      "ops": [
+        {"press": "New shortcut"},
+        {"wait_for": "Add trigger"},
+        {"click": "App to watch"},
+        {"type": "so.tilo.chat"},
+        {"press": "Add trigger"},
+        {"must": [{"see": ["when the app opens \"so.tilo.chat\""]}]}
+      ],
+      "budget_ms": 10000
+    },
+    {
       "id": "save-a-shortcut",
       "said": "Save a shortcut that makes a strip, and see it in the list",
       "ops": [
