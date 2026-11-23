@@ -297,7 +297,7 @@ setup = "swtpm"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-pdf) or package(pdf-viewer) or package(tilo-thumbnail)"
+filter = "package(tilo-pdf) or package(tilo-thumbnail)"
 setup = "pdf-sandbox"
 
 [[profile.ci.scripts]]

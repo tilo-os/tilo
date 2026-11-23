@@ -10,7 +10,6 @@ function Get-TiloWindowsAppName {
         'diffmerge' { 'Diff and Merge' }
         'db-client' { 'Database Client' }
         'git-client' { 'Git Client' }
-        'pdf-viewer' { 'PDF Viewer' }
         'video-player' { 'Video Player' }
         'music' { 'Music' }
         'ebook' { 'Books' }

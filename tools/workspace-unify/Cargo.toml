@@ -773,7 +773,6 @@ doc = false
 "pathdiff-0_2_3" = { package = "pathdiff", version = "^0.2.3", default-features = false, features = [] }
 "pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }
-"pdf-viewer" = { path = "../../apps/pdf-viewer", default-features = false, features = ["samples"] }
 "pdf-writer-0_15_0" = { package = "pdf-writer", version = "^0.15.0", default-features = false, features = [] }
 "pdfium-render-0_8_37" = { package = "pdfium-render", version = "^0.8.37", default-features = false, features = ["pdfium_7543", "pdfium_latest"] }
 "peg-0_8_6" = { package = "peg", version = "^0.8.6", default-features = false, features = ["default", "std"] }
@@ -3420,7 +3419,6 @@ doc = false
 "pathdiff-0_2_3" = { package = "pathdiff", version = "^0.2.3", default-features = false, features = [] }
 "pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }
-"pdf-viewer" = { path = "../../apps/pdf-viewer", default-features = false, features = ["samples"] }
 "pdf-writer-0_15_0" = { package = "pdf-writer", version = "^0.15.0", default-features = false, features = [] }
 "pdfium-render-0_8_37" = { package = "pdfium-render", version = "^0.8.37", default-features = false, features = ["pdfium_7543", "pdfium_latest"] }
 "peg-0_8_6" = { package = "peg", version = "^0.8.6", default-features = false, features = ["default", "std"] }

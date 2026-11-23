@@ -29,7 +29,7 @@ function Get-TiloWindowsAppBuildPlan {
         runtime = [ordered]@{
             fonts = 'crates/ui/ui-core/assets/fonts'
             dxc = $true
-            pdfium = ('pdf-viewer' -in $applications -or 'file-explorer' -in $applications)
+            pdfium = ('file-explorer' -in $applications)
             gstreamer = 'Resolve from built executables PE imports; no media imports means no bundle.'
             notifications = ('clocks' -in $applications)
         }

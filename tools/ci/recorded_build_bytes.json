@@ -106,7 +106,6 @@
   "package-store": {"libraries": 27354040, "tests": 90577560},
   "pam-tilo": {"libraries": 0, "tests": 20260632},
   "passwords": {"libraries": 17396424, "tests": 328107472},
-  "pdf-viewer": {"libraries": 41957117, "tests": 1002882312},
   "pim-lines": {"libraries": 860938, "tests": 3136624},
   "poker": {"libraries": 10649730, "tests": 537181488},
   "print-centre": {"libraries": 9514892, "tests": 353281408},

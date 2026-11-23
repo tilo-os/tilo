@@ -12168,45 +12168,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pdf-viewer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "fnv",
- "hex",
- "image",
- "pdf-viewer",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "taffy",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-content",
- "tilo-cpu-raster",
- "tilo-desktop-model",
- "tilo-desktop-surface",
- "tilo-document",
- "tilo-files",
- "tilo-page-raster",
- "tilo-paths",
- "tilo-pdf",
- "tilo-pdf-engine",
- "tilo-rich-text",
- "tilo-session-core",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "pdf-writer"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17424,7 +17385,6 @@ dependencies = [
  "music",
  "neighbour-wire",
  "passwords",
- "pdf-viewer",
  "photos",
  "poker",
  "postcard",
@@ -28671,7 +28631,6 @@ dependencies = [
  "pathdiff",
  "pbkdf2 0.12.2",
  "pbkdf2 0.13.0",
- "pdf-viewer",
  "pdf-writer",
  "pdfium-render",
  "peg",

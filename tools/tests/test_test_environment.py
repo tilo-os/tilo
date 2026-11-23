@@ -328,7 +328,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  # script's and proc macro's cache entry by it.
                                  "package(tilo-auth) or package(tilo-rollback) or "
                                  "package(tilo-test-env)": "swtpm",
-                                 "package(tilo-pdf) or package(pdf-viewer) or "
+                                 "package(tilo-pdf) or "
                                  "package(tilo-thumbnail)": "pdf-sandbox",
                                  "package(tilo-agent-session)": "video-render",
                                  "package(tilo-agent-session) and "

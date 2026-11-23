@@ -171,7 +171,6 @@ members = [
     "apps/passwords",
     "apps/passwords-model",
     "apps/passwords-model-wasm",
-    "apps/pdf-viewer",
     "apps/print-centre",
     "apps/print-centre-model",
     "apps/print-centre-model-wasm",

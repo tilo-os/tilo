@@ -836,7 +836,7 @@ class WrapperHandedProgramTests(unittest.TestCase):
                         "TILO_REQUIRE_MEDIA", "TILO_REQUIRE_AUDIO", "TILO_REQUIRE_GPU",
                         "PROPTEST_CASES")
             # Every package whose tests needed one of them.
-            for package in ("tilo-ntfs-helper", "tilo-pdf", "pdf-viewer", "tilo-thumbnail",
+            for package in ("tilo-ntfs-helper", "tilo-pdf", "tilo-thumbnail",
                             "tilo-agent-session", "pam-tilo", "tilo-auth", "tilo-rollback"):
                 with self.subTest(package=package):
                     env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",

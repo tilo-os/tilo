@@ -66,7 +66,7 @@ pub const HEAD_BYTES: usize = 8 * 1024;
 
 const PDF: Landing = Landing {
     app: "pdf-viewer",
-    action: "import-pdf-content",
+    action: "open_source",
     own_resource: true,
     takes: Takes::ContentNamed,
 };

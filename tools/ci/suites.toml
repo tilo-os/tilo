@@ -748,12 +748,12 @@ package = "tilolang-cli"
 # describes Chat and Tasks from their sources, and the layout check's own tests lay out the
 # shell's traditional desktop, and its windows, from its sources; the dev test builds
 # generations of Counter against the repository it is handed; the check test compiles a copy of
-# the PDF viewer's surface, and the build test reads where the runtime names its platforms. The
+# a native app's surface, and the build test reads where the runtime names its platforms. The
 # copy they all stage from is `tests/support`, which names the packages' directory.
 inputs = [
   "crates/platform/tilolang-tilo/tests/native-chat/",
   "apps/tl/",
-  "apps/pdf-viewer/surface.toml",
+  "apps/tasks/surface.toml",
   "crates/lang/tilolang-process/tilo-runtime.toml",
 ]
 readers = [
@@ -1461,19 +1461,12 @@ inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/t
 readers = ["apps/word-processor/build.rs"]
 
 [[cargo]]
-package = "pdf-viewer"
-inputs = ["crates/engines/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
-readers = ["apps/pdf-viewer/build.rs"]
-
-[[cargo]]
 package = "tilo-agent-session"
 # The session tests mount apps against the controlled font fixture and share
-# the browser peer's server test support. Its typed-read tests name the
-# surface the workspace's PDF Viewer publishes, read from the app's own
-# committed file. One flow starts the calendar server the holder's own tests
-# start, from its source.
+# the browser peer's server test support, and its typed-read tests name the
+# surface of an app read from that app's own committed file. One flow starts
+# the calendar server the holder's own tests start, from its source.
 inputs = [
-  "apps/pdf-viewer/surface.toml",
   "apps/tasks/surface.toml",
   "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
   "crates/ui/ui-core/assets/fonts/",

@@ -108,7 +108,7 @@ unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "browser", "canvas", "compat-service", "env-tools", "fs-native",
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "music", "pdf-viewer", "runtime-bundle", "store", "tilo-agent-session",
+    "music", "runtime-bundle", "store", "tilo-agent-session",
     "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
     "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -186,7 +186,7 @@ tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
-packages = ["canvas", "music", "pdf-viewer"]
+packages = ["canvas", "music"]
 heavy = true
 on = ["dispatch", "idle"]
 
@@ -5677,7 +5677,7 @@ default = false
 [[check]]
 name = "test-assets"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
+run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
 outputs = ["/target/test-assets/**"]
 default = false
 

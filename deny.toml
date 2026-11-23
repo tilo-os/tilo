@@ -35,7 +35,6 @@ exclude = [
     "maps",
     "monitor",
     "notes",
-    "pdf-viewer",
     "photos",
     "poker",
     "remote",

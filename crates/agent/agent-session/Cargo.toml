@@ -59,7 +59,6 @@ messages = { path = "../../../apps/messages" }
 model-providers = { path = "../../../apps/model-providers" }
 music = { path = "../../../apps/music", default-features = false, features = [] }
 passwords = { path = "../../../apps/passwords" }
-pdf-viewer = { path = "../../../apps/pdf-viewer" }
 poker = { path = "../../../apps/poker" }
 scratchpad = { path = "../../../apps/scratchpad" }
 settings = { path = "../../../apps/settings", default-features = false, features = [] }
