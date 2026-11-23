@@ -22,7 +22,9 @@
 
 use std::time::Instant;
 
-use crate::common::people::{Device, Person, Site, at, join_together, target};
+use crate::common::people::{
+    Device, Person, Site, join_together, shows_window, start_action, target,
+};
 use serde_json::{Value, json};
 use tilo_actions::remote::RemoteActionTarget;
 use tilo_server_protocol::workspaces::Role;
@@ -31,16 +33,6 @@ use tilo_server_protocol::workspaces::Role;
 pub(crate) const APP: &str = "so.tilo.tasks";
 /// The issue the agent's step makes.
 const TITLE: &str = "Book the ferry";
-
-/// The workspace's `start` of the closed [`APP`], as the host names it: the instance it runs with
-/// no window answers with, or the refusal.
-fn start_action(workspace: &str) -> RemoteActionTarget {
-    at(
-        &tilo_actions::remote::workspace_provider(workspace),
-        &format!("{}{APP}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX),
-        tilo_actions::remote::APPLICATION_START_ACTION,
-    )
-}
 
 /// The first part of the tracker's issues, kept beside its record: where a new issue goes.
 fn first_part() -> String {
@@ -158,13 +150,6 @@ fn step(device: &Device, action: &RemoteActionTarget, args: &Value) -> Value {
     }
 }
 
-/// Whether `device`'s shell shows a window of `app`.
-fn shows_window(device: &Device, app: &str) -> bool {
-    device.ask(&json!({"op": "windows"}))["answer"]["windows"]
-        .as_array()
-        .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
-}
-
 #[test]
 fn an_agents_step_makes_an_issue_with_tasks_closed_and_the_persons_devices_read_it() {
     let ada = Person::new("Ada");
@@ -205,7 +190,7 @@ fn an_agents_step_makes_an_issue_with_tasks_closed_and_the_persons_devices_read_
 
     // The step an agent takes: the workspace's `start` of the closed app, which runs it with no
     // window and names the instance.
-    let started = step(&laptop, &start_action(&site.workspace), &json!({}));
+    let started = step(&laptop, &start_action(&site.workspace, APP), &json!({}));
     let peer = started["peer_id"]
         .as_u64()
         .unwrap_or_else(|| panic!("the start names the instance it ran: {started}"));

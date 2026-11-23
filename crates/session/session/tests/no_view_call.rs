@@ -19,26 +19,12 @@
 use serde_json::json;
 use tilo_server_protocol::workspaces::Role;
 
-use crate::common::people::{Device, Person, Site, at, join_together};
-use tilo_actions::remote::RemoteActionTarget;
+use tilo_actions::remote::{APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX};
+
+use crate::common::people::{Person, Site, join_together, shows_window, start_action};
 
 /// The app whose code the agent's call runs.
 const APP: &str = "so.tilo.lang.tasks";
-/// The workspace's `start` of [`APP`], as the host names it.
-fn start_action(workspace: &str) -> RemoteActionTarget {
-    at(
-        &tilo_actions::remote::workspace_provider(workspace),
-        &format!("{}{APP}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX),
-        tilo_actions::remote::APPLICATION_START_ACTION,
-    )
-}
-
-/// Whether `device`'s shell shows a view of `app`.
-fn shows_window(device: &Device, app: &str) -> bool {
-    device.ask(&json!({"op": "windows"}))["answer"]["windows"]
-        .as_array()
-        .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
-}
 
 #[test]
 fn a_call_of_a_tilolang_app_with_nothing_shown_never_opens_a_view() {
@@ -61,22 +47,33 @@ fn a_call_of_a_tilolang_app_with_nothing_shown_never_opens_a_view() {
 
     // The call an agent makes: the workspace's `start` of the app. It reaches the app's process
     // start, which needs runtimes this check installs none of, and it is answered with that.
-    let answer = laptop.act_wait(&start_action(&site.workspace), &json!({}));
+    let answer = laptop.act_wait(&start_action(&site.workspace, APP), &json!({}));
     assert!(
         answer
             .get("err")
             .is_some_and(|error| error.to_string().contains("could not run without a window")),
         "the call is answered by the process start: {answer}"
     );
+    assert!(!shows_window(&laptop, APP), "the call opened no view");
+
+    // The installed app is listed though no process of it runs: its own open, which starts it.
+    let running = laptop
+        .actions()
+        .into_iter()
+        .any(|row| row.app_id == APP && row.provider.parse::<u64>().is_ok());
+    assert!(!running, "no process of the app publishes anything here");
+    let open = laptop
+        .offered(
+            &format!("{APPLICATION_RESOURCE_PREFIX}{APP}"),
+            APPLICATION_OPEN_ACTION,
+        )
+        .unwrap_or_else(|| panic!("the installed app is listed with its open"));
+    let answer = laptop.act_wait(&open, &json!({}));
+    let state = answer["update"]["state"].as_str();
     assert!(
-        !shows_window(&laptop, APP),
-        "the call opened no view: {:?}",
-        laptop.ask(&json!({"op": "windows"}))
+        state == Some("succeeded") || state == Some("failed"),
+        "the listed call reaches the app's start: {answer}"
     );
-    // Nothing of the app is running, so no call of it is offered either: a view would have to
-    // open for one, and none did.
-    assert!(
-        !laptop.actions().iter().any(|row| row.app_id == APP),
-        "no process of the app publishes anything here"
-    );
+    let view = shows_window(&laptop, APP);
+    assert!(!view, "the listed call opened no view");
 }

@@ -2762,6 +2762,22 @@ pub fn at(provider: &str, resource: &str, action: &str) -> RemoteActionTarget {
     }
 }
 
+/// The workspace's `start` of the closed app `app`, as the host names it.
+pub fn start_action(workspace: &str, app: &str) -> RemoteActionTarget {
+    at(
+        &tilo_actions::remote::workspace_provider(workspace),
+        &format!("{}{app}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX),
+        tilo_actions::remote::APPLICATION_START_ACTION,
+    )
+}
+
+/// Whether `device`'s shell shows a window of `app`.
+pub fn shows_window(device: &Device, app: &str) -> bool {
+    device.ask(&json!({"op": "windows"}))["answer"]["windows"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
+}
+
 /// The settings section `section` (`appearance`, `power`), as the settings service publishes it:
 /// the resource whose `field-edit` action a control, a script or an agent runs.
 pub fn setting_section(section: &str) -> String {
