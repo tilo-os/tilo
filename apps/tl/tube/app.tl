@@ -29,8 +29,8 @@ type Channel (origin: youtube.channel) {
     }
 }
 
-/// A video, as the service says it is, with what the person did with it: liked, kept for later,
-/// and where they left off (the history entry says that).
+/// A video, as the service says it is, with what the person did with it: liked, put on the watch
+/// queue, and where they left off (the history entry says that).
 type Video (origin: youtube.video) {
     key: Text merge register
     title: Text
@@ -50,8 +50,6 @@ type Video (origin: youtube.video) {
     live: Bool
     /// The person liked it.
     liked: Bool
-    /// The person kept it to watch later.
-    watch_later: Bool
     /// The trending feed listed it.
     trending: Bool = false
     /// The search that found it, empty for a video a feed or a page brought in.
@@ -59,7 +57,6 @@ type Video (origin: youtube.video) {
 
     search {
         filter liked "Liked" (icon: .thumbs_up)
-        filter watch_later "Watch later" (icon: .bookmark)
         filter trending "Trending" (icon: .flame)
         sort published newest
         hide thumbnail
@@ -69,7 +66,8 @@ type Video (origin: youtube.video) {
     }
 }
 
-/// A playlist: videos in an order its maker chose.
+/// A playlist: videos in an order its maker chose. The videos are the client's own, held in the
+/// order the playlist lists them, so a page plays and shows them as its maker put them.
 type Playlist (origin: youtube.playlist) {
     key: Text merge register
     title: Text
@@ -77,12 +75,16 @@ type Playlist (origin: youtube.playlist) {
     channel_name: Text
     video_count: Int
     thumbnail: Text
+    /// The keys of the videos it holds, in its maker's order: none until the service answered
+    /// what it holds.
+    video_keys: List<Text>
     /// The search that found it.
     found_for: Text = ""
 
     search {
         sort title a_z
         hide thumbnail
+        hide video_keys
         hide found_for
     }
 }
@@ -99,13 +101,39 @@ type Subscription {
     }
 }
 
+/// One video someone put on the workspace's watch queue. A collection keeps the order its items
+/// were placed in, so the queue is played in the order the videos were put on it, oldest first.
+type QueuedVideo {
+    /// The video's key, as the service names it.
+    key: Text merge register
+}
+
+/// How one member likes to watch. Each member's own record: it follows them to every device, and
+/// a view reads the record of the person looking at it.
+type PlaybackPrefs {
+    member: Actor
+    /// Play the next video when this one ends.
+    autoplay: Bool = false
+    /// How fast it plays: 0.25×, 0.5×, 1×, 1.5×, 2× or 3×.
+    speed: Float = 1.0
+    /// The tallest picture they want, as YouTube names it (`1080p`, `720p`, `480p`), or `auto`
+    /// for the best that fits.
+    quality: Text = "auto"
+    /// Show the video's captions when it has them.
+    captions: Bool = false
+}
+
 /// One video the person watched: when, and where they left off. Watched again, it moves to the
-/// front rather than appearing twice.
+/// front rather than appearing twice. Each entry names the member who watched it, so a member
+/// reads their own history and nobody else's.
 type WatchEntry {
     /// The video's key, as the service names it.
     key: Text merge register
     title: Text
     channel_name: Text
+    /// Who watched it. Empty for an entry the native app's history carried before this one
+    /// recorded members: it stays the workspace's, and watching the video again makes it theirs.
+    member: Option<Actor> = .none
     watched: Time
     /// How far in they were, as a share of its length; zero when they watched it to the end.
     progress: Float = 0.0
@@ -113,11 +141,13 @@ type WatchEntry {
     search {
         sort watched newest
         hide progress
+        hide member
     }
 }
 
 /// What the client holds: the channels, videos and playlists the service answered with, the
-/// person's subscriptions, their watch history, and how the last search stands.
+/// person's subscriptions, the workspace's watch queue, each member's watch history and playback
+/// preferences, and how the last search stands.
 type YouTube {
     /// What the client is called. A root with no text of its own is named by the first text it
     /// holds, so without this the client would be called after the first channel it holds: the
@@ -127,7 +157,11 @@ type YouTube {
     videos: Collection<Video>
     playlists: Collection<Playlist>
     subscriptions: Collection<Subscription>
+    /// The workspace's queue of videos to watch, oldest first.
+    queue: Collection<QueuedVideo>
     history: Collection<WatchEntry>
+    /// Each member's own playback preferences.
+    playback: Collection<PlaybackPrefs>
     /// What the last search asks for, as it was typed.
     search_text: Text = ""
     /// How the search of `search_text` stands: `searching`, `done`, `failed` or empty.
@@ -204,9 +238,36 @@ fn subscribed(yt: YouTube, c: Channel) -> Bool {
     yt.subscriptions.any(s -> s.key == c.key)
 }
 
-/// The video of the history the person watched, newest first, when they watched it.
-fn watched_before(yt: YouTube, v: Video) -> Option<WatchEntry> {
-    yt.history.find(h -> h.key == v.key)
+/// `who`'s own history: the entries they watched, and the ones carried from before this app
+/// recorded members, newest first.
+fn my_history(yt: YouTube, who: Actor) -> List<WatchEntry> {
+    yt.history.filter(h -> h.member == .some(who) or h.member == .none).sort_by(.watched, desc)
+}
+
+/// The entry of `who`'s own history that says when they watched the video, if they did.
+fn watched_before(yt: YouTube, who: Actor, v: Video) -> Option<WatchEntry> {
+    yt.history.find(h -> h.key == v.key and (h.member == .some(who) or h.member == .none))
+}
+
+/// Whether the video is on the workspace's watch queue.
+fn queued(yt: YouTube, key: Text) -> Bool {
+    yt.queue.any(q -> q.key == key)
+}
+
+/// The queue's videos, in the order they were put on it.
+fn queue_videos(yt: YouTube) -> List<Video> {
+    yt.queue.flat_map(q -> yt.videos.filter(v -> v.key == q.key))
+}
+
+/// How `who` likes to watch, when they said: a member who set nothing reads nothing here, and
+/// every default holds.
+fn prefs_for(yt: YouTube, who: Actor) -> Option<PlaybackPrefs> {
+    yt.playback.find(p -> p.member == who)
+}
+
+/// The playlist's videos, in its maker's order: the ones the client holds, by the keys it lists.
+fn playlist_videos(yt: YouTube, p: Playlist) -> List<Video> {
+    p.video_keys.flat_map(key -> yt.videos.filter(v -> v.key == key))
 }
 
 /// The channels the person follows, as the client holds them, by name: a subscription whose
@@ -272,13 +333,27 @@ action like(v: Video, liked: Bool = not v.liked) (
     v.liked = liked
 }
 
-/// Keeps the video to watch later, or takes it off the list.
-action watch_later(v: Video, saved: Bool (label: "On the Watch later list") = not v.watch_later) (
-    label: if v.watch_later { "Remove from Watch later" } else { "Watch later" },
+/// Puts the video on the workspace's watch queue, or takes it off. A video put on it goes after
+/// the ones already waiting, so the queue plays in the order people added to it.
+action watch_later(
+    v: Video,
+    saved: Bool (label: "On the watch queue") = not queued(root YouTube, v.key),
+) (
+    label: if queued(root YouTube, v.key) { "Remove from the queue" } else { "Watch later" },
     icon: .bookmark,
-    on: v.watch_later,
+    on: queued(root YouTube, v.key),
 ) {
-    v.watch_later = saved
+    let yt = root YouTube
+    if saved {
+        if not queued(yt, v.key) { yt.queue.insert(QueuedVideo(key: v.key)) }
+    } else {
+        yt.queue.remove_where(q -> q.key == v.key)
+    }
+}
+
+/// Plays the queue from its oldest video: what was put on it first plays first.
+action play_queue(yt: YouTube) uses time (icon: .play, label: "Play all") {
+    if let first = queue_videos(yt).first() { progress(first, 0.0) }
 }
 
 /// Plays the video, whether or not it was played before.
@@ -289,7 +364,7 @@ primary action play(v: Video) uses time (icon: .play) {
 /// Plays the video from where the person left off, when they did not finish it.
 action resume(v: Video) uses time (icon: .play, label: "Resume") {
     let yt = root YouTube
-    progress(v, watched_before(yt, v)?.progress ?? 0.0)
+    progress(v, watched_before(yt, invoker, v)?.progress ?? 0.0)
 }
 
 /// Records how far into the video the person is, and that they watched it now: it moves to the
@@ -298,9 +373,17 @@ action resume(v: Video) uses time (icon: .play, label: "Resume") {
 /// action, so a video has one place it is played from.
 action progress(v: Video, at: Float) uses time {
     let yt = root YouTube
+    let mine = invoker
     let watched = now
-    if let entry = yt.history.find(h -> h.key == v.key) {
-        entry.progress = at
+    // A video left within twenty seconds of its end is watched whole, not left at its last
+    // second: resuming it starts it again rather than at the credits.
+    let kept = if v.duration > 0 and at + 20.0 / v.duration.to_float() >= 1.0 { 0.0 } else { at }
+    if let entry = yt.history.find(
+            h -> h.key == v.key and (h.member == .some(mine) or h.member == .none),
+        ) {
+        // An entry the native app's history carried becomes theirs when they watch it again.
+        entry.member = .some(mine)
+        entry.progress = kept
         entry.watched = watched
         entry.title = v.title
         entry.channel_name = v.channel_name
@@ -310,23 +393,90 @@ action progress(v: Video, at: Float) uses time {
                 key: v.key,
                 title: v.title,
                 channel_name: v.channel_name,
+                member: .some(mine),
                 watched: watched,
-                progress: at,
+                progress: kept,
             ),
         )
     }
     if v.stream == "" { outside("youtube.stream", v.key) }
 }
 
-/// Takes one video out of the history.
+/// Takes one video out of the person's own history.
 destructive action forget(v: Video) (icon: .trash, label: "Delete from history") {
     let yt = root YouTube
-    yt.history.remove_where(h -> h.key == v.key)
+    let mine = invoker
+    yt.history.remove_where(h -> h.key == v.key and (h.member == .some(mine) or h.member == .none))
 }
 
-/// Deletes the watch history: everything the person watched.
+/// Deletes the person's own watch history, and the entries carried from before it recorded
+/// members, which this history shows them; nobody else's.
 destructive action delete_history(yt: YouTube) (icon: .trash, label: "Delete history") {
-    yt.history.remove_where(h -> true)
+    let mine = invoker
+    yt.history.remove_where(h -> h.member == .some(mine) or h.member == .none)
+}
+
+/// Asks the service for where the video's bytes play from again, after the player could not show
+/// them: the address the client holds is the service's alone to write, and the answer it gives
+/// now is what the player opens.
+action retry_playback(v: Video) (icon: .refresh, label: "Try again") {
+    outside("youtube.stream", v.key)
+}
+
+/// Asks the service for what the playlist holds, in its maker's order.
+action refresh_playlist(p: Playlist) (icon: .refresh, label: "Refresh") {
+    outside("youtube.playlist", p.key)
+}
+
+/// Plays the playlist from its first video.
+action play_playlist(p: Playlist) uses time (icon: .play, label: "Play all") {
+    let yt = root YouTube
+    if let first = playlist_videos(yt, p).first() { progress(first, 0.0) }
+}
+
+/// Each of these keeps one of the person's own playback preferences: the record is theirs, made
+/// the first time they set one, and every other member reads their own.
+action set_autoplay(yt: YouTube, on: Bool) (icon: .play, label: "Autoplay next video") {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.autoplay = on
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.autoplay = on
+    }
+}
+
+/// How fast videos play for the person: 0.25 to 3, 1 for the usual speed.
+action set_speed(yt: YouTube, speed: Float) (icon: .gauge, label: "Playback speed") {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.speed = speed
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.speed = speed
+    }
+}
+
+/// The tallest picture the person wants, as YouTube names it; `auto` takes the best that fits.
+action set_quality(yt: YouTube, quality: Text) (icon: .settings, label: "Preferred quality") {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.quality = quality
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.quality = quality
+    }
+}
+
+/// Whether videos show their captions for the person.
+action set_captions(yt: YouTube, on: Bool) (icon: .message_square, label: "Captions") {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.captions = on
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.captions = on
+    }
 }
 
 /// Searches YouTube: the service answers with channels, playlists and videos, written where the
@@ -374,9 +524,11 @@ action load_trending(yt: YouTube) (icon: .flame, label: "Refresh trending") {
 }
 
 /// What the native Tube kept before this app took its id over, carried into this one once: the
-/// channels subscribed to, the videos liked and kept for later, and the watch history with when
+/// channels subscribed to, the videos liked, the watch queue, and the watch history with when
 /// each video was watched. The native app kept a video by its key alone, so each one carried is
-/// that key until the service answers with the rest. Its comment likes and replies stay where
+/// that key until the service answers with the rest. The history carried came before this app
+/// recorded who watched what, so its entries name no member and stay the workspace's until
+/// someone watches one of the videos again. Its comment likes and replies stay where
 /// they are: this app shows no comments. The native app's own documents are left as they are.
 migration action carry_native_tube(yt: YouTube) {
     for kept in earlier(yt).filter(e -> e.of == "") {
@@ -393,10 +545,11 @@ migration action carry_native_tube(yt: YouTube) {
             }
         }
         for key in kept.lists.get("queue") ?? [] {
-            if let v = yt.videos.find(x -> x.key == key) {
-                v.watch_later = true
-            } else {
-                yt.videos.insert(Video(key: key, watch_later: true))
+            if not yt.queue.any(q -> q.key == key) {
+                // The queue reads a video's name from the video the service answers with; one it
+                // has not answered about yet is carried as its key, and the queue still holds it.
+                if not yt.videos.any(x -> x.key == key) { yt.videos.insert(Video(key: key)) }
+                yt.queue.insert(QueuedVideo(key: key))
             }
         }
         // When each video was watched, in milliseconds since 1970 as the native app kept it.
@@ -423,8 +576,9 @@ view feed(yt: YouTube) {
     state place: Text = "subscriptions"
     let subs = subscribed_videos(yt)
     let trending = trending_videos(yt)
-    let later = yt.videos.filter(.watch_later).sort_by(.published, desc)
+    let later = queue_videos(yt)
     let liked = yt.videos.filter(.liked).sort_by(.published, desc)
+    let mine = my_history(yt, workspace.me)
     // A search shows its own place until the person chooses another: choosing a place closes the
     // search (`end_search`), so the feed they pick is the one that shows.
     let searched = yt.search_state != ""
@@ -448,7 +602,7 @@ view feed(yt: YouTube) {
                     ui.NavItem("liked", "Liked videos", icon: .thumbs_up, count: liked.len()) {
                         on select: set(place, "liked").then(end_search(yt))
                     }
-                    ui.NavItem("history", "History", icon: .history, count: yt.history.len()) {
+                    ui.NavItem("history", "History", icon: .history, count: mine.len()) {
                         on select: set(place, "history").then(end_search(yt))
                     }
                 }
@@ -479,7 +633,28 @@ view feed(yt: YouTube) {
                     } else if here == "history" {
                         history_list(yt, in_column: false)
                     } else if here == "later" {
-                        video_grid(later, "Nothing kept for later")
+                        if later.is_empty() {
+                            ui.EmptyState(
+                                "Nothing on the watch queue",
+                                message: "Videos you keep for later wait here, oldest first",
+                                icon: .bookmark,
+                            )
+                        } else {
+                            // The queue is played from what was put on it first, and the heading
+                            // says how many wait, so a video added later is never lost out of
+                            // sight at the end of a long grid.
+                            stack(gap: .group) {
+                                if later.len() > 1 {
+                                    text("{later.len()} videos, oldest first", role: .caption)
+                                }
+                                row(gap: .related, align: .center) {
+                                    ui.Button("Play all", icon: .play, role: .primary) {
+                                        on press: play_queue(yt)
+                                    }
+                                }
+                                video_grid(later, "")
+                            }
+                        }
                     } else if here == "liked" {
                         video_grid(liked, "Nothing liked yet")
                     } else if here == "trending" {
@@ -631,7 +806,7 @@ fn share_text(share: Float) -> Text {
 /// the video they watched.
 view watched_page(h: WatchEntry) {
     let yt = root YouTube
-    let entries = yt.history.sort_by(.watched, desc)
+    let entries = my_history(yt, workspace.me)
     ui.NavShell(content_kind: .list, title: "History", count: entries.len()) {
         actions: {
             std.header {
@@ -647,7 +822,7 @@ view watched_page(h: WatchEntry) {
 /// The history in the feed's content: the same rows as its own place draws. The feed scrolls its
 /// page, so the list stands as tall as its rows there; its own place gives it the column.
 view history_list(yt: YouTube, in_column: Bool) {
-    let entries = yt.history.sort_by(.watched, desc)
+    let entries = my_history(yt, workspace.me)
     if entries.is_empty() {
         ui.EmptyState("Nothing watched yet")
     } else {
@@ -722,9 +897,11 @@ view channel_page(c: Channel) {
 /// it says, and what YouTube plays next.
 view video_page(v: Video) {
     state playing: Bool = false
+    // Why the player could not show the video, in its own words; empty while it plays or waits.
+    state failed: Text = ""
     let yt = root YouTube
     let channel = yt.channels.find(c -> c.key == v.channel_key)
-    let left = watched_before(yt, v)?.progress ?? 0.0
+    let left = watched_before(yt, workspace.me, v)?.progress ?? 0.0
     std.page(v, canvas: true) {
         header: {
             button(like(v)) as like
@@ -760,7 +937,24 @@ view video_page(v: Video) {
                 ) {
                     on set_playing(now_playing: Bool): set(playing, now_playing)
                     on seek(place: Float): progress(v, place)
+                    // The player reports where it got to every five seconds and once when it
+                    // stops, so a video watched without touching the playhead is remembered
+                    // where it was left.
+                    on progress(at: Float): progress(v, at)
+                    on fail(reason: Text): set(failed, reason)
                 }
+            }
+        }
+        // The player could not show the video: what the engine said, and one press to ask the
+        // service for the address again.
+        if failed != "" {
+            ui.Banner(
+                "This video won't play here",
+                message: failed,
+                kind: .warning,
+                action: "Try again",
+            ) {
+                on act: set(failed, "").then(retry_playback(v))
             }
         }
         // What the video is: its name, who made it and what people did with it, under the
@@ -797,7 +991,7 @@ view video_page(v: Video) {
                 ui.Button(
                     "Watch later",
                     icon: .bookmark,
-                    toggled: v.watch_later,
+                    toggled: queued(yt, v.key),
                     icon_only: false,
                 ) {
                     on press: watch_later(v)
@@ -823,11 +1017,17 @@ view video_page(v: Video) {
     }
 }
 
-/// A playlist's page: what it holds.
+/// A playlist's page: what it holds, in the order its maker put it in, and the way to play it
+/// from the first.
 view playlist_page(p: Playlist) {
     let yt = root YouTube
-    let videos = yt.videos.filter(v -> v.channel_key == p.channel_key).sort_by(.published, desc)
+    let videos = playlist_videos(yt, p)
     std.page(p, canvas: true) {
+        header: {
+            ui.Button("Refresh", icon: .refresh, icon_only: true) {
+                on press: refresh_playlist(p)
+            }
+        }
         row(gap: .section, align: .center) {
             if p.thumbnail != "" {
                 ui.Image(p.thumbnail, alt: p.title, fit: .cover, aspect: 16.0 / 9.0, max: 20rem)
@@ -836,9 +1036,24 @@ view playlist_page(p: Playlist) {
                 text(p.title, role: .title)
                 text(p.channel_name, role: .caption)
                 text("{p.video_count} videos", role: .caption)
+                if not videos.is_empty() {
+                    row(gap: .tight) {
+                        ui.Button("Play all", icon: .play, role: .primary) {
+                            on press: play_playlist(p)
+                        }
+                    }
+                }
             }
         }
-        video_grid(videos, "Nothing here yet")
+        if videos.is_empty() {
+            ui.EmptyState(
+                "Nothing shown from this playlist yet",
+                message: "Its videos appear once YouTube says what it holds",
+                icon: .list_video,
+            )
+        } else {
+            video_grid(videos, "")
+        }
     }
 }
 
@@ -848,7 +1063,7 @@ view video_row(v: Video) {
         v.title,
         secondary: v.channel_name,
         meta: v.published,
-        mark: if v.watch_later { .bookmark } else if v.liked { .thumbs_up },
+        mark: if queued(root YouTube, v.key) { .bookmark } else if v.liked { .thumbs_up },
     )
 }
 
@@ -1032,17 +1247,19 @@ scenario "a subscriptions feed" {
             live: false,
         ),
     )
-    // Two videos kept for later, two liked, and three the person watched.
-    bread.watch_later = true
-    rehearsal.watch_later = true
+    // Two videos on the watch queue, oldest first, two liked, and three the person watched.
+    let mine = invoker
+    let watched = now
+    yt.queue.insert(QueuedVideo(key: rehearsal.key))
+    yt.queue.insert(QueuedVideo(key: bread.key))
     magnet.liked = true
     wires.liked = true
-    let watched = now
     yt.history.insert(
         WatchEntry(
             key: phone.key,
             title: phone.title,
             channel_name: phone.channel_name,
+            member: .some(mine),
             watched: watched,
             progress: 0.35,
         ),
@@ -1052,6 +1269,7 @@ scenario "a subscriptions feed" {
             key: cache.key,
             title: cache.title,
             channel_name: cache.channel_name,
+            member: .some(mine),
             watched: watched,
             progress: 0.0,
         ),
@@ -1061,17 +1279,20 @@ scenario "a subscriptions feed" {
             key: wires.key,
             title: wires.title,
             channel_name: wires.channel_name,
+            member: .some(mine),
             watched: watched,
             progress: 0.72,
         ),
     )
+    // A playlist holds its own videos in its maker's order, which here is the older first.
     yt.playlists.insert(
         Playlist(
             key: "pl-science",
             title: "Science, explained",
             channel_name: veritasium.name,
             channel_key: veritasium.key,
-            video_count: 24,
+            video_count: 2,
+            video_keys: [wires.key, magnet.key],
         ),
     )
     yt
@@ -1161,6 +1382,7 @@ scenario "a video playing" -> Video {
             key: v.key,
             title: v.title,
             channel_name: v.channel_name,
+            member: .some(invoker),
             watched: now,
             progress: 0.4,
         ),
@@ -1346,12 +1568,14 @@ scenario "a watch history" -> WatchEntry {
             likes: 41000,
         ),
     )
+    let mine = invoker
     let watched = now
     yt.history.insert(
         WatchEntry(
             key: phone.key,
             title: phone.title,
             channel_name: phone.channel_name,
+            member: .some(mine),
             watched: watched,
             progress: 0.35,
         ),
@@ -1361,6 +1585,7 @@ scenario "a watch history" -> WatchEntry {
             key: watch.key,
             title: watch.title,
             channel_name: watch.channel_name,
+            member: .some(mine),
             watched: watched,
             progress: 0.0,
         ),
@@ -1370,6 +1595,7 @@ scenario "a watch history" -> WatchEntry {
             key: laptop.key,
             title: laptop.title,
             channel_name: laptop.channel_name,
+            member: .some(mine),
             watched: watched,
             progress: 0.72,
         ),

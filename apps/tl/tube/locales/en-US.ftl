@@ -30,7 +30,7 @@ d-2ap24kjm = Found for
     .doc = The search that found it, empty for a channel the person's subscriptions or a page brought in.
 
 d-albed4jx = Video
-    .doc = A video, as the service says it is, with what the person did with it: liked, kept for later, and where they left off (the history entry says that).
+    .doc = A video, as the service says it is, with what the person did with it: liked, put on the watch queue, and where they left off (the history entry says that).
     .noun = { $count ->
         [one] video
        *[other] videos
@@ -68,9 +68,6 @@ d-jfam7tjf = Live
 d-bifohbpv = Liked
     .doc = The person liked it.
 
-d-vvtm26ea = Watch later
-    .doc = The person kept it to watch later.
-
 d-4mojz3hw = Trending
     .doc = The trending feed listed it.
 
@@ -78,8 +75,6 @@ d-5o5fpqgh = Found for
     .doc = The search that found it, empty for a video a feed or a page brought in.
 
 d-albed4jx-filter-liked = Liked
-
-d-albed4jx-filter-watch_later = Watch later
 
 d-albed4jx-filter-trending = Trending
 
@@ -102,6 +97,9 @@ d-6cllrl7x = Video count
 
 d-4xvzshd7 = Thumbnail
 
+d-dge65utd = Video keys
+    .doc = The keys of the videos it holds, in its maker's order: none until the service answered what it holds.
+
 d-p3yw6p2h = Found for
     .doc = The search that found it.
 
@@ -117,6 +115,45 @@ d-slhmwv67 = Key
 
 d-ynf67l6e = Name
 
+d-r6snpxjs = Queued video
+    .doc = One video someone put on the workspace's watch queue.
+    .noun = { $count ->
+        [one] queued video
+       *[other] queued videos
+    }
+
+d-o3xolmld = Key
+    .doc = The video's key, as the service names it.
+
+d-qynvz25p = Playback prefs
+    .doc = How one member likes to watch.
+    .noun = { $count ->
+        [one] playback pref
+       *[other] playback prefs
+    }
+
+d-5twttwwn = Member
+
+d-vze2yftu = Autoplay
+    .doc = Play the next video when this one ends.
+
+d-5bpxm33f = Speed
+    .doc = How fast it plays: 0.25×, 0.5×, 1×, 1.5×, 2× or 3×.
+
+d-lesyml4z = Quality
+    .doc = The tallest picture they want, as YouTube names it (`1080p`, `720p`, `480p`), or `auto` for the best that fits.
+
+d-u3fgpv6e = Captions
+    .doc = Show the video's captions when it has them.
+
+d-qynvz25p-filter-member = Member
+
+d-qynvz25p-filter-autoplay = Autoplay
+
+d-qynvz25p-filter-speed = Speed
+
+d-qynvz25p-filter-captions = Captions
+
 d-kgojom6f = Watch entry
     .doc = One video the person watched: when, and where they left off.
     .noun = { $count ->
@@ -130,6 +167,9 @@ d-noppuxpb = Key
 d-stuii7l7 = Title
 
 d-j37y2bbw = Channel name
+
+d-7mtvj3xd = Member
+    .doc = Who watched it.
 
 d-dmm6f63t = Watched
 
@@ -155,7 +195,13 @@ d-v5sh2bpr = Playlists
 
 d-iputtmua = Subscriptions
 
+d-jgjqgesf = Queue
+    .doc = The workspace's queue of videos to watch, oldest first.
+
 d-hv25j74h = History
+
+d-epgpppzy = Playback
+    .doc = Each member's own playback preferences.
 
 d-bqesicxq = Search text
     .doc = What the last search asks for, as it was typed.
@@ -195,11 +241,14 @@ d-weyz2uyl = Like
 d-weyz2uyl-liked = Liked
 
 d-yw4tuoq4 = Watch later
-    .doc = Keeps the video to watch later, or takes it off the list.
-    .w-remove-from-watch-later = Remove from Watch later
+    .doc = Puts the video on the workspace's watch queue, or takes it off.
+    .w-remove-from-the-queue = Remove from the queue
     .w-watch-later = Watch later
 
-d-yw4tuoq4-saved = On the Watch later list
+d-yw4tuoq4-saved = On the watch queue
+
+d-4bg5hmr2 = Play all
+    .doc = Plays the queue from its oldest video: what was put on it first plays first.
 
 d-6ux63onw = Play
     .doc = Plays the video, whether or not it was played before.
@@ -213,10 +262,39 @@ d-jxokfijg = Progress
 d-jxokfijg-at = At
 
 d-oqumfxkj = Delete from history
-    .doc = Takes one video out of the history.
+    .doc = Takes one video out of the person's own history.
 
 d-wzt3qvyb = Delete history
-    .doc = Deletes the watch history: everything the person watched.
+    .doc = Deletes the person's own watch history, and the entries carried from before it recorded members, which this history shows them; nobody else's.
+
+d-4hpmg3yw = Try again
+    .doc = Asks the service for where the video's bytes play from again, after the player could not show them: the address the client holds is the service's alone to write, and the answer it gives now is what the player opens.
+
+d-edbp7ej2 = Refresh
+    .doc = Asks the service for what the playlist holds, in its maker's order.
+
+d-7lfzugkh = Play all
+    .doc = Plays the playlist from its first video.
+
+d-lcvxshh4 = Autoplay next video
+    .doc = Each of these keeps one of the person's own playback preferences: the record is theirs, made the first time they set one, and every other member reads their own.
+
+d-lcvxshh4-on = On
+
+d-3r5wepfg = Playback speed
+    .doc = How fast videos play for the person: 0.25 to 3, 1 for the usual speed.
+
+d-3r5wepfg-speed = Speed
+
+d-lzop6dva = Preferred quality
+    .doc = The tallest picture the person wants, as YouTube names it; `auto` takes the best that fits.
+
+d-lzop6dva-quality = Quality
+
+d-fmurpek2 = Captions
+    .doc = Whether videos show their captions for the person.
+
+d-fmurpek2-on = On
 
 d-6lgqby4s = Search
     .doc = Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them.
@@ -238,7 +316,7 @@ d-khblapap = Refresh trending
     .doc = Asks the service for the videos it lists as trending.
 
 d-t3cwabaw = Carry native tube
-    .doc = What the native Tube kept before this app took its id over, carried into this one once: the channels subscribed to, the videos liked and kept for later, and the watch history with when each video was watched.
+    .doc = What the native Tube kept before this app took its id over, carried into this one once: the channels subscribed to, the videos liked, the watch queue, and the watch history with when each video was watched.
 
 d-yc4rjoeg = Play again
     .doc = Plays the video a history entry names, from where the person left off.
@@ -265,7 +343,10 @@ d-mufcicuu = Feed
     .w-watch-later = Watch later
     .w-liked-videos = Liked videos
     .w-history = History
-    .w-nothing-kept-for-later = Nothing kept for later
+    .w-nothing-on-the-watch-queue = Nothing on the watch queue
+    .w-videos-you-keep-for-later-wait = Videos you keep for later wait here, oldest first
+    .w-videos-oldest-first = { $len } videos, oldest first
+    .w-play-all = Play all
     .w-nothing-liked-yet = Nothing liked yet
     .w-nothing-trending-yet = Nothing trending yet
     .w-refresh-trending = Refresh trending
@@ -311,6 +392,8 @@ d-yh23kjna = Channel page
 
 d-w7mpbzm4 = Video page
     .w-play = Play
+    .w-this-video-won-t-play-here = This video won't play here
+    .w-try-again = Try again
     .w-unsubscribe = Unsubscribe
     .w-subscribe = Subscribe
     .w-liked = Liked
@@ -321,8 +404,11 @@ d-w7mpbzm4 = Video page
     .w-found-for = Found for { $found_for }
 
 d-eijjevst = Playlist page
+    .w-refresh = Refresh
     .w-videos = { $video_count } videos
-    .w-nothing-here-yet = Nothing here yet
+    .w-play-all = Play all
+    .w-nothing-shown-from-this-playlist-yet = Nothing shown from this playlist yet
+    .w-its-videos-appear-once-youtube-says = Its videos appear once YouTube says what it holds
 
 d-z642pnnw = Video row
 

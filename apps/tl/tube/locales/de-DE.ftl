@@ -29,7 +29,7 @@ d-2ap24kjm = Gefunden über
     .doc = Die Suche, die ihn fand; leer für einen Kanal, den die Abonnements der Person oder eine Seite hereingebracht haben.
 
 d-albed4jx = Video
-    .doc = Ein Video, wie der Dienst es beschreibt, mit dem, was die Person damit gemacht hat: mit „Gefällt mir“ markiert, für später behalten und wo sie aufgehört hat (das sagt der Verlaufseintrag).
+    .doc = Ein Video, wie der Dienst es beschreibt, mit dem, was die Person damit gemacht hat: mit „Gefällt mir“ markiert, auf die Warteschlange gesetzt und wo sie aufgehört hat (das sagt der Verlaufseintrag).
     .noun = { $count ->
         [one] Video
        *[other] Videos
@@ -67,9 +67,6 @@ d-jfam7tjf = Live
 d-bifohbpv = Gefällt mir
     .doc = Die Person hat es mit „Gefällt mir“ markiert.
 
-d-vvtm26ea = Später ansehen
-    .doc = Die Person hat es für später behalten.
-
 d-4mojz3hw = Im Trend
     .doc = Der Trend-Feed hat es aufgeführt.
 
@@ -78,12 +75,10 @@ d-5o5fpqgh = Gefunden über
 
 d-albed4jx-filter-liked = Gefällt mir
 
-d-albed4jx-filter-watch_later = Später ansehen
-
 d-albed4jx-filter-trending = Im Trend
 
 d-mmzhfe3o = Wiedergabeliste
-    .doc = Eine Wiedergabeliste: Videos in einer Reihenfolge, die ihre Erstellerin gewählt hat.
+    .doc = Eine Wiedergabeliste: Videos in einer Reihenfolge, die ihre Erstellerin gewählt hat. Die Videos sind die des Clients, in der Reihenfolge der Wiedergabeliste gehalten, sodass eine Seite sie so zeigt und abspielt, wie ihre Erstellerin sie geordnet hat.
     .noun = { $count ->
         [one] Wiedergabeliste
        *[other] Wiedergabelisten
@@ -117,7 +112,7 @@ d-slhmwv67 = Schlüssel
 d-ynf67l6e = Name
 
 d-kgojom6f = Verlaufseintrag
-    .doc = Ein Video, das die Person gesehen hat: wann und wo sie aufgehört hat.
+    .doc = Ein Video, das die Person gesehen hat: wann und wo sie aufgehört hat. Jeder Eintrag nennt die Person, die es gesehen hat, sodass jede Person nur den eigenen Verlauf liest.
     .noun = { $count ->
         [one] Verlaufseintrag
        *[other] Verlaufseinträge
@@ -194,11 +189,11 @@ d-weyz2uyl = Gefällt mir
 d-weyz2uyl-liked = Gefällt mir
 
 d-yw4tuoq4 = Später ansehen
-    .doc = Behält das Video für später oder nimmt es von der Liste.
-    .w-remove-from-watch-later = Von „Später ansehen“ entfernen
+    .doc = Setzt das Video auf die Warteschlange des Workspace oder nimmt es herunter. Ein neu hinzugefügtes Video steht hinter den schon wartenden, sodass die Warteschlange in der Reihenfolge abgespielt wird, in der Videos hinzugefügt wurden.
+    .w-remove-from-the-queue = Von der Warteschlange entfernen
     .w-watch-later = Später ansehen
 
-d-yw4tuoq4-saved = Auf der Später-ansehen-Liste
+d-yw4tuoq4-saved = Auf der Warteschlange
 
 d-6ux63onw = Abspielen
     .doc = Spielt das Video ab, ob es schon abgespielt wurde oder nicht.
@@ -212,10 +207,10 @@ d-jxokfijg = Fortschritt
 d-jxokfijg-at = Bei
 
 d-oqumfxkj = Aus dem Verlauf löschen
-    .doc = Nimmt ein Video aus dem Verlauf.
+    .doc = Nimmt ein Video aus dem eigenen Verlauf.
 
 d-wzt3qvyb = Verlauf löschen
-    .doc = Löscht den Verlauf: alles, was die Person gesehen hat.
+    .doc = Löscht den eigenen Verlauf, und den niemandes sonst.
 
 d-6lgqby4s = Suchen
     .doc = Durchsucht YouTube: der Dienst antwortet mit Kanälen, Wiedergabelisten und Videos, geschrieben, wo die Suchansicht sie auflistet.
@@ -261,7 +256,6 @@ d-mufcicuu = Feed
     .w-watch-later = Später ansehen
     .w-liked-videos = Videos mit „Gefällt mir“
     .w-history = Verlauf
-    .w-nothing-kept-for-later = Nichts für später behalten
     .w-nothing-liked-yet = Noch nichts mit „Gefällt mir“
     .w-nothing-trending-yet = Noch nichts im Trend
     .w-refresh-trending = Trends aktualisieren
@@ -272,6 +266,10 @@ d-mufcicuu = Feed
     .w-can-t-reach = { $name } ist nicht erreichbar
     .w-last-fetched = { $reason }. Zuletzt geholt { $fetched }
     .w-try-again = Erneut versuchen
+    .w-nothing-on-the-watch-queue = Nichts auf der Warteschlange
+    .w-play-all = Alle abspielen
+    .w-videos-oldest-first = { $len } Videos, älteste zuerst
+    .w-videos-you-keep-for-later-wait = Videos, die du für später behältst, warten hier, älteste zuerst
 
 d-dfz6u5sa = Videoraster
 
@@ -315,10 +313,15 @@ d-w7mpbzm4 = Videoseite
     .w-live = Live
     .w-description = Beschreibung
     .w-found-for = Gefunden über { $found_for }
+    .w-this-video-won-t-play-here = Dieses Video lässt sich hier nicht abspielen
+    .w-try-again = Erneut versuchen
 
 d-eijjevst = Wiedergabelistenseite
     .w-videos = { $video_count } Videos
-    .w-nothing-here-yet = Noch nichts hier
+    .w-its-videos-appear-once-youtube-says = Ihre Videos erscheinen, sobald YouTube sagt, was sie enthält
+    .w-nothing-shown-from-this-playlist-yet = Aus dieser Wiedergabeliste wird noch nichts gezeigt
+    .w-play-all = Alle abspielen
+    .w-refresh = Aktualisieren
 
 d-z642pnnw = Videozeile
 
@@ -327,4 +330,87 @@ d-uiu73od5 = Kanalzeile
 d-pgyjhoe2 = Verlaufszeile
 
 d-t3cwabaw = Früheres Tube übernehmen
-    .doc = Was das frühere Tube vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: die abonnierten Kanäle, die mit Gefällt mir markierten und für später aufgehobenen Videos und der Verlauf mit der Zeit, zu der jedes Video angesehen wurde.
+    .doc = Was das frühere Tube vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: die abonnierten Kanäle, die mit Gefällt mir markierten Videos, die Warteschlange und der Verlauf mit der Zeit, zu der jedes Video angesehen wurde. Der übernommene Verlauf entstand, bevor dieses Programm festhielt, wer was gesehen hat; seine Einträge nennen daher niemanden und bleiben die des Workspace, bis jemand eines der Videos erneut sieht.
+
+d-r6snpxjs = Vorgemerktes Video
+    .doc = Ein Video, das jemand auf die Warteschlange des Workspace gesetzt hat. Eine Sammlung behält die Reihenfolge, in der ihre Einträge hinzugefügt wurden, sodass die Warteschlange in der Reihenfolge abgespielt wird, in der Videos hinzugefügt wurden.
+    .noun = { $count ->
+        [one] Vorgemerktes Video
+       *[other] Vorgemerkte Videos
+    }
+
+d-o3xolmld = Schlüssel
+    .doc = Der Schlüssel des Videos, wie der Dienst ihn nennt.
+
+d-qynvz25p = Wiedergabeeinstellungen
+    .doc = Wie eine Person gerne sieht. Der eigene Eintrag jeder Person: er folgt ihr auf jedes Gerät, und eine Ansicht liest den Eintrag der Person, die sie ansieht.
+    .noun = { $count ->
+        [one] Wiedergabeeinstellung
+       *[other] Wiedergabeeinstellungen
+    }
+
+d-qynvz25p-filter-autoplay = Automatisch weiterspielen
+
+d-qynvz25p-filter-captions = Untertitel
+
+d-qynvz25p-filter-member = Person
+
+d-qynvz25p-filter-speed = Geschwindigkeit
+
+d-5twttwwn = Person
+
+d-vze2yftu = Automatisch weiterspielen
+    .doc = Spielt das nächste Video ab, wenn dieses endet.
+
+d-5bpxm33f = Geschwindigkeit
+    .doc = Wie schnell es läuft: 0,25×, 0,5×, 1×, 1,5×, 2× oder 3×.
+
+d-lesyml4z = Bevorzugte Qualität
+    .doc = Das höchste Bild, das sie möchte, wie YouTube es nennt (1080p, 720p, 480p), oder auto für das beste, das passt.
+
+d-u3fgpv6e = Untertitel
+    .doc = Untertitel zeigen, wenn das Video welche hat.
+
+d-7mtvj3xd = Gesehen von
+    .doc = Wer es gesehen hat. Leer für einen Eintrag aus dem Verlauf des früheren Tube, bevor dieses Programm festhielt, wer was gesehen hat: er bleibt der des Workspace, und wer das Video erneut sieht, macht ihn zu seinem.
+
+d-dge65utd = Videos
+    .doc = Die Schlüssel der Videos, in der Reihenfolge ihrer Erstellerin: keine, bis der Dienst geantwortet hat, was sie enthält.
+
+d-jgjqgesf = Warteschlange
+    .doc = Die Warteschlange des Workspace, älteste zuerst.
+
+d-epgpppzy = Wiedergabeeinstellungen aller
+    .doc = Die Wiedergabeeinstellungen jeder Person.
+
+d-4bg5hmr2 = Alle abspielen
+    .doc = Spielt die Warteschlange ab ihrem ältesten Video ab: was zuerst hinzugefügt wurde, läuft zuerst.
+
+d-7lfzugkh = Alle abspielen
+    .doc = Spielt die Wiedergabeliste ab ihrem ersten Video ab.
+
+d-edbp7ej2 = Aktualisieren
+    .doc = Fragt den Dienst, was die Wiedergabeliste enthält, in der Reihenfolge ihrer Erstellerin.
+
+d-4hpmg3yw = Erneut versuchen
+    .doc = Fragt den Dienst erneut, wo die Daten des Videos abgespielt werden, nachdem der Player sie nicht zeigen konnte: die Adresse, die der Client hält, schreibt allein der Dienst, und seine neue Antwort ist die, die der Player öffnet.
+
+d-lcvxshh4 = Automatisch weiterspielen
+    .doc = Jede dieser Aktionen hält eine der Wiedergabeeinstellungen der Person fest: der Eintrag gehört ihr, entsteht beim ersten Setzen, und jede andere Person liest ihre eigenen.
+
+d-3r5wepfg = Wiedergabegeschwindigkeit
+    .doc = Wie schnell Videos für die Person laufen: 0,25 bis 3, 1 für die übliche Geschwindigkeit.
+
+d-lzop6dva = Bevorzugte Qualität
+    .doc = Das höchste Bild, das die Person möchte, wie YouTube es nennt; auto nimmt das beste, das passt.
+
+d-fmurpek2 = Untertitel
+    .doc = Ob Videos ihre Untertitel für die Person zeigen.
+
+d-lcvxshh4-on = Ein
+
+d-3r5wepfg-speed = Geschwindigkeit
+
+d-lzop6dva-quality = Qualität
+
+d-fmurpek2-on = Ein
