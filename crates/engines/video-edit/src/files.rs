@@ -57,13 +57,6 @@ fn kept_token(path: &str) -> Option<&str> {
 
 /// Whether a project media `path` names a copy imported by contents, on
 /// this device or another.
-#[cfg_attr(
-    feature = "decode",
-    expect(
-        dead_code,
-        reason = "only the seeking frame source of a build without GStreamer asks"
-    )
-)]
 pub fn is_kept(path: &str) -> bool {
     kept_token(path).is_some()
 }
@@ -159,13 +152,6 @@ static MISSING: std::sync::Mutex<std::collections::BTreeSet<String>> =
 
 /// Whether the kept copy `path` names was looked for here and is not here,
 /// so [`kept_source`] will never have it.
-#[cfg_attr(
-    feature = "decode",
-    expect(
-        dead_code,
-        reason = "only the seeking frame source of a build without GStreamer asks"
-    )
-)]
 pub fn kept_missing(path: &str) -> bool {
     kept_token(path).is_some_and(|token| MISSING.lock().is_ok_and(|m| m.contains(token)))
 }
