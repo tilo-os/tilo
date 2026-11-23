@@ -281,6 +281,18 @@ impl Running {
         self.person.within(within)?.start_shell(command)
     }
 
+    /// The shell's end of a link the daemon made, once the person's services run (within
+    /// `within`): made and admitted exactly as [`Self::start_shell`] hands one to the shell it
+    /// starts, for a test's session that runs in this process to take instead
+    /// (`tilo_session::Options::shell_link`).
+    ///
+    /// # Errors
+    /// The person's services did not start in time, or the link could not be made.
+    #[cfg(feature = "test-support")]
+    pub fn link_shell(&self, within: Duration) -> io::Result<std::os::fd::OwnedFd> {
+        Ok(self.person.within(within)?.shell_link()?.into())
+    }
+
     /// Where the daemon's native endpoint listens.
     #[must_use]
     pub fn native_socket(&self) -> &Path {

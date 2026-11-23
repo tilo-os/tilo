@@ -48,6 +48,10 @@ dev-session = []
 # throwaway identity, so the feature carries the identity crate's minting too: a
 # session built on its own (a component swap) mints as a dev image's does.
 dev-overrides = ["tilo-identity/throwaway-test-identity"]
+# Starts a test's session in the test's own process as the daemon's shell
+# (`shell_session::start_in_process`), on a link the daemon made for it. A
+# production session never builds it: the daemon starts its shell itself.
+test-support = ["tilo-runtime/test-support"]
 
 [dependencies]
 anyhow.workspace = true

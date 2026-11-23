@@ -24,15 +24,23 @@ use tilo_peer_state::workspace_documents::{
 pub const NOT_STARTED_BY_THE_DAEMON: &str =
     "this desktop was not started by the device's daemon, which keeps the person's workspaces";
 
-/// The shell link the daemon handed this process when it started it, opened on `runtime`, or why
-/// there is none.
+/// The shell link the daemon handed this process when it started it, or `handed`, the link it made
+/// for a session a test runs in its own process, opened on `runtime`; or why there is none.
 ///
 /// # Errors
 /// The daemon did not start this process, or the descriptor it handed is no socket.
-pub fn inherited_link(runtime: &tokio::runtime::Handle) -> Result<ShellClient, String> {
-    let link = ShellClient::inherited()
-        .ok_or(NOT_STARTED_BY_THE_DAEMON)?
-        .map_err(|error| format!("the link the device's daemon handed this desktop: {error}"))?;
+pub fn inherited_link(
+    handed: Option<std::os::fd::OwnedFd>,
+    runtime: &tokio::runtime::Handle,
+) -> Result<ShellClient, String> {
+    let link = match handed {
+        Some(link) => {
+            let link = std::os::unix::net::UnixStream::from(link);
+            link.set_nonblocking(true).map(|()| link)
+        }
+        None => ShellClient::inherited().ok_or(NOT_STARTED_BY_THE_DAEMON)?,
+    }
+    .map_err(|error| format!("the link the device's daemon handed this desktop: {error}"))?;
     let _entered = runtime.enter();
     let link = tokio::net::UnixStream::from_std(link)
         .map_err(|error| format!("the link the device's daemon handed this desktop: {error}"))?;

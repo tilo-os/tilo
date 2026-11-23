@@ -46,6 +46,8 @@ pub(crate) use assembly::Shared;
 mod activity_provider;
 mod continuations;
 mod daemon_fixture;
+#[cfg(all(feature = "test-support", target_os = "linux"))]
+pub mod shell_session;
 pub mod host_actions;
 pub mod records;
 pub mod search;

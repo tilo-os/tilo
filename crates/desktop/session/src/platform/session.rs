@@ -400,7 +400,10 @@ impl Session {
         // session's own reads and writes go there, the workspace resources it shows itself are
         // followed there, and its apps are vouched for on it.
         let daemon_link =
-            tilo_session_client::daemon_documents::inherited_link(tilo_rt::app().handle());
+            tilo_session_client::daemon_documents::inherited_link(
+                options.shell_link.take(),
+                tilo_rt::app().handle(),
+            );
         if let Err(reason) = &daemon_link {
             tracing::error!(%reason, "this session reads and writes no workspace");
         }

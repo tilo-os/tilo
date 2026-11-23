@@ -26,6 +26,10 @@ dev-overrides = [
   "package-store/dev-overrides",
   "launcher/dev-overrides",
 ]
+# Lets a test hand a session it runs in its own process the shell's end of a link the daemon
+# made ([`daemon::Running::link_shell`]). A production start never builds it: its shell is a
+# process the daemon starts itself.
+test-support = []
 
 [[bin]]
 name = "tilo-runtime"
