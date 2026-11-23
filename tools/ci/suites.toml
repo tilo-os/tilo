@@ -707,7 +707,6 @@ package = "tilo-app-package"
 inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "apps/*/tilo-runtime.toml", "apps/*/search/*.ftl"]
 readers = [
   "crates/packaging/tilo-app-package/tests/app_manifests.rs",
-  "crates/packaging/tilo-app-package/src/search_keywords.rs",
   "crates/packaging/tilo-app-package/src/validate.rs",
   "crates/packaging/tilo-app-package/src/view.rs",
 ]
@@ -803,13 +802,17 @@ inputs = [
   "crates/session/session/device-surface.json",
   "apps/settings/surface.toml",
   "crates/session/settings-service/agent-models-surface.json",
+  "apps/contacts/surface.toml",
+  "crates/session/vision-service/surface.json",
 ]
 readers = [
   "crates/lang/tilolang-tilo/examples/write_rate.rs",
   "crates/lang/tilolang-tilo/src/native.rs",
   "crates/lang/tilolang-tilo/src/platform_apps.rs",
+  "crates/lang/tilolang-tilo/src/shell.rs",
   "crates/lang/tilolang-tilo/src/task.rs",
   "crates/lang/tilolang-tilo/tests/agent_queries.rs",
+  "crates/lang/tilolang-tilo/tests/block_search.rs",
   "crates/lang/tilolang-tilo/tests/bundle.rs",
   "crates/lang/tilolang-tilo/tests/capture.rs",
   "crates/lang/tilolang-tilo/tests/chat.rs",
@@ -839,10 +842,12 @@ readers = [
   "crates/lang/tilolang-tilo/tests/resource_store.rs",
   "crates/lang/tilolang-tilo/tests/rich_text.rs",
   "crates/lang/tilolang-tilo/tests/scenarios.rs",
+  "crates/lang/tilolang-tilo/tests/share.rs",
   "crates/lang/tilolang-tilo/tests/suggest.rs",
   "crates/lang/tilolang-tilo/tests/surface.rs",
   "crates/lang/tilolang-tilo/tests/task.rs",
   "crates/lang/tilolang-tilo/tests/tasks.rs",
+  "crates/lang/tilolang-tilo/tests/tube.rs",
   "crates/lang/tilolang-tilo/tests/words.rs",
 ]
 
@@ -893,7 +898,6 @@ package = "tilo-shell-surface"
 # from the notes app's sources.
 inputs = ["apps/tl/"]
 readers = [
-  "crates/session/shell-surface/src/shell_part.rs",
   "crates/session/shell-surface/src/shell_part/places.rs",
   "crates/session/shell-surface/src/shell_part/tests.rs",
 ]
@@ -1108,11 +1112,6 @@ inputs = [
 ]
 readers = [
   "crates/os/install-helpers/tests/native_python.rs",
-  "crates/os/install-helpers/tests/handoff_copy.rs",
-  "crates/os/install-helpers/tests/dev_ssh.rs",
-  "crates/os/install-helpers/tests/offline_target.rs",
-  "crates/os/install-helpers/tests/staging_handoff.rs",
-  "crates/os/install-helpers/tests/install_proof.rs",
   "crates/os/install-helpers/tests/code_refresh.rs",
   "crates/os/install-helpers/tests/dev_target_uki.rs",
   "crates/os/install-helpers/tests/backend_commands.rs",
@@ -1472,18 +1471,22 @@ inputs = [
   "crates/sdk/ui-core/assets/fonts/",
   "crates/session/client/tests/support/",
   "tools/with-test-environment.sh",
+  "docs/tilo-sh/pages.toml",
+  "crates/integrations/tilo-web-search/tests/fixtures/",
 ]
 # One test binary includes the fixtures every file shares, the two examples
 # reuse the workspace-actions one, and the surface tests read the app's. The
 # update test carries the Notes and Tasks surfaces an earlier build wrote.
 readers = [
+  "crates/agent/agent-session/examples/api-on-server.rs",
   "crates/agent/agent-session/src/workspace_actions/tests.rs",
   "crates/agent/agent-session/tests/it.rs",
   "crates/agent/agent-session/tests/workspace_actions/api.rs",
+  "crates/agent/agent-session/tests/workspace_actions/flow_customer_workspaces.rs",
+  "crates/agent/agent-session/tests/workspace_actions/hosted_agent_turns.rs",
   "crates/agent/agent-session/tests/workspace_actions/meeting_rundown.rs",
   "crates/agent/agent-session/tests/workspace_actions/packaged_model.rs",
   "crates/agent/agent-session/tests/workspace_actions/update_reads_older_writes.rs",
-  "crates/agent/agent-session/examples/api-on-server.rs",
 ]
 
 [[cargo]]
@@ -1498,8 +1501,14 @@ package = "tilo-workspace-service"
 # The packaged-model tests bind actions against the surface the Tasks app
 # ships, read from the tree; the module its package carries comes from the
 # app-models check.
-inputs = ["apps/tasks/surface.toml"]
-readers = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs"]
+inputs = [
+  "apps/tasks/surface.toml",
+  "crates/integrations/tilo-web-search/tests/fixtures/",
+]
+readers = [
+  "crates/server/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
+  "crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs",
+]
 
 [[cargo]]
 package = "tilo-video-render"
@@ -1566,19 +1575,21 @@ inputs = [
   "crates/system/settings-store/locales/de-DE.ftl",
   # The page the page-track tests' engine shows: a snapshot the paint stream's own tests keep.
   "crates/engines/paint-stream/tests/fixtures/layers.top.json",
+  "tools/protocols/airdrop_sender.py",
 ]
 readers = [
-  "crates/session/session/tests/no_locale_leaks.rs",
+  "crates/session/session/src/app_wire.rs",
+  "crates/session/session/src/nearby_transfer.rs",
   "crates/session/session/src/page_track.rs",
+  "crates/session/session/src/services/mod.rs",
+  "crates/session/session/src/shell/mod.rs",
   "crates/session/session/src/window_share/tests/page.rs",
   "crates/session/session/src/window_share/tests/watching.rs",
-  "crates/session/session/src/services/mod.rs",
-  "crates/session/session/src/app_wire.rs",
-  "crates/session/session/src/shell/mod.rs",
   "crates/session/session/tests/common/dev_apps.rs",
   "crates/session/session/tests/common/mod.rs",
   "crates/session/session/tests/common/people.rs",
   "crates/session/session/tests/firstboot.rs",
+  "crates/session/session/tests/no_locale_leaks.rs",
   "crates/session/session/tests/session_package.rs",
 ]
 
@@ -1682,6 +1693,16 @@ check = "image-web-entry"
 suite = "os/containers/tilo-lounge/test-e2e.sh"
 reason = "the e2e check runs it on main's newest head with spare room (`on = [\"idle\"]`), bisecting a failure to the commit that broke it, and tilo-sh-admits-a-page runs its entry flow there too: with the Lounge check's release builds it needs, about 2 core-hours a head"
 check = "e2e"
+
+[[unrequired]]
+suite = "os/containers/tilo-sh/test-docs-browser.sh"
+reason = "needs a local tilo.sh stack with its VM host and a workspace VM's Browser; the docs-examples-browser check brings them up, when named or on idle room"
+check = "docs-examples-browser"
+
+[[unrequired]]
+suite = "os/tests/flow_scenario.sh"
+reason = "boots the target flows' devices as VMs from built disk images; the flow-scenario checks run it when named (flow-scenario-laptop-phone-server runs the other flow)"
+check = "flow-scenario-four-devices"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-program.sh"
