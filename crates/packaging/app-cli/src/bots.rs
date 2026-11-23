@@ -165,12 +165,14 @@ mod tests {
     }
 
     #[test]
-    fn a_fetched_program_refuses_unsafe_endpoints_and_allows_ipv6_loopback() {
+    fn a_fetched_program_refuses_unsafe_endpoints_and_allows_local_hosts() {
         let program = b"{\"id\":\"echo\"}".to_vec();
         for unsafe_base in [
             "http://apps.tilo.so",
             "http://localhost.apps.tilo.so",
             "https://placeholder:placeholder@apps.tilo.so",
+            "https://placeholder@apps.tilo.so",
+            "http://placeholder@127.0.0.1:8080",
             "http://placeholder:placeholder@127.0.0.1:8080",
             "http://placeholder:placeholder@[::1]:8080",
             "file:///tmp/bots",
@@ -184,11 +186,16 @@ mod tests {
                 "unsafe bot program base was not refused: {unsafe_base}"
             );
         }
-        assert!(program_url("http://[::1]:8080/").is_ok());
-        if let Ok(listener) = std::net::TcpListener::bind("[::1]:0") {
-            let origin = serve_once_on(listener, program.clone());
-            let artifact = bot("1.0.0", &program, &origin);
-            assert_eq!(fetch_bot_program(artifact.bot().unwrap()).unwrap(), program);
+        for safe in ["http://[::1]:8080/", "http://tilo.localhost:8080/"] {
+            assert!(program_url(safe).is_ok(), "safe bot URL refused: {safe}");
         }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _ = serve_once_on(listener, program.clone());
+        let local_sub = bot("1.0.0", &program, &format!("http://tilo.localhost:{port}"));
+        assert_eq!(
+            fetch_bot_program(local_sub.bot().unwrap()).unwrap(),
+            program
+        );
     }
 }
