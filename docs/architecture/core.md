@@ -709,7 +709,9 @@ The copies:
   press on the page is that node's accessibility action. It serves Rust and
   tilolang windows alike, replaces every widget's `html` (`HtmlCx`) in one
   push once the page walks match, and there is no second renderer from view
-  nodes beside it.
+  nodes beside it. The same tree reaches screen readers through the session: a window
+  sends it over its own connection and the session is the one AT-SPI (and
+  platform accessibility) exporter, so no app process holds a bus.
 - **One sandbox for app code**: `tilolang-process`, started through
   `app-launch` and the `launcher` sandbox when an action is called or a view
   is shown, one per workspace and app, serving every window, page viewer and
