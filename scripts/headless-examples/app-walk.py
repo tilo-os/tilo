@@ -1552,12 +1552,18 @@ class Walk:
     def op_open(self, value) -> dict:
         """Open another app of the session build by its directory name (`files`,
         `chat`) as the workspace offers it, and wait for its window: a shell walk
-        needs windows to switch between."""
-        deadline = 120.0
+        needs windows to switch between. `{"app": .., "answer": "Allow"}` answers
+        the question the system asks before the app's window, as a person does
+        (Mail asks to reach the network before its process starts)."""
+        deadline, answer = 120.0, None
         if isinstance(value, dict):
-            value, deadline = value["app"], float(value.get("deadline", deadline))
+            value, deadline, answer = value["app"], float(value.get("deadline", deadline)), value.get("answer")
         ident = value if "." in value else real_apps.app_id(value)
         began = time.monotonic()
+        if answer:
+            self.session.open(ident, deadline)
+            self.op_wait_for({"shown": {"prefix": answer}})
+            self.op_press_any([{"prefix": answer}])
         self.session.launch(ident, deadline)
         return {"opened": ident, "waited_ms": round((time.monotonic() - began) * 1000)}
 
