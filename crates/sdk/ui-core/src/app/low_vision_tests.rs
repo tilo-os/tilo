@@ -421,105 +421,96 @@ fn a_window_floating_as_a_card_draws_on_the_cards_ground() {
     assert_eq!(ground(&a), window, "back in its strip");
 }
 
+/// A window of 320 × 200 logical pixels, and its frame's damage.
+#[cfg(feature = "native")]
+struct Window;
+
+#[cfg(feature = "native")]
+impl crate::app::surface::AppSurface for Window {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        winit::dpi::PhysicalSize::new(320, 200)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+}
+
+#[cfg(feature = "native")]
+fn frame(app: &mut App) -> crate::app::surface::SurfaceDamage {
+    let mut scene = crate::vello::Scene::new();
+    let mut damage = crate::app::surface::SurfaceDamage::default();
+    app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+    damage
+}
+
 /// A window the shell draws in another theme repaints every pixel of it: the
 /// theme decides the colour under every widget, and no widget reports that in
 /// its damage. The frame after a theme message is whole, and the frame after
 /// that, with nothing else changed, is not: the repaint is the theme's.
+///
+/// A tree built between two frames — by the state tick that runs a window's
+/// passes while its last frame is still owed — paints the next frame whole too:
+/// the pixels on screen are the tree before it, and no widget's damage says so.
 #[cfg(feature = "native")]
 #[test]
-fn a_shell_theme_message_repaints_the_whole_surface() {
-    struct Window;
-    impl crate::app::surface::AppSurface for Window {
-        fn scale_factor(&self) -> f64 {
-            1.0
-        }
-        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
-            winit::dpi::PhysicalSize::new(320, 200)
-        }
-        fn request_redraw(&self) {}
-        fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
-    }
-    fn frame(app: &mut App) -> crate::app::surface::SurfaceDamage {
-        let mut scene = crate::vello::Scene::new();
-        let mut damage = crate::app::surface::SurfaceDamage::default();
-        app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
-        damage
-    }
+fn a_theme_message_or_a_rebuild_between_frames_repaints_the_whole_surface() {
     use crate::floating_surface::FloatingSurfaceHostMessage;
 
-    let _settings = own_settings();
-    let mut app = app();
-    app.set_theme(Theme::light());
-    // The window stands in the light theme, with a frame behind it.
-    let _ = frame(&mut app);
-    let _ = frame(&mut app);
+    {
+        let _settings = own_settings();
+        let mut app = app();
+        app.set_theme(Theme::light());
+        // The window stands in the light theme, with a frame behind it.
+        let _ = frame(&mut app);
+        let _ = frame(&mut app);
 
-    let appearance = crate::theme::WindowAppearance::default();
-    let message = FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &Theme::dark());
-    assert!(app.apply_floating_host_messages(vec![message]));
-    let themed = frame(&mut app);
-    assert!(
-        themed.repainted().is_some(),
-        "the frame after a theme message repaints every pixel"
-    );
+        let appearance = crate::theme::WindowAppearance::default();
+        let message =
+            FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &Theme::dark());
+        assert!(app.apply_floating_host_messages(vec![message]));
+        let themed = frame(&mut app);
+        assert!(
+            themed.repainted().is_some(),
+            "the frame after a theme message repaints every pixel"
+        );
 
-    // A theme made again with nothing else asked to rebuild repaints the
-    // whole surface too: no widget reports that its colours changed.
-    let _ = frame(&mut app);
-    app.rebuild_theme();
-    let remade = frame(&mut app);
-    assert_eq!(
-        remade.repainted(),
-        Some("a new theme"),
-        "a theme made again repaints every pixel"
-    );
+        // A theme made again with nothing else asked to rebuild repaints the
+        // whole surface too: no widget reports that its colours changed.
+        let _ = frame(&mut app);
+        app.rebuild_theme();
+        let remade = frame(&mut app);
+        assert_eq!(
+            remade.repainted(),
+            Some("a new theme"),
+            "a theme made again repaints every pixel"
+        );
 
-    let after = frame(&mut app);
-    assert_ne!(
-        after.repainted(),
-        Some("a new theme"),
-        "a frame with nothing else changed is not whole: the repaint was the theme's"
-    );
-}
-
-/// A tree built between two frames — by the state tick that runs a window's
-/// passes while its last frame is still owed — paints the next frame whole: the
-/// pixels on screen are the tree before it, and no widget's damage says so.
-#[cfg(feature = "native")]
-#[test]
-fn a_rebuild_between_frames_repaints_the_whole_surface() {
-    struct Window;
-    impl crate::app::surface::AppSurface for Window {
-        fn scale_factor(&self) -> f64 {
-            1.0
-        }
-        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
-            winit::dpi::PhysicalSize::new(320, 200)
-        }
-        fn request_redraw(&self) {}
-        fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
-    }
-    fn frame(app: &mut App) -> crate::app::surface::SurfaceDamage {
-        let mut scene = crate::vello::Scene::new();
-        let mut damage = crate::app::surface::SurfaceDamage::default();
-        app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
-        damage
+        let after = frame(&mut app);
+        assert_ne!(
+            after.repainted(),
+            Some("a new theme"),
+            "a frame with nothing else changed is not whole: the repaint was the theme's"
+        );
     }
 
-    let _settings = own_settings();
-    let mut app = app();
-    app.set_theme(Theme::light());
-    let _ = frame(&mut app);
-    let _ = frame(&mut app);
-    // What `service_native_idle_model` does between frames: the rebuild the
-    // change asked for runs here, and the redraw that follows sees no
-    // structure change left to report.
-    app.layout.request_rebuild();
-    app.rebuild_structure();
-    let rebuilt = frame(&mut app);
-    assert_eq!(
-        rebuilt.repainted(),
-        Some("a rebuilt tree"),
-        "a frame after a rebuild between frames repaints every pixel"
-    );
+    {
+        let _settings = own_settings();
+        let mut app = app();
+        app.set_theme(Theme::light());
+        let _ = frame(&mut app);
+        let _ = frame(&mut app);
+        // What `service_native_idle_model` does between frames: the rebuild the
+        // change asked for runs here, and the redraw that follows sees no
+        // structure change left to report.
+        app.layout.request_rebuild();
+        app.rebuild_structure();
+        let rebuilt = frame(&mut app);
+        assert_eq!(
+            rebuilt.repainted(),
+            Some("a rebuilt tree"),
+            "a frame after a rebuild between frames repaints every pixel"
+        );
+    }
 }

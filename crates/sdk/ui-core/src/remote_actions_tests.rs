@@ -276,55 +276,48 @@ tilo_test_env::scenario! {
         assert!(actions.take_collab_requests().is_empty());
     }
 
-    phase a_catalogue_walk_has_a_total_page_bound;
+    phase a_catalogue_walk_has_a_total_page_bound_whatever_restarts_it;
+    // A walk that pages on, and one a provider keeps restarting as stale, share
+    // the one budget: neither may go on asking forever.
     {
-        let mut actions = RemoteActions::session();
-        let answer = actions.catalogue(CatalogueQuery::default());
-        for page in 0..MAX_CATALOGUE_PAGES {
-            let correlation = catalogue_correlation(&mut actions, "catalogue request for a page");
-            actions.handle_collab_event(&CollabEvent::RemoteAction {
-                message: RemoteActionMessage::CatalogueResponse {
-                    correlation,
-                    result: Ok(CataloguePage {
-                        revision: "r1".into(),
-                        rows: vec![row(&format!("row-{page}"))],
-                        next_cursor: vec![u8::try_from(page + 1).unwrap()],
-                        ..CataloguePage::default()
-                    }),
-                },
-            });
+        for restarting in [false, true] {
+            let mut actions = RemoteActions::session();
+            let answer = actions.catalogue(CatalogueQuery::default());
+            for page in 0..MAX_CATALOGUE_PAGES {
+                let correlation =
+                    catalogue_correlation(&mut actions, "catalogue request for a page");
+                actions.handle_collab_event(&CollabEvent::RemoteAction {
+                    message: RemoteActionMessage::CatalogueResponse {
+                        correlation,
+                        result: Ok(CataloguePage {
+                            revision: if restarting {
+                                format!("r{page}")
+                            } else {
+                                "r1".into()
+                            },
+                            rows: if restarting {
+                                Vec::new()
+                            } else {
+                                vec![row(&format!("row-{page}"))]
+                            },
+                            next_cursor: if restarting {
+                                Vec::new()
+                            } else {
+                                vec![u8::try_from(page + 1).unwrap()]
+                            },
+                            stale_cursor: restarting,
+                            ..CataloguePage::default()
+                        }),
+                    },
+                });
+            }
+            assert!(matches!(
+                answer.get(),
+                Arrival::Failed(ActionCallError::Unavailable { reason })
+                    if reason.contains("page budget")
+            ));
+            assert!(actions.take_collab_requests().is_empty());
         }
-        assert!(matches!(
-            answer.get(),
-            Arrival::Failed(ActionCallError::Unavailable { reason })
-                if reason.contains("page budget")
-        ));
-        assert!(actions.take_collab_requests().is_empty());
-    }
-
-    phase stale_catalogue_restarts_share_the_global_page_bound;
-    {
-        let mut actions = RemoteActions::session();
-        let answer = actions.catalogue(CatalogueQuery::default());
-        for page in 0..MAX_CATALOGUE_PAGES {
-            let correlation = catalogue_correlation(&mut actions, "catalogue request for a stale page");
-            actions.handle_collab_event(&CollabEvent::RemoteAction {
-                message: RemoteActionMessage::CatalogueResponse {
-                    correlation,
-                    result: Ok(CataloguePage {
-                        revision: format!("r{page}"),
-                        stale_cursor: true,
-                        ..CataloguePage::default()
-                    }),
-                },
-            });
-        }
-        assert!(matches!(
-            answer.get(),
-            Arrival::Failed(ActionCallError::Unavailable { reason })
-                if reason.contains("page budget")
-        ));
-        assert!(actions.take_collab_requests().is_empty());
     }
 
     phase an_unannounced_catalogue_revision_change_is_refused;

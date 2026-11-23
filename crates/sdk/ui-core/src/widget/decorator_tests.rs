@@ -79,24 +79,13 @@ tilo_test_env::scenario! {
             let widget: &mut dyn Widget = &mut decorated;
             let mut doc = AutoCommit::new();
             let theme = Theme::dark();
-            let mut taffy = TaffyTree::new();
-            let mut nodes = HashMap::new();
 
             assert_eq!(widget.name(), "Named");
             assert_eq!(widget.get_rect(), Rect::new(1.0, 2.0, 3.0, 4.0));
-            widget.sync(&doc, &automerge::ROOT);
-            let node = widget.build_layout(&mut taffy, &theme, &mut nodes);
-            widget.apply_layout(&taffy, node, Point::ORIGIN);
-            widget.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &PresenceCtx::empty(),
-            );
+            let (_taffy, node, nodes) = lay_and_draw(widget, &doc, &theme);
             Dispatch::new()
                 .doc(&mut doc)
-                .layout(&taffy, node)
+                .layout(&_taffy, node)
                 .send(widget, &WindowEvent::Focused(true));
             assert_eq!(crate::resources::resources(widget, &doc).len(), 1);
             assert!(crate::widget::controls::take_control_invocation(widget).is_none());
@@ -250,21 +239,10 @@ tilo_test_env::scenario! {
         let widget: &mut dyn Widget = &mut decorated;
         let doc = AutoCommit::new();
         let theme = Theme::dark();
-        let mut taffy = TaffyTree::new();
-        let mut nodes = HashMap::new();
 
         assert_eq!(widget.name(), "ConcreteNamed");
         assert_eq!(widget.get_rect(), Rect::new(1.0, 2.0, 3.0, 4.0));
-        widget.sync(&doc, &automerge::ROOT);
-        let node = widget.build_layout(&mut taffy, &theme, &mut nodes);
-        widget.apply_layout(&taffy, node, Point::ORIGIN);
-        widget.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        let (_taffy, node, nodes) = lay_and_draw(widget, &doc, &theme);
         assert!(widget.take_structure_dirty());
         assert!(!widget.take_structure_dirty(), "reading clears it");
         assert!(widget.children().is_empty(), "the inner widget's children");
@@ -286,6 +264,28 @@ tilo_test_env::scenario! {
         assert!(registered.concrete_type_name().ends_with("ConcreteNamed"));
         assert_eq!(registered.name(), "ConcreteNamed");
     }
+}
+
+/// Lay `widget` out and draw it once, so its inner widget logs those calls; the tree and
+/// node map it built are handed back.
+fn lay_and_draw(
+    widget: &mut dyn Widget,
+    doc: &AutoCommit,
+    theme: &Theme,
+) -> (TaffyTree<()>, NodeId, HashMap<NodeId, *mut dyn Widget>) {
+    let mut taffy = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    widget.sync(doc, &automerge::ROOT);
+    let node = widget.build_layout(&mut taffy, theme, &mut nodes);
+    widget.apply_layout(&taffy, node, Point::ORIGIN);
+    widget.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        theme,
+        &PresenceCtx::empty(),
+    );
+    (taffy, node, nodes)
 }
 
 type Log = Rc<RefCell<Vec<&'static str>>>;

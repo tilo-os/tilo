@@ -286,20 +286,15 @@ fn a_long_list_builds_only_the_rows_near_its_view() {
             "a scroll frame over {count} rows ({stance:?}) built {} of them",
             run.scroll_built
         );
+        if matches!(stance, Stance::Filling) {
+            assert!(run.last_reached, "End shows the 25,000th row");
+            assert!(
+                run.end_built <= limit,
+                "going to the end built {} rows, more than the {limit} the window shows",
+                run.end_built
+            );
+        }
     }
-}
-
-#[test]
-fn the_end_key_reaches_the_last_of_a_long_lists_rows_building_only_those() {
-    crate::i18n::I18nManager::init("en-US");
-    let limit = screenful();
-    let run = run(25_000, Stance::Filling);
-    assert!(run.last_reached, "End shows the 25,000th row");
-    assert!(
-        run.end_built <= limit,
-        "going to the end built {} rows, more than the {limit} the window shows",
-        run.end_built
-    );
 }
 
 #[test]

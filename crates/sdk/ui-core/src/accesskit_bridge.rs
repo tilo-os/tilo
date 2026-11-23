@@ -1750,64 +1750,72 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_rows_trailing_control_takes_the_rows_name;
 
-        phase a_row_names_its_trailing_switch_and_describes_it;
+        phase a_rows_trailing_control_takes_the_rows_name;
+        // A row names the control it trails, whatever that control is: the
+        // switch the row turns on and off (with its description), the field
+        // that names itself, the chooser named for the row and not for its
+        // value, and the slider a container wraps.
         {
-            let mut row = crate::widget::ListRow::new("remove-data", "Remove its data")
-                .secondary("Your settings and saved files go to the Trash.")
-                .trailing(Box::new(crate::widget::Toggle::from_state(
-                    &crate::LocalState::new(false),
-                )));
-            let (_taffy, node_map, _root) = lay_out(&mut row);
-            let update = build_tree_update(&row, &node_map, None, 1.0);
-            let switch = only(&update, AkRole::Switch);
-            assert_eq!(switch.label(), Some("Remove its data"));
-            assert_eq!(
-                switch.description(),
-                Some("Your settings and saved files go to the Trash.")
-            );
-        }
-
-        phase a_control_that_names_itself_keeps_its_name;
-        {
-            let mut row = crate::widget::ListRow::new("name", "Device name").trailing(Box::new(
-                crate::widget::TextInput::new(Vec::new()).with_accessible_name("Name shown to others"),
-            ));
-            let (_taffy, node_map, _root) = lay_out(&mut row);
-            let update = build_tree_update(&row, &node_map, None, 1.0);
-            let field = only(&update, AkRole::TextInput);
-            assert_eq!(field.label(), Some("Name shown to others"));
-        }
-
-        phase a_rows_chooser_is_named_by_the_row_and_not_by_its_value;
-        {
-            let mut row = crate::widget::ListRow::new("currency", "Currency").trailing(Box::new(
-                crate::widget::Dropdown::from_state(
-                    vec!["EUR".to_owned(), "USD".to_owned()],
-                    &crate::LocalState::new("EUR".to_owned()),
+            let cases = [
+                (
+                    crate::widget::ListRow::new("remove-data", "Remove its data")
+                        .secondary("Your settings and saved files go to the Trash.")
+                        .trailing(Box::new(crate::widget::Toggle::from_state(
+                            &crate::LocalState::new(false),
+                        ))),
+                    AkRole::Switch,
+                    "Remove its data",
                 ),
-            ));
-            let (_taffy, node_map, _root) = lay_out(&mut row);
-            let update = build_tree_update(&row, &node_map, None, 1.0);
-            let chooser = only(&update, AkRole::ComboBox);
-            assert_eq!(chooser.label(), Some("Currency"));
-            assert_eq!(chooser.value(), Some("EUR"));
-        }
-
-        phase a_wrapped_trailing_slider_keeps_the_rows_name_and_description;
-        {
-            let mut row = crate::widget::ListRow::new("sdr-brightness", "Brightness")
-                .secondary("How bright standard content is")
-                .description("How bright standard content is")
-                .trailing(Box::new(
-                    crate::widget::Container::new()
-                        .with_no_padding()
-                        .with_child(Box::new(crate::widget::Slider::new("sdr", "sdr"))),
-                ));
-            let (_taffy, node_map, _root) = lay_out(&mut row);
-            let update = build_tree_update(&row, &node_map, None, 1.0);
-            let slider = only(&update, AkRole::Slider);
-            assert_eq!(slider.label(), Some("Brightness"));
-            assert_eq!(slider.description(), Some("How bright standard content is"));
+                (
+                    crate::widget::ListRow::new("name", "Device name").trailing(Box::new(
+                        crate::widget::TextInput::new(Vec::new())
+                            .with_accessible_name("Name shown to others"),
+                    )),
+                    AkRole::TextInput,
+                    "Name shown to others",
+                ),
+                (
+                    crate::widget::ListRow::new("currency", "Currency").trailing(Box::new(
+                        crate::widget::Dropdown::from_state(
+                            vec!["EUR".to_owned(), "USD".to_owned()],
+                            &crate::LocalState::new("EUR".to_owned()),
+                        ),
+                    )),
+                    AkRole::ComboBox,
+                    "Currency",
+                ),
+                (
+                    crate::widget::ListRow::new("sdr-brightness", "Brightness")
+                        .secondary("How bright standard content is")
+                        .description("How bright standard content is")
+                        .trailing(Box::new(
+                            crate::widget::Container::new()
+                                .with_no_padding()
+                                .with_child(Box::new(crate::widget::Slider::new("sdr", "sdr"))),
+                        )),
+                    AkRole::Slider,
+                    "Brightness",
+                ),
+            ];
+            for (mut row, role, label) in cases {
+                let (_taffy, node_map, _root) = lay_out(&mut row);
+                let update = build_tree_update(&row, &node_map, None, 1.0);
+                let control = only(&update, role);
+                assert_eq!(control.label(), Some(label), "{role:?}");
+                match role {
+                    AkRole::Switch => assert_eq!(
+                        control.description(),
+                        Some("Your settings and saved files go to the Trash.")
+                    ),
+                    AkRole::ComboBox => assert_eq!(control.value(), Some("EUR")),
+                    AkRole::Slider => assert_eq!(
+                        control.description(),
+                        Some("How bright standard content is")
+                    ),
+                    AkRole::TextInput => {}
+                    other => panic!("unexpected role {other:?}"),
+                }
+            }
         }
     }
 

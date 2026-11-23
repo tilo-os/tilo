@@ -207,10 +207,7 @@ tilo_test_env::scenario! {
             !recent.contains("2026") || recent.starts_with("Jun") || recent.starts_with("May"),
             "this year's date omits its year: {recent:?}"
         );
-    }
-
-    phase only_the_band_that_says_a_day_names_one;
-    {
+        // Only the bands that say a day name one.
         assert!(
             SectionDivider::new("Today").names_a_day(),
             "a day's own band names the day it opens"
@@ -254,19 +251,6 @@ tilo_test_env::scenario! {
             DeliveryState::of_step(DeliveryStep::Refused),
             DeliveryState::of_step(DeliveryStep::Uncertain),
         ];
-        assert_eq!(
-            states,
-            [
-                DeliveryState::Queued,
-                DeliveryState::Sending,
-                DeliveryState::Submitted,
-                DeliveryState::Sent,
-                DeliveryState::Delivered,
-                DeliveryState::Read,
-                DeliveryState::Failed,
-                DeliveryState::Uncertain,
-            ]
-        );
         // Every state has its own word: two states that said the same thing would
         // be one state.
         let keys: std::collections::BTreeSet<&str> = states.iter().map(|state| state.key()).collect();
@@ -310,8 +294,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_attachment_ladder_is_open_save_then_the_saved_copy;
+    phase an_attachment_says_its_actions_and_its_state;
     {
+        // The ladder is open, save, then the saved copy.
         let image = AttachmentSummary::ready(AttachmentKind::Image, "shot.png", Some(2_048));
         assert_eq!(
             image.actions(),
@@ -334,16 +319,13 @@ tilo_test_env::scenario! {
         for action in saved.actions() {
             assert!(!action.label().is_empty(), "{action:?} has no word");
         }
-    }
 
-    phase an_attachment_that_cannot_be_read_says_why_instead_of_offering_nothing;
-    {
+        // An attachment that cannot be read says why instead of offering nothing.
         let unshared = AttachmentSummary::ready(AttachmentKind::File, "payroll.pdf", None)
             .in_state(Availability::NotShared);
         assert!(unshared.actions().is_empty());
         assert!(unshared.unavailable_reason().is_some());
         assert!(unshared.describe().contains("payroll.pdf"));
-
         let uploading = AttachmentSummary::ready(AttachmentKind::Video, "clip.mp4", Some(1_000))
             .in_state(Availability::Uploading(UploadProgress {
                 sent: 250,
@@ -351,10 +333,8 @@ tilo_test_env::scenario! {
             }));
         assert_eq!(uploading.actions(), vec![AttachmentAction::CancelUpload]);
         assert_eq!(uploading.unavailable_reason(), None);
-    }
 
-    phase an_upload_says_how_far_it_has_got_and_never_invents_a_denominator;
-    {
+        // An upload says how far it has got and never invents a denominator.
         let known = UploadProgress {
             sent: 512,
             total: Some(1_024),

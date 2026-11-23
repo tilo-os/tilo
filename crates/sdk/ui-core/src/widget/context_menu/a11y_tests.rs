@@ -15,11 +15,6 @@ fn menu_accessibility_reports_state_rows_and_checks() {
             "closed menu is not expanded"
         );
         assert!(node.state.hidden, "closed menu is hidden from the tree");
-    }
-
-    fn accessibility_open_menu_is_expanded_and_visible() {
-        let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("Open", || {}));
         menu.open_at([10.0, 20.0]);
         let node = Widget::accessibility(&menu).unwrap();
         assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
@@ -93,7 +88,6 @@ fn menu_accessibility_reports_state_rows_and_checks() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     accessibility_reports_menu_role_and_collapsed_when_closed();
-    accessibility_open_menu_is_expanded_and_visible();
     a_caption_is_read_among_the_rows_but_never_chosen();
     accessibility_exposes_named_action_rows_and_skips_separators();
     accessibility_exposes_checked_state_without_polluting_the_label();

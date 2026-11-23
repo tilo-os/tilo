@@ -381,71 +381,48 @@ mod tests {
             );
         }
 
-        phase rejected_local_delta_survives_concurrent_incremental_merge;
+        phase a_rejected_local_delta_survives_a_concurrent_merge;
+        // The local edit was not accepted outbound when another device's state
+        // arrived, whichever way it arrives: as an incremental delta or as a
+        // whole snapshot. It stays pending for retry, and what arrived is not
+        // echoed back to the device that sent it.
         {
-            let mut state = State::new();
-            state.doc.put(ROOT, "local", true).unwrap();
-            state.commit_action(None, None);
-            let (rejected, _) = state.pending_outbound_delta();
-            assert!(!rejected.is_empty());
+            for (as_snapshot, incoming) in [(false, "the inbound change"), (true, "the snapshot's changes")]
+            {
+                let mut state = State::new();
+                state.doc.put(ROOT, "local", true).unwrap();
+                state.commit_action(None, None);
+                let (rejected, _) = state.pending_outbound_delta();
+                assert!(!rejected.is_empty());
 
-            let mut peer = AutoCommit::new();
-            peer.put(ROOT, "remote", true).unwrap();
-            peer.commit();
-            let remote_delta = peer.save_after(&[]);
-            state.load_incremental(&remote_delta).unwrap();
+                let mut peer = AutoCommit::new();
+                peer.put(ROOT, "remote", true).unwrap();
+                peer.commit();
+                if as_snapshot {
+                    state.merge_snapshot(&peer.save()).unwrap();
+                } else {
+                    state.load_incremental(&peer.save_after(&[])).unwrap();
+                }
 
-            let (retry, accepted_heads) = state.pending_outbound_delta();
-            assert!(
-                !retry.is_empty(),
-                "the rejected local edit must remain pending"
-            );
-            let mut retry_receiver = AutoCommit::new();
-            retry_receiver.load_incremental(&retry).unwrap();
-            assert_eq!(
-                retry_receiver.get(ROOT, "local").unwrap().unwrap().0,
-                true.into()
-            );
-            assert!(
-                retry_receiver.get(ROOT, "remote").unwrap().is_none(),
-                "the inbound change must not be echoed back"
-            );
+                let (retry, accepted_heads) = state.pending_outbound_delta();
+                assert!(
+                    !retry.is_empty(),
+                    "the rejected local edit must remain pending"
+                );
+                let mut retry_receiver = AutoCommit::new();
+                retry_receiver.load_incremental(&retry).unwrap();
+                assert_eq!(
+                    retry_receiver.get(ROOT, "local").unwrap().unwrap().0,
+                    true.into()
+                );
+                assert!(
+                    retry_receiver.get(ROOT, "remote").unwrap().is_none(),
+                    "{incoming} must not be echoed back"
+                );
 
-            state.advance_outbound(accepted_heads);
-            assert!(state.pending_outbound_delta().0.is_empty());
-        }
-
-        phase rejected_local_delta_survives_concurrent_snapshot_merge;
-        {
-            let mut state = State::new();
-            state.doc.put(ROOT, "local", true).unwrap();
-            state.commit_action(None, None);
-            let (rejected, _) = state.pending_outbound_delta();
-            assert!(!rejected.is_empty());
-
-            let mut peer = AutoCommit::new();
-            peer.put(ROOT, "remote", true).unwrap();
-            peer.commit();
-            state.merge_snapshot(&peer.save()).unwrap();
-
-            let (retry, accepted_heads) = state.pending_outbound_delta();
-            assert!(
-                !retry.is_empty(),
-                "the rejected local edit must remain pending"
-            );
-            let mut retry_receiver = AutoCommit::new();
-            retry_receiver.load_incremental(&retry).unwrap();
-            assert_eq!(
-                retry_receiver.get(ROOT, "local").unwrap().unwrap().0,
-                true.into()
-            );
-            assert!(
-                retry_receiver.get(ROOT, "remote").unwrap().is_none(),
-                "the snapshot's changes must not be echoed back"
-            );
-
-            state.advance_outbound(accepted_heads);
-            assert!(state.pending_outbound_delta().0.is_empty());
+                state.advance_outbound(accepted_heads);
+                assert!(state.pending_outbound_delta().0.is_empty());
+            }
         }
 
         phase metadata_replica_does_not_lose_rejected_delta_on_receive;
@@ -738,49 +715,24 @@ mod tests {
     tilo_test_env::scenario! {
         fn author_scoped_undo_and_redo_touch_only_that_authors_actions;
 
-        phase undo_for_author_reverts_only_that_authors_op;
-        // `undo_as` with an author reverts only the requested author's most-recent action
-        // as a new forward change, leaving other authors' committed ops intact in
-        // the live document — not just unpopped from the stack.
-        {
-            let mut state = State::new();
-            // Alice sets a=1.
-            state.doc.put(&ROOT, "a", 1).unwrap();
-            state.commit_action_authored(None, None, Some(MemberId::person("alice")));
-            // Bob sets b=1.
-            state.doc.put(&ROOT, "b", 1).unwrap();
-            state.commit_action_authored(None, None, Some(MemberId::person("bob")));
-
-            // Alice undoes — only "a" is reverted; Bob's "b" stays in the doc.
-            let popped = state
-                .undo_as(Some(&MemberId::person("alice")), None, None)
-                .expect("alice's entry");
-            assert_eq!(popped.author, Some(MemberId::person("alice")));
-            assert!(
-                state.doc.get(&ROOT, "a").unwrap().is_none(),
-                "alice's change reverted in the live doc"
-            );
-            assert!(
-                state.doc.get(&ROOT, "b").unwrap().is_some(),
-                "bob's change survives in the live doc, not just on the stack"
-            );
-        }
-
-        phase undo_as_an_author_skips_a_members_action;
+        phase undo_as_an_author_reverts_only_that_authors_op;
         // `undo_as` is the entry point `App`'s Ctrl+Z takes. With an author it
-        // must behave like an authored undo — walk past a member's action
-        // to the local user's own — not like plain LIFO undo.
+        // reverts only the requested author's most-recent action as a new
+        // forward change — walking past a member's action to the local user's
+        // own, not plain LIFO — leaving other authors' committed ops intact in
+        // the live document, not just unpopped from the stack.
         {
             let mut state = State::new();
             let alice = MemberId::person("alice");
             let bob = MemberId::person("bob");
-
+            // Alice sets a=1.
             state.doc.put(&ROOT, "a", 1).unwrap();
             state.commit_action_authored(None, None, Some(alice.clone()));
+            // Bob sets b=1.
             state.doc.put(&ROOT, "b", 1).unwrap();
-            // `bob` is never referenced again, so this is its last use.
             state.commit_action_authored(None, None, Some(bob));
 
+            // Alice undoes — only "a" is reverted; Bob's "b" stays in the doc.
             let popped = state
                 .undo_as(Some(&alice), None, None)
                 .expect("alice has an action to undo");
@@ -791,11 +743,11 @@ mod tests {
             );
             assert!(
                 state.doc.get(&ROOT, "a").unwrap().is_none(),
-                "alice's own change is reverted"
+                "alice's own change is reverted in the live doc"
             );
             assert!(
                 state.doc.get(&ROOT, "b").unwrap().is_some(),
-                "bob's change survives alice's undo"
+                "bob's change survives in the live doc, not just on the stack"
             );
         }
 
@@ -851,9 +803,11 @@ mod tests {
 
         phase can_undo_predicts_exactly_what_undo_as_does;
         // The availability a control renders from must be the availability the
-        // act has. Asserted by *doing* the undo and checking the query predicted
-        // it — not by reading the stack length, which is what would let the two
-        // drift.
+        // act has, scoped to the author as the shortcut is. Asserted by *doing*
+        // the undo and checking the query predicted it — not by reading the
+        // stack length, which is what would let the two drift. Without author
+        // scoping the control would light up and then do nothing — or, worse,
+        // revert someone else's work.
         {
             let mut state = State::new();
             let a = alice();
@@ -871,6 +825,15 @@ mod tests {
             type_action(&mut state, "body", "hello", &a);
             assert!(state.can_undo_as(Some(&a)));
             assert!(!state.can_redo_as(Some(&a)));
+            assert!(
+                !state.can_undo_as(Some(&bob())),
+                "Bob has performed no action here"
+            );
+            assert!(
+                state.undo_as(Some(&bob()), None, None).is_none(),
+                "and undo declines for Bob — the query must match"
+            );
+            assert!(state.can_undo_as(None));
 
             assert!(
                 state.undo_as(Some(&a), None, None).is_some(),
@@ -882,26 +845,6 @@ mod tests {
             assert!(state.redo_as(Some(&a), None, None).is_some());
             assert!(state.can_undo_as(Some(&a)));
             assert!(!state.can_redo_as(Some(&a)));
-        }
-
-        phase can_undo_is_author_scoped_like_the_shortcut;
-        // A session where every entry belongs to a member must report
-        // nothing to undo. Without author scoping the control would light up and
-        // then do nothing — or, worse, revert someone else's work.
-        {
-            let mut state = State::new();
-            type_action(&mut state, "body", "hello", &alice());
-
-            assert!(state.can_undo_as(Some(&alice())));
-            assert!(
-                !state.can_undo_as(Some(&bob())),
-                "Bob has performed no action here"
-            );
-            assert!(
-                state.undo_as(Some(&bob()), None, None).is_none(),
-                "and undo declines for Bob — the query must match"
-            );
-            assert!(state.can_undo_as(None));
         }
     }
 

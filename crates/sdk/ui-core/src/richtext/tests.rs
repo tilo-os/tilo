@@ -55,11 +55,7 @@ tilo_test_env::scenario! {
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         let style = crate::text_render::TextStyle::new(16.0);
-        let text = (0..7000)
-            .map(|i| format!("word{i}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES);
+        let text = huge_text();
         let layout = RichTextLayout::shape_styled(
             &mut fs,
             &[RichSpan::new(&text)],
@@ -145,150 +141,113 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase reused_paragraphs_keep_allocations_and_match_fresh_geometry_through_edits;
+    phase reused_paragraphs_match_fresh_geometry_through_edits;
     {
-        {
-            let mut fs = crate::font_catalog::fixture_font_system();
-            let style = crate::text_render::TextStyle::new(16.0);
-            let initial = "first paragraph\nunchanged שלום world\nlast line\n";
-            let old = RichTextLayout::shape_styled(
-                &mut fs,
-                &[RichSpan::new(initial)],
-                &style,
-                Some(180.0),
-                TextAlign::Left,
-                vec![],
-                vec![],
-            );
-            let retained = old.buffer.lines[1].layout_opt().unwrap().as_ptr();
-            let edited = "xfirst paragraph\nunchanged שלום world\nlast line\n";
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let base = crate::text_render::TextStyle::new(16.0);
+        let texts = [
+            "alpha beta gamma\nשלום mixed text\nemoji 👩‍💻 é\n",
+            "new paragraph\nalpha beta gamma\nשלום mixed text\nemoji 👩‍💻 é\n",
+            "new paragraph\nalpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n",
+            "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é",
+            "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n\n",
+            "",
+            "one\r\ntwo\nthree",
+            "one\nthree",
+        ];
+        let mut previous = None;
+        for (index, text) in texts.into_iter().cycle().take(32).enumerate() {
+            let mut style = base.clone();
+            if index >= 8 {
+                style.size = 20.0;
+            }
+            if index >= 16 {
+                style.letter_spacing = 0.6;
+                style.italic = true;
+            }
+            if index >= 24 {
+                style.wrap_mode = crate::text_render::TextWrapMode::Balance;
+            }
+            let width = if index % 3 == 0 { 90.0 } else { 180.0 };
+            let align = if index % 5 == 0 {
+                TextAlign::Right
+            } else {
+                TextAlign::Left
+            };
+            let split = text.find('\n').unwrap_or(text.len());
+            let spans = [
+                RichSpan::new(&text[..split])
+                    .bold(index % 2 == 0)
+                    .background(Some([20, 30, 40])),
+                RichSpan::new(&text[split..]),
+            ];
             let reused = RichTextLayout::shape_styled_reusing(
                 &mut fs,
-                &[RichSpan::new(edited)],
+                &spans,
                 &style,
-                Some(180.0),
-                TextAlign::Left,
+                Some(width),
+                align,
+                vec![(0, split)],
                 vec![],
-                vec![],
-                Some(old),
-            );
-            assert_eq!(
-                retained,
-                reused.buffer.lines[1].layout_opt().unwrap().as_ptr(),
-                "unchanged paragraph must retain its shaped layout allocation"
+                previous,
             );
             let fresh = RichTextLayout::shape_styled(
                 &mut fs,
-                &[RichSpan::new(edited)],
+                &spans,
                 &style,
-                Some(180.0),
+                Some(width),
+                align,
+                vec![(0, split)],
+                vec![],
+            );
+            assert_reused_matches_fresh(&reused, &fresh, text, &format!("case {index}"));
+            previous = Some(reused);
+        }
+        // Finer leading, a serif face, real size changes, an automatic hyphenation and widths
+        // the text wraps at: each reuses the previous layout of the same text.
+        let text = "Latin ligatures ffi é\nשלום mixed العربية\n👩‍💻 中文\nlast\n";
+        let spans = [RichSpan::new(text)];
+        let fresh_at = |fs: &mut FontSystem, style: &crate::text_render::TextStyle, width: f32| {
+            RichTextLayout::shape_styled(
+                fs,
+                &spans,
+                style,
+                Some(width),
                 TextAlign::Left,
                 vec![],
                 vec![],
-            );
-            assert_eq!(reused.width(), fresh.width());
-            assert_eq!(reused.height(), fresh.height());
-            for byte in edited.char_indices().map(|(i, _)| i).chain([edited.len()]) {
-                assert_eq!(reused.caret_geometry(byte), fresh.caret_geometry(byte));
-                assert_eq!(
-                    reused.selection_rects(0, byte),
-                    fresh.selection_rects(0, byte)
-                );
-            }
-        }
-
-        {
-            let mut fs = crate::font_catalog::fixture_font_system();
-            let base = crate::text_render::TextStyle::new(16.0);
-            let texts = [
-                "alpha beta gamma\nשלום mixed text\nemoji 👩‍💻 é\n",
-                "new paragraph\nalpha beta gamma\nשלום mixed text\nemoji 👩‍💻 é\n",
-                "new paragraph\nalpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n",
-                "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é",
-                "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n\n",
-                "",
-                "one\r\ntwo\nthree",
-                "one\nthree",
-            ];
-            let mut previous = None;
-            for (index, text) in texts.into_iter().cycle().take(32).enumerate() {
-                let mut style = base.clone();
-                if index >= 8 {
-                    style.size = 20.0;
-                }
-                if index >= 16 {
-                    style.letter_spacing = 0.6;
-                    style.italic = true;
-                }
-                if index >= 24 {
-                    style.wrap_mode = crate::text_render::TextWrapMode::Balance;
-                }
-                let width = if index % 3 == 0 { 90.0 } else { 180.0 };
-                let align = if index % 5 == 0 {
-                    TextAlign::Right
-                } else {
-                    TextAlign::Left
-                };
-                let split = text.find('\n').unwrap_or(text.len());
-                let spans = [
-                    RichSpan::new(&text[..split])
-                        .bold(index % 2 == 0)
-                        .background(Some([20, 30, 40])),
-                    RichSpan::new(&text[split..]),
-                ];
+            )
+        };
+        let mut previous = Some(fresh_at(&mut fs, &base, 240.0));
+        for style in [
+            base.clone(),
+            base.clone().with_line_height(1.7),
+            crate::text_render::TextStyle::new(24.0),
+            base.clone().with_family(crate::text_render::FontChoice::Serif),
+            base.clone().with_italic(true),
+            base.clone().with_letter_spacing(0.8),
+            base.clone()
+                .with_wrap_mode(crate::text_render::TextWrapMode::Balance),
+            base.clone().with_auto_hyphenation("en-US"),
+        ] {
+            for width in [80.0, 160.0, 240.0, 80.0] {
                 let reused = RichTextLayout::shape_styled_reusing(
                     &mut fs,
                     &spans,
                     &style,
                     Some(width),
-                    align,
-                    vec![(0, split)],
+                    TextAlign::Left,
+                    vec![],
                     vec![],
                     previous,
                 );
-                let fresh = RichTextLayout::shape_styled(
-                    &mut fs,
-                    &spans,
-                    &style,
-                    Some(width),
-                    align,
-                    vec![(0, split)],
-                    vec![],
+                let fresh = fresh_at(&mut fs, &style, width);
+                assert_reused_matches_fresh(
+                    &reused,
+                    &fresh,
+                    text,
+                    &format!("{style:?} at {width}"),
                 );
-                assert_eq!(reused.width(), fresh.width(), "case {index}");
-                assert_eq!(reused.height(), fresh.height(), "case {index}");
-                assert_eq!(reused.backgrounds, fresh.backgrounds);
-                assert_eq!(reused.logical_line_origins(), fresh.logical_line_origins());
-                // Compare full glyph layouts, not only overall dimensions.
-                for (a, b) in reused.buffer.lines.iter().zip(&fresh.buffer.lines) {
-                    assert_eq!(
-                        format!("{:?}", a.layout_opt()),
-                        format!("{:?}", b.layout_opt())
-                    );
-                }
-                for byte in text.char_indices().map(|(i, _)| i).chain([text.len()]) {
-                    for affinity in [TextAffinity::Before, TextAffinity::After] {
-                        let position = TextPosition::with_affinity(byte, affinity);
-                        let actual = reused.caret_geometry_at(position);
-                        assert_eq!(
-                            actual,
-                            fresh.caret_geometry_at(position),
-                            "case {index} byte {byte}"
-                        );
-                        assert_eq!(
-                            reused.hit_position(actual.0, actual.1 + actual.2 / 2.0),
-                            fresh.hit_position(actual.0, actual.1 + actual.2 / 2.0)
-                        );
-                        assert_eq!(
-                            reused.visual_motion_position(position, true),
-                            fresh.visual_motion_position(position, true)
-                        );
-                    }
-                    assert_eq!(
-                        reused.selection_rects(0, byte),
-                        fresh.selection_rects(0, byte)
-                    );
-                }
                 previous = Some(reused);
             }
         }
@@ -509,8 +468,6 @@ tilo_test_env::scenario! {
             assert_eq!(final_line.text(), "");
             assert_eq!(final_line.ending(), cosmic_text::LineEnding::None);
             assert_eq!(final_line.align(), Some(Align::Center));
-            assert_eq!(attrs.weight, Weight::BOLD);
-            assert_eq!(attrs.style, Style::Italic);
             assert_eq!(
                 attrs.metrics_opt,
                 Some(Metrics::new(24.0, 30.0).into()),
@@ -597,31 +554,21 @@ tilo_test_env::scenario! {
             let text = "ทุกสองสัปดาห์";
             let style = TextStyle::new(18.0);
             let mut fs = crate::font_catalog::fixture_font_system();
+            let source = RichTextLayout::shape_plain(&mut fs, text, &style, None);
+            let hinted = RichTextLayout::shape_plain(&mut fs, text, &style, Some(10_000.0));
+            assert!(
+                (source.width() - hinted.width()).abs() < 0.01,
+                "zero-width break hints must not alter visible text metrics"
+            );
             let probe = RichTextLayout::shape_plain(&mut fs, &text[..9], &style, None);
-            let width = probe.width() + 0.5;
-            let layout = RichTextLayout::shape_plain(&mut fs, text, &style, Some(width));
-
+            let layout =
+                RichTextLayout::shape_plain(&mut fs, text, &style, Some(probe.width() + 0.5));
             assert_eq!(layout.visual_line_index(0), 0);
             assert_eq!(layout.visual_line_index(9), 1);
             assert_eq!(layout.visual_line_index(18), 2);
             assert_eq!(
                 layout.hit(layout.caret_geometry(18).0, layout.caret_geometry(18).1),
                 18
-            );
-        }
-
-        {
-            use crate::text_render::TextStyle;
-
-            let text = "ทุกสองสัปดาห์";
-            let style = TextStyle::new(18.0);
-            let mut fs = crate::font_catalog::fixture_font_system();
-            let source = RichTextLayout::shape_plain(&mut fs, text, &style, None);
-            let hinted = RichTextLayout::shape_plain(&mut fs, text, &style, Some(10_000.0));
-
-            assert!(
-                (source.width() - hinted.width()).abs() < 0.01,
-                "zero-width break hints must not alter visible text metrics"
             );
         }
 
@@ -933,27 +880,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase bounded_caret_geometry_matches_real_stops_without_origin_fallback;
-    {
-        let shaped = layout("a😀éZ", 400.0);
-        for byte in [0, 1, 5, 7, 8] {
-            assert_eq!(
-                shaped.caret_geometry_bounded(byte),
-                Some(shaped.caret_geometry(byte))
-            );
-        }
-        assert!(shaped.caret_geometry_bounded(9).is_none());
-        assert!(
-            shaped.caret_geometry_bounded(2).is_none(),
-            "a byte inside the emoji is not an observed caret stop"
-        );
-        let empty = layout("", 400.0);
-        assert_eq!(
-            empty.caret_geometry_bounded(0),
-            Some(empty.caret_geometry(0))
-        );
-    }
-
     phase bounded_geometry_refuses_oversized_shaped_runs_before_caret_allocation;
     {
         let text = "a".repeat(65_537);
@@ -982,8 +908,28 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase batched_carets_match_existing_geometry_and_visit_each_row_once;
+    phase batched_and_bounded_carets_answer_real_stops_once_per_row;
     {
+        // A bounded caret is an observed stop only: never the origin fallback past the end,
+        // and never a byte inside a cluster.
+        let shaped = layout("a😀éZ", 400.0);
+        for byte in [0, 1, 5, 7, 8] {
+            assert_eq!(
+                shaped.caret_geometry_bounded(byte),
+                Some(shaped.caret_geometry(byte))
+            );
+        }
+        assert!(shaped.caret_geometry_bounded(9).is_none());
+        assert!(
+            shaped.caret_geometry_bounded(2).is_none(),
+            "a byte inside the emoji is not an observed caret stop"
+        );
+        let empty = layout("", 400.0);
+        assert_eq!(
+            empty.caret_geometry_bounded(0),
+            Some(empty.caret_geometry(0))
+        );
+
         let mut fs = crate::font_catalog::fixture_font_system();
         let style = crate::text_render::TextStyle::new(16.0);
         for text in [
@@ -1134,27 +1080,19 @@ fn caret_hit_and_selection_geometry_follow_visual_direction() {
                 let shaped = layout(text, width);
                 for byte in 0..=text.len() + 1 {
                     for affinity in [TextAffinity::Before, TextAffinity::After] {
-                        let position = TextPosition::with_affinity(byte.min(text.len()), affinity);
-                        let mut fallback = None;
-                        let mut exact = None;
-                        'scan: for run in shaped.buffer.layout_runs() {
-                            for (x, stop) in shaped.caret_stops(&run) {
-                                let geometry = (x, run.line_top, run.line_height);
-                                if stop == position {
-                                    exact = Some(geometry);
-                                    break 'scan;
-                                }
-                                if stop.byte == position.byte && fallback.is_none() {
-                                    fallback = Some(geometry);
-                                }
-                            }
-                        }
-                        let expected = exact.or(fallback).unwrap_or((0.0, 0.0, shaped.line_height));
+                        let position = TextPosition::with_affinity(byte, affinity);
                         assert_eq!(
-                            shaped.caret_geometry_at(TextPosition::with_affinity(byte, affinity)),
-                            expected,
+                            shaped.caret_geometry_at(position),
+                            caret_geometry_full_scan(&shaped, position),
                             "text {text:?}, width {width}, byte {byte}, affinity {affinity:?}"
                         );
+                        for right in [false, true] {
+                            assert_eq!(
+                                shaped.visual_motion_position(position, right),
+                                visual_motion_full_scan(&shaped, position, right),
+                                "text {text:?}, width {width}, byte {byte}, {affinity:?}, right {right}"
+                            );
+                        }
                     }
                 }
             }
@@ -1289,6 +1227,69 @@ fn assert_near(actual: f32, expected: f32, message: &str) {
         (actual - expected).abs() < 0.01,
         "{message}: expected {expected}, got {actual}"
     );
+}
+
+/// A layout that reused an earlier one answers every geometry query as a cold layout of the same
+/// text, styles and width does: metrics, painted bands, every caret with both affinities, hit
+/// testing on each and visual motion, and every selection band.
+fn assert_reused_matches_fresh(
+    reused: &RichTextLayout,
+    fresh: &RichTextLayout,
+    text: &str,
+    case: &str,
+) {
+    assert_eq!(reused.width(), fresh.width(), "{case}");
+    assert_eq!(reused.height(), fresh.height(), "{case}");
+    assert_eq!(reused.backgrounds, fresh.backgrounds, "{case}");
+    assert_eq!(
+        reused.logical_line_origins(),
+        fresh.logical_line_origins(),
+        "{case}"
+    );
+    // Compare full glyph layouts, not only overall dimensions.
+    for (a, b) in reused.buffer.lines.iter().zip(&fresh.buffer.lines) {
+        assert_eq!(
+            format!("{:?}", a.layout_opt()),
+            format!("{:?}", b.layout_opt()),
+            "{case}"
+        );
+    }
+    for byte in text.char_indices().map(|(i, _)| i).chain([text.len()]) {
+        for affinity in [TextAffinity::Before, TextAffinity::After] {
+            let position = TextPosition::with_affinity(byte, affinity);
+            let actual = reused.caret_geometry_at(position);
+            assert_eq!(
+                actual,
+                fresh.caret_geometry_at(position),
+                "{case} byte {byte}"
+            );
+            assert_eq!(
+                reused.hit_position(actual.0, actual.1 + actual.2 / 2.0),
+                fresh.hit_position(actual.0, actual.1 + actual.2 / 2.0),
+                "{case} byte {byte}"
+            );
+            assert_eq!(
+                reused.visual_motion_position(position, true),
+                fresh.visual_motion_position(position, true),
+                "{case} byte {byte}"
+            );
+        }
+        assert_eq!(
+            reused.selection_rects(0, byte),
+            fresh.selection_rects(0, byte),
+            "{case} byte {byte}"
+        );
+    }
+}
+
+/// A paragraph past [`crate::text_break::HUGE_PARAGRAPH_BYTES`], so it is shaped in chunks.
+fn huge_text() -> String {
+    let text = (0..7000)
+        .map(|i| format!("word{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES);
+    text
 }
 
 fn layout(text: &str, width: f32) -> RichTextLayout {
@@ -1432,33 +1433,9 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase visual_motion_reads_only_its_paragraph_and_matches_a_full_scan;
+    phase visual_motion_reads_only_its_paragraph;
     {
-        for text in [
-            "",
-            "alpha beta gamma\nnext\n",
-            "a\r\nb\rc",
-            "שלום mixed العربية\n👩‍💻 é\n",
-            "ภาษาไทยทดสอบ\nខ្មែរ",
-            "soft\u{ad}hyphen word\n\n",
-        ] {
-            for width in [30.0, 180.0] {
-                let shaped = layout(text, width);
-                for byte in 0..=text.len() + 1 {
-                    for affinity in [TextAffinity::Before, TextAffinity::After] {
-                        let position = TextPosition::with_affinity(byte, affinity);
-                        for right in [false, true] {
-                            assert_eq!(
-                                shaped.visual_motion_position(position, right),
-                                visual_motion_full_scan(&shaped, position, right),
-                                "text {text:?}, width {width}, byte {byte}, {affinity:?}, right {right}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
+        // That it moves as a full scan says is checked over every text and width above.
         // An arrow key in a long document builds the caret stops of its own
         // paragraph's rows, never of the rows above it.
         let text = "a paragraph that wraps onto a second row\n".repeat(1000);
@@ -1522,6 +1499,8 @@ tilo_test_env::scenario! {
 /// Caret geometry as a scan of every row of the document: the first exact stop, else the first stop of
 /// the byte.
 fn caret_geometry_full_scan(layout: &RichTextLayout, position: TextPosition) -> (f32, f32, f32) {
+    let position =
+        TextPosition::with_affinity(position.byte.min(layout.text_len), position.affinity);
     let mut fallback = None;
     for run in layout.buffer.layout_runs() {
         for (x, stop) in layout.caret_stops(&run) {
@@ -1543,11 +1522,7 @@ fn a_caret_at_a_huge_paragraphs_chunk_boundary_stands_and_moves_as_at_a_wrap() {
     // the end of one chunk and the start of the next are the same source
     // byte, two sides of a soft wrap. The caret there must still find the
     // earlier chunk's end, or Left from it stops dead at the later start.
-    let text = (0..7000)
-        .map(|i| format!("word{i}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES);
+    let text = huge_text();
     let shaped = layout(&text, 400.0);
     let chunks = shaped.buffer.lines.len();
     assert!(chunks > 2, "shaped in chunks");

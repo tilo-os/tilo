@@ -1,29 +1,29 @@
-//! A field among other controls: the text kind a field kind sets, the rows
-//! it shares with buttons, its submit boundary and accessory, the personal
-//! words that protect an autocorrection, and a paste that arrives late.
+//! A field among other controls: its selection and caret as it is typed in, its
+//! submit boundary and accessory, the personal words that protect an
+//! autocorrection, and a paste that arrives late.
 use super::super::*;
 use super::body_size;
 use super::draw_to_populate;
 use super::drive;
+use super::layout_height;
 use super::mods;
 use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
 
 tilo_test_env::scenario! {
     fn a_field_keeps_its_selection_kind_and_row_as_it_is_typed_in;
 
-    phase accessible_selection_preserves_anchor_and_focus_direction;
+    phase a_field_keeps_its_selection_caret_and_document_size;
     {
         let _settled = crate::motion::testing::settled();
-        let mut input = TextInput::local().with_initial_value("Ae\u{301}👋B");
-        input.core.set_selection(8, 1);
+        {
+            let mut input = TextInput::local().with_initial_value("Ae\u{301}👋B");
+            input.core.set_selection(8, 1);
 
-        assert_eq!(input.selection_range_public(), Some((1, 8)));
-        assert_eq!(input.selection_anchor_focus_public(), Some((8, 1)));
-    }
+            assert_eq!(input.selection_range_public(), Some((1, 8)));
+            assert_eq!(input.selection_anchor_focus_public(), Some((8, 1)));
+        }
 
-    phase insertion_collapses_an_empty_drag_selection;
-    {
-        let _settled = crate::motion::testing::settled();
+        // Typing collapses an empty (drag) selection and goes on from the caret.
         for (text, caret, expected) in [("", 0, "Nx"), ("ab", 1, "aNxb")] {
             let mut ti = TextInput::new(Vec::new());
             ti.set_text(text);
@@ -35,56 +35,7 @@ tilo_test_env::scenario! {
             assert_eq!(ti.value(), expected);
             assert_eq!(ti.selection_range_public(), None);
         }
-    }
 
-    phase field_kinds_set_their_text_kind_while_typing;
-    {
-        let _settled = crate::motion::testing::settled();
-        for (kind, text) in [
-            (TextInputKind::Prose, TextKind::Prose),
-            (TextInputKind::Search, TextKind::Prose),
-            (TextInputKind::Username, TextKind::Identifier),
-            (TextInputKind::Email, TextKind::Identifier),
-            (TextInputKind::Url, TextKind::Url),
-            (TextInputKind::Number, TextKind::Numeric),
-            (TextInputKind::Code, TextKind::Code),
-            (TextInputKind::Password, TextKind::Secret),
-            (TextInputKind::Secret, TextKind::Secret),
-        ] {
-            assert_eq!(kind.text_kind(), text, "{kind:?}");
-            let input = TextInput::local().with_kind(kind);
-            assert_eq!(input.multiline_style(1.0).kind, text, "{kind:?}");
-        }
-    }
-
-    phase fields_share_rows_with_buttons_and_state_what_they_are;
-    {
-        fn layout_height(ti: &mut TextInput, theme: &Theme, width: f32) -> f32 {
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
-                std::collections::HashMap::new();
-            let node = ti.build_layout(&mut taffy, theme, &mut node_map);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(theme.text_scale);
-            let size = Widget::measure(
-                ti,
-                taffy::Size {
-                    width: Some(width),
-                    height: None,
-                },
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(width),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                &mut tr,
-            );
-            match taffy.style(node).unwrap().size.height.into_option() {
-                Some(fixed) => fixed,
-                None => size.height,
-            }
-        }
-
-        let _settled = crate::motion::testing::settled();
         {
             let theme = Theme::dark();
             let mut small = TextInput::local().control_size(ControlSize::Small);
@@ -150,6 +101,26 @@ tilo_test_env::scenario! {
                 "a document-space field keeps its size under a large text scale"
             );
             assert!((document.scale_for(2.0) - 1.0).abs() < f32::EPSILON);
+        }
+    }
+
+    phase field_kinds_set_their_text_kind_while_typing;
+    {
+        let _settled = crate::motion::testing::settled();
+        for (kind, text) in [
+            (TextInputKind::Prose, TextKind::Prose),
+            (TextInputKind::Search, TextKind::Prose),
+            (TextInputKind::Username, TextKind::Identifier),
+            (TextInputKind::Email, TextKind::Identifier),
+            (TextInputKind::Url, TextKind::Url),
+            (TextInputKind::Number, TextKind::Numeric),
+            (TextInputKind::Code, TextKind::Code),
+            (TextInputKind::Password, TextKind::Secret),
+            (TextInputKind::Secret, TextKind::Secret),
+        ] {
+            assert_eq!(kind.text_kind(), text, "{kind:?}");
+            let input = TextInput::local().with_kind(kind);
+            assert_eq!(input.multiline_style(1.0).kind, text, "{kind:?}");
         }
     }
 }
@@ -534,92 +505,31 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_field_with_a_change_and_a_submit_publishes_one_resource_with_both;
+    phase an_entry_publishes_its_verbs_and_carries_what_it_sent;
+    // An entry's words reach the change verb as they are typed, Enter sends them and clears the
+    // field, and the submit is answered with the words it caught even though the field has let go
+    // of them by then. An entry that sent its words keeps the keyboard and takes the very next
+    // typing: one message after another is typed and sent through the one field, as a person does
+    // in Chat's composer. Marked by `insert_at_cursor`, whose rows before the fix never reached the
+    // change verb and whose submit's answer read an emptied field.
     {
         let _settled = crate::motion::testing::settled();
-        let changed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-        let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-        let (change_sink, submit_sink) = (changed.clone(), submitted.clone());
-        let mut ti = TextInput::local()
-            .with_id("pin")
-            .with_initial_value("42")
-            .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
-            .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
-        let published = crate::resources::resources(&ti, &AutoCommit::new());
-        assert_eq!(published.len(), 1, "the field is one resource");
-        let verbs: Vec<&str> = published[0]
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        assert_eq!(verbs, ["submit", "change"]);
+        {
+            let field = TextInput::local()
+                .with_id("pin")
+                .with_initial_value("42")
+                .on_change_view(|_| {})
+                .on_submit_view(|_| {});
+            let published = crate::resources::resources(&field, &AutoCommit::new());
+            assert_eq!(published.len(), 1, "the field is one resource");
+            let verbs: Vec<&str> = published[0]
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            assert_eq!(verbs, ["submit", "change"]);
+        }
 
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &named_key(NamedKey::Enter),
-            mods(false, false)
-        ));
-        assert_eq!(
-            crate::testing::answer_controls(&mut ti),
-            1,
-            "the submit reaches its handler"
-        );
-        assert_eq!(submitted.borrow().as_slice(), ["42"]);
-    }
-
-    phase an_entry_reports_its_emptied_state_after_it_submits;
-    {
-        let _settled = crate::motion::testing::settled();
-        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-        let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-        let (change_sink, submit_sink) = (changes.clone(), submitted.clone());
-        let mut ti = TextInput::local()
-            .with_id("composer")
-            .with_entry(true)
-            .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
-            .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
-        ti.insert_at_cursor("hello");
-        assert_eq!(
-            crate::testing::answer_controls(&mut ti),
-            1,
-            "the typed words reach the change verb"
-        );
-        assert_eq!(changes.borrow().as_slice(), ["hello"]);
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &named_key(NamedKey::Enter),
-            mods(false, false)
-        ));
-        assert_eq!(ti.value(), "", "the entry emptied itself");
-        assert_eq!(
-            crate::testing::answer_controls(&mut ti),
-            2,
-            "the submit and the clearing are both reported"
-        );
-        assert_eq!(submitted.borrow().as_slice(), ["hello"]);
-        assert_eq!(
-            changes.borrow().as_slice(),
-            ["hello", ""],
-            "the emptied field is reported after the submit, so the bound draft is emptied too"
-        );
-    }
-
-    phase a_submit_is_answered_with_the_words_it_caught_even_after_an_entry_emptied_itself;
-    // A submit is answered with the words it caught, never with what the field shows when the answer
-    // runs: the shell collects a press and answers it a step later, and an entry has let go of its
-    // words by then. Reading the field back at the answer would send an empty message — the words
-    // the person typed are lost between the press and the API.
-    //
-    // Marked by `insert_at_cursor`, whose rows before the fix never reached the change verb and the
-    // submit's answer read an emptied field: this test fails on both counts without the fix.
-    {
-        let _settled = crate::motion::testing::settled();
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let answered = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let (change_sink, answer_sink) = (changes.clone(), answered.clone());
@@ -647,7 +557,7 @@ tilo_test_env::scenario! {
             &named_key(NamedKey::Enter),
             mods(false, false)
         ));
-        assert_eq!(ti.value(), "");
+        assert_eq!(ti.value(), "", "the entry emptied itself");
         assert_eq!(
             answered.borrow().as_slice(),
             [] as [String; 0],
@@ -663,26 +573,13 @@ tilo_test_env::scenario! {
             ["ship it"],
             "the submit is answered with the words it caught, not the emptied field"
         );
-    }
+        assert_eq!(
+            changes.borrow().as_slice(),
+            ["ship it", ""],
+            "the emptied field is reported after the submit, so the bound draft is emptied too"
+        );
 
-    phase an_entry_that_submitted_takes_the_next_typing_at_once;
-    // An entry that sent its words keeps the keyboard and takes the very next typing: one message
-    // after another is typed and sent through the one field, as a person does in Chat's composer.
-    // `ui.TextInput(entry: true, bind: draft)` is that field: Enter submits what it holds and the
-    // field clears itself, and what is typed next must land in it as a new draft rather than be
-    // lost or drawn over the sent words.
-    {
-        let _settled = crate::motion::testing::settled();
-        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-        let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-        let (change_sink, submit_sink) = (changes.clone(), submitted.clone());
-        let mut ti = TextInput::local()
-            .with_id("composer")
-            .with_entry(true)
-            .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
-            .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
+        // The entry keeps the keyboard, and the next words are a new message.
         for word in ["first", "second"] {
             for ch in word.chars() {
                 assert!(
@@ -711,8 +608,8 @@ tilo_test_env::scenario! {
             );
         }
         assert_eq!(
-            submitted.borrow().as_slice(),
-            ["first", "second"],
+            answered.borrow().as_slice(),
+            ["ship it", "first", "second"],
             "each send carried the words it held, and the next words are a new message"
         );
         assert_eq!(

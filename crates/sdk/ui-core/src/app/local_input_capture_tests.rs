@@ -178,11 +178,7 @@ tilo_test_env::scenario! {
 
     phase blocked_host_does_not_delay_local_edits_and_a_full_queue_still_takes_the_edit;
     {
-        let mut fixture = ActionFixture::broker();
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        fixture.app.collaboration.manager =
-            CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
-        fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+        let (mut fixture, sent) = capturing_fixture();
         fixture.app.publish_action_surface();
         let alias = fixture
             .app
@@ -310,6 +306,20 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A broker fixture whose reports are captured on the transport, as the
+/// person editing it.
+fn capturing_fixture() -> (
+    ActionFixture,
+    Rc<RefCell<Vec<(crate::collaboration::RouteSpec, CollabRequest)>>>,
+) {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    (fixture, sent)
+}
+
 fn capture_address(fixture: &mut ActionFixture) -> tilo_actions::ActionAddress {
     fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
     fixture.app.publish_action_surface();
@@ -361,10 +371,7 @@ fn capture_reply(
 
 #[test]
 fn definitive_local_capture_failures_release_pins_and_editing_recovers() {
-    let mut fixture = ActionFixture::broker();
-    let sent = Rc::new(RefCell::new(Vec::new()));
-    fixture.app.collaboration.manager =
-        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    let (mut fixture, sent) = capturing_fixture();
     let address = capture_address(&mut fixture);
     for index in 0..195 {
         fixture
@@ -581,10 +588,7 @@ tilo_test_env::scenario! {
 
     phase uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliation;
     {
-        let mut fixture = ActionFixture::broker();
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        fixture.app.collaboration.manager =
-            CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+        let (mut fixture, sent) = capturing_fixture();
         let address = capture_address(&mut fixture);
         let heads = |fixture: &ActionFixture| {
             fixture
@@ -672,11 +676,7 @@ tilo_test_env::scenario! {
 
     phase local_component_action_drains_exact_pre_execution_snapshot_and_alias;
     {
-        let mut fixture = ActionFixture::broker();
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        fixture.app.collaboration.manager =
-            CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
-        fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+        let (mut fixture, sent) = capturing_fixture();
         fixture.app.publish_action_surface();
         let revision = fixture.app.action_directory_revision();
         let alias = fixture
@@ -794,11 +794,7 @@ tilo_test_env::scenario! {
 
     phase model_action_outside_local_input_does_not_create_a_local_report;
     {
-        let mut fixture = ActionFixture::broker();
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        fixture.app.collaboration.manager =
-            CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
-        fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+        let (mut fixture, sent) = capturing_fixture();
         capture_bound_directory(&mut fixture);
         let target = fixture.target(0, "apply");
         // This is the same internal API a delivered/model action uses, not the
@@ -824,11 +820,7 @@ tilo_test_env::scenario! {
     // A click that edits nothing never says anything, whatever the state of
     // the published surface.
     {
-        let mut fixture = ActionFixture::broker();
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        fixture.app.collaboration.manager =
-            CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
-        fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+        let (mut fixture, sent) = capturing_fixture();
         fixture.app.publish_action_surface();
         for stale in [false, true] {
             if stale && let Some((_, revision)) = fixture.app.actions.action_directory_stamp.as_mut() {
@@ -852,11 +844,7 @@ tilo_test_env::scenario! {
     // wake) builds no surface: its edit is reported against the surface on the
     // route, the one the window shows, and the frame publishes once.
     {
-        let mut fixture = ActionFixture::broker();
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        fixture.app.collaboration.manager =
-            CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
-        fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+        let (mut fixture, sent) = capturing_fixture();
         fixture.app.publish_action_surface();
         let published = fixture.app.action_directory_revision();
         // A handled input changed what the surface is built from and left its
@@ -897,11 +885,7 @@ tilo_test_env::scenario! {
     // applied at once, said nothing about while it waits, and recorded with
     // the broker once a surface it can be reported against is published.
     {
-        let mut fixture = ActionFixture::broker();
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        fixture.app.collaboration.manager =
-            CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
-        fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+        let (mut fixture, sent) = capturing_fixture();
         fixture.app.publish_action_surface();
         // The surface moves under the next input: it cannot be pinned.
         if let Some((_, revision)) = fixture.app.actions.action_directory_stamp.as_mut() {
@@ -958,10 +942,7 @@ tilo_test_env::scenario! {
 /// is on its way.
 #[test]
 fn a_change_that_cannot_be_saved_says_so_and_can_be_retried() {
-    let mut fixture = ActionFixture::broker();
-    let sent = Rc::new(RefCell::new(Vec::new()));
-    fixture.app.collaboration.manager =
-        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    let (mut fixture, sent) = capturing_fixture();
     let address = capture_address(&mut fixture);
     fixture
         .app
@@ -1014,10 +995,7 @@ fn a_change_that_cannot_be_saved_says_so_and_can_be_retried() {
 /// window, which runs its own Retry rather than looking for an app action.
 #[test]
 fn the_header_retry_button_runs_the_windows_retry() {
-    let mut fixture = ActionFixture::broker();
-    let sent = Rc::new(RefCell::new(Vec::new()));
-    fixture.app.collaboration.manager =
-        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    let (mut fixture, sent) = capturing_fixture();
     let address = capture_address(&mut fixture);
     fixture
         .app
@@ -1054,10 +1032,7 @@ fn the_header_retry_button_runs_the_windows_retry() {
 #[test]
 fn edits_on_a_connection_that_admits_no_reports_land_and_say_history_misses_them() {
     let unrecorded = crate::i18n::I18nManager::lookup_plain("history-local-action-unrecorded");
-    let mut fixture = ActionFixture::broker();
-    let sent = Rc::new(RefCell::new(Vec::new()));
-    fixture.app.collaboration.manager =
-        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    let (mut fixture, sent) = capturing_fixture();
     let address = capture_address(&mut fixture);
     let heads = |fixture: &ActionFixture| {
         fixture

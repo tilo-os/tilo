@@ -165,6 +165,14 @@ tilo_test_env::scenario! {
                 .err()
                 .unwrap();
             assert!(error.to_string().contains("bytes"), "{error}");
+            // A process checks each catalog file's size from its metadata and
+            // reads none: the same cut-short file is refused before any text is
+            // set from it.
+            let error = verify_bundle(&root.canonicalize().unwrap(), false)
+                .err()
+                .expect("a font of another size is refused");
+            assert!(error.problem.contains("bytes"), "{error}");
+            assert!(catalog_roots().contains(&crate::font_catalog::checkout_root()));
         }
     }
 
@@ -232,7 +240,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase byte_catalog_rejects_missing_and_corrupt_assets;
+    phase a_byte_catalog_verifies_its_assets_and_keeps_its_canonical_faces_and_locale;
     // A browser must verify the same asset bytes and produce actual toolkit shaping.
     // Skipping a missing/corrupt asset or using ambient fonts makes these fail.
     {
@@ -247,11 +255,6 @@ tilo_test_env::scenario! {
                 })
                 .is_err()
         );
-    }
-
-    phase byte_catalog_preserves_canonical_faces_and_locale;
-    {
-        let catalog = fixture_catalog();
         let fonts = catalog
             .load_bytes(|name| std::fs::read(catalog.root().join(name)).ok())
             .unwrap();
@@ -290,30 +293,6 @@ tilo_test_env::scenario! {
                 matches!(&face.source, fontdb::Source::File(path) if path.starts_with(tmp.path().join("a")))
             );
         }
-    }
-
-    phase a_catalog_file_of_another_size_is_refused;
-    // A process checks each catalog file's size from its metadata and reads none:
-    // a file cut short is refused before any text is set from it.
-    {
-        let checkout = crate::font_catalog::checkout_root();
-        assert!(catalog_roots().contains(&checkout));
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("manifest.toml"), MANIFEST).unwrap();
-        let first = tilo_font_catalog::manifest()
-            .unwrap()
-            .font
-            .iter()
-            .find(|asset| asset.scope == Scope::Product)
-            .unwrap();
-        let mut bytes = std::fs::read(first.path_in(&checkout).unwrap()).unwrap();
-        bytes.pop();
-        std::fs::write(first.path_in(tmp.path()).unwrap(), bytes).unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        let error = verify_bundle(&root, false)
-            .err()
-            .expect("a font of another size is refused");
-        assert!(error.problem.contains("bytes"), "{error}");
     }
 
     phase new_computer_modern_cuts_are_their_own_families;
@@ -392,7 +371,7 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn a_browser_installs_its_fonts_by_digest_and_fetches_the_cuts_it_needs;
 
-    phase browser_startup_catalog_requires_only_the_core_family_assets;
+    phase a_browser_start_loads_only_the_core_family_assets_and_checks_each_digest_and_size;
     {
         let catalog = FontCatalog::product("", "en-US");
         let root = fixture().root().to_path_buf();
@@ -416,12 +395,6 @@ tilo_test_env::scenario! {
             406_096
         );
         assert_eq!(fonts.db().len(), 2);
-    }
-
-    phase a_startup_font_whose_page_digest_or_size_differs_from_the_build_is_refused;
-    {
-        let catalog = FontCatalog::product("", "en-US");
-        let root = fixture().root().to_path_buf();
         let mut read = super::test_font_files(&root);
         let Err(error) = catalog.load_browser_startup_bytes(|name| {
             let (bytes, mut digest) = read(name)?;

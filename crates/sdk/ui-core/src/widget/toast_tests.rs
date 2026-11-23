@@ -549,10 +549,6 @@ tilo_test_env::scenario! {
             painted(&typed_scene) > painted(&scene),
             "the typed reply paints over the placeholder"
         );
-    }
-
-    phase a_title_too_long_for_a_phone_wraps_to_a_second_line;
-    {
         let mut tr = TextRenderer::new();
         let theme = Theme::light();
         let title = "Claude Code finished: 8 changes in Workspace";
@@ -623,10 +619,6 @@ tilo_test_env::scenario! {
             format!("{face:?}"),
             format!("{:?}", crate::widget::AvatarFace::new("Ada", "ada"))
         );
-    }
-
-    phase the_body_and_time_are_separate_lines;
-    {
         let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
             .body("Launch notes")
             .time("just now");
