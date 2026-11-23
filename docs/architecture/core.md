@@ -439,6 +439,13 @@ There are seven ways to add a device:
   `daemon.sock` and opens no endpoint of its own. With no session running,
   those actions answer that the device can't do it now, and wake still
   works.
+- **One way the daemon starts:** the platform's service manager starts it,
+  and everything else asks the running daemon. On Tilo OS and on a server
+  it is a system service from boot, so the device answers before anyone
+  signs in. Elsewhere (another Linux distribution, macOS, Windows) it is the
+  signed-in person's service: a user unit, a launchd agent, a per-user
+  service. Installing it never asks for admin rights. Only where the unit
+  lives differs; the binary and its start are the same everywhere.
 
 ### What goes
 
