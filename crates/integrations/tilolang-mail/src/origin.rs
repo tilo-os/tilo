@@ -289,7 +289,8 @@ impl ImapOrigin {
     /// Deletes messages from the account's server for good, its trash emptied of them: what a
     /// person deleting a trashed conversation permanently does. The payload is `(account, [key
     /// …])`. A key the account's mail no longer names is passed over, so deleting again what is
-    /// already gone changes nothing.
+    /// already gone changes nothing. The records leave the workspace once the server says the
+    /// messages are gone, so a deletion the server refused keeps them here.
     fn purge(&mut self, payload: &Json) -> Delivery {
         let account = payload.get(0).and_then(Json::as_str).unwrap_or_default();
         let keys: Vec<String> = payload
@@ -302,41 +303,33 @@ impl ImapOrigin {
                     .collect()
             })
             .unwrap_or_default();
-        let Some(state) = self.state.as_mut() else {
+        let Some(state) = self.state.as_ref() else {
             return Delivery::Rejected(format!("no mail account {account} on this device"));
         };
         if !state.accounts.contains_key(account) {
             return Delivery::Rejected(format!("no mail account {account} on this device"));
         }
         let account_id = account.to_owned();
-        let connector = &mut self.connector;
-        let pending = &mut self.pending;
-        let purged = &mut self.purged;
-        let Some(acct) = state.accounts.get_mut(account) else {
-            return Delivery::Delivered;
-        };
         for key in keys {
-            let Some(held) = acct.messages.remove(&key) else {
+            let held = self
+                .state
+                .as_ref()
+                .and_then(|state| state.accounts.get(account))
+                .is_some_and(|acct| acct.messages.contains_key(&key));
+            if !held {
                 continue;
-            };
-            state.by_record.remove(&held.record.id_string());
-            if let Some(request) = connector.purge(&account_id, &key) {
-                pending.insert(
+            }
+            if let Some(request) = self.connector.purge(&account_id, &key) {
+                self.pending.insert(
                     request,
                     Pending::Purge {
                         account: account_id.clone(),
                         key: key.clone(),
                     },
                 );
-                purged.insert((account_id.clone(), key.clone()));
-            }
-            for thread in acct.threads.values_mut() {
-                thread.keys.retain(|kept| kept != &key);
+                self.purged.insert((account_id.clone(), key));
             }
         }
-        // A conversation whose messages are all gone has nothing left to say of itself here: the
-        // app takes the conversation away with its last message.
-        acct.threads.retain(|_, thread| !thread.keys.is_empty());
         Delivery::Delivered
     }
 
@@ -387,11 +380,9 @@ impl ImapOrigin {
                     }
                     Some(Pending::Purge { account, key }) => {
                         polled.wrote |= self.purged(host, now, &account, &key);
-                    }
-                    Some(Pending::Write { .. }) | None => {}
-                    Some(Pending::Purge { account, key }) => {
                         self.purged.remove(&(account, key));
                     }
+                    Some(Pending::Write { .. }) | None => {}
                 },
                 Event::Refused { request, reason } => match self.pending.remove(&request) {
                     Some(Pending::Send(payload)) => {
@@ -412,6 +403,8 @@ impl ImapOrigin {
                     // server would not, and the server's next mail brings it back if it keeps
                     // it.
                     Some(Pending::Purge { account, .. }) => {
+                        self.trouble_kind
+                            .insert(account.clone(), "unreachable".to_owned());
                         self.trouble.insert(account, reason);
                     }
                     None => {}
@@ -432,6 +425,8 @@ impl ImapOrigin {
                         polled.wrote |= self.write_back(host, now, account, key, before);
                     }
                     Some(Pending::Purge { account, .. }) => {
+                        self.trouble_kind
+                            .insert(account.clone(), "offline".to_owned());
                         self.trouble.insert(account, reason);
                     }
                     None => {}
@@ -836,7 +831,7 @@ impl ImapOrigin {
                     account: asked_of,
                     key: asked,
                 } => asked_of == account && asked == key,
-                Pending::Send(_) | Pending::Purge { .. } => false,
+                Pending::Send(_) => false,
             })
         };
         match take_in_step(host, now, state, changes, waiting) {
@@ -1264,14 +1259,14 @@ impl ImapOrigin {
         let touched = BTreeSet::from([thread_key.clone()]);
         if let Some(thread) = acct.threads.get_mut(&thread_key) {
             thread.keys.retain(|known| known != key);
-            if thread.keys.is_empty() {
-                if let Some(gone) = acct.threads.remove(&thread_key) {
-                    writes.push(OriginWrite::Remove {
-                        owner: acct.record.clone(),
-                        field: threads_field,
-                        item: gone.record,
-                    });
-                }
+            if thread.keys.is_empty()
+                && let Some(gone) = acct.threads.remove(&thread_key)
+            {
+                writes.push(OriginWrite::Remove {
+                    owner: acct.record.clone(),
+                    field: threads_field,
+                    item: gone.record,
+                });
             }
         }
         // What the conversations left say, and each mailbox's counts.
@@ -1299,6 +1294,11 @@ impl ImapOrigin {
 ///
 /// A store that cannot take the change; then the change is taken back, and the workspace is read
 /// again by [`ImapOrigin::take_in`] with nothing of the step known.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one step of the sync: the conversations it starts, the messages it read, the \
+              removals and what each conversation left says, written as one change"
+)]
 fn take_in_step(
     host: &Host,
     now: &str,
@@ -1637,6 +1637,34 @@ fn files(parts: &[Part]) -> Value {
 
 /// The files a send takes along, as the package hands them (`d.attachments`, each a `File` as
 /// it is stored): what each is called, its media type, its size and its reference.
+/// The message an `outside` payload carries: `(account, from, to, cc, bcc, subject, body, the
+/// Message-ID it answers, the References it continues, the calendar invitation[, files])`, what
+/// `smtp.send` and `imap.save_draft` take. The formatted alternative is written from the words,
+/// as every mail keeps one beside them.
+fn outgoing(payload: &Json) -> Outgoing {
+    let field = |i: usize| -> String {
+        payload
+            .get(i)
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let body = field(6);
+    Outgoing {
+        from: field(1),
+        to: field(2),
+        cc: field(3),
+        bcc: field(4),
+        subject: field(5),
+        html_body: crate::html::of_markdown(&body),
+        body,
+        in_reply_to: field(7),
+        references: field(8),
+        calendar_ics: field(9),
+        files: parts_of(payload.get(10)),
+    }
+}
+
 fn parts_of(files: Option<&Json>) -> Vec<Part> {
     let Some(files) = files.and_then(Json::as_array) else {
         return Vec::new();
@@ -1775,7 +1803,12 @@ impl Origin for ImapOrigin {
     fn serves(&self, capability: &str) -> bool {
         matches!(
             capability,
-            "smtp.send" | "imap.check" | "imap.older" | "imap.search" | "imap.save_draft" | "imap.purge"
+            "smtp.send"
+                | "imap.check"
+                | "imap.older"
+                | "imap.search"
+                | "imap.save_draft"
+                | "imap.purge"
         )
     }
 
@@ -1927,34 +1960,13 @@ impl Origin for ImapOrigin {
             }
             "imap.save_draft" => {
                 let account = field(0);
-                let draft = Outgoing {
-                    to: field(1),
-                    cc: field(2),
-                    subject: field(3),
-                    body: field(4),
-                    in_reply_to: field(5),
-                    references: field(6),
-                    calendar_ics: field(7),
-                };
-                return match self.connector.save_draft(&account, draft) {
+                return match self.connector.save_draft(&account, outgoing(payload)) {
                     Some(_) => Delivery::Delivered,
                     None => Delivery::Rejected(format!("no mail account {account} on this device")),
                 };
             }
             "imap.purge" => {
-                let (account, key) = (field(0), field(1));
-                // The server says whether the message is gone: its record leaves the workspace
-                // with the answer, never before it.
-                return match self.connector.purge(&account, &key) {
-                    Some(request) => {
-                        self.pending
-                            .insert(request, Pending::Purge { account, key });
-                        Delivery::Delivered
-                    }
-                    None => Delivery::Rejected(format!(
-                        "no message {key} of a mail account {account} on this device"
-                    )),
-                };
+                return self.purge(payload);
             }
             "smtp.send" => {}
             _ => {
@@ -1962,19 +1974,6 @@ impl Origin for ImapOrigin {
                     "the mail connector does not carry out {capability}"
                 ));
             }
-            return match self.connector.older(&account, &mailbox) {
-                // The page arrives as the server's answers do, on the poll it wakes.
-                Some(_) => Delivery::Delivered,
-                None => Delivery::Rejected(format!("there is no older mail to read in {mailbox}")),
-            };
-        }
-        if capability == "imap.purge" {
-            return self.purge(payload);
-        }
-        if capability != "smtp.send" {
-            return Delivery::Rejected(format!(
-                "the mail connector does not carry out {capability}"
-            ));
         }
         let key = payload.to_string();
         match self.sends.get(&key) {
@@ -1996,20 +1995,7 @@ impl Origin for ImapOrigin {
             None => {}
         }
         let account = field(0);
-        let body = field(6);
-        let message = Outgoing {
-            from: field(1),
-            to: field(2),
-            cc: field(3),
-            bcc: field(4),
-            subject: field(5),
-            html_body: crate::html::of_markdown(&body),
-            body,
-            in_reply_to: field(7),
-            references: field(8),
-            calendar_ics: field(9),
-            files: parts_of(payload.get(10)),
-        };
+        let message = outgoing(payload);
         match self.connector.send(&account, message) {
             Ok(request) => {
                 // Resolved by the connector's answer to `request` (`Accepted`, `Refused` or

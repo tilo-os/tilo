@@ -445,6 +445,15 @@ impl EngineConnector {
     }
 
     fn take_in(&mut self, account: &str, folder: Folder, messages: &[Message]) -> Vec<ImapMessage> {
+        // The engine answers in the order it was asked: while a move of the account's is
+        // unanswered, a fetch that answers before it read its folder before the move. A message
+        // moved here and not yet seen in its new folder keeps where it was moved to; otherwise
+        // a fetch of the folder it left puts it back there, and a purge of it asks that folder
+        // for a message it no longer holds, leaving it on the server.
+        let moving = self
+            .pending
+            .values()
+            .any(|(kind, asked_of, _)| *kind == EngineRequestKind::Move && asked_of == account);
         let held = self.held.entry(account.to_owned()).or_default();
         let mut out = Vec::with_capacity(messages.len());
         for m in messages {
@@ -453,9 +462,15 @@ impl EngineConnector {
                 account.clone_into(&mut m.account);
             }
             m.folder = folder;
+            out.push(imap_message(&m, self.content.as_ref()));
+            let moved_away = held
+                .get(m.id)
+                .is_some_and(|at| at.server.is_none() && at.folder != folder);
+            if moving && moved_away {
+                continue;
+            }
             self.keys
                 .insert((account.to_owned(), message_key(&m)), m.id);
-            out.push(imap_message(&m, self.content.as_ref()));
             held.insert(m);
         }
         out
@@ -561,7 +576,13 @@ impl MailConnector for EngineConnector {
 
     fn purge(&mut self, account: &str, key: &str) -> Option<Request> {
         let config = self.config(account)?;
-        let m = self.held_message(account, key)?;
+        let mut m = self.held_message(account, key)?;
+        // Only what the trash holds is deleted for good: a message held as read elsewhere is
+        // found in the trash by its Message-ID, never asked of a folder it has left.
+        if m.server.is_none_or(|at| at.folder != Folder::Trash) {
+            m.folder = Folder::Trash;
+            m.server = None;
+        }
         // It leaves the workspace's mail as it leaves the server: what is held here no longer
         // names it, so no flag or move a person's next change asks for is sent for it.
         if let Some(id) = self.keys.remove(&(account.to_owned(), key.to_owned()))

@@ -142,7 +142,7 @@ impl MailConnector for RemoteConnector {
         self.ask(account, |request| ToConnector::SaveDraft {
             request,
             account: account.to_owned(),
-            draft,
+            draft: Box::new(draft),
         })
     }
 

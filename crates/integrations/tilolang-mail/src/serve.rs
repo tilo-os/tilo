@@ -323,7 +323,7 @@ impl Connector {
                 request,
                 account,
                 draft,
-            } => (request, attached.connector.save_draft(&account, draft)),
+            } => (request, attached.connector.save_draft(&account, *draft)),
             ToConnector::Search {
                 request,
                 account,

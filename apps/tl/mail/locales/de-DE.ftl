@@ -273,7 +273,6 @@ d-eon6gbrn = Neue Nachricht
 
 d-ygbvdl5l = Neue Nachricht
     .doc = Beginnt eine Nachricht vom ersten Konto.
-    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-hom44or2 = Per Mail einladen
     .doc = Beginnt eine Nachricht, die `to` zu einem Termin einlädt, mit ihrer Einladung (`calendar_ics`, iCalendar) neben dem, was sie sagt: was der Kalender Mail für jeden Gast übergibt, den er einlädt.
@@ -533,8 +532,6 @@ d-k2js7gyd = Zustellung sagt
 
 d-2zkppx6r = Zeit zum Zurückholen~present
 
-d-gcixhwyt = Neuer Entwurf~present
-
 d-7jf4pn3j = Kalendereinladung vorbereiten~present
 
 d-s2qkkueu = Nachricht zustellen~present
@@ -593,9 +590,6 @@ d-dhradxj7 = Kontohinweis
     .w-try-again = Erneut versuchen
 
 d-7rcrynvm = Mail
-    .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
-    .w-mail = Mail
-    .w-recovered-mail = Wiederhergestellte Mail
 
 d-4fjgzcq6 = Zusammengeführt
     .w-all-accounts = Alle Konten
@@ -631,6 +625,11 @@ d-u43u7z6w = Unterhaltungszeile
 d-77noqogh = Entwurfszeile
 
 d-bbuecgsi = Unterhaltung
+    .w-delete-this-conversation-permanently = Diese Unterhaltung endgültig löschen?
+    .w-it-is-in-the-trash = Sie ist im Papierkorb
+    .w-this-can-t-be-undone = Das lässt sich nicht rückgängig machen.
+    .w-it-stays-here-until-you-delete = Sie bleibt hier, bis du sie endgültig löschst.
+    .w-delete-permanently = Endgültig löschen
     .w-reply-to = Antwort auf { $subject }
     .w-reply = Antworten
 

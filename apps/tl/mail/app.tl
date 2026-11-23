@@ -150,6 +150,9 @@ type Draft (title: subject, untitled: "New message") {
     body: Text
     in_reply_to: Text
     references: Text
+    /// The conversation it answers, by its key: empty for a message that answers none. The
+    /// draft shows it beside what is written, so the person reads what they answer.
+    conversation: Text = ""
     sent: Bool = false
     /// When it goes: 1970 for a draft not sent yet.
     send_at: Time = Time("1970-01-01T00:00:00Z")
@@ -169,6 +172,7 @@ type Draft (title: subject, untitled: "New message") {
         filter "Outbox" = sent and not recalled (icon: .send)
         hide in_reply_to
         hide references
+        hide conversation
         hide send_at
         hide invitation
     }
@@ -366,10 +370,9 @@ fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List
     }
 }
 
-/// Starts a message from the first account.
+/// Starts a message. A message is written before the workspace has an account to send it from:
+/// it waits in Drafts, and goes once the person adds one.
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
-    require not m.accounts.is_empty() "Add a mail account in Settings first"
-    applies not m.accounts.is_empty() "Add a mail account in Settings first"
     let from = m.accounts.first()?.key ?? ""
     m.drafts.insert(Draft(from: from, body: signature_of(m, from)))
 }
@@ -738,6 +741,35 @@ fn quoted(m: Message) -> Text {
     "\n\nOn {m.received}, {m.from_name} wrote:\n> {as_lines(m.body).replace("\n", "\n> ")}\n"
 }
 
+/// The key of the conversation `m` stands in, in an account or in the mail recovered from one
+/// that went: empty for a message no conversation holds.
+fn conversation_of(m: Message) -> Text {
+    let mail = root Mail
+    for a in mail.accounts {
+        if let t = a.threads.find(x -> x.messages.any(y -> y.id() == m.id())) {
+            return t.key
+        }
+    }
+    if let t = mail.recovered_mail.find(x -> x.messages.any(y -> y.id() == m.id())) {
+        return t.key
+    }
+    ""
+}
+
+/// The conversation named by `key`, in the accounts or the mail recovered from one that went:
+/// none once it is gone.
+fn thread_named(m: Mail, key: Text) -> Option<Thread> {
+    if key == "" {
+        return .none
+    }
+    for a in m.accounts {
+        if let t = a.threads.find(x -> x.key == key) {
+            return .some(t)
+        }
+    }
+    m.recovered_mail.find(t -> t.key == key)
+}
+
 /// Answers the conversation's newest message, to whoever wrote it, quoting it under what is
 /// written.
 primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
@@ -752,6 +784,7 @@ primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
             body: signed(m, from, if let l = last { quoted(l) } else { "" }),
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
+            conversation: t.key,
         ),
     )
 }
@@ -772,6 +805,7 @@ action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key:
             body: signed(m, from, if let l = last { quoted(l) } else { "" }),
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
+            conversation: t.key,
         ),
     )
 }
@@ -788,6 +822,7 @@ action reply_to(m: Message) -> Draft (icon: .reply) {
             body: signed(mail, from, quoted(m)),
             in_reply_to: m.message_id,
             references: "{m.references} {m.message_id}",
+            conversation: conversation_of(m),
         ),
     )
 }
@@ -806,6 +841,7 @@ action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") 
             body: signed(mail, from, quoted(m)),
             in_reply_to: m.message_id,
             references: "{m.references} {m.message_id}",
+            conversation: conversation_of(m),
         ),
     )
 }
@@ -943,28 +979,29 @@ destructive action delete(t: Thread) (icon: .trash, key: "#") {
 
 /// Deletes the conversation's trashed messages for good, from its server too, and the
 /// conversation with them when no message of it is left. This is the one deletion there is no
-/// trash to take back from: what is deleted for good is gone from the server, and the platform
-/// takes back this app's record of it only.
+/// trash to take back from: what is deleted for good is gone from the server, and this app's
+/// record of it leaves once the server says it is.
 destructive action purge(t: Thread) (icon: .trash, label: "Delete permanently") {
     require t.boxes.any(b -> b == "trash") "It is not in the trash"
     require t.messages.any(x -> x.mailbox == "trash") "Nothing of it is in the trash"
     let m = root Mail
     let doomed = t.messages.filter(x -> x.mailbox == "trash")
     // A conversation kept from outside an account's server has no server to be deleted from: it
-    // goes from the workspace alone.
+    // goes from the workspace alone, at once. One whose server can be asked leaves the workspace
+    // when the server says its messages are gone, so a deletion the server refused keeps it here.
     if has_account(m, t.account) {
         outside("imap.purge", (t.account, doomed.map(x -> x.key)))
-    }
-    for x in doomed {
-        t.messages.remove(x)
-    }
-    let left = t.messages.len()
-    if left == 0 {
-        if let a = m.accounts.find(x -> x.key == t.account) { a.threads.remove(t) }
-        if m.recovered_mail.any(x -> x.id() == t.id()) { m.recovered_mail.remove(t) }
     } else {
-        t.unread = t.messages.any(x -> x.unread)
-        t.boxes.remove("trash")
+        for x in doomed {
+            t.messages.remove(x)
+        }
+        let left = t.messages.len()
+        if left == 0 {
+            if m.recovered_mail.any(x -> x.id() == t.id()) { m.recovered_mail.remove(t) }
+        } else {
+            t.unread = t.messages.any(x -> x.unread)
+            t.boxes.remove("trash")
+        }
     }
 }
 
@@ -972,7 +1009,10 @@ destructive action purge(t: Thread) (icon: .trash, label: "Delete permanently") 
 /// each as `purge` does. A view offers this behind a confirmation, as nothing undoes it.
 destructive action empty_trash(a: Account) (icon: .trash, label: "Empty trash") {
     require not a.threads.matching("is:trash").is_empty() "The trash is empty"
-    for t in a.threads.matching("is:trash") {
+    let trashed = a.threads.matching("is:trash")
+    // The list is taken first: each purge may take its conversation out of the query as it
+    // goes, and a query read while it changes answers nothing.
+    for t in trashed {
         purge(t)
     }
 }
@@ -1188,7 +1228,18 @@ action save_to_drafts(m: Mail, d: Draft) (icon: .cloud, label: "Save in Drafts")
     require has_account(m, d.from) "Add a mail account in Settings first"
     outside(
         "imap.save_draft",
-        (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references, d.invitation),
+        (
+            d.from,
+            d.from_address,
+            d.to,
+            d.cc,
+            d.bcc,
+            d.subject,
+            d.body,
+            d.in_reply_to,
+            d.references,
+            d.invitation,
+        ),
     )
 }
 
@@ -1222,11 +1273,8 @@ action announce(t: Thread) uses notify (icon: .bell, label: "Announce the mail t
             "{t.subject}\n{account?.address}"
         } else { t.subject }
         // The mailbox is the workspace's: everyone who is in it is told, so the mail reaches
-        // each of their devices. Where the host cannot say who reads the conversation, the
-        // workspace's people are told.
-        let readers = members(t)
-        let told = if readers.is_empty() { workspace.members } else { readers }
-        for who in told {
+        // each of their devices.
+        for who in workspace.members {
             notify(to: who, title: title, body: body, opens: t)
         }
     }
@@ -1236,6 +1284,14 @@ action announce(t: Thread) uses notify (icon: .bell, label: "Announce the mail t
 /// moment it came.
 trigger new_mail(t: Thread) at t.arrived: announce(t)
 
+/// Why a message cannot go from where it stands, as the window says it: where an account is
+/// added when the workspace has none, and which account a message written before one picks.
+fn send_refusal(m: Mail) -> Text {
+    if m.accounts.is_empty() {
+        "Add a mail account in Settings first"
+    } else { "Pick the account it goes from" }
+}
+
 /// Sends the message from its account. It leaves the system, so it goes once, and waits in the
 /// outbox until the server took it; it is held back for the person's hold first, so they can
 /// take it back. The effect is an argument the action records, so the wait survives a window
@@ -1243,7 +1299,9 @@ trigger new_mail(t: Thread) at t.arrived: announce(t)
 primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" or d.bcc != "" "It goes to nobody yet"
+    require d.from != "" "Pick the account it goes from"
     require has_account(root Mail, d.from) "Add a mail account in Settings first"
+    applies has_account(root Mail, d.from) send_refusal(root Mail)
     let m = root Mail
     let at = now + Duration(m.hold)
     outside(
@@ -1296,6 +1354,7 @@ action answer(t: Thread, body: Text) -> Draft uses time (icon: .reply) {
             body: "{lead}{said}",
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
+            conversation: t.key,
         ),
     )
     send(d)
@@ -1404,42 +1463,56 @@ view account_notice(a: Account) {
 /// list, a conversation in any account opening beside it; one account's window is its
 /// mailboxes as its places.
 view mail(m: Mail) {
-    state account: Text = ""
     if m.accounts.is_empty() {
-        if m.recovered_mail.is_empty() {
-            std.page(m) {
-                ui.EmptyState("Add a mail account in Settings", icon: .mail)
-            }
-        } else {
-            // The conversations read from the last account stand in the window's overview, so
-            // one a person opens stands in the window's content beside it rather than over a
-            // page with nothing left to show. There is no account, so there is no sidebar.
-            ui.NavShell(
-                content_kind: .document,
-                title: "Recovered mail",
-                sidebar_title: "Mail",
-                overview_title: "Recovered mail",
-                overview_count: m.recovered_mail.len(),
-                actions: [new_draft],
-            ) {
-                // The bar holds what a person does here; the mailbox's settings and what scripts
-                // and moves bring in stand behind its "More".
-                sidebar: {
-                    ui.NavList(selected: "recovered") {
-                        ui.NavItem("recovered", "Recovered mail", icon: .archive) {
-                            on select: set(account, "")
-                        }
-                    }
+        without_accounts(m)
+    } else {
+        unified(m)
+    }
+}
+
+/// The mail window with no account to read from: the drafts a person wrote, which need no
+/// account, and the mail kept from the last account before it went. What sends a message is an
+/// account, so the window says where one is added.
+view without_accounts(m: Mail) {
+    state place: Text = "drafts"
+    let drafts = m.drafts.matching("is:drafts")
+    let recovered = place == "recovered"
+    ui.NavShell(
+        content_kind: .document,
+        title: if recovered { "Recovered mail" } else { "Drafts" },
+        sidebar_title: "Mail",
+        overview_title: if recovered { "Recovered mail" } else { "Drafts" },
+        overview_count: if recovered { m.recovered_mail.len() } else { drafts.len() },
+        actions: [new_draft],
+    ) {
+        sidebar: {
+            ui.NavList(selected: place) {
+                ui.NavItem("drafts", "Drafts", icon: .pencil, count: drafts.len()) {
+                    on select: set(place, "drafts")
                 }
-                overview: {
-                    recovered_mail(m)
+                if not m.recovered_mail.is_empty() {
+                    ui.NavItem("recovered", "Recovered mail", icon: .archive) {
+                        on select: set(place, "recovered")
+                    }
                 }
             }
         }
-    } else if let a = m.accounts.find(x -> x.key == account) {
-        mailboxes(a)
-    } else {
-        unified(m)
+        overview: {
+            // A conversation recovered from the last account stands in the window's overview,
+            // so one a person opens stands in the content beside it rather than over a page
+            // with nothing left to show.
+            if recovered {
+                recovered_mail(m)
+            } else {
+                draft_list(drafts)
+            }
+        }
+        content: {
+            stack(gap: .group) {
+                ui.EmptyState("Add a mail account in Settings", icon: .mail)
+                ui.Link("settings://external_accounts", label: "Add an account in Settings")
+            }
+        }
     }
 }
 
@@ -1448,8 +1521,11 @@ view mail(m: Mail) {
 view unified(m: Mail) {
     state query: Text = "is:inbox"
     let places = filters(Thread).filter(f -> f.toggle)
-    let title = place_title(m, query)
-    let shown = everywhere(m, query)
+    let drafts = m.drafts.matching("is:drafts")
+    let title = if query == "is:drafts" { "Drafts" } else { place_title(m, query) }
+    let shown: List<Thread> = if query == "is:drafts" or query == "recovered" {
+        []
+    } else { everywhere(m, query) }
     let waiting = waiting_to_go(m)
     ui.NavShell(
         content_kind: .document,
@@ -1459,8 +1535,12 @@ view unified(m: Mail) {
         sidebar_title: "All accounts",
         overview_title: if query == "recovered" {
             "Recovered mail"
+        } else if query == "is:drafts" {
+            "Drafts"
         } else if query == "outbox" { "Outbox" } else { title },
-        overview_count: if query == "recovered" {
+        overview_count: if query == "is:drafts" {
+            drafts.len()
+        } else if query == "recovered" {
             m.recovered_mail.len()
         } else if query == "outbox" { waiting.len() } else { shown.len() },
         actions: [new_draft],
@@ -1479,6 +1559,9 @@ view unified(m: Mail) {
                 }
                 ui.NavItem("all", "All mail", icon: .mail) {
                     on select: set(query, "")
+                }
+                ui.NavItem("is:drafts", "Drafts", icon: .pencil, count: drafts.len()) {
+                    on select: set(query, "is:drafts")
                 }
                 if not m.recovered_mail.is_empty() {
                     ui.NavItem("recovered", "Recovered mail", icon: .archive) {
@@ -1517,8 +1600,11 @@ view unified(m: Mail) {
         }
         overview: {
             // Every account's mail of the place is one list, so a conversation of any of them
-            // stands in it, and what each account's server says of itself is said over it.
-            if query == "recovered" {
+            // stands in it, and what each account's server says of itself is said over it. The
+            // drafts need no account, so they stand in the same window.
+            if query == "is:drafts" {
+                draft_list(drafts)
+            } else if query == "recovered" {
                 recovered_mail(m)
             } else if query == "outbox" {
                 outbox(m)
@@ -1838,6 +1924,25 @@ view thread_item(t: Thread) {
     }
 }
 
+/// The messages being written, as the Drafts place lists them: each a row that opens the draft
+/// beside it. The list asks for the rows in view, so a workspace with years of drafts opens as
+/// fast as one with a few.
+view draft_list(shown: List<Draft>) {
+    if shown.is_empty() {
+        ui.EmptyState("No drafts", icon: .pencil)
+    } else {
+        ui.VirtualList(selection_follows_focus: true, in_column: true) {
+            on select(x: Draft): open(x, front: false)
+            on activate(x: Draft): open(x)
+            for x in shown {
+                ui.ListItem(item: x) {
+                    draft_row(x)
+                }
+            }
+        }
+    }
+}
+
 /// One message being written in a list: its subject and who it goes to.
 view draft_row(d: Draft) {
     row(
@@ -1881,58 +1986,69 @@ fn can_undo(d: Draft) -> Bool {
 /// in the trash offers to delete it permanently, behind a confirmation, since nothing undoes it.
 view conversation(t: Thread) {
     state draft: Text
+    state confirming: Bool
+    // A conversation no account of this workspace sent has nothing to reply from, so its window
+    // keeps no reply bar rather than an empty one.
+    let answered = can_answer(t)
     ui.NavShell(content_kind: .page, title: t.subject) {
         content: {
-            // A conversation no account of this workspace sent has nothing to reply from, so
-            // its window keeps no reply bar rather than an empty one.
-            if can_answer(t) {
+            if answered {
                 ui.Docked {
+                    // The offer to delete it for good stays above the reply bar, at the window's
+                    // foot, so the messages keep the room they need.
                     foot: {
-                        row {
-                            ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
-                                on submit: answer(t, draft).then(set(draft, ""))
+                        stack(gap: .none) {
+                            if t.boxes.any(b -> b == "trash") {
+                                trash_offer(t, confirming)
                             }
-                            ui.Button("Reply", icon: .send, icon_only: true) {
-                                on press: answer(t, draft).then(set(draft, ""))
-                            }
+                            reply_bar(t, draft)
                         }
                     }
-                    conversation_body(t)
+                    conversation_messages(t)
                 }
             } else {
-                conversation_body(t)
+                stack(fill, gap: .none) {
+                    if t.boxes.any(b -> b == "trash") {
+                        trash_offer(t, confirming)
+                    }
+                    conversation_messages(t)
+                }
             }
         }
     }
 }
 
-/// What a conversation's window shows under its window: the offer to delete it for good while it
-/// is in the trash, over its messages.
-view conversation_body(t: Thread) {
-    state confirming: Bool
-    if t.boxes.any(b -> b == "trash") {
-        stack(fill, gap: .none) {
-            stack(padding: .group) {
-                ui.Banner(
-                    if confirming {
-                        "Delete this conversation permanently?"
-                    } else { "It is in the trash" },
-                    message: if confirming {
-                        "This can't be undone."
-                    } else {
-                        "It stays here until you delete it permanently."
-                    },
-                    kind: if confirming { .error } else { .neutral },
-                    icon: .trash,
-                    action: "Delete permanently",
-                ) {
-                    on act: if confirming { purge(t) } else { set(confirming, true) }
-                }
-            }
-            conversation_messages(t)
+/// The offer to delete a trashed conversation for good, behind a confirmation: nothing undoes
+/// it, so the first press says what it would do and the second does it.
+template view trash_offer(t: Thread, confirming: State<Bool>) {
+    stack(padding: .group) {
+        ui.Banner(
+            if confirming {
+                "Delete this conversation permanently?"
+            } else { "It is in the trash" },
+            message: if confirming {
+                "This can't be undone."
+            } else {
+                "It stays here until you delete it permanently."
+            },
+            kind: if confirming { .error } else { .neutral },
+            icon: .trash,
+            action: "Delete permanently",
+        ) {
+            on act: if confirming { purge(t) } else { set(confirming, true) }
         }
-    } else {
-        conversation_messages(t)
+    }
+}
+
+/// The bar a conversation is answered from: what is typed, and the press that sends it.
+template view reply_bar(t: Thread, draft: State<Text>) {
+    row {
+        ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
+            on submit: answer(t, draft).then(set(draft, ""))
+        }
+        ui.Button("Reply", icon: .send, icon_only: true) {
+            on press: answer(t, draft).then(set(draft, ""))
+        }
     }
 }
 
@@ -2102,7 +2218,7 @@ view editor(d: Draft) {
             if mail.accounts.is_empty() {
                 stack(gap: .tight) {
                     text("No mail account to send from")
-                    ui.Link("settings://accounts", label: "Add an account in Settings")
+                    ui.Link("settings://external_accounts", label: "Add an account in Settings")
                 }
             } else if mail.accounts.len() == 1 and sender != .none {
                 if identities_of(sender).is_empty() {
@@ -2200,20 +2316,49 @@ view editor(d: Draft) {
             }
         }
         // The message's own Send: a composer sends from where it is written, and the window's
-        // bar keeps it once for the draft it shows. While `send` would refuse, it stands dimmed
-        // where a person looks for it, saying why in the words of its `require`. Beside it,
-        // the draft is kept in the account's server Drafts folder, for the other mail clients
-        // of the account.
+        // bar keeps it once for the draft it shows. With no account to go from, the way to add
+        // one stands where Send does: pressing it opens the Settings page that adds an account,
+        // and the draft stays as it is. With one, the draft can also be kept in the account's
+        // server Drafts folder for its other mail clients.
         row {
             ui.Button("Attach", icon: .paperclip) {
                 on press: file.choose(attach(d))
             }
             spacer()
-            ui.Button("Save in Drafts", icon: .cloud) {
-                on press: save_to_drafts(mail, d)
+            if mail.accounts.is_empty() {
+                ui.Link(
+                    "settings://external_accounts",
+                    label: "Add an account to send",
+                    role: .label,
+                )
+            } else {
+                ui.Button("Save in Drafts", icon: .cloud) {
+                    on press: save_to_drafts(mail, d)
+                }
+                ui.Button("Send", icon: .send) {
+                    on press: send(d)
+                }
             }
-            ui.Button("Send", icon: .send) {
-                on press: send(d)
+        }
+        // An answer shows the conversation it answers under it, so the person reads what their
+        // message goes into without leaving the draft.
+        if let t = thread_named(mail, d.conversation) {
+            std.after_body {
+                stack(gap: .group) {
+                    ui.Text("This answers {t.subject}", role: .heading)
+                    for m in t.messages {
+                        stack(gap: .tight) {
+                            row(gap: .related, align: .center) {
+                                ui.Text(
+                                    if m.from_name == "" { m.from } else { m.from_name },
+                                    role: .subheading,
+                                )
+                                ui.Time(m.received, role: .caption, past: true, secondary: true)
+                            }
+                            ui.Text(as_lines(m.body), role: .body, secondary: true)
+                        }
+                    }
+                }
             }
         }
     }
@@ -2548,6 +2693,7 @@ scenario "a reply being written" -> Draft {
             body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam",
             in_reply_to: "launch@rivera.example",
             references: "launch@rivera.example",
+            conversation: launch.key,
         ),
     )
 }
@@ -2568,6 +2714,85 @@ scenario "a reply with no account to send it" -> Draft {
 
 /// No account yet: what a first start shows.
 scenario "no account yet" {
+    root Mail
+}
+
+/// A conversation in the trash, and its window: the offer to delete it for good stands over it.
+scenario "a conversation in the trash" -> Account {
+    let m = root Mail
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            online: true,
+        ),
+    )
+    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox"))
+    a.mailboxes.insert(Mailbox(key: "trash", name: "Trash", role: "trash", total: 1))
+    let t = a.threads.insert(
+        Thread(
+            key: "offer@deals.example",
+            account: a.key,
+            subject: "You have won a cruise",
+            latest: 2026-06-26T03:12,
+            snippet: "Claim your prize within 24 hours.",
+            senders: "Prize Draw",
+            count: 1,
+        ),
+    )
+    t.boxes.add("trash")
+    t.messages.insert(
+        Message(
+            key: "offer@deals.example",
+            account: a.key,
+            subject: "You have won a cruise",
+            from: "win@deals.example",
+            from_name: "Prize Draw",
+            to: "sam@rivera.example",
+            received: 2026-06-26T03:12,
+            snippet: "Claim your prize.",
+            body: "Claim your prize within 24 hours of confirming your card details.",
+            message_id: "offer@deals.example",
+            mailbox: "trash",
+        ),
+    )
+    a
+}
+
+/// Messages waiting to go, and the window's Outbox place over them.
+scenario "messages waiting to go" {
+    let m = root Mail
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            online: true,
+        ),
+    )
+    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox"))
+    a.mailboxes.insert(Mailbox(key: "sent", name: "Sent", role: "sent"))
+    m.drafts.insert(
+        Draft(
+            from: a.key,
+            to: "grace@hopper.example",
+            subject: "Launch plan",
+            body: "Here is where it stands.",
+            sent: true,
+            send_at: 2026-06-30T18:00,
+        ),
+    )
+    m.drafts.insert(
+        Draft(
+            from: a.key,
+            to: "ada@analytical.example",
+            subject: "Engine notes",
+            body: "Look at the timing.",
+            sent: true,
+            send_at: 2026-06-30T18:00,
+        ),
+    )
     root Mail
 }
 

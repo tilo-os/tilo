@@ -28537,6 +28537,7 @@
               "address",
               "name",
               "trouble",
+              "trouble_kind",
               "signature",
               "identities"
             ],
@@ -28595,11 +28596,29 @@
         "required": [],
         "description": "Asks the account's server for its mail now: what a person presses when the window says the\nserver could not be reached, or that what it fetched could not be saved. The account says\nhow it stands once it answers."
       },
+      "tl.so.tilo.mail.Account.search_server.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "Asks the account's server to search its mail for `text`: what finds mail the workspace does\nnot hold, and mail in folders it does not sync. What it finds comes in as the account's\nconversations, as a fetch's mail does, so it is read and searched here from then on."
+      },
       "tl.so.tilo.mail.Account.new_message.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Starts a message from the account."
+      },
+      "tl.so.tilo.mail.Account.empty_trash.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Deletes every conversation in the account's trash from the mailbox and its server for good,\neach as `purge` does. A view offers this behind a confirmation, as nothing undoes it."
       },
       "tl.so.tilo.mail.Account.mark_all_read.Arguments": {
         "type": "object",
@@ -28804,7 +28823,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Deletes the conversation's trashed messages for good, from its server too, and the\nconversation with them when no message of it is left. This is the one deletion there is no\ntrash to take back from: what is deleted for good is gone from the server, and the platform\ntakes back this app's record of it only."
+        "description": "Deletes the conversation's trashed messages for good, from its server too, and the\nconversation with them when no message of it is left. This is the one deletion there is no\ntrash to take back from: what is deleted for good is gone from the server, and this app's\nrecord of it leaves once the server says it is."
       },
       "tl.so.tilo.mail.Thread.flag.Arguments": {
         "type": "object",
@@ -28881,6 +28900,12 @@
         },
         "required": [],
         "description": "Marks the conversation read, or unread again."
+      },
+      "tl.so.tilo.mail.Thread.announce.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Tells everyone who reads the conversation that mail came to it: who wrote, what it is\ncalled, and which account it came to while the workspace reads several of them, opening the\nconversation. It is run once for each arrival, on the device that governs the workspace, so\neach person is told once however many of their devices are open."
       },
       "tl.so.tilo.mail.Thread.answer.Arguments": {
         "type": "object",
@@ -29078,6 +29103,7 @@
               "body",
               "in_reply_to",
               "references",
+              "conversation",
               "invitation",
               "set_aside"
             ],
@@ -29219,6 +29245,12 @@
         ],
         "description": "Sends the message as another of its account's names or addresses, `Name <address>`: what a\nperson writing as a role rather than as themselves chooses. Empty sends as the account's own."
       },
+      "tl.so.tilo.mail.Draft.retry.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Sends a message the account's server refused again, from where it stands: the version that\nfailed did not leave, so it goes once. A message whose outcome nobody knows is not tried\nagain, since it may have gone."
+      },
       "tl.so.tilo.mail.Draft.send.Arguments": {
         "type": "object",
         "properties": {},
@@ -29294,7 +29326,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Starts a message from the first account."
+        "description": "Starts a message. A message is written before the workspace has an account to send it from:\nit waits in Drafts, and goes once the person adds one."
       },
       "tl.so.tilo.mail.Mail.draft_message.Arguments": {
         "type": "object",
@@ -29536,6 +29568,47 @@
           "d"
         ],
         "description": "Throws a message being written away."
+      },
+      "tl.so.tilo.mail.Mail.save_to_drafts.Arguments": {
+        "type": "object",
+        "properties": {
+          "d": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.mail.Draft",
+            "type": "object"
+          }
+        },
+        "required": [
+          "d"
+        ],
+        "description": "Keeps the message in the account's server Drafts folder as it is written now, so another\nmail client of the account sees it there too. What the server says comes back with the\naccount's next mail, and the server's Drafts are read like its other folders."
       },
       "tl.so.tilo.notes.Note.$create.Arguments": {
         "type": "object",
@@ -41306,8 +41379,20 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Account",
+      "action": "search_server",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.search_server.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
       "action": "new_message",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Account.new_message.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
+      "action": "empty_trash",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.empty_trash.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -41464,6 +41549,12 @@
       "resource": "tl.so.tilo.mail.Thread",
       "action": "mark_read",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.mark_read.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
+      "action": "announce",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.announce.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -41630,6 +41721,12 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Draft",
+      "action": "retry",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.retry.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "send",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.send.Arguments"
     },
@@ -41716,6 +41813,12 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "discard",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.discard.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
+      "action": "save_to_drafts",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.save_to_drafts.Arguments"
     },
     {
       "app": "so.tilo.notes",

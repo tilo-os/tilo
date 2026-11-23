@@ -47,7 +47,8 @@ pub enum ToConnector {
     SaveDraft {
         request: Request,
         account: String,
-        draft: Outgoing,
+        /// Boxed, as a send's message is: a draft with its files is far larger than the rest.
+        draft: Box<Outgoing>,
     },
     Search {
         request: Request,
