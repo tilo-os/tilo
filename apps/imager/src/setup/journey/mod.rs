@@ -4581,7 +4581,7 @@ impl InstallerPreview {
         }
         Button::new(id, &t(label))
             .with_enabled(enabled)
-            .on_effect(move || {
+            .on_click(move || {
                 if matches!(effect, InstallerPreviewEffect::ContinuePreview) {
                     queue_continue(&commands);
                 } else {
@@ -4672,7 +4672,7 @@ impl InstallerPreview {
             .secondary(secondary)
             .two_line_secondary()
             .disclosure()
-            .on_effect(move || {
+            .on_click(move || {
                 commands
                     .borrow_mut()
                     .push(InstallerPreviewEffect::EditPreview {
@@ -5046,7 +5046,7 @@ impl InstallerPreview {
             },
         );
         let input = if focus_confirmation {
-            input.on_submit_view(move |_| {
+            input.on_submit(move |_| {
                 if submit_enabled {
                     next_focus.set(true);
                 }
@@ -5055,7 +5055,7 @@ impl InstallerPreview {
             submits(self.actions.as_ref(), input, continues())
         } else if submit_enabled {
             let commands = self.commands.clone();
-            input.on_submit_view(move |_| {
+            input.on_submit(move |_| {
                 commands
                     .borrow_mut()
                     .push(InstallerPreviewEffect::ContinuePreview);

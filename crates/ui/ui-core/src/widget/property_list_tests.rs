@@ -4,33 +4,6 @@ use crate::headless::{FrameHarness, InspectionNode};
 tilo_test_env::scenario! {
     fn property_actions_and_values_are_published_and_read_aloud;
 
-    phase editable_text_still_requires_an_action_binding;
-    {
-        struct UnboundEditable;
-        impl Widget for UnboundEditable {
-            crate::testing::inert_widget_methods!(leaf_layout);
-            fn name(&self) -> &'static str {
-                "UnboundEditable"
-            }
-            fn test_id(&self) -> Option<&str> {
-                Some("editable-unbound")
-            }
-            fn accessibility(&self) -> Option<AccessNode> {
-                Some(AccessNode::new(Role::TextInput).with_name("Editable field"))
-            }
-        }
-        let driver = FrameHarness::new(crate::State::new(), Box::new(UnboundEditable), (320, 120));
-        let audit = driver.native_app_audit();
-        assert!(
-            audit
-                .issues
-                .iter()
-                .any(|issue| issue.control == "editable-unbound"
-                    && issue.code == "missing-action-binding"),
-            "editable fields still need actual action provenance: {audit:?}"
-        );
-    }
-
     phase accessibility_reads_each_value_and_its_actions;
     {
         let list = PropertyList::new(vec![

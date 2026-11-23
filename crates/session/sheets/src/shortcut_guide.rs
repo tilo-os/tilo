@@ -766,7 +766,7 @@ fn keys(mut column: Column, guide: &Guide, ask: &Ask) -> Column {
                     &format!("guide-reset-{}", pair.previous.action),
                     &t("guide-reset"),
                 )
-                .on_own_device_effect(move || reset(effect.clone())),
+                .on_click(move || reset(effect.clone())),
             ));
         }
         column = column.push(Box::new(row));

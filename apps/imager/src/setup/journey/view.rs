@@ -547,7 +547,7 @@ impl InstallerPreview {
                                     .secondary(t("installer-flatpak-settings-note"))
                                     .two_line_secondary()
                                     .disclosure()
-                                    .on_effect(move || {
+                                    .on_click(move || {
                                         commands.borrow_mut().push(
                                             InstallerPreviewEffect::ToggleFlatpakAccessDetails,
                                         )
@@ -625,7 +625,7 @@ impl InstallerPreview {
                                 .two_line_secondary()
                                 .icon(Icon::Globe)
                                 .disclosure()
-                                .on_effect(move || {
+                                .on_click(move || {
                                     commands
                                         .borrow_mut()
                                         .push(InstallerPreviewEffect::ReviewServiceSessions)
@@ -1036,7 +1036,7 @@ impl InstallerPreview {
                                 "installer.source-handoff.approve",
                                 &t("installer-source-handoff-approve"),
                             )
-                            .on_effect(move || {
+                            .on_click(move || {
                                 commands.borrow_mut().push(
                                     InstallerPreviewEffect::ApproveSourceHandoff {
                                         approval: approval.clone(),

@@ -3257,7 +3257,7 @@ mod tests {{
                     ui::row![
                         Text::new(&format!("Item {{index}}")),
                         Button::new(&format!("open-{{key}}"), "Open")
-                            .on_view(move || activated.set(Some(key.clone()))),
+                            .on_open(move || activated.set(Some(key.clone()))),
                     ],
                 )))
             }},
@@ -3413,7 +3413,7 @@ mod tests {{
                     let activated = cells_activated.clone();
                     Box::new(
                         Button::new(&format!("open-{{index}}"), "Open")
-                            .on_view(move || activated.set(Some(index.to_string())))
+                            .on_open(move || activated.set(Some(index.to_string())))
                             .control_size(if index == 0 {{ ControlSize::Large }} else {{ ControlSize::Small }}),
                     )
                 }}),

@@ -1118,7 +1118,7 @@ impl Widget for AnswerPart {
     }
     fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         if self.1.get() && !self.2 {
-            self.0 = Box::new(Button::new("see-history", "See history").on_view(|| {}));
+            self.0 = Box::new(Button::new("see-history", "See history").on_open(|| {}));
             self.2 = true;
         }
         false
@@ -1139,7 +1139,7 @@ fn a_part_built_for_an_answer_is_published() {
     let scope = crate::wake::WakeScope::new();
     let wake = scope.handle();
     let answered = std::rc::Rc::new(Cell::new(false));
-    let waiting = Box::new(Button::new("waiting", "Waiting").on_view(|| {}));
+    let waiting = Box::new(Button::new("waiting", "Waiting").on_open(|| {}));
     let root = AnswerPart(waiting, answered.clone(), false);
     let mut app =
         App::from_scoped_parts_with_controlled_inputs(scope, State::new(), Box::new(root));

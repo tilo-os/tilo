@@ -326,7 +326,7 @@ impl Places {
         let sections = self.sections();
         let mut list = NavList::new(sections)
             .with_accessible_name(t("files-a11y-places"))
-            .on_view("places_sidebar", {
+            .on_choose("places_sidebar", {
                 let sink = sink.clone();
                 let chosen = Rc::clone(chosen);
                 move |id| {

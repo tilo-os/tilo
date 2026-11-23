@@ -55,7 +55,7 @@ impl Described for Chip {
         chip = match press {
             Event::None => chip,
             Event::Action(binding) => chip.on_action(binding),
-            Event::View(intent) => chip.on_view(intent.sender()),
+            Event::View(intent) => chip.on_open(intent.sender()),
         };
         chip = chip.with_remove_press(Press::of(remove));
         chip
@@ -84,7 +84,7 @@ impl Described for Chip {
         };
         self.selectable = selected.is_some();
         self.set_selected(selected.unwrap_or(false));
-        self.activation.set_event(press, &label);
+        self.activation.set_event(press);
         let remove = Press::of(remove);
         if remove.is_none() {
             self.removable = false;

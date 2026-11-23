@@ -156,7 +156,7 @@ fn job_row(job: &Job, presses: &Presses) -> Element {
             controls.push(Box::new(
                 Button::new(&format!("jobs-stop-{}", id.number()), "jobs-stop")
                     .control_size(ControlSize::Small)
-                    .on_view(move || presses.borrow_mut().push(Press::Stop(id))),
+                    .on_open(move || presses.borrow_mut().push(Press::Stop(id))),
             ));
         } else if job.is_stopping() {
             controls.push(Box::new(
@@ -174,7 +174,7 @@ fn job_row(job: &Job, presses: &Presses) -> Element {
                     &crate::i18n::widget_format("jobs-show-me", &[]),
                 )
                 .control_size(ControlSize::Small)
-                .on_view(move || presses.borrow_mut().push(Press::Show(id))),
+                .on_open(move || presses.borrow_mut().push(Press::Show(id))),
             ));
         }
         let presses = Rc::clone(&presses.pressed);
@@ -185,7 +185,7 @@ fn job_row(job: &Job, presses: &Presses) -> Element {
                 &crate::i18n::widget_format("jobs-read", &[]),
             )
             .control_size(ControlSize::Small)
-            .on_view(move || presses.borrow_mut().push(Press::Read(id))),
+            .on_open(move || presses.borrow_mut().push(Press::Read(id))),
         ));
     }
     let mut row = ListRow::new(format!("jobs-row-{}", id.number()), job.title())
@@ -250,7 +250,7 @@ fn more_row(more: usize) -> Element {
             ),
         )
         .icon(Icon::Timer)
-        .on_view(super::open),
+        .on_open(super::open),
     )
 }
 

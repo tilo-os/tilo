@@ -204,7 +204,7 @@ impl BottomPanel {
                     Box::new(
                         ListRow::new(format!("search-{index}"), &hit.preview)
                             .meta(format!("{}:{}", hit.rel, hit.line))
-                            .on_view(move || activated.set(Some(index))),
+                            .on_open(move || activated.set(Some(index))),
                     ) as Element
                 })
                 .collect();
@@ -239,7 +239,7 @@ impl BottomPanel {
                             ("column", ui::i18n::ArgValue::Number(d.col as f64)),
                         ],
                     ))
-                    .on_view(move || activated.set(Some(index)));
+                    .on_open(move || activated.set(Some(index)));
                 let row = match d.severity {
                     Severity::Error => row.icon(ui::icons::Icon::Ban).error(),
                     Severity::Warning => row.icon(ui::icons::Icon::TriangleAlert).warning(),

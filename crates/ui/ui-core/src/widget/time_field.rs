@@ -123,7 +123,7 @@ fn row(id: &str, value: Option<Time>, picked: &Picked, accessible_name: &str) ->
         .role(ButtonRole::Plain)
         .with_icon(Icon::Clock)
         .with_placeholder()
-        .on_view(move || on_add.set(Some(Some(morning()))));
+        .on_open(move || on_add.set(Some(Some(morning()))));
         return row.push(Box::new(add));
     };
     let on_step = Rc::clone(picked);
@@ -151,7 +151,7 @@ fn row(id: &str, value: Option<Time>, picked: &Picked, accessible_name: &str) ->
     )
     .role(ButtonRole::Plain)
     .with_placeholder()
-    .on_view(move || on_remove.set(Some(None)));
+    .on_open(move || on_remove.set(Some(None)));
     row.push(Box::new(remove))
 }
 

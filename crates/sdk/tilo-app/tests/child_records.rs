@@ -62,16 +62,16 @@ impl ResourceApp for TopicsApp {
         let (making, trashing, moving) = (topics.clone(), topics.clone(), topics);
         Box::new(
             Column::new()
-                .push(Box::new(Button::new("make", "Make").on_view(move || {
+                .push(Box::new(Button::new("make", "Make").on_open(move || {
                     making
                         .create(serde_json::json!({ "name": "design" }), None, None)
                         .unwrap();
                 })))
-                .push(Box::new(Button::new("trash", "Trash").on_view(move || {
+                .push(Box::new(Button::new("trash", "Trash").on_open(move || {
                     let (first, _, _) = trashing.children().into_iter().next().unwrap();
                     trashing.delete(&first).unwrap();
                 })))
-                .push(Box::new(Button::new("move", "Move").on_view(move || {
+                .push(Box::new(Button::new("move", "Move").on_open(move || {
                     let listed = moving.children();
                     let (last, _, _) = listed.last().unwrap();
                     let (first, _, _) = listed.first().unwrap();

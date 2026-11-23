@@ -56,7 +56,7 @@ fn button(
 ) -> Button {
     Button::new(id, label)
         .role(role)
-        .on_effect(ask(requests, request))
+        .on_click(ask(requests, request))
 }
 
 fn text(value: &str, role: TextRole) -> Element {
@@ -190,7 +190,7 @@ fn detail_header(item: &SecretItem, requests: &Requests, actions_in_bar: bool) -
         let favorite_label = favorite_label(favorite);
         Button::icon_only("passwords.favorite", Icon::Star, &favorite_label)
             .toggled(favorite)
-            .on_own_device_effect(move || {
+            .on_click(move || {
                 requests
                     .borrow_mut()
                     .push(Request::ToggleFavorite(id.clone()));
@@ -332,7 +332,7 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
     };
     input
         .with_initial_value(value)
-        .on_change_view(move |value| core.borrow_mut().set_draft(field, value))
+        .on_change(move |value| core.borrow_mut().set_draft(field, value))
 }
 
 fn field_label(kind: SecretItemKind, field: DraftField) -> String {
@@ -379,7 +379,7 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
             &ui::LocalState::new(selected.to_owned()),
         )
         .with_id("passwords.kind")
-        .on_change_view(move |label| {
+        .on_change(move |label| {
             if let Some((kind, _)) = KINDS.iter().find(|(_, candidate)| *candidate == label) {
                 requests.borrow_mut().push(Request::SetKind(*kind));
             }
@@ -766,7 +766,7 @@ fn secret_input(shared: &Shared, confirmation: bool, label: &str, error: Option<
         })
         .with_secret(true)
         .with_initial_value(&value)
-        .on_change_view(move |value| {
+        .on_change(move |value| {
             let mut core = core.borrow_mut();
             let before = core.backup_confirmation_problem();
             let slot = if confirmation {
@@ -869,7 +869,7 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
         let requests = Rc::clone(requests);
         Checkbox::from_state(&ui::LocalState::new(acknowledged))
             .with_label(crate::CATALOG.t("passwords-export-acknowledge"))
-            .on_view("passwords-export-acknowledge", move |on| {
+            .on_choose("passwords-export-acknowledge", move |on| {
                 requests.borrow_mut().push(Request::Acknowledge(on));
             })
     };

@@ -1,8 +1,8 @@
 //! What a field tells whoever holds it: a submitting Enter, a committed edit, a settled
 //! selection, and Escape letting go of what was typed.
 
-use super::{CHANGE_TEXT, SUBMIT_TEXT, TextInput};
-use crate::widget::{ActionEmitter, Widget as _};
+use super::TextInput;
+use crate::widget::ActionEmitter;
 
 impl TextInput {
     /// Run `callback` with the text when the person presses Enter: the
@@ -80,58 +80,8 @@ impl TextInput {
         event.fire(Some(value));
     }
 
-    /// Run `callback` with the text on a submitting Enter, the field as control
-    /// `tilo.control:<id>`, publishing the submit as its view action `submit`: a person's Enter, a
-    /// screen reader, a script and an agent submit through the same action.
-    #[must_use]
-    #[expect(
-        clippy::expect_used,
-        reason = "the generated payload is serializable and the action is the resource's own"
-    )]
-    pub fn on_submit_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        use crate::tilo_actions::{ActionBinding, ActionSpec, OperationKind, ResourceSpec};
-        let id = self.test_id().unwrap_or("text_input").to_owned();
-        let spec = ActionSpec::operation(
-            "submit",
-            "Submit",
-            OperationKind::View,
-            SUBMIT_TEXT,
-            &serde_json::json!({ "control": id }),
-        )
-        .expect("the submit payload is serializable")
-        .for_audience(crate::tilo_actions::Audience::Agents);
-        let resource = ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", "Submit")
-            .with_action(spec);
-        let binding = ActionBinding::unit_for(&resource, "submit")
-            .expect("the submit action is the resource's own and takes no arguments");
-        self.enter_submits = true;
-        self.on_submit = Some(Box::new(callback));
-        self.submit_view = Some((ActionEmitter::new_replace_one(binding), resource));
-        self
-    }
-
-    /// Run `callback` with the text of every committed edit, the field, as
-    /// control `tilo.control:<id>`, publishing the edit as its view action
-    /// `change`: typing, pasting, an IME commit, a screen reader's edit, a
-    /// script's and an agent's all arrive through the same action. The
-    /// control's latest text is what it reports, so a burst of edits the host
-    /// has not collected yet reports once, with the text it now holds.
-    #[must_use]
-    pub fn on_change_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        self.set_on_change_view(callback);
-        self
-    }
-
-    /// [`Self::on_change_view`] on a field already built.
-    pub fn set_on_change_view(&mut self, callback: impl FnMut(&str) + 'static) {
-        let id = self.test_id().unwrap_or("text_input").to_owned();
-        self.change_verb = Some(crate::widget::control_verb::ControlVerb::new(
-            &id,
-            "Change",
-            "change",
-            CHANGE_TEXT,
-            crate::widget::control_verb::VerbArgument::Text,
-        ));
+    /// [`Self::on_change`] on a field already built.
+    pub fn set_on_change(&mut self, callback: impl FnMut(&str) + 'static) {
         self.on_change = Some(Box::new(callback));
         self.last_notified_text.clone_from(&self.text);
     }

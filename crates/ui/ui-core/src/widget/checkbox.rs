@@ -1500,7 +1500,7 @@ mod tests {
             let state = crate::LocalState::new(false);
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
-            let mut first = Checkbox::from_state(&state).on_view("checkbox", move |checked| {
+            let mut first = Checkbox::from_state(&state).on_choose("checkbox", move |checked| {
                 captured.borrow_mut().push(checked)
             });
             let mut second = Checkbox::from_state(&state);
@@ -1520,7 +1520,6 @@ mod tests {
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
-            assert_eq!(crate::testing::answer_controls(&mut first), 1);
             assert!(!state.get(), "user activation publishes typed state");
             assert_eq!(&*changes.borrow(), &[false]);
 

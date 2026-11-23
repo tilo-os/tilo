@@ -1524,7 +1524,7 @@ mod tests {
             let presses = Rc::new(Cell::new(0_u32));
             let counter = Rc::clone(&presses);
             let button = crate::widget::Button::new("canvas-button", "Inspect")
-                .on_effect(move || counter.set(counter.get() + 1));
+                .on_click(move || counter.set(counter.get() + 1));
             let manual = crate::widget::Manual::new(|cx| {
                 let size = cx
                     .measure_child(

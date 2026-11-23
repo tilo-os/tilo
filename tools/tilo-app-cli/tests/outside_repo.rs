@@ -71,7 +71,6 @@ fn a_generated_app_goes_from_new_to_a_release_awaiting_review() {
     // collaboration, the native contract), certification of the production
     // root without a window, and the audited headless scenario.
     run(tilo_app(&app).arg("check"), "tilo-app check");
-    an_unbound_control_fails_the_audit(&app);
     run(
         tilo_app(&app).args(["build", "--target", host]).arg(&app),
         "tilo-app build (native)",
@@ -104,46 +103,6 @@ fn scaffold(checkout: &Path, parent: &Path, app: &Path) {
     assert!(manifest.contains("[patch.crates-io]"), "{manifest}");
     assert!(app.join("rust-toolchain.toml").is_file());
     assert!(app.join("Cargo.lock").is_file());
-}
-
-/// A button with an imperative callback and no action behind it is
-/// invisible to scripts, agents and assistive tools: `tilo-app test` must
-/// fail on it and name it as a control with no action binding, and pass
-/// again once it is gone.
-#[cfg(test)]
-fn an_unbound_control_fails_the_audit(app: &Path) {
-    let source = app.join("src/lib.rs");
-    let original = std::fs::read_to_string(&source).expect("app source");
-    let anchor = "            clear,\n        ])";
-    assert!(
-        original.contains(anchor),
-        "the starter's view changed shape; update this test's anchor:\n{original}"
-    );
-    let unbound = original.replace(
-        anchor,
-        "            clear,\n            Button::new(\"forget\", \"starter-clear\").on_click(|| {}),\n        ])",
-    );
-    std::fs::write(&source, unbound).expect("write the unbound control");
-    let output = tilo_app(app)
-        .arg("test")
-        .output_locked()
-        .expect("run tilo-app test");
-    std::fs::write(&source, &original).expect("restore the app source");
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        !output.status.success(),
-        "tilo-app test passed with a control bound to nothing:\n{text}"
-    );
-    assert!(
-        text.contains("initial_native_app_contract_is_certified")
-            && text.contains("\"forget\"")
-            && text.contains("missing-action-binding"),
-        "the failure must be the audit naming the control:\n{text}"
-    );
 }
 
 /// `tilo-app package` for this host: the Tilo OS thin app on Linux (what a

@@ -553,7 +553,7 @@ fn panel_contents(
     let api = dispatcher.clone();
     let person = selected.person.clone();
     let typed_recipient = recipient.clone();
-    let add = Button::new("contacts.accounts.add", "contacts-account-add").on_view(move || {
+    let add = Button::new("contacts.accounts.add", "contacts-account-add").on_open(move || {
         api.effect(&AccountEffect::ReviewAccount {
             person: person.clone(),
             service: service.get(),
@@ -625,7 +625,7 @@ fn endpoint_list(
                                 &format!("contacts.accounts.edit:{}", id.as_str()),
                                 "contacts-account-edit",
                             )
-                            .on_view(move || {
+                            .on_open(move || {
                                 edit_api.effect(&edit);
                             }),
                         ))
@@ -634,7 +634,7 @@ fn endpoint_list(
                                 &format!("contacts.accounts.revoke:{}", id.as_str()),
                                 "contacts-account-remove",
                             )
-                            .on_view(move || {
+                            .on_open(move || {
                                 api.effect(&effect);
                             }),
                         )),
@@ -691,14 +691,14 @@ fn review(pending: &Pending, dispatcher: &Dispatcher<Contacts>) -> Element {
         body.push(Box::new(
             Row::new()
                 .push(Box::new(
-                    Button::new("contacts.accounts.cancel", "contacts-account-cancel").on_view(
+                    Button::new("contacts.accounts.cancel", "contacts-account-cancel").on_open(
                         move || {
                             cancel.effect(&AccountEffect::CancelAccountReview);
                         },
                     ),
                 ))
                 .push(Box::new(
-                    Button::new("contacts.accounts.confirm", "contacts-account-confirm").on_view(
+                    Button::new("contacts.accounts.confirm", "contacts-account-confirm").on_open(
                         move || {
                             confirm.effect_on(
                                 &format!("contacts.account-review:{token}"),

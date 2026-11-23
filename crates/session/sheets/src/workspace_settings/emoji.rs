@@ -140,7 +140,7 @@ fn row(emoji: &Emoji, parts: &Parts) -> Element {
             )
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small)
-            .on_effect(move || {
+            .on_click(move || {
                 press.ask(WorkspaceSettingsEffect::RemoveEmoji { name: name.clone() });
             }),
         ));

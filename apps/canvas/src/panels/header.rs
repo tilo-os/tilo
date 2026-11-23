@@ -68,7 +68,7 @@ pub(crate) fn add_picture(tools: &Tools, size: ControlSize) -> Element {
     Box::new(
         Button::icon_only("canvas-add-picture", Icon::Image, &name)
             .control_size(size)
-            .on_view(move || {
+            .on_open(move || {
                 *picking.borrow_mut() = Some(pick_request());
             }),
     )
@@ -199,7 +199,7 @@ impl Command {
             bind: Box::new(move |button, cx| {
                 let dispatch = cx.dispatcher();
                 // The effect it hands on decides who may run it.
-                Box::new(button.on_own_device_effect(move || {
+                Box::new(button.on_click(move || {
                     dispatch.effect(&crate::resource::ViewOp::FindArea { area: select() });
                 }))
             }),
@@ -416,7 +416,7 @@ fn mask_back(tools: &Tools, owner: String) -> Element {
     Box::new(
         Button::icon_only("canvas-paint-layer", Icon::Brush, &label)
             .control_size(ControlSize::Small)
-            .on_view(move || chosen.set(owner.clone())),
+            .on_open(move || chosen.set(owner.clone())),
     )
 }
 
@@ -654,7 +654,7 @@ fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
         .with_accessible_name(&name)
         .tooltip(name.clone())
         .control_size(ui::widget::ControlSize::Small)
-        .on_view(move || sheet.set(Some(which)))
+        .on_open(move || sheet.set(Some(which)))
 }
 
 /// The artwork's menu: new, open, save, a copy, export, and the keys.
@@ -724,6 +724,6 @@ fn view_button(tools: &Tools, id: &str, icon: Icon, request: ViewRequest) -> Ele
     Box::new(
         Button::icon_only(id, icon, &name)
             .control_size(ControlSize::Small)
-            .on_view(move || view.set(Some(request))),
+            .on_open(move || view.set(Some(request))),
     )
 }

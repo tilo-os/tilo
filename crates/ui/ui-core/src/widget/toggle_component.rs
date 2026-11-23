@@ -41,7 +41,7 @@ impl Described for Toggle {
         } = props;
         let edits = value.clone();
         let mut toggle = Self::from_state(&value.state)
-            .on_view(key, move |on| edits.edited(Value::Bool(on)))
+            .on_choose(key, move |on| edits.edited(Value::Bool(on)))
             .with_enabled(enabled);
         if let Some(label) = label {
             toggle = toggle.with_label(label);

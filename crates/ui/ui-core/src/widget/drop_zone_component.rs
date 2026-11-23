@@ -62,13 +62,13 @@ impl DropZone {
             match choose.clone() {
                 Event::None => button,
                 Event::Action(binding) => button.on_action(binding),
-                Event::View(intent) => button.on_view(intent.sender()),
+                Event::View(intent) => button.on_open(intent.sender()),
             }
         });
         if drop.is_none() {
             self.on_files = None;
         } else {
-            self.set_on_files_view(move |files: Vec<PathBuf>| {
+            self.set_on_files(move |files: Vec<PathBuf>| {
                 // A dropped file goes into the content store, and the view hears of it as the
                 // `File` an app's process can open; one the store will not keep says why where
                 // the person dropped it.

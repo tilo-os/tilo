@@ -207,11 +207,11 @@ fn servers_section(servers: &Servers, parts: &Parts) -> Element {
             // What the field takes, in the field: a field with no visible name
             // reads as an empty box Add sits beside.
             .with_placeholder(servers.host_label.clone())
-            .on_submit_view(move |_| submitting.ask_server_host()),
+            .on_submit(move |_| submitting.ask_server_host()),
     );
     let asking = parts.clone();
     let add = Button::new("ws-general-server-add", &servers.add_label)
-        .on_effect(move || asking.ask_server_host());
+        .on_click(move || asking.ask_server_host());
     items.push(Box::new(
         Row::new()
             .with_rhythm(Rhythm::Related)
@@ -253,7 +253,7 @@ fn leaving(general: &General, parts: &Parts) -> Element {
                 .secondary_lines(4)
                 .trailing(Box::new(
                     Button::new("ws-general-delete", &general.delete_label)
-                        .on_view(move || asking.confirm(Confirm::DeleteWorkspace))
+                        .on_open(move || asking.confirm(Confirm::DeleteWorkspace))
                         .role(ButtonRole::Destructive)
                         .with_enabled(general.delete_note.is_none()),
                 )),
@@ -321,7 +321,7 @@ fn name_field(general: &General, parts: &Parts) -> Element {
             .with_id("ws-general-name")
             .with_accessible_name(general.name_label.clone())
             .with_read_only(!general.can_rename)
-            .on_submit_view(move |_| save.commit_name()),
+            .on_submit(move |_| save.commit_name()),
     )
 }
 
@@ -333,7 +333,7 @@ pub(super) fn button(
     effect: impl Fn() -> WorkspaceSettingsEffect + 'static,
 ) -> Button {
     let press = parts.clone();
-    Button::new(id, label).on_effect(move || press.ask(effect()))
+    Button::new(id, label).on_click(move || press.ask(effect()))
 }
 
 pub(super) fn caption(text: &str) -> Element {

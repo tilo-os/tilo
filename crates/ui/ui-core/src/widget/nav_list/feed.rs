@@ -209,7 +209,7 @@ impl NavList {
                 let mut seen = None;
                 move || reads.pull(&mut seen)
             })
-            .on_view(id, move |id| {
+            .on_choose(id, move |id| {
                 let mut feed = chooses.0.borrow_mut();
                 feed.chosen.push(id);
                 feed.answer_due = true;

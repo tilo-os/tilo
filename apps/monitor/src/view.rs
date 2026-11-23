@@ -276,7 +276,7 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
             let requests = Rc::clone(shared);
             let mut tile = StatTile::new(stat.label(), value)
                 .sparkline(samples)
-                .on_view(format!("monitor.summary.{}", stat.id()), move || {
+                .on_open(format!("monitor.summary.{}", stat.id()), move || {
                     requests.borrow_mut().push(Request::ShowStat(stat));
                 });
             if !unit.is_empty() {
@@ -397,7 +397,7 @@ fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, 
                 sorts.borrow_mut().push(Request::Sort(*key));
             }
         })
-        .on_activate_view("monitor.processes", move |index| {
+        .on_activate(move |index| {
             let pid = activations.borrow().rows.get(index).map(|row| row.pid);
             if let Some(pid) = pid {
                 activations.borrow_mut().push(Request::Activate(pid));
@@ -456,13 +456,13 @@ fn empty_state(kind: Placeholder, shared: &Shared) -> EmptyState {
             "This account isn't allowed to read the process list.",
         )
         .with_action("Try again")
-        .on_view(retry),
+        .on_open(retry),
         Placeholder::Unavailable => EmptyState::error(
             "Processes unavailable",
             "The process list couldn't be read.",
         )
         .with_action("Try again")
-        .on_view(retry),
+        .on_open(retry),
         Placeholder::NoMatches => EmptyState::new("No processes match the search"),
     }
 }
@@ -1628,7 +1628,7 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
         let requests = Rc::clone(&detail.requests);
         let button = Button::new(id, label)
             .role(role)
-            .on_view(move || requests.borrow_mut().push(request.clone()));
+            .on_open(move || requests.borrow_mut().push(request.clone()));
         actions = actions.push(Box::new(button));
     }
 

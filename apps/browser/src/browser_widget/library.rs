@@ -475,7 +475,7 @@ impl BrowserWidget {
                 .collect(),
             current,
         )
-        .on_view("browser.library.sections", move |index| {
+        .on_choose("browser.library.sections", move |index| {
             if let Some((_, _, resource)) = SECTIONS.get(index) {
                 queue.update(|commands| commands.push(((*resource).to_owned(), "show".to_owned())));
             }

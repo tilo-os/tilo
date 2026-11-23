@@ -238,7 +238,7 @@ pub(crate) fn drive_list(
     NavList::new(vec![section])
         .selected(&drive_id(selected))
         .with_accessible_name(crate::locales::CATALOG.t("disks-a11y-drives"))
-        .on_view("disks.drives", move |id| {
+        .on_choose("disks.drives", move |id| {
             if let Some(index) = id.strip_prefix("drive:").and_then(|n| n.parse().ok()) {
                 intents.push(Intent::SelectDrive(index));
             }
@@ -262,7 +262,7 @@ pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Elemen
     Box::new(
         state
             .with_action("Rescan")
-            .on_effect(intents.sender(Intent::Rescan)),
+            .on_click(intents.sender(Intent::Rescan)),
     )
 }
 
@@ -505,7 +505,7 @@ fn mounted_action(
             Intent::DiskUsage(_) => format!("How much space {mount} has left"),
             _ => format!("Open {mount} in Files"),
         })
-        .on_effect(intents.sender(intent))
+        .on_click(intents.sender(intent))
 }
 
 const NEARLY_FULL: f64 = 0.9;
@@ -532,7 +532,7 @@ fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents)
         .icon(Icon::Layers)
         .secondary(secondary)
         .selected(selected)
-        .on_view(move || pick.push(Intent::SelectPartition(Some(index))));
+        .on_open(move || pick.push(Intent::SelectPartition(Some(index))));
     if let Some(used) = part.used {
         row = row.meta(CATALOG.t_args(
             "disks-partition-free",
@@ -836,7 +836,7 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
                 .secondary(partition_summary(drive, part))
                 .meta(size(part.size))
                 .selected(model.partition == Some(index))
-                .on_view(move || pick.push(Intent::SelectPartition(Some(index))));
+                .on_open(move || pick.push(Intent::SelectPartition(Some(index))));
             Box::new(ContextMenuArea::new(
                 Box::new(row),
                 operations_menu(drive, Some(index), intents),

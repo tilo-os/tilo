@@ -108,7 +108,7 @@ impl HeaderBar {
         let open_menu = menu_requested.clone();
         let history_button = control("host-header-history", Icon::History, "host-menu-history")
             .with_enabled(!history.is_empty())
-            .on_view(move || *open_menu.borrow_mut() = true);
+            .on_open(move || *open_menu.borrow_mut() = true);
         let mut row = Row::new().no_wrap().push(Box::new(history_button));
         row = row
             .push(Box::new(Spacer::new()))
@@ -124,7 +124,7 @@ impl HeaderBar {
                     "host-search-placeholder",
                 )
                 .with_enabled(search.enabled && invocation.is_some())
-                .on_effect(move || {
+                .on_click(move || {
                     if let Some(invocation) = invocation.clone() {
                         queue
                             .borrow_mut()
@@ -155,7 +155,7 @@ impl HeaderBar {
         ] {
             let queue = requests.clone();
             row = row
-                .push(Box::new(control(id, icon, key).on_effect(move || {
+                .push(Box::new(control(id, icon, key).on_click(move || {
                     queue.borrow_mut().push_back(request.clone())
                 })));
         }

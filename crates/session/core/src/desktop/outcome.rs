@@ -232,7 +232,7 @@ impl OutcomeCard {
                 card = card
                     .with_action(label)
                     .with_action_id(RETRY_ID)
-                    .on_effect(retry);
+                    .on_click(retry);
             }
             return Self {
                 title: outcome.what.clone(),
@@ -253,7 +253,7 @@ impl OutcomeCard {
                 Button::new(RETRY_ID, label)
                     .role(ButtonRole::Primary)
                     .with_enabled(!outcome.busy)
-                    .on_effect(retry),
+                    .on_click(retry),
             ));
         }
         Self {

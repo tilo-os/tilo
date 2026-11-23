@@ -36,7 +36,7 @@ pub(crate) fn use_recommendation(
         &strings::t("windows-use-recommendation"),
     )
     .role(ButtonRole::Plain)
-    .on_effect(move || {
+    .on_click(move || {
         if let Some(dispatcher) = &dispatcher {
             dispatcher.submit(routes.remove(app_id.as_str()));
         }
@@ -146,7 +146,7 @@ impl WindowsSupport {
         let install = |label_key: &str| {
             Button::new("windows-support-install", &strings::t(label_key))
                 .role(ButtonRole::Primary)
-                .on_effect(intents.sender(Intent::InstallSupport))
+                .on_click(intents.sender(Intent::InstallSupport))
         };
         let banner = match &self.readiness {
             Readiness::NeedsInstall(disclosure) => {

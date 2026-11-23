@@ -288,7 +288,7 @@ impl ListRow {
             *self = std::mem::replace(self, Self::new("", "")).trailing(control);
         }
         let label = self.title.clone();
-        self.activation.set_event(activate, &label);
+        self.activation.set_event(activate);
     }
 }
 

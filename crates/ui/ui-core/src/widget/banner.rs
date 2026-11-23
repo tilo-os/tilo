@@ -1011,7 +1011,7 @@ impl Banner {
                 &crate::i18n::widget_format("widget-dismiss", &[]),
             )
             .control_size(ControlSize::Small)
-            .on_view(move || requested.set(true)),
+            .on_open(move || requested.set(true)),
         );
         self.body.dismissible = true;
         self

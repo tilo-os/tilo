@@ -185,7 +185,7 @@ fn action_button(
 ) -> Button {
     Button::new(id, &strings::t(label_key))
         .role(role)
-        .on_effect(intents.sender(intent))
+        .on_click(intents.sender(intent))
 }
 
 fn body(text: &str) -> Text {
@@ -1457,7 +1457,7 @@ impl WindowsApp {
             let mut row = ListRow::new("windows-pending-install", &pending.display_name)
                 .secondary(strings::t("windows-pending-secondary"))
                 .selected(self.page == Page::PendingInstall)
-                .on_view(self.intents.sender(Intent::SelectPending));
+                .on_open(self.intents.sender(Intent::SelectPending));
             if pushed {
                 row = row.disclosure();
             }
@@ -1478,7 +1478,7 @@ impl WindowsApp {
                         .secondary(strings::t(app.status.label_key()))
                         .badge(strings::t(app.route.button_key()))
                         .selected(self.page == Page::App && index == self.selected)
-                        .on_view(self.intents.sender(Intent::SelectApp(index)));
+                        .on_open(self.intents.sender(Intent::SelectApp(index)));
                     row = match app.status {
                         AppStatus::Running => row.active(),
                         AppStatus::NeedsAttention => row.warning(),
@@ -1500,7 +1500,7 @@ impl WindowsApp {
         let mut appliance = ListRow::new("windows-appliance", strings::t("windows-appliance-row"))
             .secondary(appliance_summary(status, self.appliance_owner.has_status()))
             .selected(self.page == Page::Appliance)
-            .on_view(self.intents.sender(Intent::SelectAppliance));
+            .on_open(self.intents.sender(Intent::SelectAppliance));
         appliance = if status.power_state == AppliancePowerState::Running {
             appliance.active()
         } else {
@@ -1727,7 +1727,7 @@ impl WindowsApp {
                         .collect(),
                     selected,
                 )
-                .on_view("windows-route", move |index| {
+                .on_choose("windows-route", move |index| {
                     let Some(route) = choices.get(index).copied() else {
                         return;
                     };
@@ -1899,7 +1899,7 @@ impl WindowsApp {
                 .icon(icon)
                 .secondary(strings::t(detail))
                 .disclosure()
-                .on_effect(intents.sender(intent))
+                .on_click(intents.sender(intent))
         };
         let mut capsule = destination(
             "windows-confirm-capsule-install",
@@ -2169,7 +2169,7 @@ impl WindowsWindow {
             Icon::Plus,
             &strings::t("windows-install"),
         )
-        .on_effect(app.intents.sender(Intent::Install));
+        .on_click(app.intents.sender(Intent::Install));
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
             .with_id("windows-shell")

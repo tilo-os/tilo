@@ -314,7 +314,7 @@ fn field(
     let picker = DatePicker::from_state(shown)
         .with_today(today)
         .with_accessible_name(crate::i18n::widget_format("date-field-calendar", &[]))
-        .on_view(format!("{id}-calendar"), move |day| {
+        .on_choose(format!("{id}-calendar"), move |day| {
             on_day.set(Some(Some(day)))
         });
     let mut content = Stack::stack();
@@ -329,7 +329,7 @@ fn field(
             &crate::i18n::widget_format("date-field-clear", &[]),
         )
         .role(ButtonRole::Plain)
-        .on_view(move || on_clear.set(Some(None)));
+        .on_open(move || on_clear.set(Some(None)));
         content = content.push(Box::new(clear));
     }
     let (fact, tone) = DateField::fact(value, at);

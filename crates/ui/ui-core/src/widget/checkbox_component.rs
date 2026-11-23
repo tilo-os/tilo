@@ -58,10 +58,10 @@ impl Described for Checkbox {
         match check {
             Event::None => {
                 let edits = value.clone();
-                boxed = boxed.on_view(key, move |marked| edits.edited(Value::Bool(marked)));
+                boxed = boxed.on_choose(key, move |marked| edits.edited(Value::Bool(marked)));
             }
-            Event::Action(binding) => boxed = boxed.on_choose(binding),
-            Event::View(intent) => boxed = boxed.on_view(key, move |_| intent.fire(None)),
+            Event::Action(binding) => boxed = boxed.on_choose_action(binding),
+            Event::View(intent) => boxed = boxed.on_choose(key, move |_| intent.fire(None)),
         }
         if let Some(label) = label {
             boxed = boxed.with_label(label);

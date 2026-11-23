@@ -66,7 +66,7 @@ impl Described for Breadcrumb {
             trail = trail.root_icon(icon);
         }
         if goes {
-            trail = trail.on_view(key, move |index| {
+            trail = trail.on_choose(key, move |index| {
                 if let Some(Some(go)) = handlers.get_mut(index) {
                     go();
                 }
@@ -100,19 +100,12 @@ impl Described for Breadcrumb {
         }
         self.root_icon = root_icon;
         if handlers.iter().any(Option::is_some) {
-            if self.choice.is_none() {
-                self.choice = Some(crate::widget::view_choice::ViewChoice::new(
-                    self.key.clone(),
-                    "Go to",
-                ));
-            }
             self.on_navigate = Some(Box::new(move |index| {
                 if let Some(Some(go)) = handlers.get_mut(index) {
                     go();
                 }
             }));
         } else {
-            self.choice = None;
             self.on_navigate = None;
         }
         self.on_edit_requested = edit.handler();

@@ -38,7 +38,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
     };
 
     let harness = click(
-        Button::new("go", "Copy").on_own_device_effect(counter()),
+        Button::new("go", "Copy").on_click(counter()),
         Role::Editor,
     );
     assert_eq!(
@@ -55,7 +55,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
     assert_eq!(harness.refusal_said(), None);
 
     let harness = click(
-        Button::new("go", "Copy").on_own_device_effect(counter()),
+        Button::new("go", "Copy").on_click(counter()),
         Role::Viewer,
     );
     assert_eq!(
@@ -65,7 +65,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         harness.control_failures()
     );
 
-    let harness = click(Button::new("go", "Send").on_effect(counter()), Role::Editor);
+    let harness = click(Button::new("go", "Send").on_click(counter()), Role::Editor);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
@@ -78,7 +78,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         harness.control_failures()
     );
 
-    let harness = click(Button::new("go", "Send").on_effect(counter()), Role::Viewer);
+    let harness = click(Button::new("go", "Send").on_click(counter()), Role::Viewer);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
@@ -208,7 +208,7 @@ fn intrinsic_width_stays_compact_and_aligned_in_hosts() {
     fn compact_fit_width_is_the_prepaint_click_and_focus_geometry() {
         let fired = Arc::new(AtomicUsize::new(0));
         let clicks = Arc::clone(&fired);
-        let button = Button::new("back", "Back to apps").on_effect(move || {
+        let button = Button::new("back", "Back to apps").on_click(move || {
             clicks.fetch_add(1, Ordering::SeqCst);
         });
         let mut harness = crate::headless::FrameHarness::new_with_theme(
@@ -686,7 +686,7 @@ fn disabled_faces_are_neutral_and_reject_input() {
         let mut b = {
             let fired = fired.clone();
             Button::new("id", "Go")
-                .on_effect(move || fired.set(fired.get() + 1))
+                .on_click(move || fired.set(fired.get() + 1))
                 .with_enabled(false)
         };
 
@@ -730,9 +730,6 @@ fn disabled_faces_are_neutral_and_reject_input() {
             focus = sent.focus_target.or(focus);
         }
 
-        // Presses are published, so an enabled button would fire here
-        // when the press is answered; a disabled one queues nothing.
-        assert_eq!(crate::testing::answer_controls(&mut b), 0);
         assert_eq!(fired.get(), 0, "disabled button must not fire its press");
         assert!(focus.is_none(), "disabled button must not request focus");
         assert!(!handled, "disabled button must not swallow input");
@@ -943,7 +940,7 @@ tilo_test_env::scenario! {
         let clicks = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&clicks);
         let mut column = crate::widget::Column::new().push(Box::new(
-            Button::new("files.retry", "Retry").on_view(move || {
+            Button::new("files.retry", "Retry").on_open(move || {
                 counted.fetch_add(1, Ordering::SeqCst);
             }),
         ));
@@ -1105,7 +1102,7 @@ tilo_test_env::scenario! {
             let fired = Rc::new(Cell::new(0u32));
             let mut b = {
                 let fired = fired.clone();
-                Button::new("id", "Go").on_effect(move || fired.set(fired.get() + 1))
+                Button::new("id", "Go").on_click(move || fired.set(fired.get() + 1))
             };
 
             let mut tree = TaffyTree::<()>::new();
@@ -1151,12 +1148,6 @@ tilo_test_env::scenario! {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-            );
-            assert_eq!(fired.get(), 0, "the press waits to be answered");
-            assert_eq!(
-                crate::testing::answer_controls(&mut b),
-                1,
-                "fired once, when the release's press is answered"
             );
             assert_eq!(fired.get(), 1);
         }
@@ -1322,10 +1313,10 @@ tilo_test_env::scenario! {
             let named = Button::new("private", "")
                 .with_icon(crate::icons::Icon::Shield)
                 .with_accessible_name("New Private Window")
-                .on_effect(|| {});
+                .on_click(|| {});
             let tooltip_after = Button::new("search", "")
                 .with_icon(crate::icons::Icon::Search)
-                .on_effect(|| {})
+                .on_click(|| {})
                 .tooltip("Search");
             for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
                 let resources = crate::resources::resources(&button, &doc);

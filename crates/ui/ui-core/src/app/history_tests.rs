@@ -4657,7 +4657,7 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
             crate::widget::Column::new()
                 .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse").on_effect(|| {}),
+                    crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
                 )),
         ),
         denied: denied.clone(),
@@ -4950,7 +4950,7 @@ fn ownership_matrix_app_with_confirmation(
             let log = log.clone();
             Box::new(
                 ToggleGroup::new(vec![Segment::new("Zero"), Segment::new("One")], 0)
-                    .on_view("control", move |index| {
+                    .on_choose("control", move |index| {
                         log.borrow_mut().push(serde_json::json!({"value":index}))
                     }),
             )
@@ -4976,7 +4976,7 @@ fn ownership_matrix_app_with_confirmation(
         installed_output: None,
         record: None,
         child: Box::new(Column::new().push(control).push(Box::new(
-            Button::new("pulse", "Live pulse").on_effect(|| {}),
+            Button::new("pulse", "Live pulse").on_click(|| {}),
         ))),
         resources,
         log: log.clone(),
@@ -5325,7 +5325,7 @@ tilo_test_env::scenario! {
                 crate::widget::Column::new()
                     .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                     .push(Box::new(
-                        crate::widget::Button::new("live-pulse", "Live pulse").on_effect(|| {}),
+                        crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
                     )),
             ),
             denied: denied.clone(),

@@ -563,21 +563,10 @@ impl<M: ListModel + 'static> VirtualList<M> {
         Some(DropTarget::new(target.key.typed(), target.placement))
     }
 
+    /// [`VirtualRows::on_choose`], with the row's typed key.
     #[must_use]
-    pub fn on_view(mut self, id: impl Into<String>, mut f: impl FnMut(M::Key) + 'static) -> Self {
-        self.rows = self.rows.on_view(id, move |key: ListKey| f(key.typed()));
-        self
-    }
-
-    #[must_use]
-    pub fn on_activate_view(
-        mut self,
-        id: impl Into<String>,
-        mut f: impl FnMut(M::Key) + 'static,
-    ) -> Self {
-        self.rows = self
-            .rows
-            .on_activate_view(id, move |key: ListKey| f(key.typed()));
+    pub fn on_choose(mut self, id: impl Into<String>, mut f: impl FnMut(M::Key) + 'static) -> Self {
+        self.rows = self.rows.on_choose(id, move |key: ListKey| f(key.typed()));
         self
     }
 

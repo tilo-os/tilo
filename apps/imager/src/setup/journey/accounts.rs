@@ -1562,7 +1562,7 @@ impl Accounts {
                         )
                         .secondary(t("installer-accounts-included"))
                         .icon(Icon::CircleCheck)
-                        .on_effect(move || choose(AccountRequest::Remove(id.clone()))),
+                        .on_click(move || choose(AccountRequest::Remove(id.clone()))),
                     ));
                 }
                 for candidate in self.inventory.candidates.iter().filter(|c| {
@@ -1603,7 +1603,7 @@ impl Accounts {
                         .secondary(t(message))
                         .with_enabled(available)
                         .icon(Icon::Cloud)
-                        .on_effect(move || choose(AccountRequest::Source(id.clone()))),
+                        .on_click(move || choose(AccountRequest::Source(id.clone()))),
                     ));
                 }
                 body = body.push(Box::new(action_button(
@@ -1633,7 +1633,7 @@ impl Accounts {
                         )
                         .icon(Icon::Music)
                         .secondary(t("installer-accounts-add"))
-                        .on_effect(move || {
+                        .on_click(move || {
                             choose(AccountRequest::Provider("spotify-options".into()))
                         }),
                     ));
@@ -1651,7 +1651,7 @@ impl Accounts {
                             } else {
                                 "installer-accounts-app-password-needed"
                             }))
-                            .on_effect(move || choose(AccountRequest::Provider(id.to_string()))),
+                            .on_click(move || choose(AccountRequest::Provider(id.to_string()))),
                     ));
                 }
             }
@@ -1735,7 +1735,7 @@ impl Accounts {
                         ListRow::new(format!("installer.account.spotify.{id}"), t(label))
                             .icon(Icon::Music)
                             .secondary(t(detail))
-                            .on_effect(move || choose(AccountRequest::Provider(id.into()))),
+                            .on_click(move || choose(AccountRequest::Provider(id.into()))),
                     ));
                 }
             }
@@ -1922,7 +1922,7 @@ fn action_button(
     action: AccountRequest,
     dispatch: Rc<dyn Fn(AccountRequest)>,
 ) -> Button {
-    Button::new(id, &t(key)).on_effect(move || dispatch(action.clone()))
+    Button::new(id, &t(key)).on_click(move || dispatch(action.clone()))
 }
 fn service_copy(key: &str, service: &str) -> String {
     t_args(key, &[("service", service.into())])

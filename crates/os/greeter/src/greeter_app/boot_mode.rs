@@ -170,7 +170,7 @@ impl GreeterApp {
                         .role(ButtonRole::Plain)
                         .control_size(ControlSize::Large)
                         .with_enabled(!busy)
-                        .on_view(move || requests.cant_sign_in.set(true)),
+                        .on_open(move || requests.cant_sign_in.set(true)),
                 )],
             )
             .align(align),

@@ -43,7 +43,7 @@ impl crate::widget::Button {
         let request = std::rc::Rc::new(std::cell::Cell::new(false));
         let flag = std::rc::Rc::clone(&request);
         MenuButton {
-            button: self.on_view(move || flag.set(true)),
+            button: self.on_open(move || flag.set(true)),
             menu: ContextMenu::with_items(items),
             request,
             request_keyboard: true,

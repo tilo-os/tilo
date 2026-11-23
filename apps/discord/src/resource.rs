@@ -268,7 +268,7 @@ fn not_connected(setup: &Setup) -> Element {
             .with_message(CATALOG.t("discord-empty-body"))
             .with_action(CATALOG.t("discord-bridge-server"))
             .with_action_id("discord-bridge-server")
-            .on_view(move || setup.open()),
+            .on_open(move || setup.open()),
     )
 }
 

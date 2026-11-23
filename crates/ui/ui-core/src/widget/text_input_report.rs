@@ -40,10 +40,6 @@ impl TextInput {
         // The field's own state stays the one a bound local edit reads: an
         // action publishing the text does not stand in for it.
         self.publish_local_state();
-        if let Some(verb) = &mut self.change_verb {
-            verb.emit(self.text.clone());
-            return;
-        }
         if let Some(callback) = self.on_change.as_mut() {
             callback(&self.text);
         }

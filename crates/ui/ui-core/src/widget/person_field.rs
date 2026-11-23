@@ -271,7 +271,7 @@ fn picker(
         .role(ButtonRole::Plain)
         .with_icon(Icon::X)
         .with_placeholder()
-        .on_view(move || on_clear.set(Some(None)));
+        .on_open(move || on_clear.set(Some(None)));
     content = content.push(Box::new(When::new(
         Box::new(clear),
         shown_matching(query, &none_label, ""),
@@ -332,7 +332,7 @@ fn entry(id: &str, label: &str, who: &Person, picked: Option<Person>, chosen: &P
     Button::new(id, label)
         .role(ButtonRole::Plain)
         .with_avatar(who.clone())
-        .on_view(move || on_pick.set(Some(picked.clone())))
+        .on_open(move || on_pick.set(Some(picked.clone())))
 }
 
 impl Decorator for PersonField {

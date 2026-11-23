@@ -283,7 +283,7 @@ impl Accounts {
                 )
                 .secondary(t("installer-accounts-saved-attention"))
                 .icon(Icon::Cloud)
-                .on_effect(move || choose(AccountRequest::Attention(id.clone()))),
+                .on_click(move || choose(AccountRequest::Attention(id.clone()))),
             ));
         }
         body

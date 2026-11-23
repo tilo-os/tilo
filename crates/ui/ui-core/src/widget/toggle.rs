@@ -1431,7 +1431,7 @@ mod tests {
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
             let mut first = Toggle::from_state(&state)
-                .on_view("toggle", move |checked| captured.borrow_mut().push(checked));
+                .on_choose("toggle", move |checked| captured.borrow_mut().push(checked));
             let mut second = Toggle::from_state(&state);
             let mut document = AutoCommit::new();
 
@@ -1449,7 +1449,6 @@ mod tests {
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
-            assert_eq!(crate::testing::answer_controls(&mut first), 1);
             assert!(!state.get(), "user activation publishes typed state");
             assert_eq!(&*changes.borrow(), &[false]);
 
@@ -1804,7 +1803,7 @@ mod tests {
         let changes = std::rc::Rc::new(std::cell::Cell::new(0));
         let count = std::rc::Rc::clone(&changes);
         let mut t =
-            Toggle::from_state(state).on_view("toggle", move |_| count.set(count.get() + 1));
+            Toggle::from_state(state).on_choose("toggle", move |_| count.set(count.get() + 1));
         switch_at_origin(&mut t);
         (t, changes)
     }
@@ -1848,11 +1847,9 @@ mod tests {
             );
             assert!(!t.switch.is_moving(at), "nothing runs under the hand");
         }
-        crate::testing::answer_controls(&mut t);
         assert_eq!(changes.get(), 0, "the knob moves; the value does not");
         with_monotonic_time(ms(t0, 60), || dispatch(&mut t, &mouse_release()));
         assert!(!state.get(), "left on the off side");
-        crate::testing::answer_controls(&mut t);
         assert_eq!(changes.get(), 0, "a drag back to the start changes nothing");
         assert!(!Widget::wants_pointer_capture(&t));
         let rest = t.switch.knob.settles_at().map_or(ms(t0, 60), |at| at);
@@ -1867,14 +1864,8 @@ mod tests {
             dispatch(&mut t, &cursor_moved(16.0, 16.0));
         });
         with_monotonic_time(ms(t0, 10), || dispatch(&mut t, &cursor_moved(30.0, 16.0)));
-        crate::testing::answer_controls(&mut t);
         assert_eq!(changes.get(), 0);
         with_monotonic_time(ms(t0, 300), || dispatch(&mut t, &mouse_release()));
-        assert_eq!(
-            crate::testing::answer_controls(&mut t),
-            1,
-            "a drag across reports once when it is answered"
-        );
         assert!(state.get(), "left on the on side");
         assert_eq!(changes.get(), 1, "a drag across changes the value once");
         assert_eq!(t.switch.knob(ms(t0, 2_000)), 1.0);
@@ -1886,7 +1877,6 @@ mod tests {
             dispatch(&mut t, &mouse_release());
         });
         assert!(state.get());
-        crate::testing::answer_controls(&mut t);
         assert_eq!(changes.get(), 1);
     }
 

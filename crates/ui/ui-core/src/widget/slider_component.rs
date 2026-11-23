@@ -60,7 +60,7 @@ impl Described for Slider {
         let edits = value.clone();
         let mut slider = Self::from_state(&value.state)
             .with_id(key)
-            .on_change_view(move |number| {
+            .on_change(move |number| {
                 edits.edited(Value::Float(number));
                 change.fire(Some(Value::Float(number)));
             })

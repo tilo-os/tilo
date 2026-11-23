@@ -353,16 +353,9 @@ pub(super) fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<Acce
 }
 
 /// Every semantic control a binding may stand behind: the effect-capable roles, and a focusable list
-/// item, which is pressed as a whole (a list row bound through `ListRow::on_view`).
+/// item, which is pressed as a whole (a list row bound through `ListRow::on_action`).
 pub(super) fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
     effect_control_ids_of(node, &|_| true, true)
-}
-
-pub(super) fn effect_control_ids_where(
-    node: &InspectionNode,
-    include: &dyn Fn(&AccessNode) -> bool,
-) -> HashSet<String> {
-    effect_control_ids_of(node, include, false)
 }
 
 fn effect_control_ids_of(

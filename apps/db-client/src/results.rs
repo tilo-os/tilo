@@ -217,7 +217,7 @@ impl ResultsTable {
         match link {
             Some(link) => {
                 let ask = link.clone();
-                table.selectable(true).on_view(name, move |row| {
+                table.selectable(true).on_choose(name, move |row| {
                     ask.ask(crate::link::Intent::SelectRow(Some(row)));
                 })
             }

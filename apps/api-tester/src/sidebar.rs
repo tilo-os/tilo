@@ -35,7 +35,7 @@ pub(crate) fn new_collection(sink: &Sink) -> Element {
             Icon::Plus,
             &crate::locales::CATALOG.t("api-tester-new-collection-button"),
         )
-        .on_own_device_effect(move || {
+        .on_click(move || {
             sink.borrow_mut().push(Cmd::OpenForm(
                 FormMode::NewCollection,
                 FormTarget::default(),
@@ -161,7 +161,7 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
     let menu_sink = sink.clone();
     let mut list = NavList::new(sections(view))
         .with_accessible_name(crate::locales::CATALOG.t("api-tester-requests"))
-        .on_view("api.nav", move |id| {
+        .on_choose("api.nav", move |id| {
             let cmd = if let Some((ci, ri)) = parse_request(&id) {
                 Cmd::LoadRequest(ci, ri)
             } else if let Some(hi) = id.strip_prefix("history:").and_then(|hi| hi.parse().ok()) {

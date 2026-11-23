@@ -2635,13 +2635,10 @@ pub use virtual_list::{
     TreeRow, VecListModel, VirtualList, VirtualListProps, VirtualRows, row_content_box,
 };
 mod activation;
-pub(crate) mod control_verb;
 mod press;
 pub use press::Press;
 mod dismissal;
-pub(crate) mod view_choice;
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) use activation::NATIVE_INVOKE;
 pub use activation::{Interaction, PaintedTargets, paint_disabled, paint_focus_ring};
 pub(crate) use activation::{press_waiting, take_presses};
 pub mod media_card;

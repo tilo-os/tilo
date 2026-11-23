@@ -952,7 +952,7 @@ impl NavShell {
     }
 
     fn shell_button(id: &str, icon: Icon, name: &str, on_press: impl FnMut() + 'static) -> Button {
-        Button::icon_only(id, icon, name).on_view(on_press)
+        Button::icon_only(id, icon, name).on_open(on_press)
     }
 
     /// The sidebar of destinations (usually a [`crate::widget::NavList`]).

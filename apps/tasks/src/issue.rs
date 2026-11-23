@@ -543,7 +543,7 @@ fn sub_issues(cx: &ViewCx<IssueList>, id: &Id, nav: &Nav, window: &Window) -> El
                     .with_rhythm(ui::tokens::Rhythm::Related)
                     .push(Box::new(
                         Button::new(&format!("tasks-sub-issue-{child}"), &label)
-                            .on_view(move || open.open(&child)),
+                            .on_open(move || open.open(&child)),
                     ))
                     .push(Box::new(status_badge(issue.status))),
             ));

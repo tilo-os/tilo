@@ -523,11 +523,12 @@ impl StatTile {
         self
     }
 
+    /// Pressing the tile opens its detail, once for a double-click; `id` names it for keyboard,
+    /// tests and assistive technology.
     #[must_use]
-    pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut() + 'static) -> Self {
+    pub fn on_open(mut self, id: impl Into<String>, f: impl FnMut() + 'static) -> Self {
         self.activation = Activation::new(id);
-        self.activation
-            .set_native(tilo_actions::OperationKind::View, &self.label, Box::new(f));
+        self.activation.set_open(Box::new(f));
         self
     }
 
@@ -662,8 +663,6 @@ impl Widget for StatTile {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
     );
 
     fn build_layout(
@@ -785,28 +784,9 @@ impl Widget for StatTile {
     }
 }
 
-impl crate::widget::ResourceOperations for StatTile {
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.activation.native_handlers()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.activation.start_native(op)
-    }
-}
 
 activation_controls!(StatTile, activation);
 
-impl crate::resources::PublishesResources for StatTile {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.activation.native_resources()
-    }
-}
 
 /// A set of stat tiles that reflows by width: all in one row when they fit,
 /// then half per row (a 2×2 for four), then one per row. Tiles are separated
@@ -1112,7 +1092,7 @@ mod tests {
             let mut tile = StatTile::new("CPU", "42")
                 .unit("%")
                 .change("3% in the last minute", Trend::Down)
-                .on_view("cpu", move || counter.set(counter.get() + 1));
+                .on_open("cpu", move || counter.set(counter.get() + 1));
             let node = Widget::accessibility(&tile).unwrap();
             assert_eq!(node.name.as_deref(), Some("CPU"));
             assert_eq!(
@@ -1127,8 +1107,6 @@ mod tests {
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
-            assert_eq!(hits.get(), 0, "the press waits to be answered");
-            assert_eq!(crate::testing::answer_controls(&mut tile), 1);
             assert_eq!(hits.get(), 1);
         }
 
@@ -1196,7 +1174,7 @@ mod tests {
     fn a_detail_tile_is_admitted_for_pointer_and_assistive_activation() {
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
         let count = calls.clone();
-        let tile = StatTile::new("CPU", "42").on_view("cpu.detail", move || {
+        let tile = StatTile::new("CPU", "42").on_open("cpu.detail", move || {
             count.set(count.get() + 1);
         });
         let mut harness =

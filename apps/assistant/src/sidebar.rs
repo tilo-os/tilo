@@ -40,7 +40,7 @@ pub(crate) fn view(nav: &Nav, hands: &Hands) -> Element {
         .with_accessible_name(tr("assistant-places"))
         .with_semantic_key("assistant.places")
         .bind_selection(&nav.place)
-        .on_view("assistant.places", move |_| {
+        .on_choose("assistant.places", move |_| {
             chosen.asking.set(false);
             chosen.pane.set(ui::widget::NavPane::Content);
         });

@@ -147,10 +147,8 @@ impl ControlRow {
             return;
         };
         if let Some(id) = self.id.clone().or_else(|| self.name.clone()) {
-            let label = self.name.clone().unwrap_or_else(|| id.clone());
             self.activation = crate::widget::activation::Activation::new(id);
-            self.activation
-                .set_native(tilo_actions::OperationKind::View, &label, handler);
+            self.activation.set_open(handler);
         } else {
             self.choose_handler = Some(handler);
         }
@@ -227,10 +225,6 @@ impl crate::widget::Decorator for ControlRow {
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
-        } else if request.wants::<dyn crate::resources::PublishesResources>() {
-            request.provide::<dyn crate::resources::PublishesResources>(self);
-        } else if request.wants::<dyn crate::widget::ResourceOperations>() {
-            request.provide::<dyn crate::widget::ResourceOperations>(self);
         } else {
             Widget::provide(&self.content, request);
         }
@@ -239,10 +233,6 @@ impl crate::widget::Decorator for ControlRow {
     fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
-        } else if request.wants::<dyn crate::resources::PublishesResources>() {
-            request.provide::<dyn crate::resources::PublishesResources>(self);
-        } else if request.wants::<dyn crate::widget::ResourceOperations>() {
-            request.provide::<dyn crate::widget::ResourceOperations>(self);
         } else {
             Widget::provide_mut(&mut self.content, request);
         }
@@ -334,29 +324,7 @@ impl crate::widget::Decorator for ControlRow {
 
 crate::widget::activation::activation_controls!(ControlRow, activation);
 
-impl crate::widget::ResourceOperations for ControlRow {
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.activation.native_handlers()
-    }
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = self.activation.start_native(op)? {
-            return Ok(Some(started));
-        }
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-}
-
-impl crate::resources::PublishesResources for ControlRow {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.activation.native_resources()
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -405,20 +373,13 @@ mod tests {
             assert_eq!(node.name.as_deref(), Some("Ink"));
         }
 
-        phase a_rows_press_is_a_published_view_action_a_script_reaches;
+        phase an_accessibility_activation_runs_the_rows_press_at_once;
         {
             let presses = std::rc::Rc::new(std::cell::Cell::new(0));
             let counted = std::rc::Rc::clone(&presses);
             let mut row = ControlRow::new(crate::widget::Row::new())
                 .with_id("canvas-history-now")
                 .on_choose(Box::new(move || counted.set(counted.get() + 1)));
-
-            let published =
-                crate::resources::PublishesResources::resources(&row, &automerge::AutoCommit::new());
-            let resource = published.first().expect("the row publishes its press");
-            assert_eq!(resource.id.0, "tilo.control:canvas-history-now");
-            assert_eq!(resource.actions.len(), 1);
-            assert_eq!(resource.actions[0].kind, tilo_actions::OperationKind::View);
 
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
@@ -429,14 +390,7 @@ mod tests {
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
-            let invocation = crate::widget::controls::take_control_invocation(&mut row)
-                .expect("the press is the row's own published action");
-            assert_eq!(invocation.address.action, "invoke");
-            assert_eq!(
-                invocation.address.resource,
-                format!("tilo.control:{}", "canvas-history-now")
-            );
-            assert_eq!(presses.get(), 0, "the host runs it, not the press itself");
+            assert_eq!(presses.get(), 1, "the press runs where it is made");
             assert!(row.is_selected());
         }
     }

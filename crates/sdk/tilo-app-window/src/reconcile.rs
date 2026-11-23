@@ -1164,7 +1164,7 @@ impl Reconciler {
         let key = node.key.clone();
         let label = crate::date::shown(node, "label").unwrap_or_default();
         let control = Checkbox::from_state(&state)
-            .on_view(&node.key, move |checked| {
+            .on_choose(&node.key, move |checked| {
                 sink.push(UiEvent::Toggle(key.clone(), checked));
             })
             .with_enabled(prop(node, "enabled").is_none() || flag(node, "enabled"));
@@ -1350,7 +1350,7 @@ impl Reconciler {
             Button::new(&format!("{}~{suffix}", node.key), label)
                 .role(role)
                 .control_size(size)
-                .on_view(move || {
+                .on_open(move || {
                     sink.push(UiEvent::Resolve(key.clone(), approve));
                 }),
         ))
@@ -1476,7 +1476,7 @@ impl Reconciler {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let label = crate::date::shown(node, "label").unwrap_or_default();
-        let control = Toggle::from_state(&state).on_view(&node.key, move |checked| {
+        let control = Toggle::from_state(&state).on_choose(&node.key, move |checked| {
             sink.push(UiEvent::Toggle(key.clone(), checked));
         });
         Box::new(FormSection::untitled().field(Field::new(label, control)))
@@ -1530,7 +1530,7 @@ impl Reconciler {
                 .map(|case| Segment::new(case.label.clone()))
                 .collect();
             Box::new(
-                ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_view(
+                ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_choose(
                     &node.key,
                     move |index| {
                         if let Some(case) = names.get(index) {
@@ -1556,7 +1556,7 @@ impl Reconciler {
                 Dropdown::from_state(labels, &state)
                     .with_id(&node.key)
                     .with_placeholder(&placeholder)
-                    .on_change_view(move |label| {
+                    .on_change(move |label| {
                         if let Some(case) = chosen
                             .iter()
                             .position(|shown| shown == label)

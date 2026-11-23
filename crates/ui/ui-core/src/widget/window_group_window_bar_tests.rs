@@ -680,7 +680,7 @@ fn a_header_row_that_holds_a_popover_is_the_window_bar() {
                 "Design",
                 vec![Box::new(
                     crate::widget::Button::icon_only("new", icons::Icon::Plus, "New")
-                        .on_effect(|| {}),
+                        .on_click(|| {}),
                 )],
             ),
     );
@@ -924,7 +924,7 @@ fn a_row_shown_as_parts_keeps_the_windows_functions() {
                 "Design",
                 vec![Box::new(
                     crate::widget::Button::icon_only("new", icons::Icon::Plus, "New")
-                        .on_effect(|| {}),
+                        .on_click(|| {}),
                 )],
             ),
     );
@@ -1467,7 +1467,7 @@ fn a_window_with_its_own_band_keeps_one_bar_stop() {
             .content_header(
                 "Design",
                 vec![Box::new(
-                    crate::widget::Button::new("plain", "Plain").on_effect(|| {}),
+                    crate::widget::Button::new("plain", "Plain").on_click(|| {}),
                 )],
             ),
     );

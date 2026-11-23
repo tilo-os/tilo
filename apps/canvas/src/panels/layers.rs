@@ -184,7 +184,7 @@ fn tree(
     .with_selection(selection)
     .with_semantic_key(ToString::to_string)
     .with_viewport_height(viewport);
-    list = list.on_view(id, move |key| {
+    list = list.on_choose(id, move |key| {
         if let Some(picks) = picks.get(&key) {
             (chosen.borrow_mut())(picks.clone());
         }
@@ -297,7 +297,7 @@ fn pictures(cx: &ViewCx<Artwork>, tools: &Tools, row: &LayerRow) -> Row {
             .with_accessible_name(name)
             .tooltip(name)
             .fill_width()
-            .on_view(move || chosen.set(target.clone()));
+            .on_open(move || chosen.set(target.clone()));
         // The picture over its button: the button takes the press the
         // picture lets through, and the picture shows what it chooses.
         Box::new(

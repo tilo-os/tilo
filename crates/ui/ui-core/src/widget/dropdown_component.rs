@@ -61,7 +61,7 @@ impl Described for Dropdown {
         let edits = value.clone();
         let mut dropdown = Self::from_state(options, &value.state)
             .with_id(key)
-            .on_change_view(move |chosen| edits.edited(Value::Text(chosen.to_owned())))
+            .on_change(move |chosen| edits.edited(Value::Text(chosen.to_owned())))
             .with_enabled(enabled)
             .control_size(size);
         if let Some(placeholder) = &placeholder {

@@ -161,7 +161,7 @@ impl ProgramStepView {
         let mut chip = Chip::reference(resource.reference.label.clone(), &resource.reference.id);
         if let Some(answer) = &self.answer {
             let (answer, resource) = (Rc::clone(answer), resource.clone());
-            chip = chip.on_view(move || {
+            chip = chip.on_open(move || {
                 (answer.borrow_mut())(StepAnswer::Open(resource.clone()));
             });
         }
@@ -186,7 +186,7 @@ impl ProgramStepView {
                 )
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small)
-                .on_effect(move || {
+                .on_click(move || {
                     (answer.borrow_mut())(StepAnswer::Undo(change.clone()));
                 }),
             ));
@@ -228,7 +228,7 @@ impl ProgramStepView {
                         &widget_format("program-step-approve", &[]),
                     )
                     .role(ButtonRole::Primary)
-                    .on_effect(move || {
+                    .on_click(move || {
                         (confirm.borrow_mut())(StepAnswer::Confirm(confirmed.clone()));
                     }),
                 )
@@ -238,7 +238,7 @@ impl ProgramStepView {
                         &widget_format("program-step-decline", &[]),
                     )
                     .role(ButtonRole::Secondary)
-                    .on_effect(move || {
+                    .on_click(move || {
                         (decline.borrow_mut())(StepAnswer::Decline(declined.clone()));
                     }),
                 ),

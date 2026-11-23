@@ -1190,7 +1190,7 @@ impl<T> Intents<T> {
 }
 
 impl<T: Clone + 'static> Intents<T> {
-    /// A callback that queues `intent` each time it runs, for a control's `on_view` / `on_effect`.
+    /// A callback that queues `intent` each time it runs, for a control's `on_click`.
     pub fn sender(&self, intent: T) -> impl FnMut() + 'static {
         let intents = self.clone();
         move || intents.push(intent.clone())

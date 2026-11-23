@@ -344,7 +344,7 @@ impl ExtensionController {
         Some(Box::new(
             Button::icon_only(SIDE_PANEL_BUTTON, Icon::PanelRight, &close)
                 .tooltip(&close)
-                .on_effect(self.queue(Command::CloseSidePanel(panel.id.clone()))),
+                .on_click(self.queue(Command::CloseSidePanel(panel.id.clone()))),
         ))
     }
 

@@ -465,7 +465,7 @@ impl FilesState {
     fn cloud_button(&self, id: &str, label: &str, effect: FilesEffect) -> Box<dyn Widget> {
         let sink = self.cmds.clone();
         Button::new(id, label)
-            .on_effect(move || crate::command::push(&sink, FileCommand::Cloud(effect.clone())))
+            .on_click(move || crate::command::push(&sink, FileCommand::Cloud(effect.clone())))
             .into_widget()
     }
 
@@ -475,7 +475,7 @@ impl FilesState {
         let id = entry.id.clone();
         ui::widget::Checkbox::from_state(&checked)
             .with_label(&entry.name)
-            .on_view(&format!("cloud-entry-{}", entry.id), move |_| {
+            .on_choose(&format!("cloud-entry-{}", entry.id), move |_| {
                 crate::command::push(
                     &sink,
                     FileCommand::Cloud(FilesEffect::SelectCloud { entry: id.clone() }),

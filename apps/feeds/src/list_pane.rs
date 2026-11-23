@@ -138,7 +138,7 @@ impl EmptyList {
             state
                 .with_action("Add feed")
                 .with_action_id("feeds.empty.add")
-                .on_view(move || core.borrow_mut().open_add_subscription())
+                .on_open(move || core.borrow_mut().open_add_subscription())
         } else {
             state
         }

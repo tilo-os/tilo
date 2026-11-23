@@ -264,7 +264,7 @@ pub(crate) fn session_row(
         row = row.active();
     }
     let (chosen, id) = (nav.clone(), session.id.clone());
-    Box::new(row.on_view(move || chosen.open_session(&id)))
+    Box::new(row.on_open(move || chosen.open_session(&id)))
 }
 
 /// Who started a session, as its row says it: "Started by you" for the reader's own, the
@@ -502,7 +502,7 @@ pub(crate) fn commands(records: &Resources, seen: &Seen, session: &wire::AgentSe
             Button::new("console-session-stop", "console-session-stop")
                 .with_icon(Icon::Square)
                 .role(ButtonRole::Destructive)
-                .on_view(move || {
+                .on_open(move || {
                     stop(&records, &seen, &session);
                 }),
         ));
@@ -512,7 +512,7 @@ pub(crate) fn commands(records: &Resources, seen: &Seen, session: &wire::AgentSe
         row = row.push(Box::new(
             Button::new("console-session-take-over", "console-session-take-over")
                 .with_icon(Icon::Hand)
-                .on_view(move || take_over(&records, &seen, &session)),
+                .on_open(move || take_over(&records, &seen, &session)),
         ));
     }
     let (undo, undone) = (records.clone(), session.clone());
@@ -520,7 +520,7 @@ pub(crate) fn commands(records: &Resources, seen: &Seen, session: &wire::AgentSe
         Button::new("console-session-undo", "console-session-undo")
             .with_icon(Icon::Undo2)
             .with_enabled(session.undo_blocked.is_none())
-            .on_view(move || {
+            .on_open(move || {
                 undo_session(&undo, &undone);
             }),
     ));
@@ -529,7 +529,7 @@ pub(crate) fn commands(records: &Resources, seen: &Seen, session: &wire::AgentSe
     row = row.push(Box::new(
         Button::new("console-session-copy-link", "console-session-copy-link")
             .with_icon(Icon::Link)
-            .on_view(move || link.share_link(&resource)),
+            .on_open(move || link.share_link(&resource)),
     ));
     Box::new(row)
 }
@@ -618,7 +618,7 @@ fn actions(
             row = row.trailing(Box::new(
                 Button::new(&format!("console-action-{index}-undo"), &offer.label)
                     .role(ButtonRole::Plain)
-                    .on_view(move || match kind {
+                    .on_open(move || match kind {
                         wire::DetailAction::UndoEntry => {
                             records.history(wire::UNDO_RECORD, &query);
                         }
@@ -627,7 +627,7 @@ fn actions(
             ));
         }
         let chosen = nav.clone();
-        row = row.on_view(move || {
+        row = row.on_open(move || {
             chosen
                 .action
                 .update(|open| *open = (*open != Some(index)).then_some(index));
@@ -669,7 +669,7 @@ fn action_view(
         let (records, target) = (records.clone(), target.clone());
         Button::new(&format!("{id}-open"), "console-action-open")
             .with_icon(Icon::ExternalLink)
-            .on_view(move || records.history(wire::OPEN, &target))
+            .on_open(move || records.history(wire::OPEN, &target))
     };
     let mut parts: Vec<Element> = Vec::new();
     match &action.view {
@@ -821,7 +821,7 @@ fn output_part(
             },
         )
         .role(ButtonRole::Plain)
-        .on_view(move || shown.update(|open| *open = (!full).then_some(index)))
+        .on_open(move || shown.update(|open| *open = (!full).then_some(index)))
     };
     let printed: Element = match whole {
         Some(whole) if whole.unavailable => {

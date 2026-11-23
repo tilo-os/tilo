@@ -13,9 +13,6 @@ impl ActionControls for ListRow {
         attachment: crate::control_domain::DomainAttachment,
     ) {
         self.activation.attach(domain, attachment);
-        if let Some(verb) = &mut self.check_verb {
-            verb.attach(domain, attachment);
-        }
         if let Some(action) = &mut self.check_action {
             let _ = action.attach(domain, attachment);
         }
@@ -34,13 +31,6 @@ impl ActionControls for ListRow {
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         if let Some(invocation) = self.activation.take_invocation() {
-            return Some(invocation);
-        }
-        if let Some(invocation) = self
-            .check_verb
-            .as_mut()
-            .and_then(crate::widget::control_verb::ControlVerb::take)
-        {
             return Some(invocation);
         }
         if let Some(invocation) = self.check_action.as_mut().and_then(ActionEmitter::take) {
@@ -64,9 +54,6 @@ impl ActionControls for ListRow {
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.activation.bindings();
         let id = self.activation.id();
-        if let Some(verb) = &self.check_verb {
-            bindings.push(verb.metadata(&format!("{id}/check")));
-        }
         if let Some(action) = &self.check_action {
             bindings.push(action.metadata(format!("{id}/check")));
         }
@@ -93,9 +80,6 @@ impl ActionControls for ListRow {
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         let mut changed = self.activation.refresh_availability(allowed);
-        if let Some(verb) = &mut self.check_verb {
-            verb.refresh_availability(allowed);
-        }
         if let Some(action) = &mut self.check_action {
             let before = action.is_available();
             action.refresh_availability(allowed);

@@ -53,16 +53,14 @@ impl VirtualRows {
             self.open_where_it_stands(key);
             return;
         }
-        if self.opens.is_none() && self.on_activate.is_none() {
+        if self.on_activate.is_none() {
             self.apply_selection(key, false, false, Choosing::ByHand);
             return;
         }
         // Opening the row is one act: the selection it moves onto the way is not
         // reported as a choice of its own.
         self.choose_quietly(key.clone());
-        if let Some((_, handler)) = &mut self.opens {
-            handler(key);
-        } else if let Some(callback) = &mut self.on_activate {
+        if let Some(callback) = &mut self.on_activate {
             callback(key);
         }
     }

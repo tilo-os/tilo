@@ -35,7 +35,6 @@ pub struct Breadcrumb {
     /// All segments, in path order. The rightmost is the active page.
     segments: Vec<String>,
     on_navigate: Option<Box<dyn FnMut(usize)>>,
-    choice: Option<super::view_choice::ViewChoice>,
     segment_rects: Vec<Rect>,
     /// Original-index mapping for each entry in `segment_rects`: `None` for
     /// the (non-clickable) ellipsis placeholder.
@@ -61,7 +60,6 @@ impl Breadcrumb {
             key: String::new(),
             segments,
             on_navigate: None,
-            choice: None,
             segment_rects: Vec::new(),
             visible_origin: Vec::new(),
             cached_visible: Vec::new(),
@@ -104,13 +102,12 @@ impl Breadcrumb {
 
     /// Called with the index of the segment gone to, into the original
     /// `segments` (never the visible list's, so middle truncation never
-    /// confuses the app): the trail, as control `id`, publishes going to a
-    /// segment as its view action `select`, so a person's click, a screen
-    /// reader, a script and an agent go through the same action. Where the
-    /// window is shown is its own state, never an edit.
+    /// confuses the app), whether a click, a key or a screen reader chose it.
+    /// `id` names the trail. Where the window is shown is its own state,
+    /// never an edit.
     #[must_use]
-    pub fn on_view<F: FnMut(usize) + 'static>(mut self, id: impl Into<String>, f: F) -> Self {
-        self.choice = Some(super::view_choice::ViewChoice::new(id, "Go to"));
+    pub fn on_choose<F: FnMut(usize) + 'static>(mut self, id: impl Into<String>, f: F) -> Self {
+        self.key = id.into();
         self.on_navigate = Some(Box::new(f));
         self
     }
@@ -122,9 +119,7 @@ impl Breadcrumb {
     }
 
     fn navigate(&mut self, index: usize) {
-        if let Some(choice) = self.choice.as_mut() {
-            choice.emit(index.to_string());
-        } else if let Some(navigate) = self.on_navigate.as_mut() {
+        if let Some(navigate) = self.on_navigate.as_mut() {
             navigate(index);
         }
     }
@@ -356,89 +351,6 @@ impl Breadcrumb {
     }
 }
 
-impl crate::widget::ResourceOperations for Breadcrumb {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        if self.choice.is_some() {
-            &[super::view_choice::CHOICE_SELECT]
-        } else {
-            &[]
-        }
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(entry) = self
-            .choice
-            .as_ref()
-            .map(|choice| choice.start(op))
-            .transpose()?
-            .flatten()
-        else {
-            return Ok(None);
-        };
-        let index = entry
-            .parse::<usize>()
-            .ok()
-            .filter(|index| *index + 1 < self.segments.len())
-            .ok_or_else(|| format!("no segment `{entry}`"))?;
-        if let Some(navigate) = self.on_navigate.as_mut() {
-            navigate(index);
-        }
-        Ok(Some(super::view_choice::chosen()))
-    }
-}
-
-impl crate::resources::PublishesResources for Breadcrumb {
-    /// The segments before the current one, each by its index.
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let ancestors = self.segments.len().saturating_sub(1);
-        self.choice
-            .as_ref()
-            .map(|choice| {
-                choice.resource(
-                    self.segments[..ancestors]
-                        .iter()
-                        .enumerate()
-                        .map(|(index, label)| (index.to_string(), label.clone()))
-                        .collect(),
-                )
-            })
-            .into_iter()
-            .collect()
-    }
-}
-
-impl crate::widget::controls::ActionControls for Breadcrumb {
-    fn attach_controls(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
-    ) {
-        if let Some(choice) = self.choice.as_mut() {
-            choice.attach(domain, attachment);
-        }
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.choice
-            .as_mut()
-            .and_then(super::view_choice::ViewChoice::take)
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(choice) = self.choice.as_mut() {
-            choice.refresh_availability(allowed);
-        }
-    }
-}
-
 impl Widget for Breadcrumb {
     /// The path as a page's own trail: every folder a link in its list, the page itself last.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
@@ -540,12 +452,6 @@ impl Widget for Breadcrumb {
     }
 
     crate::described!();
-
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
-    );
 
     fn build_layout(
         &mut self,

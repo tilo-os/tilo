@@ -148,7 +148,7 @@ impl Described for TextInput {
         let mut input = Self::from_state(&value.state)
             .with_id(key)
             .with_presence_path(value.path.clone())
-            .on_change_view(move |text| edits.edited(Value::Text(text.to_owned())))
+            .on_change(move |text| edits.edited(Value::Text(text.to_owned())))
             .with_accessible_name(&name)
             .with_placeholder(&placeholder)
             .with_change(change)
@@ -219,7 +219,7 @@ impl Described for TextInput {
             (by, note)
         });
         let edits = value.clone();
-        self.set_on_change_view(move |text| edits.edited(Value::Text(text.to_owned())));
+        self.set_on_change(move |text| edits.edited(Value::Text(text.to_owned())));
         let placeholder = placeholder.unwrap_or_default();
         let name = if value.name.is_empty() {
             placeholder.clone()

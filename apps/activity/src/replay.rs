@@ -47,9 +47,9 @@ pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav) -> (Element, Vec<Element>) {
         }
     };
     let back =
-        Button::transport("activity-replay-back", TransportControl::Previous).on_view(step(false));
+        Button::transport("activity-replay-back", TransportControl::Previous).on_open(step(false));
     let forward =
-        Button::transport("activity-replay-forward", TransportControl::Next).on_view(step(true));
+        Button::transport("activity-replay-forward", TransportControl::Next).on_open(step(true));
     let toggled = (position.clone(), playing.clone(), frames.clone());
     let play = cx.switch(&playing, move |_, now| {
         let toggled = toggled.clone();
@@ -58,7 +58,7 @@ pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav) -> (Element, Vec<Element>) {
                 "activity-replay-play",
                 TransportControl::PlayPause { playing: *now },
             )
-            .on_view(move || {
+            .on_open(move || {
                 let (position, playing, frames) = &toggled;
                 if !playing.get() && position.get() + 1.0 >= place_of(frames()) {
                     position.set(0.0);

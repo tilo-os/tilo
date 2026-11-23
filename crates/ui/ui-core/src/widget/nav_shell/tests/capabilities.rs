@@ -3,11 +3,11 @@ use crate::component::Described;
 use crate::widget::{FilterCount, Filterable};
 
 fn labelled(id: &'static str, label: &str, icon: Icon) -> Element {
-    Box::new(Button::new(id, label).with_icon(icon).on_view(|| {}))
+    Box::new(Button::new(id, label).with_icon(icon).on_open(|| {}))
 }
 
 fn icon(id: &'static str, icon: Icon, name: &str) -> Element {
-    Box::new(Button::icon_only(id, icon, name).on_view(|| {}))
+    Box::new(Button::icon_only(id, icon, name).on_open(|| {}))
 }
 
 fn part_rect(h: &FrameHarness, part: Part) -> Rect {
@@ -100,8 +100,8 @@ tilo_test_env::scenario! {
         let next = vec![
             icon("three", Icon::Send, "Three"),
             labelled("four", "Four", Icon::Plus),
-            Box::new(Button::new("five", "Five").in_menu().on_view(|| {})) as Element,
-            Box::new(Button::new("six", "Six").in_menu().on_view(|| {})) as Element,
+            Box::new(Button::new("five", "Five").in_menu().on_open(|| {})) as Element,
+            Box::new(Button::new("six", "Six").in_menu().on_open(|| {})) as Element,
         ];
         {
             let mut shell = h.root_mut::<NavShell>();
@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
         let theme = Theme::dark();
         let title = "Launch plan for the autumn release, and everything it has to carry with it";
         let actions: Vec<Element> = (0..10)
-            .map(|_| Box::new(Button::new("open", "Open").in_menu().on_view(|| {})) as Element)
+            .map(|_| Box::new(Button::new("open", "Open").in_menu().on_open(|| {})) as Element)
             .collect();
         let shell = NavShell::new()
             .content(Probe::boxed("content").0)
@@ -266,14 +266,14 @@ tilo_test_env::scenario! {
                     Button::new("new", "New note")
                         .with_icon(Icon::Plus)
                         .role(crate::widget::ButtonRole::Primary)
-                        .on_view(|| {}),
+                        .on_open(|| {}),
                 ) as Element,
                 labelled("pin", "Pin", Icon::Pin),
                 Box::new(
                     Button::new("delete", "Delete note")
                         .with_icon(Icon::Trash2)
                         .in_menu()
-                        .on_view(|| {}),
+                        .on_open(|| {}),
                 ) as Element,
             ]
         };
@@ -495,7 +495,7 @@ tilo_test_env::scenario! {
         let primary = |icon: Option<Icon>| {
             let button = Button::new("new", "New note")
                 .role(crate::widget::ButtonRole::Primary)
-                .on_view(|| {});
+                .on_open(|| {});
             Box::new(match icon {
                 Some(icon) => button.with_icon(icon),
                 None => button,
@@ -550,7 +550,7 @@ tilo_test_env::scenario! {
                 Box::new(
                     Button::new("delete", "Delete message")
                         .with_icon(Icon::Trash2)
-                        .on_view(move || deleted.set(true)),
+                        .on_open(move || deleted.set(true)),
                 ) as Element,
             ]
         };
@@ -861,7 +861,7 @@ tilo_test_env::scenario! {
             .overview(Box::new(list))
             .content(Probe::boxed("content").0)
             .overview_header("Contacts", Vec::new())
-            .overview_controls(Box::new(Button::new("sort", "Sort by name").on_view(|| {})))
+            .overview_controls(Box::new(Button::new("sort", "Sort by name").on_open(|| {})))
             .with_filter(SearchField::filter());
         let mut h = harness(shell, 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);

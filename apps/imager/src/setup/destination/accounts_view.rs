@@ -338,7 +338,7 @@ impl AccountsForm {
             providers = providers.push(Box::new(
                 Button::new(choice.label(), &t(choice.label()))
                     .with_enabled(idle && provider != choice)
-                    .on_view(move || {
+                    .on_open(move || {
                         form.provider.set(choice);
                         form.files.set(false);
                         form.mail.set(false);
@@ -489,7 +489,7 @@ impl AccountsForm {
                     &t("installer-online-use-hint"),
                 )
                 .with_enabled(idle)
-                .on_view(move || {
+                .on_open(move || {
                     let _ = form.choose_hint(index);
                 }),
             ));
@@ -526,7 +526,7 @@ impl AccountsForm {
                     ),
                 )
                 .with_enabled(enabled)
-                .on_view(move || {
+                .on_open(move || {
                     let result = match id {
                         "installer-online-add" => form.submit(false),
                         "installer-online-retry" => form.submit(true),

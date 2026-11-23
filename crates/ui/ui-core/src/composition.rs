@@ -1899,7 +1899,7 @@ mod tests {
             crate::State::new(),
             Box::new(
                 crate::widget::ListRow::new("milk", "Milk")
-                    .checkbox_view(false, move |on| seen.set(on)),
+                    .checkbox(false, move |on| seen.set(on)),
             ),
             (400, 60),
         );

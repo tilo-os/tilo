@@ -540,8 +540,6 @@ impl Widget for Card {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
     );
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -786,29 +784,7 @@ impl Widget for Card {
 
 activation_controls!(Card, activation);
 
-impl crate::widget::ResourceOperations for Card {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        self.activation.native_handler()
-    }
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = self.activation.start_native(op)? {
-            return Ok(Some(started));
-        }
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-}
-
-impl crate::resources::PublishesResources for Card {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.activation.native_resources()
-    }
-}
 
 /// Standard actions in declaration/focus order: secondaries, then primary.
 /// Unspecified buttons use measured content sizing; explicit sizes remain manual.

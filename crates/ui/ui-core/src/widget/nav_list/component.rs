@@ -205,7 +205,7 @@ impl Described for NavList {
         if rail {
             list = list.rail();
         }
-        list.report(key, &placed);
+        list.report(&placed);
         list
     }
 
@@ -224,7 +224,7 @@ impl Described for NavList {
         self.set_sections(placed.sections.clone());
         self.set_selected(selected.as_deref());
         self.set_rail_rows(rail);
-        self.report(&self.key.clone(), &placed);
+        self.report(&placed);
         true
     }
 }
@@ -313,7 +313,7 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
 
 impl NavList {
     /// Answer choosing a place and pressing a section's add with the events `placed` carries.
-    fn report(&self, key: &str, placed: &Placed) {
+    fn report(&self, placed: &Placed) {
         self.bind_actions(&placed.bound, &placed.bound_adds);
         if !placed.adds.is_empty() {
             let mut runs: std::collections::HashMap<String, Box<dyn FnMut()>> = placed
@@ -338,7 +338,7 @@ impl NavList {
             .filter_map(|(key, event)| Some((key.clone(), event.clone().handler()?)))
             .collect();
         let select = placed.select.clone();
-        self.set_on_view(key, move |id| {
+        self.set_on_choose(move |id| {
             if let Some(run) = runs.get_mut(&id) {
                 run();
             }

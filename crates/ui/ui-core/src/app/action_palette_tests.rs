@@ -663,7 +663,7 @@ tilo_test_env::scenario! {
         {
             let mut app = App::new(
                 State::new(),
-                Box::new(Button::new("complete", "Complete").on_view(|| {})),
+                Box::new(Button::new("complete", "Complete").on_open(|| {})),
             );
             app.init_layout();
             let resource = app

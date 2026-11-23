@@ -54,7 +54,7 @@ fn action(key: &str, label: String, event: Event) -> Button {
     match event {
         Event::None => button.with_enabled(false),
         Event::Action(binding) => button.on_action(binding),
-        Event::View(intent) => button.on_view(intent.sender()),
+        Event::View(intent) => button.on_open(intent.sender()),
     }
 }
 

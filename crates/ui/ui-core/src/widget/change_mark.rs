@@ -233,7 +233,7 @@ impl ChangeMarkProps {
         button = match activate {
             Event::None => button,
             Event::Action(binding) => button.on_action(binding),
-            Event::View(intent) => button.on_view(intent.sender()),
+            Event::View(intent) => button.on_open(intent.sender()),
         };
         Some(button)
     }

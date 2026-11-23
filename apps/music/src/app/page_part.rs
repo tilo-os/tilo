@@ -63,9 +63,9 @@ pub(super) fn press(
 ) -> ui::widget::Button {
     bound(actions, button, &action).unwrap_or_else(|button| {
         if action.only_shows() {
-            button.on_view(asking(asked, action))
+            button.on_open(asking(asked, action))
         } else {
-            button.on_effect(asking(asked, action))
+            button.on_click(asking(asked, action))
         }
     })
 }

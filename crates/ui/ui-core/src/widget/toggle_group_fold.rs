@@ -315,7 +315,7 @@ mod tests {
 
     fn chooser(width: f64, chosen: Rc<RefCell<Vec<usize>>>) -> ToggleGroup {
         let mut group = ToggleGroup::new(LABELS.iter().map(|l| Segment::new(*l)).collect(), 1)
-            .on_view("choice", move |index| chosen.borrow_mut().push(index));
+            .on_choose("choice", move |index| chosen.borrow_mut().push(index));
         let mut text = TextRenderer::new();
         group.adopt_theme(&Theme::dark());
         group.measure_naturals(&mut text);
@@ -354,7 +354,6 @@ mod tests {
         dispatch(group, &cursor_moved(at.x, at.y));
         dispatch(group, &mouse_press());
         dispatch(group, &mouse_release());
-        crate::testing::answer_controls(group);
     }
 
     tilo_test_env::scenario! {

@@ -55,7 +55,7 @@ impl VirtualRows {
             return;
         }
         let selected = self.selection.is_selected(&key);
-        if let Some((_, handler)) = &mut self.view {
+        if let Some(handler) = &mut self.view {
             if selected {
                 handler(key);
             }

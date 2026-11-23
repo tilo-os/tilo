@@ -187,7 +187,7 @@ fn manager_publishes_the_first_frame_without_input() {
         let manager = manager_on(fd, &app_id, Uuid::new_v4());
         let mut app = crate::App::with_collaboration_manager(
             crate::State::new(),
-            Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+            Box::new(crate::widget::Button::new("complete", "Complete").on_open(|| {})),
             manager,
         );
         assert!(captures.lock().unwrap().action_publications.is_empty());
@@ -218,7 +218,7 @@ fn manager_publishes_the_first_frame_without_input() {
         let manager = manager_on(fd, &app_id, Uuid::new_v4());
         let mut app = crate::App::with_collaboration_manager(
             crate::State::new(),
-            Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+            Box::new(crate::widget::Button::new("complete", "Complete").on_open(|| {})),
             manager,
         );
         crate::app::draw_prepared_component_test_frame(&mut app);
@@ -269,7 +269,7 @@ fn held_directory_observation(refused: bool) {
     let manager = manager_on(fd, &crate::collaboration::local_app_id(), Uuid::new_v4());
     let mut app = crate::App::with_collaboration_manager(
         crate::State::new(),
-        Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+        Box::new(crate::widget::Button::new("complete", "Complete").on_open(|| {})),
         manager,
     );
     crate::app::draw_prepared_component_test_frame(&mut app);
@@ -332,7 +332,7 @@ fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
         let publication_app_id = "so.tilo.browser";
         let mut app = crate::App::with_collaboration_manager(
             crate::State::new(),
-            Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+            Box::new(crate::widget::Button::new("complete", "Complete").on_open(|| {})),
             manager,
         );
         crate::app::draw_prepared_component_test_frame(&mut app);

@@ -332,7 +332,7 @@ pub(crate) fn widget_inspection_json(widget: &dyn Widget) -> String {
 use inspection::{
     audit_inspection_node, collect_inspection, collect_named_targets, collect_targets,
     compare_bool, compare_contains, compare_optional_bool, compare_text, compare_text_selection,
-    effect_control_ids, effect_control_ids_where, find_semantic_target, inspection_has_semantics,
+    effect_control_ids, find_semantic_target, inspection_has_semantics,
     role_name,
 };
 mod inspection_patch;
@@ -5967,10 +5967,6 @@ impl FrameHarness {
         };
         let has_semantics = inspection_has_semantics(&application);
         let semantic_effect_controls = effect_control_ids(&application);
-        // A disabled control cannot cause an effect, so it needs no binding;
-        // a binding on one is still not an orphan.
-        let enabled_effect_controls =
-            effect_control_ids_where(&application, &|node| !node.state.disabled);
         let mut issues = bindings
             .into_iter()
             .filter_map(|binding| match binding.kind {
@@ -5995,13 +5991,6 @@ impl FrameHarness {
                 control: "application-root".into(),
                 code: "empty-native-contract".into(),
                 message: "application exposes neither accessibility semantics nor a control/action inventory".into(),
-            });
-        }
-        for control in enabled_effect_controls.difference(&inventoried_controls) {
-            issues.push(NativeAppIssue {
-                control: control.clone(),
-                code: "missing-action-binding".into(),
-                message: "effect-capable semantic control has no resource/action binding".into(),
             });
         }
         for control in inventoried_controls.difference(&semantic_effect_controls) {
@@ -10166,7 +10155,7 @@ mod tests {
             let activations: std::rc::Rc<std::cell::Cell<usize>> =
                 std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = std::rc::Rc::clone(&activations);
-            let button = Button::new("save", "Save").on_effect(move || {
+            let button = Button::new("save", "Save").on_click(move || {
                 observed.set(observed.get().saturating_add(1));
             });
             let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
@@ -10868,14 +10857,6 @@ mod tests {
             .perform_named("audit-tab", &crate::a11y::Action::Activate)
             .unwrap();
         assert_eq!(calls.get(), 1);
-
-        let omitted = FrameHarness::new(
-            State::new(),
-            Box::new(AuditTab(Button::new("audit-tab", "Review"))),
-            (320, 160),
-        );
-        let audit = omitted.native_app_audit();
-        assert!(audit.issues.iter().any(|issue| issue.control == "audit-tab" && issue.code == "missing-action-binding"), "{audit:?}");
     }
 
     struct SemanticAuditTab(std::rc::Rc<std::cell::Cell<usize>>);
@@ -10969,29 +10950,15 @@ mod tests {
                 .expect("bound control dispatches through the headless host");
             assert_eq!(calls.get(), 1);
 
-            let omitted = FrameHarness::new(
+            let plain = FrameHarness::new(
                 State::new(),
-                Box::new(Button::new("omitted", "Omitted")),
+                Box::new(Button::new("plain", "Plain").on_click(|| {})),
                 (320, 160),
             );
             assert!(
-                omitted
-                    .native_app_audit()
-                    .issues
-                    .iter()
-                    .any(|issue| issue.code == "missing-action-binding"),
-                "an interactive custom/control implementation cannot certify itself by omitting inventory"
-            );
-
-            let disabled = FrameHarness::new(
-                State::new(),
-                Box::new(Button::new("unavailable", "Unavailable").with_enabled(false)),
-                (320, 160),
-            );
-            assert!(
-                disabled.native_app_audit().is_certified(),
-                "a disabled control causes no effect, so it needs no binding: {:?}",
-                disabled.native_app_audit().issues
+                plain.native_app_audit().is_certified(),
+                "a press is the control's own closure, never an action of its own: {:?}",
+                plain.native_app_audit().issues
             );
 
             let secret = FrameHarness::new(
@@ -11021,16 +10988,12 @@ mod tests {
         {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let invoked = calls.clone();
-            let button = Button::new("refresh", "Refresh").on_effect(move || {
+            let button = Button::new("refresh", "Refresh").on_click(move || {
                 invoked.set(invoked.get() + 1);
             });
             let mut driver = FrameHarness::new(State::new(), Box::new(button), (320, 160));
 
             assert!(driver.native_app_audit().is_certified());
-            assert!(driver.resources().iter().any(|resource| {
-                resource.id.as_str() == "tilo.control:refresh"
-                    && resource.actions.iter().any(|action| action.id == "invoke")
-            }));
             driver
                 .perform_named("refresh", &crate::a11y::Action::Activate)
                 .expect("the visible control enters through its action");
@@ -11119,7 +11082,7 @@ mod tests {
             let fired = Rc::new(Cell::new(0));
             let fired_by_button = Rc::clone(&fired);
             let button = Button::new("save", "Save")
-                .on_effect(move || fired_by_button.set(fired_by_button.get() + 1));
+                .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
             let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
 
             let pointer_rect = driver.targets()["save"];
@@ -11349,7 +11312,7 @@ mod tests {
 
             let fired = Rc::new(Cell::new(0));
             let observed = Rc::clone(&fired);
-            let button = Button::new("save", "Save").on_effect(move || {
+            let button = Button::new("save", "Save").on_click(move || {
                 observed.set(observed.get() + 1);
             });
             let mut driver = FrameHarness::new_with_controlled_inputs(

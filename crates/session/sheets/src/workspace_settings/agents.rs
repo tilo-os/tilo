@@ -305,7 +305,7 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
                     .role(ButtonRole::Primary)
                     .with_icon(Icon::Plus)
                     .with_enabled(agents.manage)
-                    .on_effect(move || open.start_agent()),
+                    .on_click(move || open.start_agent()),
             )),
         );
     }
@@ -315,7 +315,7 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
         .with_placeholder(agents.name.clone())
         .with_accessible_name(agents.name.clone())
         .with_read_only(!agents.manage)
-        .on_submit_view(move |_| submit.add_agent());
+        .on_submit(move |_| submit.add_agent());
     let name = Row::new()
         .with_rhythm(Rhythm::Related)
         .push(Box::new(field));
@@ -350,13 +350,13 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
         .push(Box::new(
             Button::new("ws-agents-create-cancel", &agents.cancel)
                 .with_enabled(agents.manage)
-                .on_effect(move || put_away.cancel_agent()),
+                .on_click(move || put_away.cancel_agent()),
         ))
         .push(Box::new(
             Button::new("ws-agents-create", &agents.create)
                 .role(ButtonRole::Primary)
                 .with_enabled(agents.manage)
-                .on_effect(move || typed.add_agent()),
+                .on_click(move || typed.add_agent()),
         ));
 
     let mut rows: Vec<Element> = vec![Box::new(name)];
@@ -471,7 +471,7 @@ fn moderation_row(moderation: &Moderation, parts: &Parts) -> Element {
     // The switch stands where the workspace's grant does; a press asks the shell to change it.
     let switch = Toggle::from_state(&ui::LocalState::new(moderation.on))
         .with_accessible_name(&moderation.name)
-        .on_view("ws-bots-moderation-switch", move |on| {
+        .on_choose("ws-bots-moderation-switch", move |on| {
             press.ask(WorkspaceSettingsEffect::SetModeration { on });
         });
     Box::new(row.trailing(Box::new(switch)))
@@ -618,7 +618,7 @@ fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Par
         // Every line keeps a place per answer, so a line offering fewer lines up with the rest.
         .with_columns(ANSWERS.len())
         .with_enabled(review.editable)
-        .on_view(
+        .on_choose(
             &format!("ws-agent-answer-{}-{}", app.scope, line.kind),
             move |index| {
                 if let Some(answer) = choices.get(index).and_then(|choice| ANSWERS.get(*choice)) {
@@ -710,12 +710,12 @@ fn limit_section(review: &AgentReview, limit: &Limit, parts: &Parts) -> Element 
         .with_id("ws-agent-limit-field")
         .with_placeholder(limit.placeholder.clone())
         .with_accessible_name(limit.title.clone())
-        .on_submit_view(move |_| submit.commit_agent_limit(&typed));
+        .on_submit(move |_| submit.commit_agent_limit(&typed));
     let press = parts.clone();
     let agent = review.agent.clone();
     let set = Button::new("ws-agent-limit-set", &limit.set)
         .control_size(ControlSize::Small)
-        .on_effect(move || press.commit_agent_limit(&agent));
+        .on_click(move || press.commit_agent_limit(&agent));
     column = column.push(Box::new(
         Row::new()
             .no_wrap()

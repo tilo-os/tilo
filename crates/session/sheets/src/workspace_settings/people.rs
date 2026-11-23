@@ -179,7 +179,7 @@ fn roles(people: &People, parts: &Parts) -> Element {
                         .with_rhythm(Rhythm::Related)
                         .push(Box::new(
                             Button::new(&format!("ws-role-rename-{}", role.key), &editor.rename)
-                                .on_effect(move || {
+                                .on_click(move || {
                                     edit.role_name.set(name.clone());
                                     edit.local
                                         .update(|local| local.editing_role = Some(key.clone()));
@@ -188,7 +188,7 @@ fn roles(people: &People, parts: &Parts) -> Element {
                         .push(Box::new(
                             Button::new(&format!("ws-role-remove-{}", role.key), &people.remove)
                                 .role(ButtonRole::Destructive)
-                                .on_effect(move || remove.confirm(change.clone())),
+                                .on_click(move || remove.confirm(change.clone())),
                         )),
                 ));
             }
@@ -198,7 +198,7 @@ fn roles(people: &People, parts: &Parts) -> Element {
     if editor.manage {
         let create = parts.clone();
         rows.push(Box::new(
-            Button::new("ws-role-create", &editor.create).on_effect(move || {
+            Button::new("ws-role-create", &editor.create).on_click(move || {
                 create.role_name.set(String::new());
                 create
                     .local
@@ -226,12 +226,12 @@ fn roles(people: &People, parts: &Parts) -> Element {
                             .with_id("ws-role-name")
                             .with_placeholder(editor.name.clone())
                             .with_accessible_name(editor.name.clone())
-                            .on_submit_view(move |_| submit()),
+                            .on_submit(move |_| submit()),
                     ))
                     .push(Box::new(
                         Button::new("ws-role-save", &editor.save)
                             .role(ButtonRole::Primary)
-                            .on_effect(save),
+                            .on_click(save),
                     )),
             ));
         }
@@ -306,7 +306,7 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
                 .role(ButtonRole::Destructive)
                 .control_size(ControlSize::Small)
                 .with_enabled(person.can_manage)
-                .on_effect(move || {
+                .on_click(move || {
                     confirm.confirm(Confirm::RemoveMember {
                         member: member.clone(),
                         name: name.clone(),

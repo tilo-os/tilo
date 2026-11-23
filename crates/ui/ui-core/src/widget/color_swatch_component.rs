@@ -49,7 +49,7 @@ impl Described for ColorSwatchPicker {
             picker = picker.with_accessible_name(label);
         }
         if !change.is_none() {
-            picker = picker.on_change_view(move |index| {
+            picker = picker.on_change(move |index| {
                 change.fire(Some(Value::Int(i64::try_from(index).unwrap_or(i64::MAX))));
             });
         }

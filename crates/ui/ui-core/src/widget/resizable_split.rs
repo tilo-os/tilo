@@ -1753,14 +1753,14 @@ mod tests {
                         vec![Segment::new("Left first"), Segment::new("Left second")],
                         0,
                     )
-                    .on_view("left", move |index| left_changed.set(index)),
+                    .on_choose("left", move |index| left_changed.set(index)),
                 )),
                 Column::new().with_no_padding().push(Box::new(
                     ToggleGroup::new(
                         vec![Segment::new("Right first"), Segment::new("Right second")],
                         0,
                     )
-                    .on_view("right", move |index| right_changed.set(index)),
+                    .on_choose("right", move |index| right_changed.set(index)),
                 )),
                 SplitOrientation::Vertical,
             )
@@ -1807,7 +1807,7 @@ mod tests {
                     vec![Segment::new("Other first"), Segment::new("Other second")],
                     0,
                 )
-                .on_view("other", |_| {}),
+                .on_choose("other", |_| {}),
             )),
             SplitOrientation::Horizontal,
         )

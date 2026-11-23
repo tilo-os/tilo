@@ -98,7 +98,7 @@ fn sidebar(core: &Shared, requests: &Requests) -> NavList {
     let core = Rc::clone(core);
     NavList::new(Vec::new())
         .with_accessible_name(crate::CATALOG.t("passwords-a11y-vault"))
-        .on_view("passwords.sidebar", move |id| {
+        .on_choose("passwords.sidebar", move |id| {
             requests.borrow_mut().push(Request::Navigate(id));
         })
         .follow(move || {
@@ -143,7 +143,7 @@ impl PasswordsWindow {
                 Icon::Plus,
                 &crate::CATALOG.t("passwords-new-item"),
             )
-            .on_own_device_effect(move || requests.borrow_mut().push(Request::NewItem))
+            .on_click(move || requests.borrow_mut().push(Request::NewItem))
         };
         let search = ui::search::search_button(ui::search::SearchRequest::this_app());
         vec![Box::new(search) as Element, Box::new(new_item)]

@@ -784,7 +784,7 @@ impl SetupApp {
         let sink = Rc::clone(&self.commands);
         Button::new(id, &label)
             .control_size(ui::widget::ControlSize::Regular)
-            .on_effect(move || sink.borrow_mut().push(command))
+            .on_click(move || sink.borrow_mut().push(command))
     }
 
     fn desktop_install_card(&self) -> Section {

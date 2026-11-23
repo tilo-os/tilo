@@ -76,7 +76,7 @@ fn card_of(props: CardGridCardProps) -> (String, Element) {
     if !activate.is_none() {
         card.activation = Activation::new(key.clone());
         let label = title.clone().unwrap_or_default();
-        card.activation.set_event(activate, &label);
+        card.activation.set_event(activate);
     }
     let card = match title {
         Some(title) if !title.is_empty() => {

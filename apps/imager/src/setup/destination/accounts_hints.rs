@@ -133,7 +133,7 @@ impl AccountsForm {
         ) {
             let form = self.clone();
             column = column.push(Box::new(
-                Button::new("installer.windows.unlock", &t("installer-windows-unlock")).on_view(
+                Button::new("installer.windows.unlock", &t("installer-windows-unlock")).on_open(
                     move || {
                         form.windows
                             .command
@@ -148,7 +148,7 @@ impl AccountsForm {
         }
         let form = self.clone();
         column.push(Box::new(
-            Button::new("installer.windows.skip", &t("installer-windows-skip")).on_view(
+            Button::new("installer.windows.skip", &t("installer-windows-skip")).on_open(
                 move || {
                     form.windows.command.set(Some(HintControl::Skip));
                 },

@@ -207,7 +207,7 @@ impl Described for ToggleGroup {
         }
         if !change.is_none() {
             let reported = change;
-            group = group.on_view(key, move |index| reported.fire(Some(carried(index))));
+            group = group.on_choose(key, move |index| reported.fire(Some(carried(index))));
         }
         group.with_enabled(enabled).with_id(key)
     }
@@ -255,7 +255,7 @@ impl Described for ViewTabs {
         }
         if !change.is_none() {
             let reported = change;
-            tabs = tabs.on_view(key, move |index| reported.fire(Some(carried(index))));
+            tabs = tabs.on_choose(key, move |index| reported.fire(Some(carried(index))));
         }
         tabs.with_enabled(enabled).with_id(key)
     }

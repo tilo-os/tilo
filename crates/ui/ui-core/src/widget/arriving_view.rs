@@ -547,7 +547,7 @@ fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) ->
         .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("arriving-failed"));
     let retry = read.can_retry().then(|| {
         let again = Rc::clone(read);
-        Button::new("arriving.retry", "arriving-retry").on_view(move || again.retry())
+        Button::new("arriving.retry", "arriving-retry").on_open(move || again.retry())
     });
     let compact = match shape {
         SkeletonShape::Row(_) | SkeletonShape::Chip => true,
@@ -582,7 +582,7 @@ fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) ->
         let without = Rc::clone(read);
         banner = banner.with_secondary_action(
             Button::new("arriving.without", "arriving-continue-without")
-                .on_view(move || without.continue_without()),
+                .on_open(move || without.continue_without()),
         );
     }
     Box::new(banner)

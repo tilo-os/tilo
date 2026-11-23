@@ -13,7 +13,7 @@ fn window_failure(retried: &Rc<Cell<u32>>) -> WindowFailure {
             .with_id("failed")
             .with_action(
                 Button::new("failed.retry", "Try again")
-                    .on_view(move || retry.set(retry.get() + 1)),
+                    .on_open(move || retry.set(retry.get() + 1)),
             ),
     )
 }

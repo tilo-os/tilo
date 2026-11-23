@@ -44,7 +44,7 @@ impl Described for DatePicker {
         } = props;
         let shown = value.clone();
         let mut picker = Self::from_text_state(&value.state)
-            .on_view(key, move |day| {
+            .on_choose(key, move |day| {
                 shown.edited(crate::component::Value::Text(day.to_string()));
             })
             .marked(

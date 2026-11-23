@@ -84,7 +84,7 @@ impl ResourceApp for SketchApp {
     fn view(cx: &mut ViewCx<Sketch>) -> Element {
         let dispatch = cx.dispatcher();
         Box::new(
-            Column::new().push(Box::new(Button::new("erase", "Erase").on_view(move || {
+            Column::new().push(Box::new(Button::new("erase", "Erase").on_open(move || {
                 dispatch.apply(&SketchAction::RemoveMarks {
                     ids: vec!["a".into()],
                 });

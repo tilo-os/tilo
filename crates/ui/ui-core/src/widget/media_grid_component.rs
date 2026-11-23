@@ -269,7 +269,7 @@ pub(crate) fn card(props: MediaCardProps) -> MediaCard {
     match activate {
         Event::None => card,
         Event::Action(binding) => card.on_action(binding),
-        Event::View(intent) => card.on_view(intent.sender()),
+        Event::View(intent) => card.on_open(intent.sender()),
     }
 }
 

@@ -473,7 +473,7 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
     let pressed = SharedRc::new(Cell::new(0));
     let count = SharedRc::clone(&pressed);
     let compose =
-        Button::new("mail.compose", "Compose").on_effect(move || count.set(count.get() + 1));
+        Button::new("mail.compose", "Compose").on_click(move || count.set(count.get() + 1));
     let shell = NavShell::new()
         .content_kind(ContentKind::Page)
         .sidebar(Probe::boxed("sidebar").0)

@@ -925,9 +925,7 @@ fn buttons_under(widget: &dyn crate::widget::Widget, out: &mut Vec<(String, Opti
 #[derive(Clone)]
 enum Handler {
     Binding(tilo_actions::ActionBinding<()>),
-    View(Rc<RefCell<Box<dyn FnMut()>>>),
-    Effect(Rc<RefCell<Box<dyn FnMut()>>>),
-    OwnDeviceEffect(Rc<RefCell<Box<dyn FnMut()>>>),
+    Press(Rc<RefCell<Box<dyn FnMut()>>>),
 }
 
 /// A centered empty-state placeholder: hero icon + title + message + action.
@@ -1340,33 +1338,21 @@ impl EmptyState {
         self
     }
 
-    /// Publish the action as a transient presentation action that runs `f`, like
-    /// [`super::Button::on_view`].
+    /// Run `f` when the action is pressed.
     #[must_use]
-    pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
-        self.handler = Some(Handler::View(Rc::new(RefCell::new(Box::new(f)))));
+    pub fn on_click(mut self, f: impl FnMut() + 'static) -> Self {
+        self.handler = Some(Handler::Press(Rc::new(RefCell::new(Box::new(f)))));
         self.rebuild_engine();
         self
     }
 
-    /// Publish the action as an effect that runs `f`, like [`super::Button::on_effect`].
+    /// A press that opens or shows something; the same as [`Self::on_click`].
     #[must_use]
-    pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
-        self.handler = Some(Handler::Effect(Rc::new(RefCell::new(Box::new(f)))));
-        self.rebuild_engine();
-        self
+    pub fn on_open(self, f: impl FnMut() + 'static) -> Self {
+        self.on_click(f)
     }
 
-    /// Publish the action as an effect on the person's own device alone that runs `f`, like
-    /// [`super::Button::on_own_device_effect`].
-    #[must_use]
-    pub fn on_own_device_effect(mut self, f: impl FnMut() + 'static) -> Self {
-        self.handler = Some(Handler::OwnDeviceEffect(Rc::new(RefCell::new(Box::new(f)))));
-        self.rebuild_engine();
-        self
-    }
-
-    /// The control id the action is published, addressed and tested by:
+    /// The control id the action is addressed and tested by:
     /// [`Self::with_action_id`], or one derived from the title.
     pub fn action_control_id(&self) -> String {
         self.action_id
@@ -1385,9 +1371,7 @@ impl EmptyState {
             .with_enabled(self.action_enabled);
         self.engine = Some(match handler {
             Handler::Binding(binding) => button.on_action(binding),
-            Handler::View(f) => button.on_view(move || (f.borrow_mut())()),
-            Handler::Effect(f) => button.on_effect(move || (f.borrow_mut())()),
-            Handler::OwnDeviceEffect(f) => button.on_own_device_effect(move || (f.borrow_mut())()),
+            Handler::Press(f) => button.on_click(move || (f.borrow_mut())()),
         });
     }
 

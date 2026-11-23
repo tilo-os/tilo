@@ -103,7 +103,7 @@ impl OverflowButton {
     #[must_use]
     pub fn with_label(id: &str, label: &str) -> Self {
         let requested = Rc::new(Cell::new(false));
-        let button = Button::icon_only(id, Icon::MoreHorizontal, label).on_view({
+        let button = Button::icon_only(id, Icon::MoreHorizontal, label).on_open({
             let requested = Rc::clone(&requested);
             move || requested.set(true)
         });

@@ -474,7 +474,7 @@ fn window(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
                 &tr("assistant-supervision"),
             )
             .toggled(place == Place::Supervision)
-            .on_view(move || {
+            .on_open(move || {
                 if nav.place() == Place::Supervision {
                     nav.show(&Place::MainChat);
                 } else {
@@ -509,7 +509,7 @@ fn window(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
                     Icon::Pencil,
                     &tr("assistant-start-sub-agent"),
                 )
-                .on_view(move || asked.ask_for_job()),
+                .on_open(move || asked.ask_for_job()),
             )]
         };
         match &place {
@@ -568,7 +568,7 @@ pub(crate) fn no_assistant(cx: &ViewCx<Window>, hands: &Hands) -> Element {
                 .with_id("assistant-none")
                 .with_action(tr("assistant-create"))
                 .with_action_id("assistant-create")
-                .on_effect(move || {
+                .on_click(move || {
                     if let Err(why) = hands.create_assistant() {
                         said.set(why);
                     }
@@ -644,7 +644,7 @@ fn job_prompt(
         let (nav, hands, said) = (nav.clone(), hands.clone(), refused.clone());
         Button::new("assistant-job-start", "assistant-job-start")
             .role(ButtonRole::Primary)
-            .on_effect(move || {
+            .on_click(move || {
                 let job = nav.job.get();
                 if job.trim().is_empty() {
                     said.set(tr("assistant-job-empty"));
@@ -660,7 +660,7 @@ fn job_prompt(
     let cancel = {
         let nav = nav.clone();
         Button::new("assistant-job-cancel", "assistant-job-cancel")
-            .on_view(move || nav.asking.set(false))
+            .on_open(move || nav.asking.set(false))
     };
     page(vec![
         Box::new(Text::new(&trf(

@@ -121,9 +121,9 @@ impl MediaGridHost {
         let built = MediaCard::new(format!("music.card.{}", card.art_id), source).title(card.title);
         let mut built = bound(actions, built, &card.action).unwrap_or_else(|built| {
             if card.action.only_shows() {
-                built.on_view(asking(&self.asked, card.action))
+                built.on_open(asking(&self.asked, card.action))
             } else {
-                built.on_effect(asking(&self.asked, card.action))
+                built.on_click(asking(&self.asked, card.action))
             }
         });
         if card.portrait {
@@ -159,9 +159,9 @@ impl MediaGridHost {
             return card.hover_action_binding(icon, label, binding);
         }
         if action.only_shows() {
-            card.hover_action_view(icon, label, asking(&self.asked, action))
+            card.on_hover_action(icon, label, asking(&self.asked, action))
         } else {
-            card.hover_action_effect(icon, label, asking(&self.asked, action))
+            card.on_hover_action(icon, label, asking(&self.asked, action))
         }
     }
 

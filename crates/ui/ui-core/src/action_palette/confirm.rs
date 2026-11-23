@@ -209,12 +209,12 @@ pub(super) fn controls(
 ) -> Row {
     let go = command.clone();
     let cancel = command.clone();
-    let mut submit = Button::new("palette-submit", submit).on_view(move || go.set(Some(true)));
+    let mut submit = Button::new("palette-submit", submit).on_open(move || go.set(Some(true)));
     if let Some(role) = role {
         submit = submit.role(role);
     }
     Row::new().push(Box::new(submit)).push(Box::new(
-        Button::new("palette-cancel", "Cancel").on_view(move || cancel.set(Some(false))),
+        Button::new("palette-cancel", "Cancel").on_open(move || cancel.set(Some(false))),
     ))
 }
 

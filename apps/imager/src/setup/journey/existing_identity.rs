@@ -281,7 +281,7 @@ impl ExistingIdentity {
         Box::new(
             body.push(Box::new(
                 Button::new("installer.existing.choose", &t("installer-existing-choose"))
-                    .on_effect(move || choose()),
+                    .on_click(move || choose()),
             )),
         )
     }

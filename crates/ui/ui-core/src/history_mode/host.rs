@@ -1675,7 +1675,7 @@ impl HistoryHost {
 
     fn command_button(&self, id: &str, label: &str, command: Command) -> Button {
         let queue = self.commands.clone();
-        Button::new(id, label).on_effect(move || {
+        Button::new(id, label).on_click(move || {
             queue.borrow_mut().push_back(command);
             super::note_news();
         })
@@ -1754,7 +1754,7 @@ impl HistoryHost {
                             "history-open",
                             crate::widget::window_header::HistoryControl::of(self.open),
                         )
-                        .on_view(move || {
+                        .on_open(move || {
                             clicked.set(true);
                             super::note_news();
                         }),
@@ -1823,7 +1823,7 @@ impl HistoryHost {
                                         "history-mode-type-to-confirm",
                                         &[("phrase", phrase.clone().into())],
                                     ))
-                                    .on_change_view(move |value| {
+                                    .on_change(move |value| {
                                         changed.borrow_mut().replace_range(.., value)
                                     }),
                             ));
@@ -1845,7 +1845,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label).on_effect(move || callback.invoke()),
+                            Button::new(&id, label).on_click(move || callback.invoke()),
                         ));
                     } else {
                         let command =
@@ -1858,7 +1858,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label).on_effect(move || callback.invoke()),
+                            Button::new(&id, label).on_click(move || callback.invoke()),
                         ));
                     }
                     let commands = self.pending_controls.commands();
@@ -1874,7 +1874,7 @@ impl HistoryHost {
                         .insert(cancel_id.clone(), callback.clone());
                     row = row.push(Box::new(
                         Button::new(&cancel_id, "history-mode-cancel")
-                            .on_effect(move || callback.invoke()),
+                            .on_click(move || callback.invoke()),
                     ));
                 }
                 toolbar = toolbar.push(Box::new(row));
@@ -2058,7 +2058,7 @@ impl HistoryHost {
             let label = I18nManager::lookup_plain("history-mode-back-to-live");
             let close = self.commands.clone();
             Some(
-                Button::icon_only("history-back-live", crate::icons::Icon::X, &label).on_view(
+                Button::icon_only("history-back-live", crate::icons::Icon::X, &label).on_open(
                     move || {
                         close.borrow_mut().push_back(Command::Live);
                         super::note_news();
@@ -2077,7 +2077,7 @@ impl HistoryHost {
                     "history-open",
                     crate::widget::window_header::HistoryControl::Open,
                 )
-                .on_view(move || {
+                .on_open(move || {
                     clicked.set(true);
                     super::note_news();
                 }),
@@ -2142,7 +2142,7 @@ impl HistoryHost {
                     TextInput::from_state(&self.name_draft)
                         .with_id("history-name-field")
                         .with_placeholder("history-panel-name")
-                        .on_submit_view(move |_| {
+                        .on_submit(move |_| {
                             commands
                                 .borrow_mut()
                                 .push_back(Command::Review(review::ReviewCommand::Name));
@@ -2194,7 +2194,7 @@ impl HistoryHost {
             .push(Box::new(
                 Button::new("history-back-now", "history-preview-now")
                     .role(ButtonRole::Plain)
-                    .on_view(move || {
+                    .on_open(move || {
                         now.borrow_mut().push_back(Command::Now);
                         super::note_news();
                     }),

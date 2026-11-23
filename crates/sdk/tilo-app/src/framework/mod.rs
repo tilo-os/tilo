@@ -402,7 +402,7 @@ pub use chain::{PART_BYTES, PART_ITEMS, PartLimits, placed};
 pub use chain_list::{ChainList, ChainPager, ChainRow, Paged};
 pub use children::{ChildResource, Children, Listed, child_resource_id};
 pub use controls::{ActionControl, Actions};
-pub use delivery::HostDelivery;
+pub use delivery::{HostDelivery, press_control};
 pub use dispatch::{DispatchGroup, Dispatcher, Landed, Refused, Submit};
 pub use each::Each;
 pub use effect::{

@@ -77,7 +77,7 @@ fn feed(cx: &ViewCx<Window>, nav: &Nav, query: &wire::FeedQuery, filters: &Filte
             if feed.total > feed.entries.len() {
                 let more = nav.clone();
                 parts.push(Box::new(
-                    Button::new("activity-show-more", "activity-show-more").on_view(move || {
+                    Button::new("activity-show-more", "activity-show-more").on_open(move || {
                         more.limit.update(|limit| {
                             *limit = (*limit)
                                 .max(wire::FEED_PAGE)
@@ -218,7 +218,7 @@ fn filter_row(nav: &Nav, feed: &wire::Feed, narrows: bool) -> Element {
         row = row.push(Box::new(
             Button::new("activity-clear-filters", "activity-clear-filters")
                 .with_icon(Icon::X)
-                .on_view(move || cleared.clear_filters()),
+                .on_open(move || cleared.clear_filters()),
         ));
     }
     Box::new(row)
@@ -304,7 +304,7 @@ fn list(
                             &format!("activity-group-select-{index}"),
                             "activity-group-select",
                         )
-                        .on_view(move || chosen.select(Some(range.clone()))),
+                        .on_open(move || chosen.select(Some(range.clone()))),
                     );
                 }
                 Section::new(rows).with_header(header)
@@ -408,7 +408,7 @@ fn entry_row(
     }
     let chosen = nav.clone();
     let one = wire::Range::one(&entry.id);
-    row = row.on_view(move || chosen.select(Some(one.clone())));
+    row = row.on_open(move || chosen.select(Some(one.clone())));
     let through = selection
         .map(|range| range.from.clone())
         .filter(|from| *from != entry.id)

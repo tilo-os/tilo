@@ -561,7 +561,7 @@ impl EditForm {
             _ => {}
         }
         let submit = std::rc::Rc::clone(shared);
-        input.on_submit_view(move |_| submit.borrow_mut().push(Request::AdvanceField(slot)))
+        input.on_submit(move |_| submit.borrow_mut().push(Request::AdvanceField(slot)))
     }
 
     fn type_menu(&self, target: TypeTarget) -> Option<Dropdown> {
@@ -605,7 +605,7 @@ impl EditForm {
                         )],
                     ),
                 )
-                .on_view(queue(shared, Request::Remove(target))),
+                .on_open(queue(shared, Request::Remove(target))),
             )),
         )
     }
@@ -624,7 +624,7 @@ impl EditForm {
             Button::new(id, label)
                 .with_icon(Icon::Plus)
                 .role(ButtonRole::Plain)
-                .on_view(queue(shared, Request::Add(kind))),
+                .on_open(queue(shared, Request::Add(kind))),
         )
     }
 
@@ -692,7 +692,7 @@ impl EditForm {
             .content(Box::new(
                 Button::new("contacts.form.calendar", &calendar_label)
                     .with_icon(Icon::Calendar)
-                    .on_view(queue(shared, Request::ToggleCalendar)),
+                    .on_open(queue(shared, Request::ToggleCalendar)),
             ));
         if self.calendar_open {
             let shown = self.value(Slot::Birthday);
@@ -707,7 +707,7 @@ impl EditForm {
                     .with_accessible_name(
                         crate::account_editor::CATALOG.t("contacts-a11y-birthday-calendar"),
                     )
-                    .on_view("contacts.birthday-picker", move |date| {
+                    .on_choose("contacts.birthday-picker", move |date| {
                         picker_shared
                             .borrow_mut()
                             .push(Request::PickDate(date.to_string()));

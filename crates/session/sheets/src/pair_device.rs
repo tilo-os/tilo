@@ -186,7 +186,7 @@ fn code(device: &AddDevice, link: &LocalState<String>, ask: &Ask) -> Element {
                 Button::new("pair-device-copy", &device.copy)
                     .with_icon(Icon::Copy)
                     .role(ButtonRole::Primary)
-                    .on_view(move || {
+                    .on_open(move || {
                         copying(PairDeviceEffect::Copy {
                             link: copied.clone(),
                         });

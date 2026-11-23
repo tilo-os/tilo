@@ -574,21 +574,6 @@ fn count_items(items: &[NavItem]) -> usize {
 
 type Callback<A> = Option<Box<dyn FnMut(A)>>;
 
-/// A navigation list's selection, published as its view action `select`
-/// ([`NavList::on_view`]).
-struct NavView {
-    choice: crate::widget::view_choice::ViewChoice,
-    handler: Box<dyn FnMut(String)>,
-}
-
-/// Every destination of `sections`, nested ones included: (id, label).
-fn destinations(sections: &[NavSection]) -> Vec<(String, String)> {
-    all_items(sections)
-        .into_iter()
-        .map(|item| (item.id.clone(), item.label.clone()))
-        .collect()
-}
-
 /// The id the app gave the item or section a row key names
 /// (`item:{id}` → `id`).
 fn app_id(key: &str) -> &str {
@@ -619,7 +604,7 @@ struct NavShared {
     chosen_by_press: HashSet<String>,
     item_actions: Vec<String>,
     section_actions: HashMap<String, String>,
-    view: Option<NavView>,
+    view: Callback<String>,
     selection_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
     component_places: HashSet<String>,
     section_add_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
@@ -667,7 +652,7 @@ impl NavShared {
             if let Some(action) = self.selection_actions.get_mut(&id) {
                 let _ = action.emit(());
             } else if let Some(view) = self.view.as_mut() {
-                (view.handler)(id.clone());
+                view(id.clone());
             }
             self.selection_emitted = false;
             return;
@@ -681,7 +666,7 @@ impl NavShared {
             let _ = action.emit(());
             self.selection_emitted = true;
         } else if let Some(view) = self.view.as_mut() {
-            (view.handler)(id);
+            view(id);
         }
     }
 
@@ -912,7 +897,7 @@ impl NavList {
     }
 
     /// Choose `id` and bring its row into view. Does not report through
-    /// [`Self::on_view`].
+    /// [`Self::on_choose`].
     #[must_use]
     pub fn selected(mut self, id: &str) -> Self {
         self.set_selected(Some(id));
@@ -967,85 +952,22 @@ impl NavList {
         true
     }
 
-    /// Called with the item id when a destination is chosen: the list, as control `id`,
-    /// publishes choosing a destination as its view action `select` (`view_choice`), so a
-    /// person's click, a screen reader, a script and an agent choose through the same action.
+    /// Called with the item id when a destination is chosen, whether a click, a key or a screen
+    /// reader chose it; `id` names the list.
     #[must_use]
-    pub fn on_view(self, id: impl Into<String>, f: impl FnMut(String) + 'static) -> Self {
-        let id = id.into();
-        self.set_on_view(id.clone(), f);
+    pub fn on_choose(self, id: impl Into<String>, f: impl FnMut(String) + 'static) -> Self {
+        self.set_on_choose(f);
         self.with_id(id)
     }
 
-    /// [`Self::on_view`] after construction: what choosing a destination does.
-    fn set_on_view(&self, id: impl Into<String>, f: impl FnMut(String) + 'static) {
-        let id = id.into();
-        self.shared.borrow_mut().view = Some(NavView {
-            choice: crate::widget::view_choice::ViewChoice::new(id, "Go to"),
-            handler: Box::new(f),
-        });
-    }
-
-    /// The published selection ([`Self::on_view`]), offering the current
-    /// destinations.
-    fn view_resource(&self) -> Option<tilo_actions::ResourceSpec> {
-        let shared = self.shared.borrow();
-        let view = shared.view.as_ref()?;
-        // The control is named by the place the person is at, in their words
-        // ("Inbox"), never by its id: a sheet asking the person to confirm a
-        // step reads "Inbox", not the address of a row.
-        let here = shared
-            .selected
-            .as_deref()
-            .and_then(|selected| {
-                destinations(&self.sections)
-                    .into_iter()
-                    .find(|(id, _)| id == selected)
-                    .map(|(_, label)| label)
-            })
-            .filter(|label| !label.trim().is_empty());
-        Some(
-            view.choice
-                .resource_named(here.as_deref(), destinations(&self.sections)),
-        )
-    }
-
-    /// Answer a `select` addressed to this list: show the destination and
-    /// report it, whoever chose it.
-    fn start_view(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let chosen = match self.shared.borrow().view.as_ref() {
-            Some(view) => view.choice.start(op)?,
-            None => None,
-        };
-        let Some(destination) = chosen else {
-            return Ok(None);
-        };
-        if !destinations(&self.sections)
-            .iter()
-            .any(|(id, _)| *id == destination)
-        {
-            return Err(format!("no destination `{destination}`"));
-        }
-        if self.selected_id().as_deref() != Some(destination.as_str()) {
-            self.set_selected(Some(&destination));
-            if let Some(binding) = self.shared.borrow_mut().binding.as_mut() {
-                binding.publish(&Some(destination.clone()));
-            }
-        }
-        let mut shared = self.shared.borrow_mut();
-        shared.navigated = true;
-        if let Some(view) = shared.view.as_mut() {
-            (view.handler)(destination);
-        }
-        Ok(Some(crate::widget::view_choice::chosen()))
+    /// [`Self::on_choose`] after construction: what choosing a destination does.
+    fn set_on_choose(&self, f: impl FnMut(String) + 'static) {
+        self.shared.borrow_mut().view = Some(Box::new(f));
     }
 
     /// Bind each destination to its published typed action. Bound rows route
     /// selection through host ownership; unbound rows choose through
-    /// [`Self::on_view`].
+    /// [`Self::on_choose`].
     #[must_use]
     pub fn selection_actions(
         self,
@@ -2084,14 +2006,6 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
             return;
         }
-        if request.wants::<dyn crate::resources::PublishesResources>() {
-            request.provide::<dyn crate::resources::PublishesResources>(self);
-            return;
-        }
-        if request.wants::<dyn crate::widget::ResourceOperations>() {
-            request.provide::<dyn crate::widget::ResourceOperations>(self);
-            return;
-        }
         if request.wants::<dyn RailExtent>() {
             request.provide::<dyn RailExtent>(self);
             return;
@@ -2106,10 +2020,6 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            return;
-        }
-        if request.wants::<dyn crate::widget::ResourceOperations>() {
-            request.provide::<dyn crate::widget::ResourceOperations>(self);
             return;
         }
         if request.wants::<dyn NavigationSource>() {
@@ -2375,9 +2285,6 @@ impl crate::widget::controls::ActionControls for NavList {
             let _ = action.attach(domain, attachment);
         }
         shared.bound.attach(domain, attachment);
-        if let Some(view) = shared.view.as_mut() {
-            view.choice.attach(domain, attachment);
-        }
         drop(shared);
         crate::widget::controls::attach_controls(&mut *self.list, domain, attachment);
     }
@@ -2397,7 +2304,6 @@ impl crate::widget::controls::ActionControls for NavList {
                         .find_map(crate::widget::ActionEmitter::take)
                 })
                 .or_else(|| shared.bound.take())
-                .or_else(|| shared.view.as_mut().and_then(|view| view.choice.take()))
         };
         taken.or_else(|| crate::widget::controls::take_control_invocation(&mut *self.list))
     }
@@ -2429,16 +2335,11 @@ impl crate::widget::controls::ActionControls for NavList {
             let Some(id) = key.strip_prefix("item:") else {
                 continue;
             };
-            let action = shared.selection_actions.get(id).map_or_else(
-                || {
-                    shared
-                        .view
-                        .as_ref()
-                        .map(|view| view.choice.metadata(format!("key:{key}")))
-                },
-                |action| Some(action.metadata(format!("key:{key}"))),
-            );
-            if let Some(action) = action {
+            if let Some(action) = shared
+                .selection_actions
+                .get(id)
+                .map(|action| action.metadata(format!("key:{key}")))
+            {
                 bindings.retain(|binding| binding.control_id != action.control_id);
                 bindings.push(action);
             }
@@ -2468,16 +2369,12 @@ impl crate::widget::controls::ActionControls for NavList {
                 .mounted_rows()
                 .filter_map(|index| model.row(index))
         };
-        let selection = if shared.view.is_some() {
-            rows().any(|row| model.is_item(&row.key))
-        } else {
-            !shared.selection_actions.is_empty()
-                && rows().any(|row| {
-                    row.key
-                        .strip_prefix("item:")
-                        .is_some_and(|id| shared.selection_actions.contains_key(id))
-                })
-        };
+        let selection = !shared.selection_actions.is_empty()
+            && rows().any(|row| {
+                row.key
+                    .strip_prefix("item:")
+                    .is_some_and(|id| shared.selection_actions.contains_key(id))
+            });
         let adds = !shared.section_add_actions.is_empty()
             && rows().any(|row| shared.section_add_actions.contains_key(&row.key));
         let bound = shared.bound.is_bound()
@@ -2507,9 +2404,6 @@ impl crate::widget::controls::ActionControls for NavList {
             action.refresh_availability(allowed);
         }
         shared.bound.refresh_availability(allowed);
-        if let Some(view) = shared.view.as_mut() {
-            view.choice.refresh_availability(allowed);
-        }
         drop(shared);
         crate::widget::controls::refresh_control_action_availability(&mut *self.list, allowed);
     }
@@ -2518,30 +2412,3 @@ impl crate::widget::controls::ActionControls for NavList {
 mod component;
 pub use component::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
 
-impl crate::resources::PublishesResources for NavList {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.view_resource().into_iter().collect()
-    }
-}
-
-impl crate::widget::ResourceOperations for NavList {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        if self.shared.borrow().view.is_some() {
-            &[crate::widget::view_choice::CHOICE_SELECT]
-        } else {
-            &[]
-        }
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = self.start_view(op)? {
-            return Ok(Some(started));
-        }
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-}

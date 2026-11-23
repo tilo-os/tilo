@@ -419,7 +419,7 @@ fn document(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Element {
                 Checkbox::from_state(&done).with_accessible_name("Done"),
             ))
             .push(Box::new(
-                Button::new("save", "Save").on_view(move || saved.set(saved.get() + 1)),
+                Button::new("save", "Save").on_open(move || saved.set(saved.get() + 1)),
             )),
     )
 }

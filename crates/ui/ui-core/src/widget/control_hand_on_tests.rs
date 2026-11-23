@@ -37,22 +37,22 @@ fn view(model: &Rc<RefCell<Model>>) -> Vec<Box<dyn Widget>> {
     vec![
         Box::new(
             Toggle::from_state(&crate::LocalState::new(m.on))
-                .on_view("switch", set(|m, value| m.on = value)),
+                .on_choose("switch", set(|m, value| m.on = value)),
         ),
         Box::new(
             Checkbox::from_state(&crate::LocalState::new(m.remember))
                 .with_label("Remember me")
-                .on_view("remember", set(|m, value| m.remember = value)),
+                .on_choose("remember", set(|m, value| m.remember = value)),
         ),
         Box::new(
             Checkbox::from_state(&crate::LocalState::new(m.nearby))
                 .radio()
                 .with_label("Nearby only")
-                .on_view("nearby", set(|m, value| m.nearby = value)),
+                .on_choose("nearby", set(|m, value| m.nearby = value)),
         ),
         Box::new(
             Slider::from_state(&crate::LocalState::new(m.level))
-                .on_change_view(move |value| level.borrow_mut().level = value),
+                .on_change(move |value| level.borrow_mut().level = value),
         ),
         Box::new(Badge::count(m.unread)),
     ]
@@ -84,7 +84,6 @@ fn act(d: &mut FrameHarness, index: usize, action: &Action, source: MotionSource
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
-    crate::testing::answer_controls(*control);
 }
 
 #[test]

@@ -25,7 +25,7 @@ pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav) -> (Element, Vec<Element>) {
         let provider = provider.clone();
         let mut mark = Button::new("activity-mark-viewed", "activity-mark-viewed")
             .with_icon(Icon::Check)
-            .on_view(move || {
+            .on_open(move || {
                 provider.ask(
                     wire::MARK_VIEWED,
                     &wire::Viewed {
@@ -96,7 +96,7 @@ fn resume_section(provider: &Provider, resume: &wire::Resume) -> Element {
     }
     let row = row.trailing(Box::new(
         Button::new("activity-resume-open", "activity-resume-button")
-            .on_view(move || open.ask(wire::OPEN, &target)),
+            .on_open(move || open.ask(wire::OPEN, &target)),
     ));
     Box::new(Section::titled(
         tr("activity-resume-heading"),
@@ -124,7 +124,7 @@ fn briefs(nav: &Nav, opened: &LocalState<Option<String>>, summary: &wire::Summar
                 .with_icon(Icon::Check)
                 .with_action(tr("activity-see-history"))
                 .with_action_id("activity-see-history")
-                .on_view(move || history.show(crate::Place::History)),
+                .on_open(move || history.show(crate::Place::History)),
         );
     }
     let rows = summary
@@ -182,7 +182,7 @@ fn brief_card(
                 &format!("activity-brief-{index}-history"),
                 "activity-brief-open-explorer",
             )
-            .on_view(move || history.open_in_history(range.clone())),
+            .on_open(move || history.open_in_history(range.clone())),
         ));
     }
     Box::new(row)
@@ -224,7 +224,7 @@ fn sources(provider: &Provider, actions: &Actions<Window>, sources: &[wire::Sour
             )
             .subtitle(source.text.clone())
             .two_line_secondary()
-            .on_view(move || {
+            .on_open(move || {
                 open.ask(
                     wire::SOURCE,
                     &wire::SourceRequest {

@@ -344,7 +344,7 @@ fn source_view(source: &Source, expanded: &BTreeSet<String>, bind: &Bindings) ->
             .two_line_secondary()
             .icon(source.icon)
             .disclosure()
-            .on_view(move || disclosure(disclosure_id.clone(), !open)),
+            .on_open(move || disclosure(disclosure_id.clone(), !open)),
     ));
     if !open {
         return Box::new(column);
@@ -418,7 +418,7 @@ fn group_view(group: &Group, expanded: &BTreeSet<String>, bind: &Bindings) -> El
             .secondary(summary)
             .two_line_secondary()
             .disclosure()
-            .on_view(move || disclosure(disclosure_id.clone(), !open)),
+            .on_open(move || disclosure(disclosure_id.clone(), !open)),
         ));
     }
     if !open || !group.has_children() {

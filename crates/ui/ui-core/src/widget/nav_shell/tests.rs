@@ -2261,7 +2261,7 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
         vec![crate::widget::NavItem::new("inbox", "Inbox")],
     )])
     .selected("inbox")
-    .on_view("places", move |id| seen.borrow_mut().push(id));
+    .on_choose("places", move |id| seen.borrow_mut().push(id));
     assert!(
         Widget::as_any(&list)
             .unwrap()

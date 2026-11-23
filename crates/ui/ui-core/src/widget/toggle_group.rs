@@ -7,7 +7,6 @@ use crate::num::f64_of_usize;
 use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::toolbar::Orientation;
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -323,13 +322,12 @@ pub struct ToggleGroup {
     /// chooses one itself.
     presses: Vec<Press>,
     cursor: usize,
-    /// What a selection made through the strip's own view action runs.
+    /// What a person's selection, by pointer, key or screen reader, runs.
     viewed: Option<ChangeCallback>,
     action: Option<ActionEmitter<usize>>,
     chosen_action: Option<ActionEmitter<Vec<usize>>>,
     chosen_state: Option<Chosen>,
     binding: Option<BoxedBinding<usize>>,
-    native_resource: Option<crate::tilo_actions::ResourceSpec>,
     segment_rects: Vec<Rect>,
     outer: Rect,
     rect: Rect,
@@ -404,7 +402,6 @@ impl ToggleGroup {
             chosen_action: None,
             chosen_state: None,
             binding: None,
-            native_resource: None,
             segment_rects: Vec::new(),
             outer: Rect::ZERO,
             rect: Rect::ZERO,
@@ -649,7 +646,6 @@ impl ToggleGroup {
     #[must_use]
     pub fn on_action(mut self, binding: crate::tilo_actions::ActionBinding<usize>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
-        self.native_resource = None;
         self.viewed = None;
         self
     }
@@ -660,58 +656,12 @@ impl ToggleGroup {
         self
     }
 
+    /// Called with the segment a person chooses; the strip is known as `id`.
     #[must_use]
-    pub fn on_view<F: FnMut(usize) + 'static>(self, id: &str, f: F) -> Self {
-        self.on_view_boxed(id, Box::new(f))
-    }
-
-    #[expect(
-        clippy::expect_used,
-        reason = "the generated integer schema and action are internally consistent"
-    )]
-    fn on_view_boxed(mut self, id: &str, f: Box<dyn FnMut(usize)>) -> Self {
-        use crate::tilo_actions::{
-            ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-            ResourceSpec,
-        };
-
-        const TYPE_ID: &str = "tilo.ui.segmented.select";
+    pub fn on_choose<F: FnMut(usize) + 'static>(mut self, id: &str, f: F) -> Self {
         self.id = Some(id.to_owned());
-        let control_id = id.to_owned();
-        let spec = ActionSpec::typed_operation(
-            "select",
-            "Select",
-            "Choose a segment",
-            OperationKind::View,
-            TYPE_ID,
-            vec![ActionParam::required(
-                "index",
-                ParamType::Integer,
-                "Zero-based segment index",
-            )],
-            move |args| {
-                EncodedAction::encode_operation(
-                    TYPE_ID,
-                    &serde_json::json!({
-                        "control": control_id,
-                        "index": args.integer("index").unwrap_or_default(),
-                    }),
-                )
-                .expect("generated segmented action payload is serializable")
-            },
-        )
-        // A value verb is a view: what the app writes from it is decided as that write is.
-        .of_kind(crate::tilo_actions::ActionKind::Read);
-        let resource =
-            ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control.segmented", id)
-                .with_action(spec.clone());
-        let binding = ActionBinding::new(&resource, &spec, |index: usize| {
-            serde_json::Map::from_iter([("index".into(), serde_json::json!(index))])
-        })
-        .expect("segment index matches the generated integer parameter");
-        self.action = Some(ActionEmitter::new(binding));
-        self.native_resource = Some(resource);
-        self.viewed = Some(f);
+        self.action = None;
+        self.viewed = Some(Box::new(f));
         self
     }
 
@@ -813,7 +763,7 @@ impl ToggleGroup {
         self.chosen.as_deref()
     }
 
-    /// Does **not** run the view action, which is for user-driven changes. [`NONE_CHOSEN`] clears
+    /// Does **not** run the `on_choose` callback, which is for user-driven changes. [`NONE_CHOSEN`] clears
     /// the choice.
     pub fn set_selected(&mut self, selected: usize) {
         let clamped = if selected == NONE_CHOSEN {
@@ -1957,32 +1907,6 @@ impl ToggleGroup {
         taffy.set_style(node, style).is_ok()
     }
 
-    fn select_segment_operation(
-        &mut self,
-        kind: crate::tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if kind != crate::tilo_actions::OperationKind::View
-            || type_id != "tilo.ui.segmented.select"
-            || self.action.is_none()
-        {
-            return Ok(false);
-        }
-        let value: serde_json::Value =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        if value.get("control").and_then(serde_json::Value::as_str) != self.id.as_deref() {
-            return Ok(false);
-        }
-        let index = value
-            .get("index")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|index| *index < self.segments.len())
-            .ok_or_else(|| "segmented action index is out of range".to_owned())?;
-        self.apply_selection(index);
-        Ok(true)
-    }
 }
 
 impl ToggleGroup {
@@ -2067,11 +1991,7 @@ impl Widget for ToggleGroup {
 
     crate::described!();
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
@@ -2598,37 +2518,6 @@ impl Widget for ToggleGroup {
             self.cache_dirty = true;
         }
         true
-    }
-}
-
-impl crate::widget::ResourceOperations for ToggleGroup {
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.native_resource
-            .as_ref()
-            .map(|_| std::iter::once("tilo.ui.segmented.select".to_owned()).collect())
-            .unwrap_or_default()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &super::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &ObjId,
-    ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let request = op.request();
-        Ok(self
-            .select_segment_operation(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                super::ResourceOperationStart::Completed(
-                    crate::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-}
-
-impl crate::resources::PublishesResources for ToggleGroup {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::ResourceSpec> {
-        self.native_resource.iter().cloned().collect()
     }
 }
 

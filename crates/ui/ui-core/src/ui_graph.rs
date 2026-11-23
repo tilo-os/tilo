@@ -456,7 +456,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
                 _ => None,
             };
             if record.is_some() || navigation.is_some() {
-                button = button.on_view(move || {
+                button = button.on_open(move || {
                     if let Some(record) = &record {
                         record();
                     }
@@ -1700,7 +1700,7 @@ fn build_editor_child(
                 } else {
                     ButtonRole::Plain
                 })
-                .on_view(move || {
+                .on_open(move || {
                     if let Err(error) = graph.finish_edit_group() {
                         state
                             .borrow()
@@ -1798,7 +1798,7 @@ fn build_editor_child(
                 .with_id(input_id)
                 .with_accessible_name(label)
                 .with_initial_value(&value)
-                .on_change_view(move |value| {
+                .on_change(move |value| {
                     let parsed = parse_editable_property(property, value);
                     let status = state.borrow().status.clone();
                     let result = parsed.and_then(|parsed| {
@@ -2500,7 +2500,7 @@ fn boolean_property_button(
         id,
         &format!("{label}: {}", if value { "On" } else { "Off" }),
     )
-    .on_effect(move || {
+    .on_click(move || {
         let result = graph.update_node(&selected, |node| set_editable_bool(node, property, !value));
         let status = state.borrow().status.clone();
         match result {
@@ -2565,7 +2565,7 @@ fn choice_property_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     let selected = selected.to_owned();
-    Button::new(id, &format!("{label}: {value}")).on_effect(move || {
+    Button::new(id, &format!("{label}: {value}")).on_click(move || {
         let result = graph.update_node(&selected, |node| cycle_editable_choice(node, property));
         let status = state.borrow().status.clone();
         match result {
@@ -2681,7 +2681,7 @@ fn save_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let state = Rc::clone(shared);
     Button::new("builder-save", "Save")
         .role(ButtonRole::Primary)
-        .on_effect(move || {
+        .on_click(move || {
             let status = state.borrow().status.clone();
             if let Err(error) = graph.finish_edit_group() {
                 status.set(format!("Cannot finish property edit: {error}"));
@@ -2711,7 +2711,7 @@ fn undo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let state = Rc::clone(shared);
     Button::new("builder-undo", "Undo")
         .with_enabled(handle.can_undo())
-        .on_effect(move || {
+        .on_click(move || {
             let status = state.borrow().status.clone();
             match graph.undo() {
                 Ok(true) => status.set("Undid graph edit".to_owned()),
@@ -2726,7 +2726,7 @@ fn redo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let state = Rc::clone(shared);
     Button::new("builder-redo", "Redo")
         .with_enabled(handle.can_redo())
-        .on_effect(move || {
+        .on_click(move || {
             let status = state.borrow().status.clone();
             match graph.redo() {
                 Ok(true) => status.set("Redid graph edit".to_owned()),
@@ -2750,7 +2750,7 @@ fn add_button(
     let state = Rc::clone(shared);
     Button::new(id, label)
         .with_enabled(enabled)
-        .on_effect(move || {
+        .on_click(move || {
             let status = state.borrow().status.clone();
             let result = (|| {
                 let document = graph.document()?;
@@ -2894,7 +2894,7 @@ fn move_button(
     let state = Rc::clone(shared);
     Button::new(id, label)
         .with_enabled(enabled)
-        .on_effect(move || {
+        .on_click(move || {
             let result = (|| {
                 let document = graph.document()?;
                 let (parent, index, _) = parent_relation(&document.root, &selected)
@@ -2930,7 +2930,7 @@ fn delete_button(
     Button::new("builder-delete", "Delete")
         .role(ButtonRole::Destructive)
         .with_enabled(enabled)
-        .on_effect(move || {
+        .on_click(move || {
             let result = (|| {
                 let document = graph.document()?;
                 let parent = parent_relation(&document.root, &selected)

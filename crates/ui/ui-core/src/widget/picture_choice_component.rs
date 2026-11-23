@@ -202,7 +202,7 @@ impl Described for PictureChoice {
             choice = choice.with_accessible_name(label);
         }
         if !change.is_none() {
-            choice = choice.on_change_view(move |index| {
+            choice = choice.on_change(move |index| {
                 change.fire(Some(Value::Int(i64::try_from(index).unwrap_or(i64::MAX))));
             });
         }

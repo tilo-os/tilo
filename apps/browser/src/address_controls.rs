@@ -284,7 +284,7 @@ impl AddressControls {
         self.act(Action::Delete(profile));
     }
     fn button(&self, id: &str, key: &str, action: Action) -> Button {
-        Button::new(id, &crate::CATALOG.t(key)).on_effect(self.command(action))
+        Button::new(id, &crate::CATALOG.t(key)).on_click(self.command(action))
     }
     fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.action.clone();
@@ -400,7 +400,7 @@ impl AddressControls {
                     let effect =
                         |effect: BrowserEffect| actions.and_then(|actions| actions.effect(&effect));
                     if self.enabled {
-                        row = row.on_view(self.command(Action::Select(profile.id.clone())));
+                        row = row.on_open(self.command(Action::Select(profile.id.clone())));
                         if let Some(edit) = effect(BrowserEffect::EditAddress {
                             profile: profile.id.clone(),
                         }) {

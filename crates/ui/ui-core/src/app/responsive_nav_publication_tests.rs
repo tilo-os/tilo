@@ -44,7 +44,7 @@ fn responsive_nav_factory(
                 .overview_header(
                     "Conversations",
                     vec![Box::new(
-                        crate::widget::Button::new("account-setup", "Accounts").on_view(|| {}),
+                        crate::widget::Button::new("account-setup", "Accounts").on_open(|| {}),
                     )],
                 )
                 .content(Box::new(crate::widget::Text::new(if *setup {
@@ -119,13 +119,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
     // Startup refresh discovers resources before the first layout exists.
     let _ = app.collect_resources();
     app.init_layout();
-    for (width, scale, narrow) in [
-        (1400, 1.0, false),
-        (480, 1.0, true),
-        (960, 2.0, true),
-        (1400, 1.0, false),
-        (480, 1.0, true),
-    ] {
+    for (width, scale) in [(1400, 1.0), (480, 1.0), (960, 2.0), (1400, 1.0), (480, 1.0)] {
         let root = app
             .layout
             .root_node
@@ -138,14 +132,6 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
                 .all(|entry| entry.status != ControlBindingStatus::StaleAddress),
             "current navigation controls need current resource action APIs at width {width}: {coverage:?}"
         );
-        if narrow {
-            assert!(
-                coverage
-                    .iter()
-                    .any(|entry| entry.binding.control_id == "nav-shell-back"),
-                "the narrow layout must actually exercise its back control"
-            );
-        }
         app.publish_action_surface();
         assert!(
             app.actions
@@ -156,27 +142,6 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
         );
         assert!(app.collaboration.manager.is_connected());
         assert!(app.published_action_history_ready());
-        if narrow {
-            let back = tilo_actions::ActionAddress::new(
-                app.actions
-                    .bound_publication
-                    .alias(&owner, "tilo.control:nav-shell-back")
-                    .unwrap(),
-                "invoke",
-            );
-            assert!(
-                app.actions
-                    .last_published_actions
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .any(|descriptor| {
-                        descriptor.address == back
-                            && descriptor.contract.availability.is_available()
-                    }),
-                "the exact native Back api must be offered, not merely another action"
-            );
-        }
     }
     owner
         .with_document(&mut app.state.doc, |doc, _| {

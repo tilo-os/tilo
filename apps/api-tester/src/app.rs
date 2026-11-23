@@ -373,7 +373,7 @@ impl ApiTesterApp {
             ui::icons::Icon::AlignEndHorizontal,
             &crate::locales::CATALOG.t("api-tester-reset-area"),
         )
-        .on_view(move || reset.set(true))
+        .on_open(move || reset.set(true))
         .enabled_from(&sink.area_resized)
     }
 

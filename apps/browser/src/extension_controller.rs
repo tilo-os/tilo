@@ -1480,7 +1480,7 @@ impl ExtensionController {
                 Button::new(ADD_BUTTON, &label)
                     .with_icon(Icon::Download)
                     .with_enabled(!self.busy)
-                    .on_effect(self.queue(Command::Fetch(item.id.clone()))),
+                    .on_click(self.queue(Command::Fetch(item.id.clone()))),
             ));
         }
         let model = self.model();
@@ -1492,7 +1492,7 @@ impl ExtensionController {
             )
             .tooltip(&entry.tooltip)
             .with_enabled(entry.enabled)
-            .on_effect(self.queue(Command::OpenAction(entry.id.clone())));
+            .on_click(self.queue(Command::OpenAction(entry.id.clone())));
             let image = self
                 .action_icon(&entry.id)
                 .or_else(|| self.icons.get(&entry.id).and_then(Option::as_ref));
@@ -1722,14 +1722,14 @@ impl ExtensionController {
                             "browser.extension.confirm",
                             &CATALOG.t("browser-extension-confirm"),
                         )
-                        .on_effect(self.queue(Command::Confirm)),
+                        .on_click(self.queue(Command::Confirm)),
                     )
                     .secondary(
                         Button::new(
                             "browser.extension.cancel",
                             &CATALOG.t("browser-extension-cancel"),
                         )
-                        .on_effect(self.queue(Command::Cancel)),
+                        .on_click(self.queue(Command::Cancel)),
                     ),
                 ));
                 (
@@ -1749,7 +1749,7 @@ impl ExtensionController {
                                 "browser.extension.close",
                                 &CATALOG.t("browser-extension-close"),
                             )
-                            .on_effect(self.queue(Command::ClosePanel)),
+                            .on_click(self.queue(Command::ClosePanel)),
                         )),
                 ),
                 vec![ADD_BUTTON.to_owned(), MENU_BUTTON.to_owned()],
@@ -1844,7 +1844,7 @@ impl ExtensionController {
                         "browser-extension-turn-on"
                     }),
                 )
-                .on_effect(self.queue(command)),
+                .on_click(self.queue(command)),
             );
         }
         if extension.enabled && extension.options.is_some() {
@@ -1853,7 +1853,7 @@ impl ExtensionController {
                     &format!("browser.extension.settings.{id}"),
                     &CATALOG.t("browser-extension-settings"),
                 )
-                .on_effect(self.queue(Command::OpenSettings(id.clone()))),
+                .on_click(self.queue(Command::OpenSettings(id.clone()))),
             );
         }
         if extension.enabled && extension.action.is_some() {
@@ -1866,7 +1866,7 @@ impl ExtensionController {
                         "browser-extension-pin"
                     }),
                 )
-                .on_effect(self.queue(Command::Pin(id.clone(), !extension.pinned))),
+                .on_click(self.queue(Command::Pin(id.clone(), !extension.pinned))),
             );
         }
         if granted.is_some() {
@@ -1875,7 +1875,7 @@ impl ExtensionController {
                     &format!("browser.extension.revoke.{id}"),
                     &CATALOG.t("browser-extension-revoke"),
                 )
-                .on_effect(self.queue(Command::Revoke(id.clone()))),
+                .on_click(self.queue(Command::Revoke(id.clone()))),
             );
         }
         buttons.push(
@@ -1883,7 +1883,7 @@ impl ExtensionController {
                 &format!("browser.extension.remove.{id}"),
                 &CATALOG.t("browser-extension-remove"),
             )
-            .on_effect(self.queue(Command::Remove(id.clone()))),
+            .on_click(self.queue(Command::Remove(id.clone()))),
         );
         Box::new(crate::rows::with_buttons(
             ListRow::new(format!("browser.extension.{id}"), info.name.clone())
@@ -2145,7 +2145,7 @@ impl ExtensionController {
                                 "browser.extension.install-file",
                                 &CATALOG.t("browser-extension-install-file"),
                             )
-                            .on_effect(install),
+                            .on_click(install),
                         )),
                 )),
         )

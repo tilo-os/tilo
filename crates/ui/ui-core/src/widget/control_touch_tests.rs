@@ -24,7 +24,7 @@ tilo_test_env::scenario! {
                 "Send".to_owned(),
             ])
             .current(2usize)
-            .on_station_view(|_| {})
+            .on_station(|_| {})
         };
         for (input, want) in [
             (InteractionEnvironment::default(), false),

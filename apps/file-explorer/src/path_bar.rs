@@ -97,7 +97,7 @@ impl PathBar {
                 self.home.as_deref(),
                 &self.workspace_roots,
             ))
-            .on_view("path_bar", move |index| {
+            .on_choose("path_bar", move |index| {
                 if let Some(target) = goto.get(index) {
                     push(&sink, FileCommand::Navigate(target.clone()));
                 }

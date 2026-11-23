@@ -424,7 +424,7 @@ fn empty_state(kind: Placeholder, bridge: &Bridge, shared: &Shared) -> EmptyStat
             let shared = shared.clone();
             EmptyState::new("No entries match these filters")
                 .with_action("Clear filters")
-                .on_view(move || shared.borrow_mut().push(Request::ClearFilters))
+                .on_open(move || shared.borrow_mut().push(Request::ClearFilters))
         }
     }
 }
@@ -726,7 +726,7 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
                 &CATALOG.t("logs-copy-message"),
             )
             .control_size(ui::widget::ControlSize::Small)
-            .on_view(move || {
+            .on_open(move || {
                 let _ = ui::try_clipboard_copy(&message);
             }),
         ))
@@ -737,7 +737,7 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
                 &CATALOG.t("logs-copy-entry"),
             )
             .control_size(ui::widget::ControlSize::Small)
-            .on_view(move || {
+            .on_open(move || {
                 let _ = ui::try_clipboard_copy(&whole);
             }),
         ));

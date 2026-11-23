@@ -191,19 +191,13 @@ impl DatePicker {
         self.month_view
     }
 
-    /// Called with the day chosen, by its ISO date: the picker, as control
-    /// `id`, publishes choosing a day as its view action `select`, so a
-    /// click, a key, a screen reader, a script and an agent choose through
-    /// the same action. What is chosen is the draft's own value, never an
-    /// edit.
+    /// Called with the day chosen, whether a click, a key or a screen reader
+    /// chose it; `id` names the picker. What is chosen is the draft's own
+    /// value, never an edit.
     #[must_use]
-    pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut(Date) + 'static) -> Self {
-        let id = id.into();
+    pub fn on_choose(mut self, id: impl Into<String>, f: impl FnMut(Date) + 'static) -> Self {
         self.choice = Some(DateChoice {
-            choice: crate::widget::view_choice::ViewChoice::new(
-                format!("{id}/day"),
-                "Choose a day",
-            ),
+            id: format!("{}/day", id.into()),
             handler: Box::new(f),
         });
         self
@@ -246,7 +240,7 @@ impl DatePicker {
         self.month_view = (date.year(), date.month());
         self.publish_local_state();
         if let Some(choice) = &mut self.choice {
-            choice.choice.emit(date.to_string());
+            (choice.handler)(date);
         }
     }
 
@@ -421,11 +415,6 @@ impl Widget for DatePicker {
 
     crate::described!();
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
-    );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(binding) = &mut self.local_state
@@ -705,10 +694,9 @@ impl Widget for DatePicker {
     }
 
     /// Value is the selected date in ISO `YYYY-MM-DD` form; `expanded` is
-    /// left unset since the grid is rendered inline. A picker whose choice is
-    /// published ([`Self::on_view`]) is reached at that choice's address; a
-    /// fed picker ([`DateFeed`]) that publishes none is reached by its name,
-    /// so its choices still go to the app's feed.
+    /// left unset since the grid is rendered inline. A picker told what a choice
+    /// does ([`Self::on_choose`]) is reached by its id; a fed picker
+    /// ([`DateFeed`]) by its name, so its choices still go to the app's feed.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let node = AccessNode::new(Role::ComboBox)
@@ -720,7 +708,7 @@ impl Widget for DatePicker {
                     .focused(self.is_focused()),
             );
         Some(if let Some(choice) = &self.choice {
-            node.with_action_target(choice.choice.id().to_owned())
+            node.with_action_target(choice.id.clone())
         } else if self.feed.is_some() {
             node.with_action_target(format!(
                 "date-picker:{}",
@@ -761,83 +749,8 @@ impl Widget for DatePicker {
 }
 
 struct DateChoice {
-    choice: crate::widget::view_choice::ViewChoice,
+    id: String,
     handler: Box<dyn FnMut(Date)>,
-}
-
-impl crate::widget::ResourceOperations for DatePicker {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        if self.choice.is_some() {
-            &[crate::widget::view_choice::CHOICE_SELECT]
-        } else {
-            &[]
-        }
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let chosen = self
-            .choice
-            .as_ref()
-            .map(|choice| choice.choice.start(op))
-            .transpose()?
-            .flatten();
-        let Some(entry) = chosen else {
-            return Ok(None);
-        };
-        let date = Date::strptime("%Y-%m-%d", &entry).map_err(|_| format!("no day `{entry}`"))?;
-        self.set_selected(date);
-        if let Some(choice) = &mut self.choice {
-            (choice.handler)(date);
-        }
-        Ok(Some(crate::widget::view_choice::chosen()))
-    }
-}
-
-impl crate::resources::PublishesResources for DatePicker {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.choice
-            .iter()
-            .map(|choice| choice.choice.resource_unlisted())
-            .collect()
-    }
-}
-
-impl crate::widget::controls::ActionControls for DatePicker {
-    fn attach_controls(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
-    ) {
-        if let Some(choice) = &mut self.choice {
-            choice.choice.attach(domain, attachment);
-        }
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.choice.as_mut().and_then(|choice| choice.choice.take())
-    }
-
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        let mut bindings = crate::widget::controls::default_bindings(self);
-        if let Some(choice) = &self.choice {
-            bindings.push(choice.choice.metadata(choice.choice.id().to_owned()));
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(choice) = &mut self.choice {
-            choice.choice.refresh_availability(allowed);
-        }
-    }
 }
 
 impl DatePicker {
@@ -1057,7 +970,7 @@ mod tests {
                     .accessibility()
                     .and_then(|node| node.action_target),
                 Some("date-picker/day".to_owned()),
-                "a fed picker reaches its published choice where it is drawn"
+                "a fed picker is reached by its choice's id where it is drawn"
             );
         }
 
@@ -1136,7 +1049,7 @@ mod tests {
 
                 let captured: Rc<RefCell<Option<Date>>> = Rc::new(RefCell::new(None));
                 let captured_cb = captured.clone();
-                let mut dp = DatePicker::new(initial).on_view("date-picker", move |d| {
+                let mut dp = DatePicker::new(initial).on_choose("date-picker", move |d| {
                     *captured_cb.borrow_mut() = Some(d);
                 });
 
@@ -1163,8 +1076,6 @@ mod tests {
                 at_node.send(&mut dp, &mouse_press());
 
                 assert_eq!(dp.selected(), target);
-                assert_eq!(*captured.borrow(), None, "the choice waits to be answered");
-                assert_eq!(crate::testing::answer_controls(&mut dp), 1);
                 assert_eq!(*captured.borrow(), Some(target));
             }
 
@@ -1174,10 +1085,9 @@ mod tests {
                 let captured: Rc<RefCell<Option<Date>>> = Rc::new(RefCell::new(None));
                 let cb = captured.clone();
                 let mut dp = DatePicker::new(Date::new(2024, 6, 30).unwrap())
-                    .on_view("date-picker", move |d| *cb.borrow_mut() = Some(d));
+                    .on_choose("date-picker", move |d| *cb.borrow_mut() = Some(d));
 
                 dp.move_selection(1);
-                crate::testing::answer_controls(&mut dp);
                 assert_eq!(dp.selected(), Date::new(2024, 7, 1).unwrap());
                 assert_eq!(dp.month_view(), (2024, 7));
                 assert_eq!(
@@ -1302,7 +1212,7 @@ mod tests {
                 let state = crate::LocalState::new(initial);
                 let captured = Rc::new(RefCell::new(None));
                 let callback = Rc::clone(&captured);
-                let mut picker = DatePicker::from_state(&state).on_view("date-picker", move |date| {
+                let mut picker = DatePicker::from_state(&state).on_choose("date-picker", move |date| {
                     *callback.borrow_mut() = Some(date)
                 });
                 let mut doc = AutoCommit::new();
@@ -1314,7 +1224,6 @@ mod tests {
                     &mut crate::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
-                crate::testing::answer_controls(&mut picker);
                 assert_eq!(state.with(|date| *date), expected);
                 assert_eq!(*captured.borrow(), Some(expected));
 

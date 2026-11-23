@@ -300,7 +300,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
     }
 
     /// A column of checkboxes (an enabled header, a selected file): the table paints the box, toggles
-    /// it with a pointer or Space, and reports the row through [`DataTable::on_check_view`].
+    /// it with a pointer or Space, and reports the row through [`DataTable::on_check`].
     pub fn checkbox(
         key: impl Into<String>,
         header: impl Into<String>,
@@ -581,9 +581,7 @@ pub trait TableModel {
     }
 }
 
-mod row_action;
 
-use row_action::{CHECK_ROW, CLICK_ROW, RowAction};
 
 /// Absent values sort last; numbers by value; text without regard to case.
 fn compare_text(a: Option<&str>, b: Option<&str>, numeric: bool) -> Ordering {
@@ -661,11 +659,8 @@ struct AddRow {
 #[crate::component::not_a_component(part, "the body of a data table")]
 pub struct DataTableCore {
     test_id: String,
-    /// Choosing a row, published as the table's view action `select`.
-    row_choice: Option<RowChoice>,
-    /// Opening a row, published as the table's view action `open`
-    /// ([`DataTableCore::on_activate_view`]).
-    opens: Option<RowChoice>,
+    /// Choosing a row ([`DataTableCore::on_choose`]).
+    row_choice: Option<Box<dyn FnMut(usize)>>,
     accessible_name: Option<String>,
     columns: Vec<ColumnDef<AnyRow>>,
     rows: Vec<Box<AnyRow>>,
@@ -706,8 +701,8 @@ pub struct DataTableCore {
     selection: crate::selection::SelectionModel,
     /// Model-backed tables attach selection to stable keys.
     model_selection: crate::selection::KeySelection<u64>,
-    /// Row clicks, published as the table's view action `click` ([`DataTableCore::on_row_click_view`]).
-    row_click: Option<RowAction<(usize, bool, bool)>>,
+    /// Row clicks ([`DataTableCore::on_row_click`]).
+    row_click: Option<Box<dyn FnMut(usize, bool, bool)>>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
     /// When set, *replaces* the internal `toggle_sort` so the host can own sort order (the file
     /// explorer sorts its own model).
@@ -781,9 +776,8 @@ pub struct DataTableCore {
     /// Where the order a person chose is kept across rebuilds.
     sort_state: Option<crate::LocalState<Option<TableSort>>>,
     add_row: Option<AddRow>,
-    /// Check box turns, published as the table's view action `check`
-    /// ([`DataTableCore::on_check_view`]).
-    check: Option<RowAction<(usize, bool)>>,
+    /// Check box turns ([`DataTableCore::on_check`]).
+    check: Option<Box<dyn FnMut(usize, bool)>>,
     /// The display row under the pointer.
     hover_row: Option<usize>,
     /// The sortable column whose header is under the pointer: it shows the order a press gives.
@@ -980,14 +974,10 @@ impl<Row: 'static> DataTable<Row> {
         Self::of(self.core.with_add_row(label, on_add))
     }
 
-    /// [`DataTableCore::on_check_view`].
+    /// [`DataTableCore::on_check`].
     #[must_use]
-    pub fn on_check_view(
-        self,
-        id: impl Into<String>,
-        f: impl FnMut(usize, bool) + 'static,
-    ) -> Self {
-        Self::of(self.core.on_check_view(id, f))
+    pub fn on_check(self, f: impl FnMut(usize, bool) + 'static) -> Self {
+        Self::of(self.core.on_check(f))
     }
 
     /// [`DataTableCore::ruled`].
@@ -1032,14 +1022,10 @@ impl<Row: 'static> DataTable<Row> {
         Self::of(self.core.with_viewport(height_px, row_height_px))
     }
 
-    /// [`DataTableCore::on_row_click_view`].
+    /// [`DataTableCore::on_row_click`].
     #[must_use]
-    pub fn on_row_click_view(
-        self,
-        id: impl Into<String>,
-        f: impl FnMut(usize, bool, bool) + 'static,
-    ) -> Self {
-        Self::of(self.core.on_row_click_view(id, f))
+    pub fn on_row_click(self, f: impl FnMut(usize, bool, bool) + 'static) -> Self {
+        Self::of(self.core.on_row_click(f))
     }
 
     /// [`DataTableCore::on_activate`].
@@ -1048,16 +1034,10 @@ impl<Row: 'static> DataTable<Row> {
         Self::of(self.core.on_activate(f))
     }
 
-    /// [`DataTableCore::on_view`].
+    /// [`DataTableCore::on_choose`].
     #[must_use]
-    pub fn on_view(self, id: impl Into<String>, f: impl FnMut(usize) + 'static) -> Self {
-        Self::of(self.core.on_view(id, f))
-    }
-
-    /// [`DataTableCore::on_activate_view`].
-    #[must_use]
-    pub fn on_activate_view(self, id: impl Into<String>, f: impl FnMut(usize) + 'static) -> Self {
-        Self::of(self.core.on_activate_view(id, f))
+    pub fn on_choose(self, id: impl Into<String>, f: impl FnMut(usize) + 'static) -> Self {
+        Self::of(self.core.on_choose(id, f))
     }
 
     /// [`DataTableCore::on_header_click`].
@@ -1136,7 +1116,6 @@ impl DataTableCore {
         Self {
             test_id: "data_table".to_owned(),
             row_choice: None,
-            opens: None,
             accessible_name: None,
             columns,
             rows: Vec::new(),
@@ -1276,7 +1255,6 @@ impl DataTableCore {
         self.selectable
             || self.row_click.is_some()
             || self.on_activate.is_some()
-            || self.opens.is_some()
     }
 
     /// The row whose revealed-on-hover cells are mounted: the one under the pointer, or the selected
@@ -1435,66 +1413,11 @@ impl DataTableCore {
         self
     }
 
-    /// Run `f(row, checked)` when a checkbox column's box is toggled: the table, as control `id`,
-    /// publishes the turn as its view action `check`, so a person's click, a screen reader, a script
-    /// and an agent turn the box through the same action.
+    /// Run `f(row, checked)` when a checkbox column's box is toggled, by a click, Space or a screen
+    /// reader.
     #[must_use]
-    #[expect(
-        clippy::expect_used,
-        reason = "the generated payload is serializable and the action declares the parameters it is handed"
-    )]
-    pub fn on_check_view(
-        mut self,
-        id: impl Into<String>,
-        mut f: impl FnMut(usize, bool) + 'static,
-    ) -> Self {
-        use crate::tilo_actions::{
-            ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-            ResourceSpec,
-        };
-        let id = id.into();
-        let control = id.clone();
-        let spec = ActionSpec::typed_operation(
-            "check",
-            "Check a row",
-            "Turn a row's check box on or off",
-            OperationKind::View,
-            CHECK_ROW,
-            vec![
-                ActionParam::required("row", ParamType::Integer, "Zero-based row index"),
-                ActionParam::required("checked", ParamType::Boolean, "Whether the row is checked"),
-            ],
-            move |args| {
-                EncodedAction::encode_operation(
-                    CHECK_ROW,
-                    &serde_json::json!({
-                        "control": control,
-                        "row": args.integer("row").unwrap_or_default(),
-                        "checked": args.boolean("checked").unwrap_or_default(),
-                    }),
-                )
-                .expect("generated check payload is serializable")
-            },
-        )
-        // A value verb is a view: what the app writes from it is decided as that write is.
-        .of_kind(crate::tilo_actions::ActionKind::Read)
-        .for_audience(crate::tilo_actions::Audience::Agents);
-        let resource =
-            ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", "Check a row")
-                .with_action(spec.clone());
-        let binding = ActionBinding::new(&resource, &spec, |(row, checked): (usize, bool)| {
-            serde_json::Map::from_iter([
-                ("row".into(), serde_json::json!(row)),
-                ("checked".into(), serde_json::json!(checked)),
-            ])
-        })
-        .expect("the check action declares the parameters it is handed");
-        self.check = Some(RowAction {
-            id,
-            resource,
-            action: crate::widget::ActionEmitter::new(binding),
-            handler: Box::new(move |(row, checked)| f(row, checked)),
-        });
+    pub fn on_check(mut self, f: impl FnMut(usize, bool) + 'static) -> Self {
+        self.check = Some(Box::new(f));
         self
     }
 
@@ -1659,73 +1582,10 @@ impl DataTableCore {
         self
     }
 
-    /// Run `f(row, ctrl, shift)` when a row is clicked: the table, as control `id`, publishes the click
-    /// as its view action `click`, so a person's click, a screen reader, a script and an agent click
-    /// through the same action.
+    /// Run `f(row, ctrl, shift)` when a row is clicked.
     #[must_use]
-    #[expect(
-        clippy::expect_used,
-        reason = "the generated payload is serializable and the action declares the parameters it is handed"
-    )]
-    pub fn on_row_click_view(
-        mut self,
-        id: impl Into<String>,
-        mut f: impl FnMut(usize, bool, bool) + 'static,
-    ) -> Self {
-        use crate::tilo_actions::{
-            ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-            ResourceSpec,
-        };
-        let id = id.into();
-        let control = id.clone();
-        let spec = ActionSpec::typed_operation(
-            "click",
-            "Click a row",
-            "Click a row, optionally beside others or in a run",
-            OperationKind::View,
-            CLICK_ROW,
-            vec![
-                ActionParam::required("row", ParamType::Integer, "Zero-based row index"),
-                ActionParam::optional("ctrl", ParamType::Boolean, "Add to the selection"),
-                ActionParam::optional("shift", ParamType::Boolean, "Extend the selection"),
-            ],
-            move |args| {
-                EncodedAction::encode_operation(
-                    CLICK_ROW,
-                    &serde_json::json!({
-                        "control": control,
-                        "row": args.integer("row").unwrap_or_default(),
-                        "ctrl": args.boolean("ctrl").unwrap_or_default(),
-                        "shift": args.boolean("shift").unwrap_or_default(),
-                    }),
-                )
-                .expect("generated click payload is serializable")
-            },
-        )
-        // A value verb is a view: what the app writes from it is decided as that write is.
-        .of_kind(crate::tilo_actions::ActionKind::Read)
-        .for_audience(crate::tilo_actions::Audience::Agents);
-        let resource =
-            ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", "Click a row")
-                .with_action(spec.clone());
-        let binding = ActionBinding::new(
-            &resource,
-            &spec,
-            |(row, ctrl, shift): (usize, bool, bool)| {
-                serde_json::Map::from_iter([
-                    ("row".into(), serde_json::json!(row)),
-                    ("ctrl".into(), serde_json::json!(ctrl)),
-                    ("shift".into(), serde_json::json!(shift)),
-                ])
-            },
-        )
-        .expect("the click action declares the parameters it is handed");
-        self.row_click = Some(RowAction {
-            id,
-            resource,
-            action: crate::widget::ActionEmitter::new(binding),
-            handler: Box::new(move |(row, ctrl, shift)| f(row, ctrl, shift)),
-        });
+    pub fn on_row_click(mut self, f: impl FnMut(usize, bool, bool) + 'static) -> Self {
+        self.row_click = Some(Box::new(f));
         self
     }
 
@@ -1735,42 +1595,13 @@ impl DataTableCore {
         self
     }
 
-    /// Called with the row chosen, by its index in the rows the host set: the table, as control `id`,
-    /// publishes choosing a row as its view action `select`, so a person's click, a screen reader, a
-    /// script and an agent choose through the same action.
+    /// Called with the row chosen, by its index in the rows the host set, whether a click, Enter or a
+    /// screen reader chose it; `id` names the table.
     #[must_use]
-    pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut(usize) + 'static) -> Self {
-        let id = id.into();
-        self.test_id.clone_from(&id);
-        self.row_choice = Some(RowChoice {
-            choice: super::view_choice::ViewChoice::new(id, "Select"),
-            handler: Box::new(f),
-        });
+    pub fn on_choose(mut self, id: impl Into<String>, f: impl FnMut(usize) + 'static) -> Self {
+        self.test_id = id.into();
+        self.row_choice = Some(Box::new(f));
         self
-    }
-
-    /// Called with the row opened, by its index in the rows the host set: the table, as control `id`,
-    /// publishes opening a row as its view action `open`, so a double click, Enter, a screen reader, a
-    /// script and an agent open through the same action.
-    #[must_use]
-    pub fn on_activate_view(
-        mut self,
-        id: impl Into<String>,
-        f: impl FnMut(usize) + 'static,
-    ) -> Self {
-        let id = id.into();
-        self.opens = Some(RowChoice {
-            choice: super::view_choice::ViewChoice::new(format!("{id}/open"), "Open"),
-            handler: Box::new(f),
-        });
-        self
-    }
-
-    /// How many rows the host set.
-    fn row_total(&self) -> usize {
-        self.model
-            .as_ref()
-            .map_or(self.rows.len(), |model| model.len())
     }
 
     #[must_use]
@@ -2724,9 +2555,7 @@ impl DataTableCore {
         };
         let source = self.source_row(row);
         if let Some(check) = &mut self.check {
-            if let Err(error) = check.action.emit((source, !checked)) {
-                tracing::warn!(%error, control = check.id, "a check box refused its turn");
-            }
+            check(source, !checked);
         }
         true
     }
@@ -3397,13 +3226,11 @@ impl DataTableCore {
         self.apply_selection_click(ri, ctrl, shift);
         *focus_target = Some(node_id);
         let source = self.source_row(ri);
-        if let Some(view) = &mut self.row_choice {
-            view.choice.emit(source.to_string());
+        if let Some(choose) = &mut self.row_choice {
+            choose(source);
         }
         if let Some(click) = &mut self.row_click {
-            if let Err(error) = click.action.emit((source, ctrl, shift)) {
-                tracing::warn!(%error, control = click.id, "a row refused its click");
-            }
+            click(source, ctrl, shift);
         }
         if self.clicks.register(ri) {
             self.fire_activate(source);
@@ -3412,9 +3239,7 @@ impl DataTableCore {
 
     /// Open `row`, published as the table's `open` view action where the host asks for one.
     fn fire_activate(&mut self, row: usize) {
-        if let Some(opens) = &mut self.opens {
-            opens.choice.emit(row.to_string());
-        } else if let Some(callback) = &mut self.on_activate {
+        if let Some(callback) = &mut self.on_activate {
             callback(row);
         }
     }
@@ -3560,9 +3385,9 @@ impl DataTableCore {
             Key::Named(NamedKey::Enter) => {
                 let source = cur.map(|c| self.source_row(c));
                 if let Some(c) = source
-                    && let Some(view) = &mut self.row_choice
+                    && let Some(choose) = &mut self.row_choice
                 {
-                    view.choice.emit(c.to_string());
+                    choose(c);
                 }
                 if let Some(c) = source {
                     self.fire_activate(c);
@@ -3725,12 +3550,6 @@ fn accessible_sort_description<Row: ?Sized>(
     })
 }
 
-/// A table's published row choice and the app's handler.
-struct RowChoice {
-    choice: super::view_choice::ViewChoice,
-    handler: Box<dyn FnMut(usize)>,
-}
-
 impl DataTableCore {
     /// Measure [`ColumnWidth::Auto`] columns from their header and the visible cells, never narrower
     /// than four characters' worth of line. Whether one changed.
@@ -3890,73 +3709,6 @@ impl DataTableCore {
     }
 }
 
-impl crate::widget::controls::ActionControls for DataTableCore {
-    fn attach_controls(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
-    ) {
-        if let Some(view) = self.row_choice.as_mut() {
-            view.choice.attach(domain, attachment);
-        }
-        if let Some(opens) = self.opens.as_mut() {
-            opens.choice.attach(domain, attachment);
-        }
-        if let Some(check) = self.check.as_mut() {
-            let _ = check.action.attach(domain, attachment);
-        }
-        if let Some(click) = self.row_click.as_mut() {
-            let _ = click.action.attach(domain, attachment);
-        }
-        for child in Widget::children_mut(self) {
-            crate::widget::controls::attach_controls(child, domain, attachment);
-        }
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(invocation) = self.row_choice.as_mut().and_then(|view| view.choice.take()) {
-            return Some(invocation);
-        }
-        if let Some(invocation) = self.opens.as_mut().and_then(|view| view.choice.take()) {
-            return Some(invocation);
-        }
-        if let Some(invocation) = self.check.as_mut().and_then(|check| check.action.take()) {
-            return Some(invocation);
-        }
-        if let Some(invocation) = self
-            .row_click
-            .as_mut()
-            .and_then(|click| click.action.take())
-        {
-            return Some(invocation);
-        }
-        Widget::children_mut(self)
-            .into_iter()
-            .find_map(crate::widget::controls::take_control_invocation)
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(view) = self.row_choice.as_mut() {
-            view.choice.refresh_availability(allowed);
-        }
-        if let Some(opens) = self.opens.as_mut() {
-            opens.choice.refresh_availability(allowed);
-        }
-        if let Some(check) = self.check.as_mut() {
-            check.action.refresh_availability(allowed);
-        }
-        if let Some(click) = self.row_click.as_mut() {
-            click.action.refresh_availability(allowed);
-        }
-        for child in Widget::children_mut(self) {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
-        }
-    }
-}
-
 impl Widget for DataTableCore {
     /// A table of its columns and the rows in view: a header cell per column, a cell per value,
     /// sorted by the column the person chose.
@@ -4099,11 +3851,6 @@ impl Widget for DataTableCore {
         }
     }
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
-    );
 
     /// Rows fading in after a long reveal, on their way after a sort or a change, or whose placeholder
     /// steps on, repaint the table; otherwise what its mounted cells say.
@@ -4911,7 +4658,7 @@ impl Widget for DataTableCore {
                     }
                 }
                 if (self.row_key.is_some() || self.model.is_some())
-                    && (self.selectable || self.on_activate.is_some() || self.opens.is_some())
+                    && (self.selectable || self.on_activate.is_some())
                     && let Some(identity) = self.row_identity_at(ri)
                 {
                     row = row.with_action_target(format!(
@@ -4977,8 +4724,8 @@ impl Widget for DataTableCore {
                 }
                 self.select_only_index(row);
                 let source = self.source_row(row);
-                if let Some(view) = &mut self.row_choice {
-                    view.choice.emit(source.to_string());
+                if let Some(choose) = &mut self.row_choice {
+                    choose(source);
                 }
                 self.fire_activate(source);
                 self.refresh_view_anchor();
@@ -5051,15 +4798,14 @@ impl Widget for DataTableCore {
             Action::Activate
                 if self.selectable
                     || self.on_activate.is_some()
-                    || self.opens.is_some()
                     || self.row_choice.is_some() =>
             {
                 if self.selectable {
                     self.select_only_index(index);
                 }
                 let source = self.source_row(index);
-                if let Some(view) = &mut self.row_choice {
-                    view.choice.emit(source.to_string());
+                if let Some(choose) = &mut self.row_choice {
+                    choose(source);
                 }
                 self.fire_activate(source);
                 true

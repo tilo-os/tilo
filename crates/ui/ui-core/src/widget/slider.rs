@@ -22,8 +22,6 @@ const TRACK_PADDING: f64 = 0.0;
 const PAGE_FRACTION: f64 = 0.1;
 /// Arrow keys and assistive steps move this share of a range with no step.
 const ARROW_FRACTION: f64 = 0.01;
-/// The slider's own view action: the value a person moved it to.
-const CHANGE_VALUE: &str = "tilo.ui.slider.change";
 
 /// Formats a slider's value for assistive technology ("40 %", "1.5 s").
 type ValueText = Box<dyn Fn(f64) -> String>;
@@ -130,10 +128,8 @@ pub struct Slider {
     /// How the value is spoken; a percentage of a `0..1` range otherwise.
     value_text: Option<ValueText>,
     binding: Option<BoxedBinding<f64>>,
-    /// What hears each value the person moves it to, through [`Self::change_verb`].
+    /// What hears each value the person moves it to.
     on_change: Option<Box<dyn FnMut(f64)>>,
-    /// The slider as control `tilo.control:<id>`, publishing a move as its view action `change`.
-    change_verb: Option<super::control_verb::ControlVerb<f64>>,
     settles: bool,
     drag_from: Option<f64>,
     /// Where the pointer and the value were when Shift was pressed during
@@ -220,7 +216,6 @@ impl Slider {
             value_text: None,
             binding: Some(crate::doc_source::number_key(on_change_path)),
             on_change: None,
-            change_verb: None,
             settles: false,
             drag_from: None,
             fine_from: None,
@@ -443,20 +438,11 @@ impl Slider {
         }
     }
 
-    /// Run `callback` with each value the person moves the slider to, the slider as control
-    /// `tilo.control:<id>` (its [`Self::with_id`], set first) publishing the move as its view
-    /// action `change`: a drag, a key, a screen reader's step and a script's set all arrive
-    /// through the same action. Model synchronization and [`Self::set_value`] move it without.
+    /// Run `callback` with each value the person moves the slider to: a drag, a key and a
+    /// screen reader's step alike. Model synchronization and [`Self::set_value`] move it without.
     #[must_use]
-    pub fn on_change_view(mut self, callback: impl FnMut(f64) + 'static) -> Self {
+    pub fn on_change(mut self, callback: impl FnMut(f64) + 'static) -> Self {
         if self.action.is_none() {
-            self.change_verb = Some(super::control_verb::ControlVerb::new(
-                self.test_id().unwrap_or("slider"),
-                "Change",
-                "change",
-                CHANGE_VALUE,
-                super::control_verb::VerbArgument::Number,
-            ));
             self.on_change = Some(Box::new(callback));
         }
         self
@@ -474,7 +460,6 @@ impl Slider {
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<f64>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.on_change = None;
-        self.change_verb = None;
         self
     }
 
@@ -484,7 +469,7 @@ impl Slider {
     }
 
     /// Set the value programmatically (in the range's units) and update a
-    /// bound local model without invoking [`Self::on_change_view`]'s callback.
+    /// bound local model without invoking [`Self::on_change`]'s callback.
     pub fn set_value(&mut self, value: f64) {
         self.value = self.constrain(value);
         if self.action.is_none() {
@@ -642,8 +627,8 @@ impl Slider {
         if self.settles && moved {
             if let Some(action) = &mut self.action {
                 let _ = action.emit(self.value);
-            } else if let Some(verb) = &mut self.change_verb {
-                verb.emit(self.value);
+            } else if let Some(on_change) = &mut self.on_change {
+                on_change(self.value);
             }
         }
     }
@@ -717,10 +702,10 @@ impl Slider {
             if let Some(binding) = &mut self.binding {
                 binding.publish(&self.value);
             }
-            if let Some(verb) = &mut self.change_verb
+            if let Some(on_change) = &mut self.on_change
                 && !(self.settles && self.is_dragging)
             {
-                verb.emit(self.value);
+                on_change(self.value);
             }
         }
         true
@@ -1019,9 +1004,7 @@ impl Widget for Slider {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+        dyn crate::presence::capability::PublishesPresence
     );
 
     /// A slider repaints when what it paints changed since the frame on screen: its value, its
@@ -1342,7 +1325,7 @@ impl Widget for Slider {
                     .focused(self.is_focused())
                     .disabled(!self.is_enabled()),
             );
-        if self.action.is_none() && self.change_verb.is_none() {
+        if self.action.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("slider"));
         }
         Some(node)
@@ -1412,60 +1395,10 @@ impl crate::permissions::capability::PermissionGuarded for Slider {
     }
 }
 
-impl crate::resources::PublishesResources for Slider {
-    fn resources(&self, _doc: &crate::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.change_verb
-            .iter()
-            .map(super::control_verb::ControlVerb::resource)
-            .collect()
-    }
-}
-
-impl crate::widget::ResourceOperations for Slider {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        if self.change_verb.is_some() {
-            &[CHANGE_VALUE]
-        } else {
-            &[]
-        }
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &super::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &crate::automerge::ObjId,
-    ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let moved = self
-            .change_verb
-            .as_ref()
-            .map(|verb| verb.start(op))
-            .transpose()?
-            .flatten();
-        let Some(value) = moved else {
-            return crate::widget::resource_operation::start_by_default(self, op, doc, path);
-        };
-        if !value.is_finite() {
-            return Err(format!("no value `{value}`"));
-        }
-        self.value = self.constrain(value);
-        self.publish_local_state();
-        if let Some(on_change) = self.on_change.as_mut() {
-            on_change(self.value);
-        }
-        Ok(Some(super::ResourceOperationStart::Completed(
-            crate::tilo_actions::ActionOutput::default(),
-        )))
-    }
-}
-
 impl crate::widget::controls::ActionControls for Slider {
-    super::control_verb::action_and_verb_controls!();
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let id = self.test_id().unwrap_or("slider");
-        if let Some(verb) = &self.change_verb {
-            return vec![verb.metadata(id)];
-        }
         crate::widget::controls::value_control_bindings(
             id,
             self.action.as_ref(),
@@ -2022,7 +1955,7 @@ mod tests {
                 let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                 let captured = std::rc::Rc::clone(&changes);
                 let mut first = Slider::from_state(&state)
-                    .on_change_view(move |value| captured.borrow_mut().push(value));
+                    .on_change(move |value| captured.borrow_mut().push(value));
                 let mut second = Slider::from_state(&state);
                 let mut document = AutoCommit::new();
 
@@ -2041,11 +1974,6 @@ mod tests {
                     &automerge::ROOT,
                 ));
                 assert_eq!(state.get(), 0.55);
-                assert!(
-                    changes.borrow().is_empty(),
-                    "the move goes through the slider's own action"
-                );
-                assert_eq!(crate::testing::answer_controls(&mut first), 1);
                 assert_eq!(&*changes.borrow(), &[0.55]);
                 Widget::sync(&mut second, &document, &automerge::ROOT);
                 assert_eq!(second.value(), 0.55);
@@ -2234,7 +2162,7 @@ mod tests {
 
             {
                 let mut slider = Slider::new("native", "legacy")
-                    .on_change_view(|_| panic!("the view action gives way to the bound one"))
+                    .on_change(|_| panic!("the callback gives way to the bound action"))
                     .on_action(crate::widget::test_number_action_binding());
                 let mut doc = AutoCommit::new();
                 crate::widget::controls::refresh_control_action_availability(
@@ -2368,7 +2296,7 @@ mod tests {
 
         fn built(level: &Rc<Cell<f64>>, rebuilt: &Rc<Cell<bool>>) -> Slider {
             let (level, rebuilt) = (Rc::clone(level), Rc::clone(rebuilt));
-            Slider::from_state(&crate::LocalState::new(level.get())).on_change_view(move |value| {
+            Slider::from_state(&crate::LocalState::new(level.get())).on_change(move |value| {
                 level.set(value);
                 rebuilt.set(true);
             })

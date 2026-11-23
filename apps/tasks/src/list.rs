@@ -524,7 +524,7 @@ fn list(window: &Window, nav: &Nav, filter: Filter, me: Option<MemberId>) -> Ele
                 false
             },
         )
-        .on_activate_view("tasks-list", move |key| {
+        .on_activate(move |key| {
             if let Some(issue) = issue_of(&opening, key) {
                 opener.open(&issue);
             }

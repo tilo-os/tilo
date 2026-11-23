@@ -208,7 +208,7 @@ fn row(item: &Item, presses: &Presses) -> Element {
         &item.action().label,
     )
     .control_size(ControlSize::Small)
-    .on_view(move || actions.borrow_mut().push(Press::Act(id)));
+    .on_open(move || actions.borrow_mut().push(Press::Act(id)));
     let actions = Rc::clone(&presses.pressed);
     let defer = Button::icon_only(
         &format!("attention-defer-{}", id.number()),
@@ -216,7 +216,7 @@ fn row(item: &Item, presses: &Presses) -> Element {
         &crate::i18n::widget_format("attention-defer", &[]),
     )
     .control_size(ControlSize::Small)
-    .on_view(move || actions.borrow_mut().push(Press::Defer(id)));
+    .on_open(move || actions.borrow_mut().push(Press::Defer(id)));
     let controls = Row::new()
         .no_wrap()
         .with_rhythm(Rhythm::Related)

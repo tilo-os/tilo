@@ -540,26 +540,6 @@ mod tests {
             }));
         }
 
-        phase model_view_publishes_each_admitted_child_resource_once;
-        {
-            use crate::widget::ToggleGroup;
-            use crate::widget::toggle_group::Segment;
-            let state = crate::LocalState::new(0_u8);
-            let mut view = ModelView::from_state(&state, |_| {
-                Box::new(
-                    ToggleGroup::new(vec![Segment::new("One"), Segment::new("Two")], 0)
-                        .on_view("model-view-mode", |_| {}),
-                )
-            });
-            let doc = AutoCommit::new();
-            view.sync(&doc, &automerge::ROOT);
-            let resources = crate::widget::published_resources(&view, &doc);
-            assert_eq!(resources.len(), 1);
-            assert_eq!(resources[0].id.as_str(), "tilo.control:model-view-mode");
-            assert_eq!(resources[0].actions.len(), 1);
-            assert_eq!(resources[0].actions[0].id, "select");
-        }
-
         phase the_boundary_passes_percent_height_and_growth_through;
         {
             use crate::widget::{Column, Scrollable, Spacer};

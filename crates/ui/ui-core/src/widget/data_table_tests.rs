@@ -200,42 +200,6 @@ pub(super) fn sample_cols() -> Vec<ColumnDef<R>> {
     ]
 }
 
-/// Answer the row actions a table queued while the test drove it, the way a
-/// host does: take each invocation, find the action it names among the
-/// table's published resources, and let the table answer it.
-pub(super) fn answer_row_actions<Row: 'static>(table: &mut DataTable<Row>) {
-    let mut doc = AutoCommit::new();
-    while let Some(invocation) = crate::widget::controls::take_control_invocation(table) {
-        let resources = crate::resources::resources(&*table, &doc);
-        let spec = resources
-            .iter()
-            .find_map(|resource| {
-                resource.actions.iter().find(|spec| {
-                    invocation.address
-                        == crate::tilo_actions::ActionAddress::new(
-                            resource.id.as_str(),
-                            spec.id.as_str(),
-                        )
-                })
-            })
-            .unwrap_or_else(|| panic!("no published action at {:?}", invocation.address));
-        let encoded = spec.build_json(&invocation.arguments).unwrap();
-        let op = crate::widget::ResourceOperation::local(
-            crate::tilo_actions::InvocationId::new(),
-            spec.kind,
-            &encoded.type_id,
-            &encoded.payload,
-        );
-        crate::widget::start_operation(
-            &mut *table,
-            &op,
-            &mut crate::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        )
-        .expect("the table answers its own row action");
-    }
-}
-
 struct HugeModel {
     row: R,
     key_queries: Rc<Cell<usize>>,
@@ -863,10 +827,10 @@ tilo_test_env::scenario! {
             let mut table = DataTable::new(columns())
                 .selectable(true)
                 .with_sort_state(&state)
-                .on_row_click_view("table.click", move |row, _, _| {
+                .on_row_click(move |row, _, _| {
                     click_sink.borrow_mut().push(row)
                 })
-                .on_activate_view("table.open", move |row| {
+                .on_activate(move |row| {
                     activate_sink.borrow_mut().push(row);
                 });
             table.set_rows(rows());
@@ -907,7 +871,6 @@ tilo_test_env::scenario! {
                     );
                 }
             }
-            answer_row_actions(&mut table);
             assert_eq!(*clicks.borrow(), [1, 1]);
             assert_eq!(*activations.borrow(), [1]);
             assert_eq!(table.selected_rows(), [1]);
@@ -1041,7 +1004,7 @@ tilo_test_env::scenario! {
             let mut table = DataTable::<R>::new(sample_cols())
                 .with_row_key(|row| u64::from(row.name.as_bytes()[0]))
                 .selectable(true)
-                .on_activate_view("table.open", move |index| captured.borrow_mut().push(index));
+                .on_activate(move |index| captured.borrow_mut().push(index));
             table.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
 
             let semantics = Widget::accessibility(&table).expect("table semantics");
@@ -1064,7 +1027,6 @@ tilo_test_env::scenario! {
                 &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
-            assert_eq!(crate::testing::answer_controls(&mut table), 1);
             assert_eq!(&*activated.borrow(), &[1]);
 
             let mut index_keyed = DataTable::<R>::new(sample_cols()).selectable(true);
@@ -1108,7 +1070,7 @@ tilo_test_env::scenario! {
             let sink = fired.clone();
             let mut t = DataTable::<R>::new(sample_cols())
                 .selectable(true)
-                .on_activate_view("table.open", move |i| sink.borrow_mut().push(i));
+                .on_activate(move |i| sink.borrow_mut().push(i));
             t.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
             t.selection_mut().move_to(0, false);
 
@@ -1122,11 +1084,6 @@ tilo_test_env::scenario! {
                 &root,
             );
             assert!(!handled, "a vanished row cannot be activated");
-            assert_eq!(
-                crate::testing::answer_controls(&mut t),
-                0,
-                "and it publishes nothing to answer"
-            );
             assert!(
                 fired.borrow().is_empty(),
                 "and must not activate some other row in its place"
@@ -1325,8 +1282,6 @@ tilo_test_env::scenario! {
                 &crate::synthetic_input::mouse_release(),
             );
 
-            assert_eq!(clicks.get(), 0, "the press waits to be answered");
-            assert_eq!(crate::testing::answer_controls(&mut table), 1);
             assert_eq!(clicks.get(), 1, "real cell button receives activation");
             assert!(
                 table.selection().is_empty(),
@@ -1341,7 +1296,7 @@ tilo_test_env::scenario! {
                 let clicks = clicks.clone();
                 DataTable::<R>::new(sample_cols())
                     .selectable(true)
-                    .on_row_click_view("table.click", move |i, c, s| {
+                    .on_row_click(move |i, c, s| {
                         clicks.borrow_mut().push((i, c, s))
                     })
             };
@@ -1362,7 +1317,6 @@ tilo_test_env::scenario! {
 
             assert!(t.selection().is_selected(2), "row 2 selected");
             assert_eq!(t.selection().primary(), Some(2));
-            answer_row_actions(&mut t);
             assert_eq!(*clicks.borrow(), vec![(2, false, false)]);
         }
 
@@ -1945,7 +1899,7 @@ fn interactive_cols(clicks: Rc<Cell<usize>>, builds: Rc<Cell<usize>>) -> Vec<Col
                 let id = format!("action-{index}");
                 Box::new(
                     Button::new(&id, &row.name)
-                        .on_effect(move || clicks.set(clicks.get().saturating_add(1))),
+                        .on_click(move || clicks.set(clicks.get().saturating_add(1))),
                 )
             },
         ),
@@ -2014,7 +1968,7 @@ fn a_row_carries_its_name_activation_and_menu_into_the_accessibility_tree() {
     let mut table = DataTable::<R>::new(columns)
         .with_row_key(|row: &R| u64::from(row.name.as_bytes()[0]))
         .selectable(true)
-        .on_activate_view("table.open", move |index| answer.borrow_mut().push(index))
+        .on_activate(move |index| answer.borrow_mut().push(index))
         .on_row_context_menu(move |row, point, _rect| recorded.borrow_mut().push((row, point)));
     table.set_rows(rows4());
     table.set_viewport(96.0, 24.0);
@@ -2044,7 +1998,6 @@ fn a_row_carries_its_name_activation_and_menu_into_the_accessibility_tree() {
         &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
         &automerge::ROOT,
     ));
-    assert_eq!(crate::testing::answer_controls(&mut table), 1);
     assert_eq!(&*opened.borrow(), &[0], "the row's own record is opened");
 
     assert!(Widget::perform_action(

@@ -388,7 +388,7 @@ impl ContactsApp {
         .with_id("contacts.export.selection")
         .with_accessible_name(crate::account_editor::CATALOG.t("contacts-a11y-export-list"))
         .selectable(true)
-        .on_check_view("contacts.export.selection", move |index, checked| {
+        .on_check(move |index, checked| {
             if let Some(id) = toggled_ids.get(index) {
                 selected.update(|set| {
                     if checked {
@@ -412,13 +412,13 @@ impl ContactsApp {
                     .with_padding_rhythm(None, None)
                     .push(Box::new(
                         Button::new("contacts.export.all", &CATALOG.t("contacts-select-all"))
-                            .on_view(move || {
+                            .on_open(move || {
                                 all_state.set(ids.iter().copied().collect());
                             }),
                     ))
                     .push(Box::new(
                         Button::new("contacts.export.none", &CATALOG.t("contacts-select-none"))
-                            .on_view(move || {
+                            .on_open(move || {
                                 none_state.set(HashSet::new());
                             }),
                     )),

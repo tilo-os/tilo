@@ -596,7 +596,7 @@ fn text_sits_on_the_content_edge_and_the_lift_bleeds_past_it() {
     let rows: Element = Box::new(
         Column::new()
             .with_horizontal_padding(24.0, 24.0)
-            .push(Box::new(ListRow::new("a", "Ada").on_view(|| {}))),
+            .push(Box::new(ListRow::new("a", "Ada").on_open(|| {}))),
     );
     let harness = FrameHarness::new(crate::State::new(), rows, (400, 200));
     let row = rect_of(find(&harness.inspection().root, "ListRow").unwrap());
@@ -750,7 +750,7 @@ tilo_test_env::scenario! {
         let deleted = Rc::new(Cell::new(0));
         let (r, d) = (Rc::clone(&replied), Rc::clone(&deleted));
         let mut row = ListRow::new("m", "Ada")
-            .on_view(|| {})
+            .on_open(|| {})
             .action(Icon::Reply, "Reply", move || r.set(r.get() + 1))
             .action(Icon::Trash, "Delete message", move || d.set(d.get() + 1));
         let mut doc = automerge::AutoCommit::new();
@@ -790,7 +790,7 @@ tilo_test_env::scenario! {
     {
         let opened = Rc::new(Cell::new(0));
         let counter = Rc::clone(&opened);
-        let mut row = ListRow::new("contact-ada", "Ada Lovelace").on_view(move || {
+        let mut row = ListRow::new("contact-ada", "Ada Lovelace").on_open(move || {
             counter.set(counter.get() + 1);
         });
         let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
@@ -824,7 +824,7 @@ tilo_test_env::scenario! {
 
     phase a_disabled_row_is_inert_and_skipped_by_focus;
     {
-        let mut row = ListRow::new("r", "Row").on_view(|| {}).with_enabled(false);
+        let mut row = ListRow::new("r", "Row").on_open(|| {}).with_enabled(false);
         assert!(!row.is_focusable());
         assert!(!Widget::is_enabled(&row));
         let mut doc = automerge::AutoCommit::new();
@@ -1311,7 +1311,7 @@ fn retained_row_activates_by_pointer_and_accessibility() {
                 .secondary("ada@example.org")
                 .avatar("Ada Lovelace", "ada@example.org")
                 .meta("Today")
-                .on_view(move || counter.set(counter.get() + 1)),
+                .on_open(move || counter.set(counter.get() + 1)),
         )),
     );
     let mut harness = FrameHarness::new(crate::State::new(), rows, (400, 200));
@@ -1321,7 +1321,7 @@ fn retained_row_activates_by_pointer_and_accessibility() {
     assert!(h >= 40.0);
     harness.click_at(x + w / 2.0, y + h / 2.0);
     assert_eq!(hits.get(), 1);
-    let mut row = ListRow::new("r", "Row").on_view(|| {});
+    let mut row = ListRow::new("r", "Row").on_open(|| {});
     let node = Widget::accessibility(&row).unwrap();
     assert_eq!(node.role, Role::ListItem);
     assert_eq!(node.name.as_deref(), Some("Row"));
@@ -1340,11 +1340,11 @@ fn a_trailing_disclosure_button_stands_on_the_chevron_column() {
     let rows = Column::new()
         .with_no_padding()
         .push(Box::new(
-            ListRow::new("all", "Show all").disclosure().on_view(|| {}),
+            ListRow::new("all", "Show all").disclosure().on_open(|| {}),
         ))
         .push(Box::new(
             ListRow::new("home", "Home")
-                .on_view(|| {})
+                .on_open(|| {})
                 .trailing_disclosure(Box::new(crate::widget::Button::icon_only(
                     "home.open",
                     crate::icons::Icon::ChevronRight,
@@ -1515,8 +1515,8 @@ fn a_leading_checkbox_toggles_apart_from_activation() {
     let activated = Rc::new(Cell::new(0));
     let (t, a) = (Rc::clone(&toggled), Rc::clone(&activated));
     let mut row = ListRow::new("m", "Ada")
-        .checkbox_view(false, move |on| t.set(Some(on)))
-        .on_view(move || a.set(a.get() + 1));
+        .checkbox(false, move |on| t.set(Some(on)))
+        .on_open(move || a.set(a.get() + 1));
     let mut doc = automerge::AutoCommit::new();
     assert!(Widget::perform_action(
         &mut row,
@@ -1525,8 +1525,6 @@ fn a_leading_checkbox_toggles_apart_from_activation() {
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
-    assert_eq!(toggled.get(), None, "the box's report waits to be answered");
-    assert_eq!(crate::testing::answer_controls(&mut row), 1);
     assert_eq!(toggled.get(), Some(true));
     assert_eq!(activated.get(), 0);
     let node = Widget::accessibility(&row).unwrap();
@@ -1539,7 +1537,7 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
     let invoked = Rc::clone(&calls);
     let row = ListRow::new("contact-ada", "Ada Lovelace")
         .secondary("ada@example.org")
-        .on_view(move || invoked.set(invoked.get() + 1));
+        .on_open(move || invoked.set(invoked.get() + 1));
     let mut driver = FrameHarness::new(
         crate::State::new(),
         Box::new(Column::new().with_no_padding().push(Box::new(row))),
@@ -2321,7 +2319,7 @@ fn a_double_click_opens_once_and_changes_twice() {
         (double, hits.get())
     };
     let opened = counted(|hits| {
-        ListRow::new("file-plan", "plan.csv").on_view(move || hits.set(hits.get() + 1))
+        ListRow::new("file-plan", "plan.csv").on_open(move || hits.set(hits.get() + 1))
     });
     assert_eq!(
         opened,
@@ -2329,7 +2327,7 @@ fn a_double_click_opens_once_and_changes_twice() {
         "a double-click opens once; clicks apart open each"
     );
     let changed =
-        counted(|hits| ListRow::new("count", "Count").on_effect(move || hits.set(hits.get() + 1)));
+        counted(|hits| ListRow::new("count", "Count").on_click(move || hits.set(hits.get() + 1)));
     assert_eq!(
         changed,
         (2, 7),

@@ -1,32 +1,8 @@
-//! The dialog's own controls as the host reaches them: its close control
-//! ([`ModalDialog::on_dismiss`]) and its footer buttons, each published as an action of
-//! control `<dialog>.<close|primary|secondary|tertiary>`; the host's ownership of the close
-//! control's emitter; and the operations that run them.
+//! The dialog's close control as the host reaches it ([`ModalDialog::on_dismiss`]), and the
+//! host's ownership of its emitter when it dismisses through an action.
 
-use crate::i18n::widget_text;
-use automerge::ObjId;
-
-use super::{ModalDialog, Slot};
+use super::ModalDialog;
 use crate::widget::Widget;
-use crate::widget::activation::{NATIVE_INVOKE, NativeControl, invoked_control};
-
-const FOOTER: [(Slot, &str, tilo_actions::OperationKind); 3] = [
-    (
-        Slot::Primary,
-        "primary",
-        tilo_actions::OperationKind::Effect,
-    ),
-    (
-        Slot::Secondary,
-        "secondary",
-        tilo_actions::OperationKind::View,
-    ),
-    (
-        Slot::Tertiary,
-        "tertiary",
-        tilo_actions::OperationKind::Effect,
-    ),
-];
 
 impl<C: Widget + 'static> ModalDialog<C> {
     /// Fires on Escape, on a scrim click and on the close control.
@@ -38,15 +14,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
 
     /// [`Self::on_dismiss`] after construction; `None` takes the close control away.
     pub fn set_on_dismiss(&mut self, f: Option<Box<dyn FnMut()>>) {
-        self.dismiss =
-            f.map(|f| crate::widget::dismissal::Dismissal::published(self.surface_id(), f));
+        self.dismiss = f.map(crate::widget::dismissal::Dismissal::own);
         self.laid_out_for = None;
-    }
-
-    /// What the dialog's close control is named after: its test id, else
-    /// its title.
-    pub(super) fn surface_id(&self) -> &str {
-        self.test_id.as_deref().unwrap_or(&self.title)
     }
 
     /// Dismiss through `binding`, an action the app or host already publishes ("Keep
@@ -60,62 +29,6 @@ impl<C: Widget + 'static> ModalDialog<C> {
 }
 
 impl ModalDialog<dyn Widget> {
-    fn footer_id(&self, name: &str) -> String {
-        format!("{}.{name}", self.test_id.as_deref().unwrap_or(&self.title))
-    }
-
-    fn published_footer(
-        &self,
-    ) -> impl Iterator<Item = (Slot, &'static str, tilo_actions::OperationKind)> + '_ {
-        FOOTER.into_iter().filter(|(slot, _, _)| {
-            self.up() && self.slot_action(*slot).is_some() && self.slot_enabled(*slot)
-        })
-    }
-
-    fn start_dismissal(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if self.up()
-            && let Some(dismiss) = self.dismiss.as_mut()
-            && let Some(started) = dismiss.start(op)?
-        {
-            return Ok(Some(started));
-        }
-        let invoked = invoked_control(op)?;
-        let slot = invoked.and_then(|control| {
-            self.published_footer()
-                .find(|(_, name, _)| self.footer_id(name) == control)
-                .map(|(slot, _, _)| slot)
-        });
-        if let Some(slot) = slot {
-            self.activate(slot);
-            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
-    fn dismissal_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        let close = self
-            .dismiss
-            .as_ref()
-            .filter(|_| self.up())
-            .and_then(crate::widget::dismissal::Dismissal::resource);
-        let footer = self.published_footer().filter_map(|(slot, name, kind)| {
-            let action = self.slot_action(slot)?;
-            Some(NativeControl::resource_of(
-                &self.footer_id(name),
-                &widget_text(&action.label),
-                kind,
-            ))
-        });
-        close.into_iter().chain(footer).collect()
-    }
-
     fn install_dismissal_ownership(
         &mut self,
         domain: &crate::ControlDomain,
@@ -142,21 +55,6 @@ impl ModalDialog<dyn Widget> {
 
     fn dismissal_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let mut bindings = crate::widget::controls::default_bindings(self);
-        for (slot, name, _) in self.published_footer() {
-            let target = self.slot_target(slot);
-            if bindings.iter().any(|binding| binding.control_id == target) {
-                bindings.retain(|binding| binding.control_id != target);
-                bindings.push(crate::widget::ControlBindingMetadata {
-                    control_id: target,
-                    kind: crate::widget::ControlBindingKind::Action(
-                        tilo_actions::ActionAddress::new(
-                            format!("tilo.control:{}", self.footer_id(name)),
-                            "invoke",
-                        ),
-                    ),
-                });
-            }
-        }
         if self.up()
             && self.closable()
             && let Some(dismiss) = &self.dismiss
@@ -176,36 +74,6 @@ impl ModalDialog<dyn Widget> {
         for child in self.children_mut() {
             crate::widget::controls::refresh_control_action_availability(child, allowed);
         }
-    }
-}
-
-impl<C: Widget + 'static> crate::widget::ResourceOperations for ModalDialog<C> {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        let footer = self.primary_action.is_some()
-            || self.secondary_action.is_some()
-            || self.tertiary_action.is_some();
-        if footer {
-            &[NATIVE_INVOKE]
-        } else {
-            self.dismiss
-                .as_ref()
-                .map_or(&[], crate::widget::dismissal::Dismissal::handlers)
-        }
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.as_dyn_mut().start_dismissal(op, doc, path)
-    }
-}
-
-impl<C: Widget + 'static> crate::resources::PublishesResources for ModalDialog<C> {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.as_dyn().dismissal_resources()
     }
 }
 

@@ -65,7 +65,7 @@ impl Described for Card {
         if !activate.is_none() {
             card.activation = Activation::new(key);
             let label = title.clone().unwrap_or_default();
-            card.activation.set_event(activate, &label);
+            card.activation.set_event(activate);
         }
         match title {
             Some(title) if !title.is_empty() => {
@@ -107,7 +107,7 @@ impl Described for Card {
             }
         }
         let label = self.title.clone().unwrap_or_default();
-        self.activation.set_event(activate, &label);
+        self.activation.set_event(activate);
         true
     }
 }

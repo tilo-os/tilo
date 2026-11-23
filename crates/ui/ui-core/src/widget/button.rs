@@ -89,8 +89,6 @@ pub struct Button {
     action: Option<ActionEmitter<()>>,
     /// Resource and handler synthesized by `on_effect` / `on_view`: ordinary Rust, reachable only
     /// through the published action API.
-    native_resource: Option<tilo_actions::ResourceSpec>,
-    native_handler: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     enabled: bool,
@@ -195,8 +193,6 @@ impl Button {
             default_focus: false,
             on_click: None,
             action: None,
-            native_resource: None,
-            native_handler: None,
             presence_path: Vec::new(),
             permission_scope: None,
             enabled: true,
@@ -241,84 +237,10 @@ impl Button {
         self
     }
 
-    /// Publish a zero-argument effect and route every activation through it: closure ergonomics
-    /// without an invisible callback-only control. For replayable document mutations, prefer a
-    /// typed document [`Action`](tilo_actions::Action).
+    /// A press that opens or shows something; the same as [`Self::on_click`].
     #[must_use]
-    pub fn on_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
-        self.on_native(tilo_actions::OperationKind::Effect, handler)
-    }
-
-    #[must_use]
-    pub fn on_own_device_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
-        self.on_native_scoped(tilo_actions::OperationKind::Effect, true, handler)
-    }
-
-    #[must_use]
-    pub fn on_view<F: FnMut() + 'static>(self, handler: F) -> Self {
-        self.on_native(tilo_actions::OperationKind::View, handler)
-    }
-
-    fn on_native<F: FnMut() + 'static>(
-        self,
-        kind: tilo_actions::OperationKind,
-        handler: F,
-    ) -> Self {
-        self.on_native_scoped(kind, false, handler)
-    }
-
-    fn on_native_scoped<F: FnMut() + 'static>(
-        self,
-        kind: tilo_actions::OperationKind,
-        own_device: bool,
-        handler: F,
-    ) -> Self {
-        self.on_native_boxed(kind, own_device, Box::new(handler))
-    }
-
-    /// [`Self::on_native_scoped`] once the handler is boxed, so the toolkit compiles publishing the
-    /// press once rather than every app once per closure.
-    #[expect(
-        clippy::expect_used,
-        reason = "String serialization and lookup of the just-created action are infallible"
-    )]
-    fn on_native_boxed(
-        mut self,
-        kind: tilo_actions::OperationKind,
-        own_device: bool,
-        handler: Box<dyn FnMut()>,
-    ) -> Self {
-        const TYPE_ID: &str = "tilo.ui.control.invoke";
-        let resource_id = format!("tilo.control:{}", self.id);
-        // Named by what a screen reader announces: the app's name where it says more than the
-        // label, else the label; an icon-only button falls back to the tooltip.
-        let label = self.accessible_name.clone().unwrap_or_else(|| {
-            if self.label.is_empty() {
-                self.tooltip.clone().unwrap_or_default()
-            } else {
-                self.label.clone()
-            }
-        });
-        // Pressing is the control's own verb, never a row of its own in people's lists, where it
-        // would repeat the app's actions.
-        let mut spec =
-            tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
-                .expect("a control id is always JSON serializable")
-                .for_audience(tilo_actions::Audience::Agents);
-        if own_device {
-            spec.type_mut()
-                .contract
-                .tags
-                .push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
-        }
-        let resource =
-            tilo_actions::ResourceSpec::new(resource_id, "tilo.control", label).with_action(spec);
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
-            .expect("the synthesized invoke action is nullary");
-        self = self.on_action(binding);
-        self.native_resource = Some(resource);
-        self.native_handler = Some(handler);
-        self
+    pub fn on_open<F: FnMut() + 'static>(self, f: F) -> Self {
+        self.on_click(f)
     }
 
     /// With an empty label the icon is centred (icon-only button); with
@@ -2187,27 +2109,6 @@ impl Button {
         taffy.set_style(node, style).is_ok()
     }
 
-    fn invoke_native_control(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document
-            || type_id != "tilo.ui.control.invoke"
-            || self.native_handler.is_none()
-        {
-            return Ok(false);
-        }
-        let control: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        if control != self.id {
-            return Ok(false);
-        }
-        if let Some(handler) = &mut self.native_handler {
-            handler();
-        }
-        Ok(true)
-    }
 }
 
 impl Widget for Button {
@@ -2221,10 +2122,8 @@ impl Widget for Button {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
         dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence,
-        dyn crate::widget::ResourceOperations
     );
 
     fn set_interaction_environment(
@@ -2751,29 +2650,6 @@ impl Widget for Button {
     }
 }
 
-impl crate::widget::ResourceOperations for Button {
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.native_resource
-            .as_ref()
-            .map(|_| std::iter::once("tilo.ui.control.invoke".to_owned()).collect())
-            .unwrap_or_default()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &super::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &ObjId,
-    ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let request = op.request();
-        Ok(self
-            .invoke_native_control(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                super::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-            }))
-    }
-}
-
 impl crate::presence::capability::PublishesPresence for Button {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
@@ -2783,34 +2659,6 @@ impl crate::presence::capability::PublishesPresence for Button {
 impl crate::permissions::capability::PermissionGuarded for Button {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
-    }
-}
-
-impl crate::resources::PublishesResources for Button {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let Some(mut resource) = self.native_resource.clone() else {
-            return Vec::new();
-        };
-        // The action directory refuses unnamed resources and actions, and an
-        // icon-only button is named by what it is announced as now: its
-        // accessible name or tooltip may be set after `on_effect` built the
-        // resource, or change with its state ("Hide sidebar" / "Show
-        // sidebar"). Publish the current name.
-        if self.label.is_empty()
-            && let Some(name) = self
-                .accessible_name
-                .as_ref()
-                .or(self.tooltip.as_ref())
-                .filter(|name| !name.trim().is_empty())
-        {
-            let stale = std::mem::replace(&mut resource.label, name.clone());
-            for action in &mut resource.actions {
-                if action.label.trim().is_empty() || action.label == stale {
-                    action.type_mut().label.clone_from(name);
-                }
-            }
-        }
-        vec![resource]
     }
 }
 

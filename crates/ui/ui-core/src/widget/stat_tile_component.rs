@@ -96,7 +96,7 @@ impl Described for StatTile {
         if !activate.is_none() {
             tile.activation = Activation::new(key);
             let label = tile.label.clone();
-            tile.activation.set_event(activate, &label);
+            tile.activation.set_event(activate);
             tile = tile.selected(selected);
         }
         tile

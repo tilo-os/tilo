@@ -899,7 +899,7 @@ tilo_test_env::scenario! {
         .with_viewport_height(60.0)
         .with_semantic_key(ToString::to_string)
         .open_on_press()
-        .on_activate_view("probe-list", move |key| api.borrow_mut().push(key));
+        .on_activate(move |key| api.borrow_mut().push(key));
         let (taffy, node) = lay_out(&mut list, 200.0);
 
         dispatch(&mut list, &cursor(10.0), &taffy, node);

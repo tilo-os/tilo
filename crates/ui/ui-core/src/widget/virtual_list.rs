@@ -353,8 +353,7 @@ pub struct VirtualRows {
     on_select: Option<SelectCallback<ListKey>>,
     on_selected: Option<SelectedCallback<ListKey>>,
     reported_many: bool,
-    view: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<ListKey>)>,
-    opens: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<ListKey>)>,
+    view: Option<KeyCallback<ListKey>>,
     on_activate: Option<KeyCallback<ListKey>>,
     open_on_press: bool,
     on_fold: Option<FoldCallback<ListKey>>,
@@ -539,7 +538,6 @@ impl VirtualRows {
             on_selected: None,
             reported_many: false,
             view: None,
-            opens: None,
             on_activate: None,
             open_on_press: false,
             on_fold: None,
@@ -1676,9 +1674,6 @@ impl Widget for VirtualRows {
     }
 
     crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations,
         dyn crate::widget::PaintedRowLifts,
         dyn crate::widget::virtual_list::PaintedRowChevrons
     );

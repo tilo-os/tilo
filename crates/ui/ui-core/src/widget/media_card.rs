@@ -849,14 +849,37 @@ struct MediaCreator {
 struct HoverAction {
     icon: Icon,
     label: String,
-    emitter: crate::widget::ActionEmitter<()>,
-    native: Option<crate::widget::activation::NativeControl>,
+    press: HoverPress,
+}
+
+enum HoverPress {
+    Bound(crate::widget::ActionEmitter<()>),
+    Plain(Box<dyn FnMut()>),
 }
 
 impl HoverAction {
     fn run(&mut self) {
-        if let Err(error) = self.emitter.emit(()) {
-            tracing::warn!(%error, "a hover action refused its arguments");
+        match &mut self.press {
+            HoverPress::Bound(emitter) => {
+                if let Err(error) = emitter.emit(()) {
+                    tracing::warn!(%error, "a hover action refused its arguments");
+                }
+            }
+            HoverPress::Plain(press) => press(),
+        }
+    }
+
+    fn emitter(&self) -> Option<&crate::widget::ActionEmitter<()>> {
+        match &self.press {
+            HoverPress::Bound(emitter) => Some(emitter),
+            HoverPress::Plain(_) => None,
+        }
+    }
+
+    fn emitter_mut(&mut self) -> Option<&mut crate::widget::ActionEmitter<()>> {
+        match &mut self.press {
+            HoverPress::Bound(emitter) => Some(emitter),
+            HoverPress::Plain(_) => None,
         }
     }
 }
@@ -999,57 +1022,23 @@ impl MediaCard {
         self.hover_action = Some(HoverAction {
             icon,
             label: label.into(),
-            emitter: crate::widget::ActionEmitter::new(binding),
-            native: None,
+            press: HoverPress::Bound(crate::widget::ActionEmitter::new(binding)),
         });
         self
     }
 
-    /// Publish the hover action as the card's own view action, as [`Self::on_view`] does
-    /// for the card: what it shows through `f` (a menu, a page) is the window's own state,
-    /// and the control is discoverable and agent-driveable.
+    /// A centred action over the art on hover that calls `f`.
     #[must_use]
-    pub fn hover_action_view(
-        self,
-        icon: Icon,
-        label: impl Into<String>,
-        f: impl FnMut() + 'static,
-    ) -> Self {
-        self.hover_action_native(icon, label, tilo_actions::OperationKind::View, f)
-    }
-
-    /// Publish the hover action as the card's own effect, as [`Self::on_effect`] does for
-    /// the card: what it does through `f` acts on the window's resource, and the control is
-    /// discoverable and agent-driveable.
-    #[must_use]
-    pub fn hover_action_effect(
-        self,
-        icon: Icon,
-        label: impl Into<String>,
-        f: impl FnMut() + 'static,
-    ) -> Self {
-        self.hover_action_native(icon, label, tilo_actions::OperationKind::Effect, f)
-    }
-
-    fn hover_action_native(
+    pub fn on_hover_action(
         mut self,
         icon: Icon,
         label: impl Into<String>,
-        kind: tilo_actions::OperationKind,
         f: impl FnMut() + 'static,
     ) -> Self {
-        let label = label.into();
-        let (native, binding) = crate::widget::activation::NativeControl::new(
-            &format!("{}/action", self.activation.id()),
-            &label,
-            kind,
-            Box::new(f),
-        );
         self.hover_action = Some(HoverAction {
             icon,
-            label,
-            emitter: crate::widget::ActionEmitter::new(binding),
-            native: Some(native),
+            label: label.into(),
+            press: HoverPress::Plain(Box::new(f)),
         });
         self
     }
@@ -1066,24 +1055,10 @@ impl MediaCard {
         self
     }
 
-    /// Publish activation as a zero-argument effect, as
-    /// [`Button::on_effect`](crate::widget::Button::on_effect) does: the closure keeps
-    /// working and the card is discoverable and agent-driveable.
+    /// A press that opens or shows something: a double-click asks for it once.
     #[must_use]
-    pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
-        let label = self.title.clone().unwrap_or_default();
-        self.activation
-            .set_native(tilo_actions::OperationKind::Effect, &label, Box::new(f));
-        self
-    }
-
-    /// Publish activation as a transient view action (opening what the card stands for), as
-    /// [`Button::on_view`](crate::widget::Button::on_view) does.
-    #[must_use]
-    pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
-        let label = self.title.clone().unwrap_or_default();
-        self.activation
-            .set_native(tilo_actions::OperationKind::View, &label, Box::new(f));
+    pub fn on_open(mut self, f: impl FnMut() + 'static) -> Self {
+        self.activation.set_open(Box::new(f));
         self
     }
 
@@ -1242,8 +1217,6 @@ impl Widget for MediaCard {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations,
         dyn crate::widget::ReservedShape
     );
 
@@ -1461,8 +1434,8 @@ impl crate::widget::controls::ActionControls for MediaCard {
         attachment: crate::control_domain::DomainAttachment,
     ) {
         self.activation.attach(domain, attachment);
-        if let Some(hover) = self.hover_action_mut() {
-            let _ = hover.emitter.attach(domain, attachment);
+        if let Some(emitter) = self.hover_action_mut().and_then(HoverAction::emitter_mut) {
+            let _ = emitter.attach(domain, attachment);
         }
         for child in crate::widget::Widget::children_mut(self) {
             crate::widget::controls::attach_controls(child, domain, attachment);
@@ -1472,7 +1445,8 @@ impl crate::widget::controls::ActionControls for MediaCard {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         let hover = self
             .hover_action_mut()
-            .and_then(|hover| hover.emitter.take());
+            .and_then(HoverAction::emitter_mut)
+            .and_then(crate::widget::ActionEmitter::take);
         self.activation.take_invocation().or(hover).or_else(|| {
             crate::widget::Widget::children_mut(self)
                 .into_iter()
@@ -1482,12 +1456,8 @@ impl crate::widget::controls::ActionControls for MediaCard {
 
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let mut bindings = self.activation.bindings();
-        if let Some(hover) = self.hover_action_ref() {
-            bindings.push(
-                hover
-                    .emitter
-                    .metadata(format!("{}/action", self.activation.id())),
-            );
+        if let Some(emitter) = self.hover_action_ref().and_then(HoverAction::emitter) {
+            bindings.push(emitter.metadata(format!("{}/action", self.activation.id())));
         }
         for child in crate::widget::Widget::children(self) {
             bindings.extend(crate::widget::controls::control_action_bindings(child));
@@ -1500,57 +1470,12 @@ impl crate::widget::controls::ActionControls for MediaCard {
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         self.activation.refresh_availability(allowed);
-        if let Some(hover) = self.hover_action_mut() {
-            hover.emitter.refresh_availability(allowed);
+        if let Some(emitter) = self.hover_action_mut().and_then(HoverAction::emitter_mut) {
+            emitter.refresh_availability(allowed);
         }
         for child in crate::widget::Widget::children_mut(self) {
             crate::widget::controls::refresh_control_action_availability(child, allowed);
         }
-    }
-}
-
-impl crate::widget::ResourceOperations for MediaCard {
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = self.activation.native_handlers();
-        if self
-            .hover_action_ref()
-            .is_some_and(|hover| hover.native.is_some())
-        {
-            handlers.insert(crate::widget::activation::NATIVE_INVOKE.to_owned());
-        }
-        handlers
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = self.activation.start_native(op)? {
-            return Ok(Some(started));
-        }
-        let id = format!("{}/action", self.activation.id());
-        match self
-            .hover_action_mut()
-            .and_then(|hover| hover.native.as_mut())
-        {
-            Some(native) => native.start(&id, op),
-            None => Ok(None),
-        }
-    }
-}
-
-impl crate::resources::PublishesResources for MediaCard {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = self.activation.native_resources();
-        if let Some(native) = self
-            .hover_action_ref()
-            .and_then(|hover| hover.native.as_ref())
-        {
-            resources.push(native.resource());
-        }
-        resources
     }
 }
 

@@ -520,9 +520,9 @@ impl ImageAttachment {
             node: None,
             node_editing: false,
             edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit")
-                .on_view(move || edit_command.set(Some(true))),
+                .on_open(move || edit_command.set(Some(true))),
             done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done")
-                .on_view(move || done_command.set(Some(false))),
+                .on_open(move || done_command.set(Some(false))),
             command,
         }
     }
@@ -5655,16 +5655,16 @@ impl TableModeControl {
                 "table-edit-visual"
             },
         )
-        .on_view(move || clicked.set(true));
+        .on_open(move || clicked.set(true));
         let structure = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_request = structure.clone();
         let column_request = structure.clone();
         let add_row =
             ui::widget::Button::new(&format!("notes.table-add-row:{id}"), "table-add-row")
-                .on_view(move || row_request.set(Some(true)));
+                .on_open(move || row_request.set(Some(true)));
         let add_column =
             ui::widget::Button::new(&format!("notes.table-add-column:{id}"), "table-add-column")
-                .on_view(move || column_request.set(Some(false)));
+                .on_open(move || column_request.set(Some(false)));
         Self {
             button,
             requested,

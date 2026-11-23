@@ -134,7 +134,7 @@ impl PagePopups {
                     Icon::X,
                     &CATALOG.t("browser-popup-close"),
                 )
-                .on_effect(move || close.set(true)),
+                .on_click(move || close.set(true)),
             ));
         let page = ui::widget::WebView::new(open.engine.clone()).with_test_id("browser.popup.page");
         let height = open.size.1.min((max_height - row).max(MIN_SIZE.1));

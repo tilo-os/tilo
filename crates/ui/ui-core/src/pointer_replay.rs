@@ -395,7 +395,7 @@ mod tests {
         let clicks = Rc::clone(clicks);
         Box::new(
             Button::new("copy_link", "Copy link")
-                .on_own_device_effect(move || clicks.borrow_mut().push(generation)),
+                .on_click(move || clicks.borrow_mut().push(generation)),
         )
     }
 

@@ -123,14 +123,14 @@ impl ActionButton {
                     .with_id(&id)
                     .with_label(self.label.clone())
                     .with_enabled(self.enabled)
-                    .on_view(&id, move |_| control.fire()),
+                    .on_choose(&id, move |_| control.fire()),
             )
         } else {
             let mut button = Button::new(&id, &self.label)
                 .role(self.role)
                 .control_size(self.size)
                 .with_enabled(self.enabled)
-                .on_effect(move || control.fire());
+                .on_click(move || control.fire());
             if let Some(icon) = self.icon {
                 button = button.with_icon(icon);
             }

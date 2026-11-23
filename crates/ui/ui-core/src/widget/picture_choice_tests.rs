@@ -79,24 +79,18 @@ tilo_test_env::scenario! {
         let mut picker = laid_out(
             PictureChoice::new(sizes(), Some(1))
                 .with_id("text-size")
-                .on_change_view(move |index| log.borrow_mut().push(index)),
+                .on_change(move |index| log.borrow_mut().push(index)),
             720.0,
         );
         let third = picker.tile_rect(2).center();
         dispatch(&mut picker, &cursor_moved(third.x, third.y));
         assert!(dispatch(&mut picker, &mouse_release()));
         assert_eq!(picker.selected(), Some(2));
-        assert_eq!(
-            crate::testing::answer_controls(&mut picker),
-            1,
-            "the choice reaches its owner through the choice's own action"
-        );
 
         Widget::set_focus(&mut picker, true);
         assert!(dispatch(&mut picker, &named_key(NamedKey::End)));
         assert!(dispatch(&mut picker, &named_key(NamedKey::Enter)));
         assert_eq!(picker.selected(), Some(3));
-        assert_eq!(crate::testing::answer_controls(&mut picker), 1);
 
         assert!(Widget::perform_semantic_action(
             &mut picker,
@@ -106,7 +100,6 @@ tilo_test_env::scenario! {
             &automerge::ROOT,
         ));
         assert_eq!(picker.selected(), Some(0));
-        assert_eq!(crate::testing::answer_controls(&mut picker), 1);
         assert_eq!(*told.borrow(), vec![2, 3, 0]);
     }
 

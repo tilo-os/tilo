@@ -162,6 +162,6 @@ fn row_of(nav: &Nav, id: &Id, row: &Row) -> Element {
             .subtitle(&row.subtitle)
             .meta(&row.said)
             .icon(ui::icons::Icon::MessageCircle)
-            .on_view(move || open.open(&issue_id)),
+            .on_open(move || open.open(&issue_id)),
     )
 }

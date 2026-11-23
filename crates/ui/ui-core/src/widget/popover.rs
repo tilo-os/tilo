@@ -387,7 +387,7 @@ impl PopoverPanel {
     }
 
     fn set_on_dismiss(&mut self, f: Option<Box<dyn FnMut()>>) {
-        self.dismiss = f.map(|f| super::dismissal::Dismissal::published(self.surface_id(), f));
+        self.dismiss = f.map(super::dismissal::Dismissal::own);
     }
 
     fn surface_id(&self) -> &str {
@@ -401,9 +401,6 @@ impl PopoverPanel {
     fn set_label_option(&mut self, label: Option<String>) {
         self.dirty = true;
         self.label = label;
-        if let Some(dismiss) = self.dismiss.take() {
-            self.dismiss = Some(dismiss.renamed(self.surface_id()));
-        }
     }
 
     fn set_anchor(&mut self, anchor: Rect) {
@@ -1322,43 +1319,6 @@ impl Popover {
     }
 }
 
-impl<C: Widget + 'static> crate::widget::ResourceOperations for Popover<C> {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        self.panel
-            .dismiss
-            .as_ref()
-            .map_or(&[], super::dismissal::Dismissal::handlers)
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(dismiss) = self.panel.dismiss.as_mut()
-            && let Some(started) = dismiss.start(op)?
-        {
-            self.panel.open = false;
-            self.panel.appear.show(false);
-            return Ok(Some(started));
-        }
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-}
-
-impl<C: Widget + 'static> crate::resources::PublishesResources for Popover<C> {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.panel
-            .dismiss
-            .as_ref()
-            .filter(|_| self.panel.open)
-            .and_then(super::dismissal::Dismissal::resource)
-            .into_iter()
-            .collect()
-    }
-}
-
 impl<C: Widget + 'static> crate::widget::controls::ActionControls for Popover<C> {
     fn attach_controls(
         &mut self,
@@ -1407,8 +1367,6 @@ impl<C: Widget + 'static> Widget for Popover<C> {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
     );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -1611,7 +1569,7 @@ impl crate::widget::Button {
         let request = std::rc::Rc::new(std::cell::Cell::new(false));
         let flag = std::rc::Rc::clone(&request);
         PopoverButton {
-            button: self.on_view(move || flag.set(true)),
+            button: self.on_open(move || flag.set(true)),
             popover: Popover::with_content(content),
             request,
         }

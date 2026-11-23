@@ -467,7 +467,7 @@ impl Capabilities {
                 &label,
             )
             .control_size(ui::widget::ControlSize::Regular)
-            .on_effect(move || {
+            .on_click(move || {
                 engine.send(if permission {
                     WebViewCommand::PermissionDecision { id, allow }
                 } else {
@@ -527,7 +527,7 @@ impl Capabilities {
                 &label,
             )
             .control_size(ui::widget::ControlSize::Regular)
-            .on_effect(move || questions.borrow_mut().answer(&engine, request, allow))
+            .on_click(move || questions.borrow_mut().answer(&engine, request, allow))
         };
         // In the popover as a site's question is: no frame of its own.
         Box::new(column.push(Box::new(
@@ -719,7 +719,7 @@ impl Capabilities {
                         &format!("browser.download.cancel.{id}"),
                         &crate::CATALOG.t("browser-download-cancel"),
                     )
-                    .on_effect(move || {
+                    .on_click(move || {
                         engine.send(WebViewCommand::CancelNativeDownload { id });
                     }),
                 );
@@ -734,7 +734,7 @@ impl Capabilities {
                     let notice = self.notice.writer();
                     buttons.push(
                         Button::new(&format!("browser.download.{name}.{id}"), &label)
-                            .on_effect(move || launch_download(&path, reveal, &notice)),
+                            .on_click(move || launch_download(&path, reveal, &notice)),
                     );
                 }
             }
@@ -746,7 +746,7 @@ impl Capabilities {
                             &format!("browser.download.retry.{id}"),
                             &crate::CATALOG.t("browser-download-retry"),
                         )
-                        .on_effect(move || {
+                        .on_click(move || {
                             engine.send(WebViewCommand::RetryDownload { id });
                         }),
                     );
@@ -819,15 +819,7 @@ mod tests {
                 "browser.decision.extension.4.true"
             ));
             assert!(!contains(prompt.as_ref(), "browser.decision.true.1.true"));
-            prompt
-                .start_encoded(
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.decision.extension.4.true").unwrap(),
-                    &mut automerge::AutoCommit::new(),
-                    &automerge::ROOT,
-                )
-                .unwrap();
+            ui::framework::press_control(&mut prompt, "browser.decision.extension.4.true", &mut automerge::AutoCommit::new(), &automerge::ROOT);
             assert_eq!(
                 capture.commands(),
                 [WebViewCommand::ExtensionPermissionDecision {
@@ -963,16 +955,8 @@ mod tests {
             assert!(capabilities.downloads_changed());
             let mut rows = capabilities.downloads(&engine, &ui::Theme::dark());
             assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
-            let result = rows
-                .start_encoded(
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.download.cancel.7").unwrap(),
-                    &mut automerge::AutoCommit::new(),
-                    &automerge::ROOT,
-                )
-                .unwrap();
-            assert!(result.is_some());
+            let result = ui::framework::press_control(&mut rows, "browser.download.cancel.7", &mut automerge::AutoCommit::new(), &automerge::ROOT);
+            assert!(result);
             assert!(
                 capture
                     .commands()
@@ -1122,16 +1106,8 @@ mod tests {
             });
             let mut rows = capabilities.downloads(&engine, &ui::Theme::dark());
             assert!(contains(rows.as_ref(), "browser.download.retry.41"));
-            let result = rows
-                .start_encoded(
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.download.retry.41").unwrap(),
-                    &mut automerge::AutoCommit::new(),
-                    &automerge::ROOT,
-                )
-                .unwrap();
-            assert!(result.is_some());
+            let result = ui::framework::press_control(&mut rows, "browser.download.retry.41", &mut automerge::AutoCommit::new(), &automerge::ROOT);
+            assert!(result);
             assert!(
                 capture
                     .commands()

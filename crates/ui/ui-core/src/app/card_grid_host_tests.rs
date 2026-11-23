@@ -14,7 +14,7 @@ fn fixture_tree(count: usize) -> (Box<dyn Widget>, Rc<RefCell<Vec<usize>>>) {
             let clicks = clicks.clone();
             Box::new(Card::new(Box::new(
                 Button::new(&format!("card-{i}"), &format!("Card {i}"))
-                    .on_view(move || clicks.borrow_mut().push(i)),
+                    .on_open(move || clicks.borrow_mut().push(i)),
             ))) as Element
         })
         .collect();
@@ -438,7 +438,7 @@ impl Widget for GrowingBody {
             let clicks = self.clicks.clone();
             self.column = std::mem::take(&mut self.column).push(Box::new(
                 Button::new(&format!("dynamic-{index}"), "Action")
-                    .on_effect(move || clicks.borrow_mut().push(index)),
+                    .on_click(move || clicks.borrow_mut().push(index)),
             ));
         }
         self.dirty = true;

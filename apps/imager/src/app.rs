@@ -73,7 +73,7 @@ pub(crate) type Commands = Rc<RefCell<Vec<Command>>>;
 
 pub(crate) fn command_button(commands: &Commands, id: &str, key: &str, command: Command) -> Button {
     let sink = Rc::clone(commands);
-    Button::new(id, &CATALOG.t(key)).on_effect(move || sink.borrow_mut().push(command.clone()))
+    Button::new(id, &CATALOG.t(key)).on_click(move || sink.borrow_mut().push(command.clone()))
 }
 
 struct PendingWriterResult {
@@ -764,7 +764,7 @@ impl ImagerApp {
         .current(self.stepper_current());
         if matches!(self.step, Step::Drive | Step::Customize | Step::Confirm) {
             let sink = Rc::clone(&self.commands);
-            stepper = stepper.on_station_view(move |index| {
+            stepper = stepper.on_station(move |index| {
                 sink.borrow_mut().push(Command::Station(index));
             });
         }
@@ -938,7 +938,7 @@ impl ImagerApp {
                     .message(crate::setup::strings::t("imager-drop-message"))
                     .icon(Icon::Download)
                     .with_action(self.button("imager.browse", "imager-browse", Command::PickFile))
-                    .on_files_view(move |files| {
+                    .on_files(move |files| {
                         if let Some(file) = files.into_iter().next() {
                             sink.borrow_mut().push(Command::Dropped(file));
                         }
@@ -988,7 +988,7 @@ impl ImagerApp {
                             .meta(fmt_size(source.size))
                             .selected(self.recent_selected(index))
                             .checked(self.recent_selected(index))
-                            .on_effect(move || sink.borrow_mut().push(Command::Recent(index))),
+                            .on_click(move || sink.borrow_mut().push(Command::Recent(index))),
                     ) as Box<dyn Widget>)
                 })
                 .collect();
@@ -1059,7 +1059,7 @@ impl ImagerApp {
             self.bind_effect(row, &ImagerEffect::CancelDownload)
         } else {
             let sink = Rc::clone(&self.commands);
-            row.on_effect(move || sink.borrow_mut().push(Command::Release(index)))
+            row.on_click(move || sink.borrow_mut().push(Command::Release(index)))
         };
         if downloading
             && let Some(cancel) = self

@@ -56,92 +56,6 @@ pub fn paint_disabled(scene: &mut Scene, transform: Affine, bounds: &impl vello:
     );
 }
 
-pub(crate) const NATIVE_INVOKE: &str = "tilo.ui.control.invoke";
-
-/// A zero-argument effect or view action a control publishes for its own
-/// closure, so a closure-bound control is still discoverable and
-/// agent-driveable like [`Button::on_effect`](crate::widget::Button::on_effect).
-pub(crate) struct NativeControl {
-    resource: tilo_actions::ResourceSpec,
-    handler: Box<dyn FnMut()>,
-}
-
-impl NativeControl {
-    #[expect(
-        clippy::expect_used,
-        reason = "String serialization and lookup of the just-created action are infallible"
-    )]
-    pub(crate) fn new(
-        id: &str,
-        label: &str,
-        kind: tilo_actions::OperationKind,
-        handler: Box<dyn FnMut()>,
-    ) -> (Self, tilo_actions::ActionBinding<()>) {
-        let spec = tilo_actions::ActionSpec::operation("invoke", label, kind, NATIVE_INVOKE, &id)
-            .expect("a control id is always JSON serializable")
-            .for_audience(tilo_actions::Audience::Agents);
-        let resource =
-            tilo_actions::ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", label)
-                .with_action(spec);
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
-            .expect("the synthesized invoke action is nullary");
-        (Self { resource, handler }, binding)
-    }
-
-    pub(crate) fn resource(&self) -> tilo_actions::ResourceSpec {
-        self.resource.clone()
-    }
-
-    pub(crate) fn resource_of(
-        id: &str,
-        label: &str,
-        kind: tilo_actions::OperationKind,
-    ) -> tilo_actions::ResourceSpec {
-        Self::new(id, label, kind, Box::new(|| {})).0.resource
-    }
-
-    pub(crate) fn into_handler(self) -> Box<dyn FnMut()> {
-        self.handler
-    }
-
-    pub(crate) fn run(&mut self) {
-        (self.handler)();
-    }
-
-    pub(crate) fn start(
-        &mut self,
-        id: &str,
-        op: &crate::widget::ResourceOperation<'_>,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let request = op.request();
-        if request.kind == tilo_actions::OperationKind::Document || request.type_id != NATIVE_INVOKE
-        {
-            return Ok(None);
-        }
-        let control: String =
-            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
-        if control != id {
-            return Ok(None);
-        }
-        (self.handler)();
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
-    }
-}
-
-pub(crate) fn invoked_control(
-    op: &crate::widget::ResourceOperation<'_>,
-) -> Result<Option<String>, String> {
-    let request = op.request();
-    if request.kind == tilo_actions::OperationKind::Document || request.type_id != NATIVE_INVOKE {
-        return Ok(None);
-    }
-    serde_json::from_slice(request.payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
 thread_local! {
     static PRESSES: std::cell::RefCell<Vec<Point>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -166,7 +80,6 @@ pub(crate) struct Activation {
     id: String,
     action: Option<ActionEmitter<()>>,
     on_activate: Option<Box<dyn FnMut()>>,
-    native: Option<NativeControl>,
     pub(crate) state: Interaction,
     held: HeldPress,
     cursor: Point,
@@ -197,78 +110,32 @@ impl Activation {
     pub(crate) fn set_callback(&mut self, f: Box<dyn FnMut()>) {
         self.on_activate = Some(f);
         self.action = None;
-        self.native = None;
         self.opens = false;
     }
 
     pub(crate) fn set_action(&mut self, binding: tilo_actions::ActionBinding<()>) {
         self.action = Some(ActionEmitter::new(binding));
         self.on_activate = None;
-        self.native = None;
         self.opens = false;
     }
 
-    pub(crate) fn set_native(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        label: &str,
-        handler: Box<dyn FnMut()>,
-    ) {
-        let (native, binding) = NativeControl::new(&self.id, label, kind, handler);
-        self.set_action(binding);
-        self.native = Some(native);
-        self.opens = kind == tilo_actions::OperationKind::View;
+    /// A press that opens or shows something: a double-click asks for it once.
+    pub(crate) fn set_open(&mut self, handler: Box<dyn FnMut()>) {
+        self.set_callback(handler);
+        self.opens = true;
     }
 
-    pub(crate) fn set_event(&mut self, event: crate::component::Event, label: &str) {
+    pub(crate) fn set_event(&mut self, event: crate::component::Event) {
         match event {
             crate::component::Event::None => self.clear_event(),
             crate::component::Event::Action(binding) => self.set_action(binding),
-            crate::component::Event::View(intent) => self.set_native(
-                tilo_actions::OperationKind::View,
-                label,
-                Box::new(intent.sender()),
-            ),
+            crate::component::Event::View(intent) => self.set_open(Box::new(intent.sender())),
         }
     }
 
     pub(crate) fn clear_event(&mut self) {
         self.on_activate = None;
         self.action = None;
-        self.native = None;
-    }
-
-    pub(crate) fn native_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        self.native
-            .as_ref()
-            .map(NativeControl::resource)
-            .into_iter()
-            .collect()
-    }
-
-    pub(crate) fn native_handler(&self) -> &'static [&'static str] {
-        if self.native.is_some() {
-            &[NATIVE_INVOKE]
-        } else {
-            &[]
-        }
-    }
-
-    pub(crate) fn native_handlers(&self) -> std::collections::HashSet<String> {
-        self.native
-            .as_ref()
-            .map(|_| std::iter::once(NATIVE_INVOKE.to_owned()).collect())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn start_native(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        match &mut self.native {
-            Some(native) => native.start(&self.id, op),
-            None => Ok(None),
-        }
     }
 
     pub(crate) fn is_bound(&self) -> bool {

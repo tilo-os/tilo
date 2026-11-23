@@ -1029,9 +1029,6 @@ impl<C: Widget + 'static> ModalDialog<C> {
     #[must_use]
     pub fn with_test_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = Some(id.into());
-        if let Some(dismiss) = self.dismiss.take() {
-            self.dismiss = Some(dismiss.renamed(self.surface_id()));
-        }
         self
     }
 
@@ -2479,8 +2476,6 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

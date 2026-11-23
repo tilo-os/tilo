@@ -512,7 +512,7 @@ fn card(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let button = |id: &str, icon: Icon, then: Box<dyn Fn()>| -> Element {
         let name = lookup(id);
-        Box::new(Button::new(id, &name).with_icon(icon).on_view(then))
+        Box::new(Button::new(id, &name).with_icon(icon).on_open(then))
     };
     let new = {
         let sheet = tools.sheet.clone();
@@ -540,7 +540,7 @@ fn card(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
                 .with_accessible_name(&name)
                 .tooltip(name.clone())
                 .control_size(ui::widget::ControlSize::Small)
-                .on_view(move || welcomed.set(true)),
+                .on_open(move || welcomed.set(true)),
         )
     };
     let recents = recent_list(cx, tools);

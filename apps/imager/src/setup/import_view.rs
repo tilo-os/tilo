@@ -2146,7 +2146,7 @@ impl ImportApp {
         let sink = Rc::clone(&self.commands);
         Button::new(id, &super::strings::t(key))
             .control_size(ui::widget::ControlSize::Regular)
-            .on_effect(move || sink.borrow_mut().push(command))
+            .on_click(move || sink.borrow_mut().push(command))
     }
 
     fn journey_choices(&self) -> Section {

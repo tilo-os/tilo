@@ -209,12 +209,12 @@ impl Said {
             } else {
                 ButtonRole::Primary
             })
-            .on_effect(asking(asked, Answer::Allow(suggestion.id)));
+            .on_click(asking(asked, Answer::Allow(suggestion.id)));
             let dismiss = Button::new(
                 &format!("chat.view.dismiss.{}", suggestion.id),
                 &t("chat-view-dismiss"),
             )
-            .on_view(asking(asked, Answer::Dismiss(suggestion.id)));
+            .on_open(asking(asked, Answer::Dismiss(suggestion.id)));
             card = card.push(Box::new(
                 Row::new()
                     .with_gap(gap)

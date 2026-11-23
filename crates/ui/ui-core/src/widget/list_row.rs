@@ -32,7 +32,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, ImageData};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-const CHECK_ROW: &str = "tilo.ui.row.check";
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{
     ActionEmitter, ChipStyle, DrawChild, Element, Fact, MediaArt, MediaAspect, MediaSource,
@@ -1143,7 +1142,6 @@ pub struct ListRow {
     swipe_offset: f64,
     trailing: Option<Trailing>,
     activation: Activation,
-    check_verb: Option<super::control_verb::ControlVerb<bool>>,
     check_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
     check_action: Option<crate::widget::ActionEmitter<()>>,
     /// What the box edits, when the app binds it to a field and gives it no action of its own: the
@@ -1232,7 +1230,6 @@ impl ListRow {
             swipe_offset: 0.0,
             trailing: None,
             activation: Activation::new(id),
-            check_verb: None,
             check_binding: None,
             check_action: None,
             check_identity: None,
@@ -1320,7 +1317,7 @@ impl ListRow {
     /// `event`: what a component's card does when it opens what it stands for.
     pub fn set_activate(&mut self, event: crate::component::Event) {
         let label = self.title.clone();
-        self.activation.set_event(event, &label);
+        self.activation.set_event(event);
         self.dirty = true;
     }
 
@@ -1606,27 +1603,6 @@ impl ListRow {
             self.feel = feel;
             self.dirty = true;
         }
-    }
-
-    /// [`Self::checkbox`] published as the row's view action `check`: a press on the box,
-    /// Space on the focused row, a screen reader's toggle, a script's and an agent's all
-    /// reach `on_toggle` through the same action.
-    #[must_use]
-    pub fn checkbox_view(mut self, checked: bool, on_toggle: impl FnMut(bool) + 'static) -> Self {
-        let control = self.activation.id().to_owned();
-        self.check_verb = Some(super::control_verb::ControlVerb::new(
-            &control,
-            "Check",
-            "check",
-            CHECK_ROW,
-            super::control_verb::VerbArgument::Flag,
-        ));
-        self.leading = Some(Leading::Checkbox {
-            checked,
-            on_toggle: Box::new(on_toggle),
-            icon: None,
-        });
-        self
     }
 
     /// See [`ListRowFace::leading_column`].
@@ -2028,24 +2004,10 @@ impl ListRow {
         self
     }
 
-    /// Publish activation as a zero-argument effect, as
-    /// [`Button::on_effect`](crate::widget::Button::on_effect) does: the closure keeps
-    /// working and the row is discoverable and agent-driveable.
+    /// A press that opens or shows something: a double-click asks for it once.
     #[must_use]
-    pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
-        let label = self.title.clone();
-        self.activation
-            .set_native(tilo_actions::OperationKind::Effect, &label, Box::new(f));
-        self
-    }
-
-    /// Publish activation as a transient view action (opening, selecting), as
-    /// [`Button::on_view`](crate::widget::Button::on_view) does.
-    #[must_use]
-    pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
-        let label = self.title.clone();
-        self.activation
-            .set_native(tilo_actions::OperationKind::View, &label, Box::new(f));
+    pub fn on_open(mut self, f: impl FnMut() + 'static) -> Self {
+        self.activation.set_open(Box::new(f));
         self
     }
 
@@ -2502,10 +2464,6 @@ impl ListRow {
             *checked = !*checked;
             let now = *checked;
             self.dirty = true;
-            if let Some(verb) = &mut self.check_verb {
-                verb.emit(now);
-                return true;
-            }
             if let Some(action) = &mut self.check_action {
                 if let Err(error) = action.emit(()) {
                     tracing::warn!(%error, "a row's check refused the action's arguments");
@@ -2648,7 +2606,6 @@ impl Widget for ListRow {
     crate::provides!(
         dyn crate::widget::CardBody,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations,
         dyn crate::widget::ReservedShape,
         dyn crate::widget::RowActionRects,
@@ -3359,10 +3316,7 @@ impl Widget for ListRow {
 
 impl crate::widget::ResourceOperations for ListRow {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = self.activation.native_handlers();
-        if self.check_verb.is_some() {
-            handlers.insert(CHECK_ROW.to_owned());
-        }
+        let mut handlers = std::collections::HashSet::new();
         if let Some(trailing) = &self.trailing {
             handlers.extend(crate::widget::resource_operation_handlers(
                 &*trailing.element,
@@ -3377,45 +3331,7 @@ impl crate::widget::ResourceOperations for ListRow {
         doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = self.activation.start_native(op)? {
-            return Ok(Some(started));
-        }
-        let checked = self
-            .check_verb
-            .as_ref()
-            .map(|verb| verb.start(op))
-            .transpose()?
-            .flatten();
-        if let Some(checked) = checked {
-            if let Some(Leading::Checkbox {
-                checked: shown,
-                on_toggle,
-                ..
-            }) = &mut self.leading
-            {
-                *shown = checked;
-                self.dirty = true;
-                on_toggle(checked);
-            }
-            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
         crate::widget::start_in_children(self, op, doc, path)
-    }
-}
-
-impl crate::resources::PublishesResources for ListRow {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resource = self.activation.native_resources().into_iter().next();
-        if let Some(verb) = &self.check_verb {
-            let mut verb = verb.resource();
-            match resource.as_mut() {
-                Some(resource) => resource.actions.append(&mut verb.actions),
-                None => resource = Some(verb),
-            }
-        }
-        resource.into_iter().collect()
     }
 }
 

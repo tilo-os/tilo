@@ -1229,7 +1229,7 @@ fn view_button(
     let shared = shared.clone();
     Button::icon_only(id, icon, name)
         .control_size(ControlSize::Regular)
-        .on_view(move || shared.push(event))
+        .on_open(move || shared.push(event))
 }
 
 fn event_button(id: &str, icon: Icon, name: &str, event: Option<&Event>) -> Button {
@@ -1237,7 +1237,7 @@ fn event_button(id: &str, icon: Icon, name: &str, event: Option<&Event>) -> Butt
     match event {
         Some(event) => {
             let event = event.clone();
-            button.on_view(move || event.fire(None))
+            button.on_open(move || event.fire(None))
         }
         None => button,
     }
@@ -1247,7 +1247,7 @@ fn event_transport(id: &str, control: TransportControl, event: Option<&Event>) -
     match event {
         Some(event) => {
             let event = event.clone();
-            Button::transport(id, control).on_view(move || event.fire(None))
+            Button::transport(id, control).on_open(move || event.fire(None))
         }
         None => Button::transport(id, control),
     }
@@ -1257,7 +1257,7 @@ fn event_slider(slider: Slider, event: Option<&Event>) -> Slider {
     match event {
         Some(event) => {
             let event = event.clone();
-            slider.on_change_view(move |value| {
+            slider.on_change(move |value| {
                 event.fire(Some(crate::component::Value::Float(value)));
             })
         }
@@ -1564,7 +1564,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
                 &crate::i18n::widget_format("media-more-controls", &[]),
             )
             .control_size(ControlSize::Regular)
-            .on_view(move || {
+            .on_open(move || {
                 let origin = shared.origin.get().to_vec2();
                 shared.push(TransportEvent::More(shared.more.get() + origin));
             })

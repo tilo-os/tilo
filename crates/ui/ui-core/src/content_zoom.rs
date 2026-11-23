@@ -286,14 +286,14 @@ pub fn controls<F: FnMut(ZoomStep) + 'static>(
             &crate::i18n::I18nManager::lookup_plain(key),
         )
         .with_enabled(model.can_step(wanted))
-        .on_effect(step(wanted))
+        .on_click(step(wanted))
     };
     vec![
         label("zoom-out", "host-zoom-out", ZoomStep::Out),
         crate::widget::Button::new(&format!("{prefix}.zoom-level"), &model.label(default_label))
             .role(crate::widget::ButtonRole::Plain)
             .with_enabled(!model.is_default())
-            .on_effect(step(ZoomStep::Reset)),
+            .on_click(step(ZoomStep::Reset)),
         label("zoom-in", "host-zoom-in", ZoomStep::In),
     ]
 }

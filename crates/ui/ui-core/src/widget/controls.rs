@@ -255,10 +255,8 @@ pub fn take_control_invocation(widget: &mut dyn Widget) -> Option<tilo_actions::
 }
 
 /// Run the queued control intents of a tree whose host keeps no resource tree of its own, such as
-/// the shell's own UI: an intent is delivered to the control that published the action it names — a
-/// press ([`Button::on_effect`](super::Button::on_effect),
-/// [`Button::on_view`](super::Button::on_view)) and a control's own verb (the value a field
-/// reports, the choice a picker made) alike — as a resource host delivers an admitted invocation.
+/// the shell's own UI: an intent is delivered to the control that published the action it names, as
+/// a resource host delivers an admitted invocation.
 pub fn start_pending_control_invocations(
     root: &mut dyn Widget,
     doc: &mut Edits<'_>,
@@ -277,27 +275,14 @@ pub fn start_pending_control_invocations(
         let encoded = spec
             .as_ref()
             .and_then(|spec| spec.build_json(&invocation.arguments).ok());
-        let control_press = encoded
-            .is_none()
-            .then(|| {
-                let control = invocation.address.resource.strip_prefix("tilo.control:")?;
-                (invocation.address.action == "invoke").then(|| serde_json::to_vec(control).ok())
-            })
-            .flatten()
-            .flatten();
-        let (kind, type_id, payload) = match (&spec, &encoded, &control_press) {
-            (Some(spec), Some(encoded), _) => (
-                spec.kind,
-                encoded.type_id.as_str(),
-                encoded.payload.as_slice(),
-            ),
-            (_, _, Some(payload)) => (
-                tilo_actions::OperationKind::Effect,
-                super::activation::NATIVE_INVOKE,
-                payload.as_slice(),
-            ),
-            _ => continue,
+        let (Some(spec), Some(encoded)) = (&spec, &encoded) else {
+            continue;
         };
+        let (kind, type_id, payload) = (
+            spec.kind,
+            encoded.type_id.as_str(),
+            encoded.payload.as_slice(),
+        );
         let operation =
             ResourceOperation::local(tilo_actions::InvocationId::new(), kind, type_id, payload);
         if matches!(

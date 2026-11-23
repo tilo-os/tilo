@@ -486,12 +486,6 @@ pub struct TextInput {
     /// what holds it is told, so a caret on a canvas goes away with it.
     cancel_event: crate::component::Event,
     submit_action: Option<ActionEmitter<String>>,
-    submit_view: Option<(ActionEmitter<()>, tilo_actions::ResourceSpec)>,
-    /// The words a submit published and its own handler has not answered yet: an entry clears
-    /// itself as it submits, so what it sent is held here for the answer, never read back from
-    /// the field once it stands empty.
-    submitted: Option<String>,
-    change_verb: Option<super::control_verb::ControlVerb<String>>,
     accessory: Option<Accessory>,
     /// `font_size_override` is a document-space size, never grown by the text
     /// scale ([`Self::with_content_size`]).
@@ -572,19 +566,6 @@ pub enum AccessoryAction {
 }
 
 const ACCESSORY_TARGET: &str = "text-input-accessory";
-
-const SUBMIT_TEXT: &str = "tilo.ui.text.submit";
-
-const CHANGE_TEXT: &str = "tilo.ui.text.change";
-
-/// What a `tilo.ui.text.submit` operation carries: the field it submits. An entry lets go of
-/// what it sent as it submits ([`TextInput::fire_submit`]), so what it held is read from the
-/// field's own record of the submission it is waiting to have answered (`submitted`), never from
-/// the text the field shows by then.
-#[derive(serde::Deserialize)]
-struct SubmitPayload {
-    control: String,
-}
 
 struct Accessory {
     icon: crate::icons::Icon,
@@ -796,9 +777,6 @@ impl TextInput {
             selection_event: None,
             cancel_event: crate::component::Event::None,
             submit_action: None,
-            submit_view: None,
-            submitted: None,
-            change_verb: None,
             accessory: None,
             content_sized: false,
             span_highlighter: None,
@@ -4060,17 +4038,7 @@ impl TextInput {
         if let Some(action) = &mut self.submit_action {
             let _ = action.emit(text.clone());
         }
-        let control = self.test_id().unwrap_or("text_input").to_owned();
-        if let Some((action, _)) = &mut self.submit_view {
-            if self.entry {
-                // What was submitted, kept for the answer below: the entry lets go of the words
-                // as it submits, so the answer must not read the field for them.
-                self.submitted = Some(text.clone());
-            }
-            if let Err(error) = action.emit(()) {
-                tracing::warn!(%error, %control, "a field refused its submit");
-            }
-        } else if let Some(callback) = self.on_submit.as_mut() {
+        if let Some(callback) = self.on_submit.as_mut() {
             callback(&text);
         }
         if self.entry {
@@ -4782,87 +4750,7 @@ impl Drop for TextInput {
     }
 }
 
-impl crate::resources::PublishesResources for TextInput {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resource = match (&self.submit_view, &self.change_verb) {
-            (None, None) => return Vec::new(),
-            (Some((_, submit)), None) => return vec![submit.clone()],
-            (None, Some(verb)) => return vec![verb.resource()],
-            (Some((_, submit)), Some(_)) => submit.clone(),
-        };
-        if let Some(verb) = &self.change_verb {
-            resource.actions.extend(verb.resource().actions);
-        }
-        vec![resource]
-    }
-}
-
-const TEXT_OPERATIONS: [&[&str]; 8] = {
-    const C: &str = CHANGE_TEXT;
-    const S: &str = SUBMIT_TEXT;
-    const E: &str = crate::undo::EDIT_OPERATION;
-    [&[], &[C], &[S], &[C, S], &[E], &[C, E], &[S, E], &[C, S, E]]
-};
-
-impl crate::widget::ResourceOperations for TextInput {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        let mut mask = 0;
-        if self.change_verb.is_some() {
-            mask |= 1;
-        }
-        if self.submit_view.is_some() {
-            mask |= 2;
-        }
-        if !crate::widget::resource_operation::local_history_handlers(self).is_empty() {
-            mask |= 4;
-        }
-        TEXT_OPERATIONS[mask]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let changed = self
-            .change_verb
-            .as_ref()
-            .map(|verb| verb.start(op))
-            .transpose()?
-            .flatten();
-        if let Some(text) = changed {
-            if let Some(callback) = self.on_change.as_mut() {
-                callback(&text);
-            }
-            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        let request = op.request();
-        let is_submit =
-            request.kind == tilo_actions::OperationKind::View && request.type_id == SUBMIT_TEXT;
-        if !is_submit {
-            return crate::widget::resource_operation::start_by_default(self, op, doc, path);
-        }
-        let payload: SubmitPayload =
-            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
-        if payload.control != self.test_id().unwrap_or("text_input") {
-            return Ok(None);
-        }
-        // What was submitted as it stood, never the text the field shows now: an entry let go of
-        // its words when it submitted them, so reading back would hand on an empty message (the
-        // words `fire_submit` kept for this answer). An ordinary field still holds them, and one
-        // another writer submitted (a script, an agent) takes what the field holds.
-        let text = self.submitted.take().unwrap_or_else(|| self.text.clone());
-        if let Some(callback) = self.on_submit.as_mut() {
-            callback(&text);
-        }
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
-    }
-}
+impl crate::widget::ResourceOperations for TextInput {}
 
 impl PlaceholderFit for TextInput {
     fn placeholder_fit(&self) -> Option<PromptFit> {
@@ -4917,7 +4805,6 @@ impl Widget for TextInput {
         dyn crate::widget::controls::ActionControls,
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::undo::UndoPoints,
-        dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations,
         dyn crate::widget::PlaceholderFit
     );
@@ -5788,7 +5675,7 @@ impl Widget for TextInput {
         } else if !self.id.is_empty() {
             node = node.with_semantic_key(&self.id);
         }
-        if self.action.is_none() && self.on_change.is_none() && self.change_verb.is_none() {
+        if self.action.is_none() && self.on_change.is_none() {
             node = node.with_action_target(self.control_identity());
         }
         if secret {
@@ -6098,28 +5985,12 @@ impl crate::widget::controls::ActionControls for TextInput {
         if let Some(action) = &mut self.submit_action {
             let _ = action.attach(domain, attachment);
         }
-        if let Some((action, _)) = &mut self.submit_view {
-            let _ = action.attach(domain, attachment);
-        }
-        if let Some(verb) = &mut self.change_verb {
-            verb.attach(domain, attachment);
-        }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action
             .as_mut()
             .and_then(ActionEmitter::take)
             .or_else(|| self.submit_action.as_mut().and_then(ActionEmitter::take))
-            .or_else(|| {
-                self.submit_view
-                    .as_mut()
-                    .and_then(|(action, _)| action.take())
-            })
-            .or_else(|| {
-                self.change_verb
-                    .as_mut()
-                    .and_then(super::control_verb::ControlVerb::take)
-            })
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.field_action_bindings();
@@ -6232,12 +6103,6 @@ impl TextInput {
         if let Some(action) = &self.submit_action {
             bindings.push(action.metadata(control_id.clone()));
         }
-        if let Some((action, _)) = &self.submit_view {
-            bindings.push(action.metadata(control_id.clone()));
-        }
-        if let Some(verb) = &self.change_verb {
-            bindings.push(verb.metadata(&control_id));
-        }
         bindings
     }
     fn refresh_control_action_availability(
@@ -6250,12 +6115,6 @@ impl TextInput {
         if let Some(action) = &mut self.submit_action {
             action.refresh_availability(allowed);
         }
-        if let Some((action, _)) = &mut self.submit_view {
-            action.refresh_availability(allowed);
-        }
-        if let Some(verb) = &mut self.change_verb {
-            verb.refresh_availability(allowed);
-        }
         self.reveal.set_enabled(!self.effectively_disabled());
     }
 }
@@ -6264,8 +6123,6 @@ impl TextInput {
     fn value_bindings(&self, control_id: &str) -> Vec<ControlBindingMetadata> {
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
-        } else if let Some(verb) = &self.change_verb {
-            vec![verb.metadata(control_id)]
         } else if self.bound_text.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),

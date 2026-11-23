@@ -183,7 +183,7 @@ impl Controls {
         // doubles as the button's accessible name.
         Button::icon_only(id, icon, tip)
             .with_enabled(enabled)
-            .on_effect(move || push(&sink, cmd.clone()))
+            .on_click(move || push(&sink, cmd.clone()))
             .into_widget()
     }
 
@@ -236,7 +236,7 @@ impl Controls {
                     ],
                     selected,
                 )
-                .on_view("files.view-mode", move |i| {
+                .on_choose("files.view-mode", move |i| {
                     let mode = if i == 0 {
                         ViewMode::List
                     } else {
@@ -254,7 +254,7 @@ impl Controls {
                 out.push(
                     Button::new("files.sort_menu", &t("files-sort-by"))
                         .with_icon(Icon::ArrowUpDown)
-                        .on_effect(move || push(&sink, FileCommand::OpenSortMenu))
+                        .on_click(move || push(&sink, FileCommand::OpenSortMenu))
                         .into_widget(),
                 );
             }
@@ -274,7 +274,7 @@ impl Controls {
             };
             out.push(
                 button
-                    .on_effect(move || {
+                    .on_click(move || {
                         push(&sink, FileCommand::ExtractCurrentArchive);
                     })
                     .into_widget(),
@@ -289,7 +289,7 @@ impl Controls {
                     Icon::MoreHorizontal,
                     &t("files-view-options"),
                 )
-                .on_effect(move || push(&sink, FileCommand::OpenViewMenu))
+                .on_click(move || push(&sink, FileCommand::OpenViewMenu))
                 .into_widget(),
             );
         }

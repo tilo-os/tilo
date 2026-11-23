@@ -20,7 +20,7 @@ fn fixture() -> App {
                 .with_footer(
                     Actions::new(
                         Button::new(&format!("primary-{index}"), "Refresh connections")
-                            .on_effect(crate::testing::record_click("clicked"))
+                            .on_click(crate::testing::record_click("clicked"))
                             .role(ButtonRole::Primary),
                     )
                     .secondary(Button::new(&format!("secondary-{index}"), "Details")),
@@ -140,7 +140,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             ))))));
         }
         content = content.push(Box::new(
-            Button::new("final-action", "Open all applications").on_effect(move || {
+            Button::new("final-action", "Open all applications").on_click(move || {
                 activated.set(activated.get() + 1);
             }),
         ));
@@ -222,7 +222,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             .with_icon(crate::icons::Icon::Inbox)
             .with_message("Reconnect to load messages.")
             .with_action("Review connection settings")
-            .on_view(move || activated.set(activated.get() + 1))
+            .on_open(move || activated.set(activated.get() + 1))
             .into_scrollable()
             .with_height(50.0);
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));

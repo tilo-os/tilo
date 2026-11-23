@@ -524,12 +524,7 @@ fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
     let audit = driver.native_app_audit();
     assert!(audit.is_certified(), "{:?}", audit.issues);
     driver
-        .invoke_action(
-            &tilo_actions::ActionAddress::new("tilo.control:open-settings", "invoke"),
-            &serde_json::Map::new(),
-            false,
-            None,
-        )
+        .perform_named("open-settings", &crate::a11y::Action::Activate)
         .unwrap();
     assert_eq!(handle.current(), "settings");
     assert!(driver.native_app_audit().is_certified());

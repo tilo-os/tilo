@@ -69,14 +69,6 @@ fn a_board_holding_cards_publishes_its_actions_and_each_card_its_own_control() {
             "the board publishes `{action}`: {actions:?}"
         );
     }
-    // A card opens its page when pressed: that press is a control of the window's own, which
-    // an agent reaches as a person does.
-    assert!(
-        all.iter().any(|resource| resource.kind == "tilo.control"
-            && resource.label == "Write the release notes"),
-        "the card's press is published: {:?}",
-        all.iter().map(|r| (&r.kind, &r.label)).collect::<Vec<_>>()
-    );
 }
 
 #[test]
@@ -101,22 +93,9 @@ fn a_cards_menu_offers_its_moves_and_actions_and_keeps_every_binding_published()
         Vec::<String>::new(),
         "an open menu's rows are published too"
     );
-    let rows: Vec<(String, String)> = flattened(&app.harness().resources())
-        .into_iter()
-        .filter(|resource| resource.id.as_str().starts_with("tilo.control:menu."))
-        .map(|resource| (resource.id.as_str().to_owned(), resource.label.clone()))
-        .collect();
-    assert!(
-        rows.iter().any(|(_, label)| label == "Delete"),
-        "an agent reaches the menu's rows: {rows:?}"
-    );
-    // An agent choosing a row is the person's choice: the card moves.
-    let (done, _) = rows
-        .iter()
-        .find(|(_, label)| label == "Move to Done")
-        .expect("Move to Done is published");
+    // An agent choosing a row presses it as a person's assistive tool does: the card moves.
     app.harness()
-        .invoke_published(done, "invoke", &serde_json::Map::new())
+        .perform_named("Move to Done", &ui::a11y::Action::Activate)
         .expect("the row is reachable");
     settle(&mut app);
     let card = card_rect(&mut app, "Write the release notes");

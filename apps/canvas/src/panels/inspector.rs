@@ -272,7 +272,7 @@ fn layer_adjust(cx: &ViewCx<Artwork>, tools: &Tools, layer: &str) -> Element {
                 .push(Box::new(
                     Button::icon_only("canvas-layer-adjust-fold", icon, &name)
                         .control_size(ControlSize::Small)
-                        .on_view(move || flip.set(!flip.with(|on| *on))),
+                        .on_open(move || flip.set(!flip.with(|on| *on))),
                 ));
             let mut parts: Vec<Element> = vec![Box::new(header)];
             if *shown {

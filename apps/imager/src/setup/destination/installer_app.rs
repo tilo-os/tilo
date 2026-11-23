@@ -2230,7 +2230,7 @@ impl InstallerApp {
                     .selected(selected)
                     .checked(selected)
                     .with_enabled(!self.network.is_busy())
-                    .on_effect(move || fire.fire());
+                    .on_click(move || fire.fire());
                 children.push(Box::new(
                     Bound::new(Box::new(row), [(id, &control)]).activated_by_keys(&control),
                 ));

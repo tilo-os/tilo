@@ -263,7 +263,7 @@ impl SettingsPane {
                     Box::new(
                         Button::new(id, &crate::resource::CATALOG.t("browser-settings-manage"))
                             .with_accessible_name(&crate::resource::CATALOG.t(label))
-                            .on_view(move || request.set(Some(addresses))),
+                            .on_open(move || request.set(Some(addresses))),
                     ),
                 ));
             }
@@ -295,7 +295,7 @@ impl SettingsPane {
                             &crate::resource::CATALOG.t("browser-settings-new-private-window"),
                         )
                         .control_size(ui::widget::ControlSize::Regular)
-                        .on_effect(move || request.set(true)),
+                        .on_click(move || request.set(true)),
                     ),
                 )]),
             ));

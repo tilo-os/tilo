@@ -53,7 +53,7 @@ impl Described for EmptyState {
             state = match act {
                 Event::None => state,
                 Event::Action(binding) => state.on_action(binding),
-                Event::View(intent) => state.on_view(intent.sender()),
+                Event::View(intent) => state.on_open(intent.sender()),
             };
         }
         if inline { state.inline() } else { state }

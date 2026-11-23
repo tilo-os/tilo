@@ -183,7 +183,7 @@ impl SidebarNav {
                 // Headings and a New folder are what a growing library
                 // needs: the sidebar is a list from the start, never a rail.
                 .with_headings()
-                .on_view("feeds.sidebar", move |id| {
+                .on_choose("feeds.sidebar", move |id| {
                     if let Some(filter) = filter_of(&id) {
                         show.borrow_mut().push(Request::Show(filter));
                     }

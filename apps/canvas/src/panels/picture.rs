@@ -315,7 +315,7 @@ fn framing(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
             let flip = crop.clone();
             let button = Button::new(id, &name)
                 .tooltip(crate::locales::CATALOG.t("canvas-crop-hint"))
-                .on_view(move || flip.set(!flip.with(|on| *on)));
+                .on_open(move || flip.set(!flip.with(|on| *on)));
             Box::new(if *cropping {
                 button.role(ButtonRole::Primary)
             } else {

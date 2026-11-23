@@ -69,7 +69,7 @@ pub(crate) fn view(cx: &ViewCx<Window>, hands: &Hands, assistant: &Assistant) ->
             state
                 .with_action(tr("assistant-open-in-chat"))
                 .with_action_id("assistant-open-in-chat")
-                .on_view(move || hands.open_in_chat(&with))
+                .on_open(move || hands.open_in_chat(&with))
         };
         match shows {
             Shows::Elsewhere => Box::new(open(

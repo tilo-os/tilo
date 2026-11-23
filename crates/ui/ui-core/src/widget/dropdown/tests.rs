@@ -820,7 +820,7 @@ tilo_test_env::scenario! {
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
             let mut first = Dropdown::from_state(opts(), &state)
-                .on_change_view(move |value| captured.borrow_mut().push(value.to_owned()));
+                .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
             let mut second = Dropdown::from_state(opts(), &state);
             let mut document = AutoCommit::new();
 
@@ -839,7 +839,6 @@ tilo_test_env::scenario! {
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), "Europe/Amsterdam");
-            assert_eq!(crate::testing::answer_controls(&mut first), 1);
             assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
             Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(second.selected(), "Europe/Amsterdam");
@@ -863,7 +862,7 @@ tilo_test_env::scenario! {
         let captured = std::rc::Rc::clone(&chosen);
         let mut menu = Dropdown::from_state(opts(), &state)
             .as_menu(crate::icons::Icon::Plus)
-            .on_change_view(move |value| captured.borrow_mut().push(value.to_owned()));
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
         menu.rect = Rect::new(560.0, 100.0, 592.0, 132.0);
         let mut document = AutoCommit::new();
         let root = automerge::ROOT;
@@ -906,11 +905,6 @@ tilo_test_env::scenario! {
             &root,
         );
 
-        assert_eq!(
-            crate::testing::answer_controls(&mut menu),
-            1,
-            "the choice reaches its handler when it is answered"
-        );
         assert_eq!(&*chosen.borrow(), &["Europe/Amsterdam"]);
         assert!(!menu.is_open());
         assert_eq!(menu.selected(), "", "a command is not kept as a value");

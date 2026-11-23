@@ -1677,8 +1677,6 @@ impl Widget for ContextMenu {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
     );
 
     /// A menu paints its panel in the window's top layer and nothing in

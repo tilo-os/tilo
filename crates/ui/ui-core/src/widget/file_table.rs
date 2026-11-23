@@ -434,12 +434,12 @@ impl<R: FileRow> FileTable<R> {
             .with_row_key(row_key::<R>)
             .selectable(true)
             .on_header_click(move |index| header.header_click.set(Some(index)))
-            .on_activate_view(format!("{}.open", self.id), move |index| {
+            .on_activate(move |index| {
                 activate.activate.set(Some(index));
             });
         let table = if self.clicks {
             let click = Rc::clone(&self.mailbox);
-            table.on_row_click_view(format!("{}.click", self.id), move |index, ctrl, shift| {
+            table.on_row_click(move |index, ctrl, shift| {
                 click.click.set(Some((index, ctrl, shift)));
             })
         } else {
@@ -989,10 +989,6 @@ mod tests {
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert_eq!(
-            crate::testing::answer_controls(table.table.as_mut().expect("the table")),
-            1
-        );
         let (open, menu) = table.take_row_requests();
         assert_eq!(open, Some(0), "the file the reader activated opens");
         assert_eq!(menu, None);

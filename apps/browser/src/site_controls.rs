@@ -301,7 +301,7 @@ impl SiteControls {
         self.panel_with(width, max_height, Vec::new())
     }
     fn button(&self, id: &str, key: &str, pending: Pending) -> Button {
-        Button::new(id, &crate::CATALOG.t(key)).on_effect(self.command(pending))
+        Button::new(id, &crate::CATALOG.t(key)).on_click(self.command(pending))
     }
     fn command(&self, pending: Pending) -> impl FnMut() + 'static {
         let state = self.pending.clone();
@@ -319,7 +319,7 @@ impl SiteControls {
             &crate::CATALOG.t("browser-site-information"),
         )
         .tooltip(crate::CATALOG.t("browser-site-launcher-tooltip"))
-        .on_effect(self.open_command(true))
+        .on_click(self.open_command(true))
     }
     fn pages(&self) -> ui::widget::ViewTabs {
         let pending = self.pending.clone();
@@ -330,7 +330,7 @@ impl SiteControls {
             ],
             usize::from(self.information),
         )
-        .on_view("browser.site.pages", move |index| {
+        .on_choose("browser.site.pages", move |index| {
             pending.set(Some(Pending::Open(index == 1)));
         })
     }
@@ -760,19 +760,6 @@ mod tests {
                     .send(&mut *panel, &event)
                     .focus_target;
             }
-            let intent = ui::widget::controls::take_control_invocation(panel.as_mut())
-                .expect("pointer emits the Done operation");
-            assert_eq!(intent.address.resource, "tilo.control:browser.site.close");
-            let result = panel
-                .start_encoded(
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.site.close").unwrap(),
-                    &mut doc,
-                    &automerge::ROOT,
-                )
-                .unwrap();
-            assert!(result.is_some());
             assert!(matches!(controls.pending.get(), Some(Pending::Close)));
         }
 

@@ -26,8 +26,6 @@ use crate::widget::activation::Activation;
 pub(crate) const TINT_FILL: f32 = 0.15;
 pub(crate) const TINT_EDGE: f32 = 0.38;
 
-const TOGGLE_CHIP: &str = "tilo.ui.chip.toggle";
-const REMOVE_CHIP: &str = "tilo.ui.chip.remove";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ChipStyle {
@@ -641,8 +639,6 @@ pub struct Chip {
     /// Told each time a person presses the "×".
     on_remove: Option<Box<dyn FnMut()>>,
     remove_press: crate::widget::Press,
-    toggle_verb: Option<super::control_verb::ControlVerb<bool>>,
-    remove_verb: Option<super::control_verb::ControlVerb<bool>>,
     rect: Rect,
     x_rect: Rect,
     last_cursor: Point,
@@ -707,8 +703,6 @@ impl Chip {
             on_toggle: None,
             on_remove: None,
             remove_press: crate::widget::Press::default(),
-            toggle_verb: None,
-            remove_verb: None,
             rect: Rect::ZERO,
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -746,19 +740,10 @@ impl Chip {
         self
     }
 
+    /// A press that opens or shows something: a double-click asks for it once.
     #[must_use]
-    pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
-        let label = self.label.clone();
-        self.activation
-            .set_native(tilo_actions::OperationKind::Effect, &label, Box::new(f));
-        self
-    }
-
-    #[must_use]
-    pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
-        let label = self.label.clone();
-        self.activation
-            .set_native(tilo_actions::OperationKind::View, &label, Box::new(f));
+    pub fn on_open(mut self, f: impl FnMut() + 'static) -> Self {
+        self.activation.set_open(Box::new(f));
         self
     }
 
@@ -889,42 +874,23 @@ impl Chip {
         self.selected = on;
     }
 
+    /// Called with the chip's new selection when a press flips it.
     #[must_use]
-    pub fn on_toggle_view(mut self, f: impl FnMut(bool) + 'static) -> Self {
+    pub fn on_toggle(mut self, f: impl FnMut(bool) + 'static) -> Self {
         self.selectable = true;
-        let id = self.activation.id().to_owned();
-        let label = self.label.clone();
-        self.toggle_verb = Some(super::control_verb::ControlVerb::new(
-            &id,
-            &label,
-            "toggle",
-            TOGGLE_CHIP,
-            super::control_verb::VerbArgument::Flag,
-        ));
         self.on_toggle = Some(Box::new(f));
         self
     }
 
-    /// Remove the chip as its published view action `remove` (implies
-    /// [`removable`](Self::removable)), so the × a person presses, a screen
-    /// reader, a script and an agent all remove it the same way.
+    /// Show the × and call `f` when it removes the chip (implies [`removable`](Self::removable)).
     #[must_use]
-    pub fn on_remove_view(mut self, f: impl FnMut() + 'static) -> Self {
-        self.set_on_remove_view(f);
+    pub fn on_remove(mut self, f: impl FnMut() + 'static) -> Self {
+        self.set_on_remove(f);
         self
     }
 
-    pub fn set_on_remove_view(&mut self, f: impl FnMut() + 'static) {
+    pub fn set_on_remove(&mut self, f: impl FnMut() + 'static) {
         self.removable = true;
-        let id = self.activation.id().to_owned();
-        let label = self.label.clone();
-        self.remove_verb = Some(super::control_verb::ControlVerb::new(
-            &id,
-            &label,
-            "remove",
-            REMOVE_CHIP,
-            super::control_verb::VerbArgument::Flag,
-        ));
         self.on_remove = Some(Box::new(f));
         self.dirty = true;
     }
@@ -941,7 +907,6 @@ impl Chip {
             return;
         }
         self.removable = true;
-        self.remove_verb = None;
         self.on_remove = None;
         self.remove_press = press;
         self.dirty = true;
@@ -949,10 +914,6 @@ impl Chip {
 
     fn flipped(&mut self) {
         let selected = !self.selected;
-        if let Some(verb) = &mut self.toggle_verb {
-            verb.emit(selected);
-            return;
-        }
         self.selected = selected;
         self.toggled = true;
         if let Some(on_toggle) = self.on_toggle.as_mut() {
@@ -964,10 +925,6 @@ impl Chip {
         if !self.remove_press.is_none() {
             self.removed = true;
             self.remove_press.run();
-            return;
-        }
-        if let Some(verb) = &mut self.remove_verb {
-            verb.emit(true);
             return;
         }
         self.removed = true;
@@ -1083,8 +1040,6 @@ impl Widget for Chip {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
     );
 
     fn set_interaction_environment(
@@ -1322,12 +1277,16 @@ impl Widget for Chip {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _key_path: &[u64],
+        key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         match action {
+            Action::Activate if key_path == [REMOVE_KEY] && self.removable => {
+                self.remove_pressed();
+                true
+            }
             Action::Activate | Action::ToggleCheck if self.pressable() => self.press(),
             _ => false,
         }
@@ -1361,6 +1320,28 @@ impl Widget for Chip {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let node = self.own_accessibility()?;
+        if !self.removable {
+            return Some(node);
+        }
+        let name = self.accessible_name.as_deref().unwrap_or(&self.label);
+        // The × is a control of its own: a screen reader, and an agent shown the window,
+        // remove the chip through it as a person's click does.
+        Some(node.with_children(vec![
+            crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                .with_key(REMOVE_KEY)
+                .with_action_target(format!("{}/remove", self.activation.id()))
+                .with_name(format!("{} {name}", crate::i18n::widget_text("Remove")))
+                .with_bounds(self.x_rect),
+        ]))
+    }
+}
+
+/// The accessibility key of a removable chip's ×.
+const REMOVE_KEY: u64 = 1;
+
+impl Chip {
+    fn own_accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let name = self
             .accessible_name
@@ -1415,12 +1396,6 @@ impl crate::widget::controls::ActionControls for Chip {
     ) {
         self.activation.attach(domain, attachment);
         self.remove_press.attach(domain, attachment);
-        for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
-            .into_iter()
-            .flatten()
-        {
-            verb.attach(domain, attachment);
-        }
         for child in crate::widget::Widget::children_mut(self) {
             crate::widget::controls::attach_controls(child, domain, attachment);
         }
@@ -1428,16 +1403,6 @@ impl crate::widget::controls::ActionControls for Chip {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.activation
             .take_invocation()
-            .or_else(|| {
-                self.toggle_verb
-                    .as_mut()
-                    .and_then(super::control_verb::ControlVerb::take)
-            })
-            .or_else(|| {
-                self.remove_verb
-                    .as_mut()
-                    .and_then(super::control_verb::ControlVerb::take)
-            })
             .or_else(|| self.remove_press.take())
             .or_else(|| {
                 crate::widget::Widget::children_mut(self)
@@ -1448,12 +1413,6 @@ impl crate::widget::controls::ActionControls for Chip {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let mut bindings = self.activation.bindings();
         let control_id = self.activation.id();
-        if let Some(verb) = &self.toggle_verb {
-            bindings.push(verb.metadata(control_id));
-        }
-        if let Some(verb) = &self.remove_verb {
-            bindings.push(verb.metadata(control_id));
-        }
         bindings.extend(self.remove_press.metadata(control_id));
         for child in crate::widget::Widget::children(self) {
             bindings.extend(crate::widget::controls::control_action_bindings(child));
@@ -1466,108 +1425,12 @@ impl crate::widget::controls::ActionControls for Chip {
     ) {
         self.activation.refresh_availability(allowed);
         self.remove_press.refresh_availability(allowed);
-        for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
-            .into_iter()
-            .flatten()
-        {
-            verb.refresh_availability(allowed);
-        }
         for child in crate::widget::Widget::children_mut(self) {
             crate::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }
 
-impl crate::widget::ResourceOperations for Chip {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        let mut mask = 0;
-        if !self.activation.native_handler().is_empty() {
-            mask |= 1;
-        }
-        if self.toggle_verb.is_some() {
-            mask |= 2;
-        }
-        if self.remove_verb.is_some() {
-            mask |= 4;
-        }
-        CHIP_OPERATIONS[mask]
-    }
-
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.activation.native_handlers()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let toggled = self
-            .toggle_verb
-            .as_ref()
-            .map(|verb| verb.start(op))
-            .transpose()?
-            .flatten();
-        if let Some(selected) = toggled {
-            self.selected = selected;
-            self.toggled = true;
-            if let Some(on_toggle) = self.on_toggle.as_mut() {
-                on_toggle(selected);
-            }
-            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        let removed = self
-            .remove_verb
-            .as_ref()
-            .map(|verb| verb.start(op))
-            .transpose()?
-            .flatten();
-        if removed.is_some() {
-            self.removed = true;
-            if let Some(on_remove) = self.on_remove.as_mut() {
-                on_remove();
-            }
-            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        self.activation.start_native(op)
-    }
-}
-
-#[allow(
-    clippy::indexing_slicing,
-    reason = "the mask is built from the same bits"
-)]
-const CHIP_OPERATIONS: [&[&str]; 8] = {
-    const A: &str = crate::widget::activation::NATIVE_INVOKE;
-    const T: &str = TOGGLE_CHIP;
-    const R: &str = REMOVE_CHIP;
-    [&[], &[A], &[T], &[A, T], &[R], &[A, R], &[T, R], &[A, T, R]]
-};
-
-impl crate::resources::PublishesResources for Chip {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        // The chip is one resource however many verbs it publishes: a host
-        // keeps one spec per id, so a second spec under the same id would
-        // shadow the first and the verb it holds would answer nothing.
-        let mut resource = self.activation.native_resources().into_iter().next();
-        for verb in [self.toggle_verb.as_ref(), self.remove_verb.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            let mut verb = verb.resource();
-            match resource.as_mut() {
-                Some(resource) => resource.actions.append(&mut verb.actions),
-                None => resource = Some(verb),
-            }
-        }
-        resource.into_iter().collect()
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2009,7 +1872,7 @@ mod activation_tests {
             let counter = Rc::clone(&opened);
             let mut chip = Chip::new("design")
                 .with_id("tag-design")
-                .on_view(move || counter.set(counter.get() + 1));
+                .on_open(move || counter.set(counter.get() + 1));
             assert!(chip.is_focusable());
             let node = Widget::accessibility(&chip).unwrap();
             assert_eq!(node.role, crate::a11y::Role::Button);
@@ -2023,8 +1886,6 @@ mod activation_tests {
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
-            assert_eq!(opened.get(), 0, "the press waits to be answered");
-            assert_eq!(crate::testing::answer_controls(&mut chip), 1);
             assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
             let mut harness = crate::headless::FrameHarness::new(
                 crate::State::new(),
@@ -2087,8 +1948,8 @@ mod activation_tests {
             let counted = Rc::clone(&removed);
             let chip = Chip::new("Book: The Tideglass")
                 .with_id("view-chip:book")
-                .on_view(|| {})
-                .on_remove_view(move || counted.set(counted.get() + 1));
+                .on_open(|| {})
+                .on_remove(move || counted.set(counted.get() + 1));
             let mut harness = crate::headless::FrameHarness::new(
                 crate::State::new(),
                 Box::new(crate::widget::Row::new().push(Box::new(chip))),
@@ -2130,7 +1991,7 @@ mod activation_tests {
                 &mut text,
             );
             assert!(menu > plain);
-            let chip = Chip::new("Sort").menu().on_view(|| {});
+            let chip = Chip::new("Sort").menu().on_open(|| {});
             let node = Widget::accessibility(&chip).unwrap();
             assert_eq!(node.state.expanded, Some(false));
             let paint_x = |width: f64, text: &mut TextRenderer| {

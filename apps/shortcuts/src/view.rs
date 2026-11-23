@@ -883,7 +883,7 @@ fn run_history(ui: &Ui, effects: &EffectsState) -> Element {
         let mut item = ListRow::new(format!("run-record-{}", run.serial), run.name.clone())
             .secondary(secondary)
             .meta(run.started.clone())
-            .on_view(open);
+            .on_open(open);
         item = match &run.status {
             InvocationStatus::Running => item.active(),
             InvocationStatus::Failed(_) => item.error(),
@@ -2334,7 +2334,7 @@ fn add_controls(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> E
     Box::new(
         Row::new().push(Box::new(
             Button::new(&format!("add-action-{key}"), "shortcuts-add-step-button")
-                .on_view(move || picker.set(Some(address.clone()))),
+                .on_open(move || picker.set(Some(address.clone()))),
         )),
     )
 }
@@ -2434,7 +2434,7 @@ fn action_picker_body(
             "shortcuts-close",
         )
         .role(ButtonRole::Plain)
-        .on_view(move || picker.set(None))
+        .on_open(move || picker.set(None))
     };
     let mut groups: Vec<Element> = Vec::new();
     let blocks: Vec<Element> = block_offers()
@@ -2584,7 +2584,7 @@ fn fold_button(ui: &Ui, draft_id: &Id, path: &str, shutting: bool) -> Button {
     let key = Id::from_raw(path);
     Button::icon_only(&format!("{id}-{path}"), icon, &name)
         .control_size(ControlSize::Small)
-        .on_view(move || {
+        .on_open(move || {
             let mut steps = folded.get();
             steps.retain(|(folding, step)| !(folding == &draft && step == &key));
             if shutting {

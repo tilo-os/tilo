@@ -1494,7 +1494,7 @@ impl GreeterApp {
                                     .with_accessible_name(&sign_in)
                                     .tooltip(sign_in.clone())
                                     .control_size(ControlSize::Regular)
-                                    .on_effect(move || requests.sign_in.set(true)),
+                                    .on_click(move || requests.sign_in.set(true)),
                             ),
                         ],
                     )
@@ -1514,7 +1514,7 @@ impl GreeterApp {
                             .as_ref()
                             .is_some_and(AuthSession::can_cancel),
                     )
-                    .on_effect(move || requests.cancel_authentication.set(true)),
+                    .on_click(move || requests.cancel_authentication.set(true)),
             ));
         }
         // While an attempt runs, the alternate factor gives way to the live
@@ -1531,7 +1531,7 @@ impl GreeterApp {
                             .role(ui::widget::ButtonRole::Plain)
                             .with_icon(Icon::Fingerprint)
                             .control_size(ControlSize::Large)
-                            .on_effect(move || requests.fingerprint.set(true)),
+                            .on_click(move || requests.fingerprint.set(true)),
                     )],
                 )
                 .align(align),
@@ -1568,7 +1568,7 @@ impl GreeterApp {
                 .with_icon(Icon::User)
                 .control_size(ControlSize::Large)
                 .with_enabled(!busy)
-                .on_view(move || requests.account.set(Some(index))),
+                .on_open(move || requests.account.set(Some(index))),
             ));
         }
         let mut row = Row::new().with_gap(theme.tokens.spacing.s2);
@@ -1597,7 +1597,7 @@ impl GreeterApp {
                 .with_accessible_name(&label)
                 .tooltip(label)
                 .control_size(ControlSize::Large)
-                .on_own_device_effect(move || requests.accessibility.set(Some(request)));
+                .on_click(move || requests.accessibility.set(Some(request)));
             Box::new(if on {
                 button
             } else {
@@ -1710,7 +1710,7 @@ impl GreeterApp {
                 .as_menu(Icon::Power)
                 .with_id("greeter.power")
                 .with_accessible_name(t("greeter-power"))
-                .on_change_view(move |label| {
+                .on_change(move |label| {
                     let action = chosen
                         .iter()
                         .position(|candidate| candidate == label)

@@ -114,7 +114,7 @@ impl Chrome {
             } else {
                 ControlSize::Small
             })
-            .on_view("diffmerge.mode", {
+            .on_choose("diffmerge.mode", {
                 let mut diff = self.request(Command::Mode(Mode::Diff));
                 let mut merge = self.request(Command::Mode(Mode::Merge));
                 move |index| {
@@ -151,7 +151,7 @@ impl Chrome {
                 };
                 Button::icon_only(id, icon, &name)
                     .with_enabled(header.changes)
-                    .on_view(self.request(command))
+                    .on_open(self.request(command))
             }
             Command::LoadSample => {
                 let label = t(if header.compact {
@@ -160,7 +160,7 @@ impl Chrome {
                     "toolbar-sample"
                 });
                 Button::new("diffmerge.load-sample", &label)
-                    .on_own_device_effect(self.request(command))
+                    .on_click(self.request(command))
             }
             Command::SaveMerged => {
                 let label = if header.merge == MergeResult::Saved {
@@ -184,7 +184,7 @@ impl Chrome {
                 button
                     .role(ButtonRole::Primary)
                     .with_enabled(header.merge != MergeResult::None)
-                    .on_own_device_effect(self.request(Command::SaveMerged))
+                    .on_click(self.request(Command::SaveMerged))
             }
             Command::ShowFolders => {
                 let label = t("toolbar-folders");
@@ -195,7 +195,7 @@ impl Chrome {
                 };
                 button
                     .with_enabled(header.folders)
-                    .on_own_device_effect(self.request(Command::ShowFolders))
+                    .on_click(self.request(Command::ShowFolders))
             }
             Command::CompareFolders => {
                 let label = t(if header.compact {
@@ -208,7 +208,7 @@ impl Chrome {
                 } else {
                     Button::new("diffmerge.compare-folders", &label).with_icon(Icon::FolderOpen)
                 };
-                button.on_own_device_effect(self.request(Command::CompareFolders))
+                button.on_click(self.request(Command::CompareFolders))
             }
             Command::Open => {
                 let button = if header.compact {
@@ -218,7 +218,7 @@ impl Chrome {
                 };
                 button
                     .role(ButtonRole::Primary)
-                    .on_own_device_effect(self.request(command))
+                    .on_click(self.request(command))
             }
             Command::Mode(_) => return self.mode(header),
         };

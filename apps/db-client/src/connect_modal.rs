@@ -163,7 +163,7 @@ fn content(fields: &Fields) -> Element {
     )
     .with_style(SegmentedStyle::Segmented)
     .fill()
-    .on_view("db.modal.engine", move |index| {
+    .on_choose("db.modal.engine", move |index| {
         chosen.choose(engine_at(index));
     });
     let form: Element = match fields.engine() {

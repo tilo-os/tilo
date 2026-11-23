@@ -1,4 +1,5 @@
 use super::*;
+use automerge::AutoCommit;
 use crate::presence::PresenceCtx;
 use crate::testing::dispatch;
 use crate::tokens::TextRole;
@@ -27,7 +28,7 @@ fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
             0,
         )
         .bind_selection(&selected)
-        .on_view("camera-modes", move |index| {
+        .on_choose("camera-modes", move |index| {
             next.set(index);
             receipts.borrow_mut().push(index);
         }),
@@ -183,18 +184,13 @@ tilo_test_env::scenario! {
                 0,
                 Rect::new(0.0, 0.0, 300.0, 36.0),
             )
-            .on_view("choice", move |i| {
+            .on_choose("choice", move |i| {
                 *captured_clone.borrow_mut() = Some(i);
             });
 
             dispatch(&mut g, &cursor_moved(250.0, 18.0));
             dispatch(&mut g, &mouse_press());
 
-            assert_eq!(
-                crate::testing::answer_controls(&mut g),
-                1,
-                "the choice reaches the group when it is answered"
-            );
             assert_eq!(g.selected(), 2, "click in segment 2 must select index 2");
             assert_eq!(
                 *captured.borrow(),
@@ -214,20 +210,16 @@ tilo_test_env::scenario! {
                 ],
                 0,
             )
-            .on_view("choice", move |index| captured.borrow_mut().push(index));
+            .on_choose("choice", move |index| captured.borrow_mut().push(index));
             group.set_focus(true);
 
             assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
-            crate::testing::answer_controls(&mut group);
             assert_eq!(group.selected(), 1);
             assert!(dispatch(&mut group, &named_key(NamedKey::End)));
-            crate::testing::answer_controls(&mut group);
             assert_eq!(group.selected(), 2);
             assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
-            crate::testing::answer_controls(&mut group);
             assert_eq!(group.selected(), 0, "arrow navigation wraps");
             assert!(dispatch(&mut group, &named_key(NamedKey::Enter)));
-            crate::testing::answer_controls(&mut group);
             assert_eq!(&*changes.borrow(), &[1, 2, 0]);
 
             group.set_focus(false);
@@ -273,7 +265,7 @@ tilo_test_env::scenario! {
                 0,
                 Rect::new(0.0, 0.0, 200.0, 44.0),
             )
-            .on_view("appearance", |_| {});
+            .on_choose("appearance", |_| {});
             crate::widget::controls::refresh_control_action_availability(
                 &mut group,
                 &std::collections::HashSet::new(),
@@ -324,7 +316,7 @@ tilo_test_env::scenario! {
                 0,
                 Rect::new(0.0, 0.0, 300.0, 36.0),
             )
-            .on_view("choice", move |i| *captured.borrow_mut() = Some(i));
+            .on_choose("choice", move |i| *captured.borrow_mut() = Some(i));
 
             assert_eq!(
                 Widget::accessibility(&g).unwrap().value.as_deref(),
@@ -339,7 +331,6 @@ tilo_test_env::scenario! {
 
             dispatch(&mut g, &cursor_moved(250.0, 18.0));
             dispatch(&mut g, &mouse_press());
-            assert_eq!(crate::testing::answer_controls(&mut g), 1);
             assert_eq!(g.selected(), 2);
             assert_eq!(
                 Widget::accessibility(&g).unwrap().value.as_deref(),
@@ -351,7 +342,7 @@ tilo_test_env::scenario! {
             let changed = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&changed);
             let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
-                .on_view("choice", move |index| captured.borrow_mut().push(index));
+                .on_choose("choice", move |index| captured.borrow_mut().push(index));
 
             assert!(Widget::perform_semantic_action(
                 &mut group,
@@ -360,62 +351,6 @@ tilo_test_env::scenario! {
                 &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
-            assert_eq!(crate::testing::answer_controls(&mut group), 1);
-            assert_eq!(group.selected(), 1);
-            assert_eq!(&*changed.borrow(), &[1]);
-        }
-
-        {
-            let changed = Rc::new(RefCell::new(Vec::new()));
-            let captured = Rc::clone(&changed);
-            let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
-                .on_view("appearance", move |index| captured.borrow_mut().push(index));
-
-            let resources = crate::resources::resources(&group, &AutoCommit::new());
-            assert_eq!(resources.len(), 1);
-            let resource = &resources[0];
-            assert_eq!(resource.id.as_str(), "tilo.control:appearance");
-            assert_eq!(resource.actions.len(), 1);
-            let spec = &resource.actions[0];
-            assert_eq!(spec.kind, crate::tilo_actions::OperationKind::View);
-            assert_eq!(spec.params()[0].name, "index");
-
-            assert!(Widget::perform_semantic_action(
-                &mut group,
-                "appearance:segment:1",
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                &automerge::ROOT,
-            ));
-            assert_eq!(
-                group.selected(),
-                0,
-                "UI intent does not bypass the action host"
-            );
-            assert!(changed.borrow().is_empty());
-
-            let invocation = crate::widget::controls::take_control_invocation(&mut group).unwrap();
-            assert_eq!(
-                invocation.address,
-                crate::tilo_actions::ActionAddress::new("tilo.control:appearance", "select")
-            );
-            assert_eq!(invocation.arguments["index"], 1);
-            let encoded = spec.build_json(&invocation.arguments).unwrap();
-            assert_eq!(encoded.type_id, "tilo.ui.segmented.select");
-            let output = crate::widget::start_operation(
-                &mut group,
-                &crate::widget::ResourceOperation::local(
-                    crate::tilo_actions::InvocationId::new(),
-                    crate::tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                &automerge::ROOT,
-            )
-            .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
-            .unwrap();
-            assert!(output.is_some());
             assert_eq!(group.selected(), 1);
             assert_eq!(&*changed.borrow(), &[1]);
         }

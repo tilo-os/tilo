@@ -805,7 +805,7 @@ fn empty_view(tx: &Dispatch) -> El {
         ui::widget::EmptyState::new("Set up your first printer")
             .with_action("Find printers")
             .with_action_id("print-centre.add.first")
-            .on_effect(move || {
+            .on_click(move || {
                 let _ = tx.send(UiCommand::Discover);
             }),
     )

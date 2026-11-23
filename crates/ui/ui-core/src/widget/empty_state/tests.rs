@@ -331,7 +331,7 @@ tilo_test_env::scenario! {
                 .with_message("Reconnect to load messages.")
                 .with_action("Review connection settings")
                 .with_action_id("empty.review")
-                .on_view(move || counted.set(counted.get() + 1))
+                .on_open(move || counted.set(counted.get() + 1))
                 .into_scrollable()
                 .with_height(50.0);
             let mut harness = crate::headless::FrameHarness::for_root(
@@ -690,7 +690,7 @@ tilo_test_env::scenario! {
                 .with_icon(Icon::Inbox)
                 .with_message("Your inbox is empty")
                 .with_action("Compose")
-                .on_view(move || counted.set(counted.get() + 1));
+                .on_open(move || counted.set(counted.get() + 1));
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
             let target = es.action_rect().center();
@@ -700,15 +700,13 @@ tilo_test_env::scenario! {
                 dispatch(&mut es, &mouse_press()),
                 "click on the action pill is consumed"
             );
-            assert_eq!(crate::testing::answer_controls(&mut es), 1);
             assert_eq!(fired.get(), 1, "the action runs once per click");
-            assert_eq!(crate::testing::answer_controls(&mut es), 0);
         }
 
         fn click_outside_action_does_not_fire() {
             let mut es = EmptyState::new("Nothing here")
                 .with_action("Add")
-                .on_view(|| panic!("a click away from the pill runs nothing"));
+                .on_open(|| panic!("a click away from the pill runs nothing"));
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
             dispatch(&mut es, &cursor(Point::new(2.0, 2.0)));
@@ -716,7 +714,6 @@ tilo_test_env::scenario! {
                 !dispatch(&mut es, &mouse_press()),
                 "click away from the pill is not consumed"
             );
-            assert_eq!(crate::testing::answer_controls(&mut es), 0);
         }
 
         fn action_is_keyboard_reachable_and_exposed_as_a_named_button() {
@@ -725,7 +722,7 @@ tilo_test_env::scenario! {
             let mut es = EmptyState::new("No notes yet")
                 .with_message("Create one to get started")
                 .with_action("Create note")
-                .on_view(move || seen.set(true));
+                .on_open(move || seen.set(true));
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
 
@@ -750,7 +747,6 @@ tilo_test_env::scenario! {
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
-            assert_eq!(crate::testing::answer_controls(&mut es), 1);
             assert!(fired.get(), "Enter/Space/AT Activate reaches the CTA");
         }
 
@@ -762,7 +758,7 @@ tilo_test_env::scenario! {
             let empty = EmptyState::new("Nothing here")
                 .with_action("Open")
                 .with_action_id("empty.open")
-                .on_view(move || counted.set(counted.get() + 1));
+                .on_open(move || counted.set(counted.get() + 1));
             let mut harness = crate::headless::FrameHarness::for_root(
                 crate::State::new(),
                 empty,
@@ -860,7 +856,7 @@ tilo_test_env::scenario! {
         let root = EmptyState::new("No places yet")
             .with_action("Add a place")
             .with_action_id("weather.empty.add")
-            .on_view(move || seen.set(seen.get() + 1));
+            .on_open(move || seen.set(seen.get() + 1));
         let mut driver =
             crate::headless::FrameHarness::new(crate::state::State::new(), Box::new(root), (480, 360));
         let audit = driver.native_app_audit();
@@ -946,7 +942,7 @@ tilo_test_env::scenario! {
         let mut state = EmptyState::new("No notes yet")
             .with_message("Notes you write show up here.")
             .with_action("New note")
-            .on_view(|| {});
+            .on_open(|| {});
         lay_out(&mut state, 600.0, 400.0);
         let action = state.action_rect();
         let box_ = Widget::get_rect(&state);
@@ -988,7 +984,7 @@ tilo_test_env::scenario! {
     {
         let es = EmptyState::new("Unavailable")
             .with_details("os error 2")
-            .on_effect(|| {})
+            .on_click(|| {})
             .with_action("Try again");
         let target = es
             .accessibility()
@@ -1022,7 +1018,7 @@ tilo_test_env::scenario! {
         let mut es = EmptyState::new("Podman isn't available")
             .with_message("Install Podman to manage containers here.")
             .with_action("Try again")
-            .on_view(|| panic!("opening details is not the action"))
+            .on_open(|| panic!("opening details is not the action"))
             .with_details(detail);
         lay_out(&mut es, 600.0, 400.0);
         let _ = draw(&mut es);
@@ -1052,7 +1048,6 @@ tilo_test_env::scenario! {
         dispatch(&mut es, &cursor(toggle.center()));
         assert!(dispatch(&mut es, &mouse_press()), "the click opens it");
         assert!(es.details_open());
-        assert_eq!(crate::testing::answer_controls(&mut es), 0);
         let node = Widget::accessibility(&es).unwrap();
         assert!(
             node.children
@@ -1229,7 +1224,7 @@ fn details_keep_their_lines_and_copy_the_command_they_name() {
     crate::process::scoped(&services, || {
         let mut es = EmptyState::new("Settings could not open")
             .with_action("Try again")
-            .on_view(|| {})
+            .on_open(|| {})
             .with_details(
                 "kernel.x turns off user namespaces, which every app's sandbox is made in.\n\
                  Turn them on:\n    sudo sysctl kernel.x=1\n\

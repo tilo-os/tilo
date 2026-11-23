@@ -84,7 +84,7 @@ fn arriving_row(
             Box::new(crate::row![
                 reason,
                 crate::widget::Button::new("arriving.retry", "arriving-retry")
-                    .on_view(move || asked.set(Some(index))),
+                    .on_open(move || asked.set(Some(index))),
             ])
         }
         MountedRowState::Ready | MountedRowState::Pending => RowReserve::element(height),

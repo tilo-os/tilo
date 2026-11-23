@@ -90,7 +90,7 @@ pub(crate) fn response(
             .unwrap_or(0),
     )
     .control_size(ControlSize::Regular)
-    .on_view("api.response-view", move |i| {
+    .on_choose("api.response-view", move |i| {
         view_sink.borrow_mut().push(Cmd::SetView(i));
     });
     let status = Badge::text(format!("{} {}", data.status, data.status_text))

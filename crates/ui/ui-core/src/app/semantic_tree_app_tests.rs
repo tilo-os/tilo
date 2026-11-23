@@ -1745,7 +1745,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             ],
             0,
         )
-        .on_view("choice", move |index| captured.set(index));
+        .on_choose("choice", move |index| captured.set(index));
         let mut app = App::new(State::new(), Box::new(group));
         app.init_layout();
         app.refresh_semantic_tree();
@@ -1765,7 +1765,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
     {
         let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let captured = std::rc::Rc::clone(&presses);
-        let button = Button::new("drive-me", "Drive me").on_effect(move || {
+        let button = Button::new("drive-me", "Drive me").on_click(move || {
             captured.set(captured.get().saturating_add(1));
         });
         let mut app = App::new(State::new(), Box::new(button));
@@ -2278,7 +2278,7 @@ fn a_table_row_does_what_an_assistive_technology_asks_of_it() {
     ])
     .with_row_key(|row: &Listed| row.name.len() as u64)
     .selectable(true)
-    .on_activate_view("files.open", move |index| recorded.borrow_mut().push(index))
+    .on_activate(move |index| recorded.borrow_mut().push(index))
     .on_row_context_menu(move |index, _point, _rect| listed.borrow_mut().push(index));
     table.set_rows(vec![
         Listed { name: "Notes.txt" },

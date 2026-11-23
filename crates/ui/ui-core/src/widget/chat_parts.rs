@@ -164,7 +164,7 @@ impl EmojiPickerButton {
         let pressed = Rc::new(Cell::new(false));
         let press = Rc::clone(&pressed);
         let button = Button::icon_only(key, crate::icons::Icon::SmilePlus, label)
-            .on_view(move || press.set(true));
+            .on_open(move || press.set(true));
         Self {
             key: key.to_owned(),
             button,
@@ -357,7 +357,7 @@ impl Described for Quote {
                     crate::icons::Icon::X,
                     &label,
                 )
-                .on_effect(move || close()),
+                .on_click(move || close()),
             ));
         }
         let mut activation = crate::widget::activation::Activation::new(format!("{key}/quote"));
@@ -365,7 +365,7 @@ impl Described for Quote {
             || crate::i18n::I18nManager::lookup_plain("quote-open"),
             |author| author.name.clone(),
         );
-        activation.set_event(activate, &label);
+        activation.set_event(activate);
         let row = row.with_id(key);
         Self {
             key: key.to_owned(),

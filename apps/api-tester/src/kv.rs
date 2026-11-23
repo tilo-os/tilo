@@ -281,7 +281,7 @@ pub(crate) fn build_table(
                         )
                         .role(ButtonRole::Plain)
                         // The removal is an edit, decided as one.
-                        .on_own_device_effect(move || {
+                        .on_click(move || {
                             sink.borrow_mut().push(Cmd::Edit {
                                 table,
                                 row: row.clone(),

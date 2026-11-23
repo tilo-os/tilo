@@ -307,7 +307,7 @@ fn lists_of(lists: Vec<BoardListProps>) -> Lists {
             let button = match act {
                 Event::None => button,
                 Event::Action(binding) => button.on_action(binding),
-                Event::View(intent) => button.on_view(intent.sender()),
+                Event::View(intent) => button.on_open(intent.sender()),
             };
             Some(Box::new(button) as Element)
         });

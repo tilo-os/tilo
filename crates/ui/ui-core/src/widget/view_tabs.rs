@@ -7,7 +7,7 @@ use crate::widget::ControlSize;
 ///
 /// ```ignore
 /// ViewTabs::new(vec![Segment::new("Logs"), Segment::new("Stats")], 0)
-///     .on_view("container-tabs", move |index| intents.push(Intent::ShowTab(index)))
+///     .on_choose("container-tabs", move |index| intents.push(Intent::ShowTab(index)))
 /// ```
 pub struct ViewTabs {
     strip: ToggleGroup,
@@ -38,8 +38,8 @@ impl ViewTabs {
     }
 
     #[must_use]
-    pub fn on_view<F: FnMut(usize) + 'static>(self, id: &str, f: F) -> Self {
-        self.map(|strip| strip.on_view(id, f))
+    pub fn on_choose<F: FnMut(usize) + 'static>(self, id: &str, f: F) -> Self {
+        self.map(|strip| strip.on_choose(id, f))
     }
 
     #[must_use]
@@ -183,7 +183,7 @@ mod tests {
         {
             let chosen = std::rc::Rc::new(std::cell::Cell::new(None));
             let seen = std::rc::Rc::clone(&chosen);
-            let mut tabs = tabs().on_view("request-tabs", move |index| seen.set(Some(index)));
+            let mut tabs = tabs().on_choose("request-tabs", move |index| seen.set(Some(index)));
             let target = tabs
                 .accessibility()
                 .and_then(|node| {
@@ -199,11 +199,6 @@ mod tests {
                 &automerge::ROOT,
             );
             assert!(acted);
-            assert_eq!(
-                crate::testing::answer_controls(&mut tabs),
-                1,
-                "the choice reaches its handler when it is answered"
-            );
             assert_eq!(tabs.selected(), 3);
             assert_eq!(chosen.get(), Some(3));
         }
@@ -218,7 +213,7 @@ mod tests {
             // choice, as a view's `on change` does: the strip follows that state back.
             let state = crate::LocalState::new(1_usize);
             let pulled = state.clone();
-            let mut tabs = tabs().bind_selection(&state).on_view("request-tabs", move |index| {
+            let mut tabs = tabs().bind_selection(&state).on_choose("request-tabs", move |index| {
                 seen.set(Some(index));
                 pulled.set(index);
             });
@@ -240,11 +235,6 @@ mod tests {
                 assert!(
                     crate::testing::dispatch(&mut tabs, &press),
                     "{key} is the tab list's"
-                );
-                assert_eq!(
-                    crate::testing::answer_controls(&mut tabs),
-                    1,
-                    "{key} reports one choice"
                 );
                 assert_eq!(chosen.get(), Some(shown), "{key} asks for tab {shown}");
                 crate::widget::Decorator::sync(&mut tabs, &doc, &automerge::ROOT);
