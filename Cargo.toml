@@ -74,6 +74,7 @@ members = [
     "apps/poker-model-wasm",
     "crates/import/browser-continuity",
     "crates/engines/browser-continuity-core",
+    "crates/engines/page-engine",
     "crates/integrations/tilo-messaging",
     "crates/os/tilo-handoff",
     "apps/canvas",

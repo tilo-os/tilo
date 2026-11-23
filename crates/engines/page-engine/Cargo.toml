@@ -1,0 +1,14 @@
+[package]
+name = "tilo-page-engine"
+version = "0.1.0"
+description = "The page a window shows, one request at a time: a window's engine, the page's own answers, and the events its view shows"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The engine client: the page protocol's requests and answers, and the engine's events.
+tilo-webview = { version = "0.1.0", path = "../tilo-webview" }
+
+[lints]
+workspace = true
