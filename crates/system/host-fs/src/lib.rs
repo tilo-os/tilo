@@ -16,9 +16,9 @@ pub mod transfer;
 pub mod trash;
 
 pub use private_dir::{create_private_dir, mark_private};
-pub use rename::rename_noreplace;
 #[cfg(unix)]
 pub use rename::rename_noreplace_at;
+pub use rename::{FileRename, rename_file_noreplace, rename_noreplace};
 pub use retained_object::{ObservedObject, RetainedObject};
 pub use space::{Space, space};
 
