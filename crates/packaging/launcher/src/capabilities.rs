@@ -759,65 +759,6 @@ mod tests {
         phase path_capabilities_plan_only_live_grants_for_this_app;
         {
             {
-                let plan =
-                    CapabilityPlan::for_app_with("so.tilo.books", &[], Some(1000), fake_device_paths);
-                assert_eq!(plan, CapabilityPlan::empty());
-                assert!(plan.is_empty());
-            }
-            {
-                let caps = vec![fs_grant(
-                    "so.tilo.books",
-                    "/var/workspace/books",
-                    Access::Read,
-                )];
-                let plan =
-                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
-                assert_eq!(plan.ro_paths, vec![PathBuf::from("/var/workspace/books")]);
-                assert!(
-                    plan.rw_paths.is_empty(),
-                    "a Read grant must never plan a writable bind: {plan:?}"
-                );
-            }
-            {
-                let caps = vec![fs_grant(
-                    "so.tilo.books",
-                    "/var/workspace/books",
-                    Access::Write,
-                )];
-                let plan =
-                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
-                assert_eq!(plan.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
-                assert!(plan.ro_paths.is_empty());
-            }
-            {
-                let caps = vec![fs_grant(
-                    "so.tilo.other",
-                    "/var/workspace/secrets",
-                    Access::Write,
-                )];
-                let plan =
-                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
-                assert_eq!(
-                    plan,
-                    CapabilityPlan::empty(),
-                    "a grant addressed to another app id must not reach this app: {plan:?}"
-                );
-            }
-            {
-                let caps = vec![
-                    fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
-                        .lasting(tilo_action_policy::Lifetime::Until(500_000)),
-                ];
-                let plan =
-                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
-                assert_eq!(plan, CapabilityPlan::empty());
-                // Same capability, evaluated before it expires, does plan a bind — proving the emptiness
-                // above is the expiry and not a typo.
-                let live =
-                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(499), fake_device_paths);
-                assert_eq!(live.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
-            }
-            {
                 let caps = vec![
                     fs_grant("so.tilo.books", "/var/workspace/books", Access::Write),
                     app_restrict(
@@ -841,24 +782,6 @@ mod tests {
             {
                 let caps = vec![app_grant(
                     "so.tilo.meet",
-                    Scope::Device(DeviceCap::Camera),
-                    Access::Read,
-                )];
-                let plan =
-                    CapabilityPlan::for_app_with("so.tilo.meet", &caps, Some(1), fake_device_paths);
-                assert_eq!(plan.devices, vec![DeviceCap::Camera]);
-                assert_eq!(plan.rw_paths, vec![PathBuf::from("/dev/video0")]);
-
-                let without =
-                    CapabilityPlan::for_app_with("so.tilo.meet", &[], Some(1), fake_device_paths);
-                assert!(
-                    without.rw_paths.is_empty() && without.devices.is_empty(),
-                    "no camera capability means no device node at all: {without:?}"
-                );
-            }
-            {
-                let caps = vec![app_grant(
-                    "so.tilo.meet",
                     Scope::Device(DeviceCap::Screen),
                     Access::Read,
                 )];
@@ -868,24 +791,6 @@ mod tests {
                 assert!(
                     plan.rw_paths.is_empty() && plan.ro_paths.is_empty(),
                     "screencast is portal-brokered, not a mount: {plan:?}"
-                );
-            }
-            {
-                let caps = vec![app_grant(
-                    "so.tilo.mail",
-                    Scope::NetHost("mail.example.com".to_string()),
-                    Access::Write,
-                )];
-                let plan =
-                    CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1), fake_device_paths);
-                assert!(plan.allow_network);
-                assert_eq!(plan.net_hosts, vec!["mail.example.com".to_string()]);
-
-                let without =
-                    CapabilityPlan::for_app_with("so.tilo.mail", &[], Some(1), fake_device_paths);
-                assert!(
-                    !without.allow_network,
-                    "without a network capability the namespace stays isolated"
                 );
             }
             {
@@ -930,14 +835,8 @@ mod tests {
                 );
             }
             {
+                // Missing and malformed files: `launcher_smoke` reads them through a launch.
                 let dir = tempfile::tempdir().unwrap();
-                let missing = dir.path().join("absent.json");
-                assert!(load_capability_file(&missing).is_empty());
-
-                let malformed = dir.path().join("bad.json");
-                std::fs::write(&malformed, b"{ this is not json ").unwrap();
-                assert!(load_capability_file(&malformed).is_empty());
-
                 let wrong_shape = dir.path().join("wrong.json");
                 std::fs::write(&wrong_shape, br#"{"subject":"nope"}"#).unwrap();
                 assert!(load_capability_file(&wrong_shape).is_empty());

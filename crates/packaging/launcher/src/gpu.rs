@@ -1236,15 +1236,8 @@ mod tests {
         phase a_pinned_vulkan_driver_turns_off_device_selection_and_an_unpinned_one_does_not;
         {
             let pinned = GpuSelection {
-                node: PathBuf::from("/dev/dri/renderD128"),
-                driver: None,
-                egl_vendor_json: None,
                 vulkan_icd_json: Some(PathBuf::from("/usr/share/vulkan/icd.d/x.json")),
-                vulkan_device: None,
-                pipeline_seed: None,
-                site_integration: None,
-                unclaimed: false,
-                notes: Vec::new(),
+                ..bare_selection("/dev/dri/renderD128")
             };
             assert!(
                 pinned
@@ -1332,15 +1325,10 @@ mod tests {
                 ],
             );
             let unclaimed = GpuSelection {
-                node: PathBuf::from("/dev/dri/card1"),
                 driver: Some("faux_driver".into()),
-                egl_vendor_json: None,
-                vulkan_icd_json: None,
-                vulkan_device: None,
-                pipeline_seed: None,
-                site_integration: None,
                 unclaimed: true,
                 notes: vec!["no Vulkan driver reports /dev/dri/card1".into()],
+                ..bare_selection("/dev/dri/card1")
             };
             let pin = unclaimed_node_pin(&unclaimed, None, &search).expect("lavapipe is installed");
             assert!(pin.vulkan_icd_json.ends_with(host_icd_name("lvp")));

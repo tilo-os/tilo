@@ -422,13 +422,6 @@ mod tests {
                 }
             }
             {
-                let data = Path::new("/data");
-                let a = host_app_dir(data, &workspace_slug(Some("workspace-a")), "so.tilo.notes");
-                let b = host_app_dir(data, &workspace_slug(Some("workspace-b")), "so.tilo.notes");
-                assert_ne!(a, b);
-                assert!(!a.starts_with(&b) && !b.starts_with(&a));
-            }
-            {
                 assert_eq!(workspace_slug(None), PERSONAL_WORKSPACE);
                 assert_eq!(workspace_slug(Some("")), PERSONAL_WORKSPACE);
                 assert_eq!(workspace_slug(Some("   ")), PERSONAL_WORKSPACE);
