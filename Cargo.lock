@@ -8424,6 +8424,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-action-policy",
+ "tilo-advisory-lock",
  "tilo-app-id",
  "tilo-app-package",
  "tilo-clipboard",

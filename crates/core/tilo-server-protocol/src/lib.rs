@@ -32,8 +32,6 @@
 
 #![deny(rust_2018_idioms)]
 
-use serde::{Deserialize, Serialize};
-
 pub mod agents;
 pub mod auth;
 pub mod certify;
