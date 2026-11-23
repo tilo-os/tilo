@@ -105,6 +105,11 @@ async fn four_devices() -> Four {
         flow::join(session, &home, "Home").await;
         flow::join(session, &person_workspace, "Ada").await;
     }
+    // tilo.sh is the person's always-on server: it has its entry among their servers, as a
+    // server enters itself there once it has their workspace.
+    tilo_server::servers::enroll(workspaces, &host.server.node_addr())
+        .await
+        .expect("the server enters itself among the person's servers");
     let (desktop_home, desktop_person) = (desktop_session.clone(), desktop_session.clone());
     let pi_person = pi_session.clone();
     let laptop_person = laptop_session.clone();
@@ -297,9 +302,8 @@ async fn flow_always_on_server_is_one_of_the_persons_devices() {
 /// held by their always-on server without asking: it is their server, and it takes their work
 /// by default. Turning it off for one workspace through the server's entry drops it there.
 ///
-/// The workspace's holders are read through the resource `copies.set` writes
-/// (`workspace/<id>/servers#copies`); no published read of them exists yet (the hosting lane
-/// publishes it there).
+/// The workspace's holders are read through the read every member may ask beside `copies.set`
+/// (`workspace/<id>/servers#keeps`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_always_on_server_holds_all_workspaces_at_once() {
     let f = four_devices().await;
@@ -365,6 +369,77 @@ async fn flow_always_on_server_holds_all_workspaces_at_once() {
              person's device, without being asked: {listed}"
         );
     }
+
+    // The person's list names both, as their devices keep it.
+    let mut list = personal(&f);
+    for (_, workspace) in &made {
+        list.workspaces.push(PersonalWorkspace {
+            workspace: workspace.clone(),
+            name: "Ada's work".into(),
+            ..list.workspaces[0].clone()
+        });
+    }
+    desktop
+        .keep_personal(&list)
+        .await
+        .expect("a device of the person's keeps their list");
+
+    // Keeping off for the laptop's workspace, through the server's entry: the server lets it
+    // go, and no member reads it among the workspace's keepers any more.
+    let server = flow::key_of(&f.server_device.cert);
+    let workspaces = f.host.server.workspaces().unwrap();
+    let (_, laptops) = &made[1];
+    keep(&f, &desktop, laptops, false).await;
+    crate::support::wait_for("the server lets go of the workspace kept off", || async {
+        workspaces.summary(laptops).await.is_err().then_some(())
+    })
+    .await;
+    let keeps = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        flow::ask_permissions_child(&laptop, f.work_id(), laptops, "servers", "keeps", json!({})),
+    )
+    .await;
+    let named = matches!(&keeps, Ok(Ok(keeps)) if keeps["keeps"]
+        .as_array()
+        .is_some_and(|keeps| keeps.iter().any(|holder| holder["device"].as_str() == Some(server.as_str()))));
+    assert!(
+        !named,
+        "the server is no keeper of the workspace its entry turned keeping off for: {keeps:?}"
+    );
+    assert!(
+        workspaces.summary(&made[0].1).await.is_ok(),
+        "the server still keeps the desktop's workspace"
+    );
+
+    // Keeping on again: the server keeps it once more.
+    keep(&f, &desktop, laptops, true).await;
+    crate::support::wait_for("the server keeps the workspace again", || async {
+        workspaces.summary(laptops).await.ok()
+    })
+    .await;
+}
+
+/// Have the server keep `workspace`, or not, through its entry among the person's servers: the
+/// ordinary action on the person's own workspace (`server.keep`), asked by `device`.
+async fn keep(
+    f: &Four,
+    device: &tilo_session_client::device::Device,
+    workspace: &str,
+    keeps: bool,
+) {
+    flow::ask_permissions(
+        device,
+        f.person_id(),
+        &f.person_workspace,
+        "server.keep",
+        json!({
+            "server": flow::key_of(&f.server_device.cert),
+            "workspace": workspace,
+            "keeps": keeps,
+        }),
+    )
+    .await
+    .unwrap_or_else(|refusal| panic!("the server's entry takes the choice: {refusal:?}"));
 }
 
 /// Four monitors, two on the desktop and one each on the Pi and the laptop, are one
