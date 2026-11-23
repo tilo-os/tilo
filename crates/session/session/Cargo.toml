@@ -91,7 +91,6 @@ tilo-desktop-surface = { path = "../desktop-surface" }
 # Settings' pages are every desktop's own, the page's included: its search offers them wherever
 # the session runs.
 tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
-tilo-vision-service = { path = "../vision-service" }
 settings-store = { path = "../../system/settings-store" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }
@@ -193,6 +192,9 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The device's image model as the session's actions: its model gateway connection and the
+# library analysis search reads, which only a Linux desktop session hosts.
+tilo-vision-service = { path = "../vision-service" }
 # The apps the session runs itself keep their resources in the workspace's store, whose
 # commands are answered by this device's own workspace service.
 tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
