@@ -1465,18 +1465,24 @@ impl Workspaces {
         channel: &str,
         change: collab_types::calls::CallChange,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        self.govern_as_member(
-            workspace,
-            member,
-            request_id,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Call {
-                channel: channel.to_owned(),
-                change,
-            },
-            governance::CALL,
-            "call",
-        )
-        .await
+        let done = self
+            .govern_as_member(
+                workspace,
+                member,
+                request_id,
+                tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Call {
+                    channel: channel.to_owned(),
+                    change,
+                },
+                governance::CALL,
+                "call",
+            )
+            .await;
+        // The live origin holds every call track to the call's rule: it reads the rule again now.
+        if done.is_ok() {
+            crate::authority_epoch::bump();
+        }
+        done
     }
 
     /// What the call in `channel` of `workspace` allows, as the workspace records it now.

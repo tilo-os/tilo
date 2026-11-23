@@ -17,6 +17,15 @@ pub const MAX_CHANNEL_BYTES: usize = 128;
 /// The most people one call denies anything.
 pub const MAX_DENIED: usize = 128;
 
+/// The tag a channel's call media is named by on the wire: the first 16 hex digits of the
+/// channel id's BLAKE3 digest, so any channel id names a track and a relay finds the call's rule
+/// from the name alone.
+#[must_use]
+pub fn tag(channel: &str) -> String {
+    let digest = blake3::hash(channel.as_bytes()).to_hex();
+    digest.as_str().get(..16).unwrap_or_default().to_owned()
+}
+
 /// What someone in a call does: speak (and show pictures) in it, and hear it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Directions {

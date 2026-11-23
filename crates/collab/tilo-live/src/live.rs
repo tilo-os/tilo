@@ -218,6 +218,32 @@ pub fn track(track: Track) -> String {
     }
 }
 
+/// What follows a call track's own name: the call whose media it carries.
+const CALL: &str = "/call/";
+
+/// Whether `track` carries a call's media: its voice or a picture of it.
+#[must_use]
+pub const fn is_call_media(track: Track) -> bool {
+    matches!(track, Track::Audio | Track::Camera(_) | Track::Screen(_))
+}
+
+/// The name a call's media `track` is published under in the call tagged `call`
+/// ([`collab_types::calls::tag`]): `<track>/call/<tag>`. A call's media names its call, so a relay
+/// and every reader hold it to that call's rule, whatever its sender's presence says.
+#[must_use]
+pub fn call_track(track: Track, call: &str) -> String {
+    format!("{}{CALL}{call}", self::track(track))
+}
+
+/// The call media track `name` names, and the call's tag; `None` for any other name.
+#[must_use]
+pub fn parse_call_track(name: &str) -> Option<(Track, &str)> {
+    let (track, call) = name.rsplit_once(CALL)?;
+    let track = parse_track(track)?;
+    (is_call_media(track) && !call.is_empty() && call.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some((track, call))
+}
+
 /// The track `name` names, or `None` for any other name.
 #[must_use]
 pub fn parse_track(name: &str) -> Option<Track> {

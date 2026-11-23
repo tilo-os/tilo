@@ -95,6 +95,9 @@ fn origin() -> (moq_net::origin::Producer, carrier::OriginTask) {
     carrier::OriginTask::produce(carrier::origin_config(1024 * 1024, Duration::from_secs(2)))
 }
 
+/// The voice track of the call both scopes are in.
+const VOICE: &str = "audio/call/0123456789abcdef";
+
 /// One scope's publication at `path`: a sealed voice track and a sealed
 /// presence track.
 struct Published {
@@ -105,7 +108,7 @@ struct Published {
 
 fn publish(origin: &moq_net::origin::Producer, path: &str) -> Published {
     let broadcast = origin.create_broadcast(path).unwrap();
-    let audio = broadcast.create_track("audio", None).unwrap();
+    let audio = broadcast.create_track(VOICE, None).unwrap();
     let presence = broadcast.create_track("presence", None).unwrap();
     broadcast
         .announce(moq_net::origin::Route::default())
@@ -213,7 +216,7 @@ async fn native_carrier_admits_scopes_and_relays_their_sealed_tracks() {
     .await
     .unwrap();
     let mut audio = incoming
-        .track("audio")
+        .track(VOICE)
         .unwrap()
         .subscribe(None)
         .await

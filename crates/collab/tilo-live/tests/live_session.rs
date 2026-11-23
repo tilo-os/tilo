@@ -349,6 +349,39 @@ fn voice(sequence: u32, payload: &[u8]) -> Vec<u8> {
     .unwrap()
 }
 
+/// The call the tests' devices talk in.
+const CALL: &str = "standup";
+
+/// A presence object that says its device is in [`CALL`].
+fn in_call() -> Vec<u8> {
+    collab_types::presence::Presence::desktop(
+        "w",
+        collab_types::presence::Payload::Availability {
+            state: "available".into(),
+            call: Some(CALL.to_owned()),
+            camera: false,
+            screen: false,
+        },
+    )
+    .encode()
+    .unwrap()
+}
+
+/// Put each of `live_sessions` in [`CALL`] (its presence says so, at `sequence`), and wait until
+/// each is asked for its voice by the others there.
+fn talk(live_sessions: &[&LiveSession], sequence: u32) {
+    for live_session in live_sessions {
+        live_session
+            .publish(Track::Presence, sequence, &in_call())
+            .unwrap();
+    }
+    wait_until("each device in the call is asked for its voice", || {
+        live_sessions
+            .iter()
+            .all(|live_session| live_session.voice_wanted())
+    });
+}
+
 /// Everything `live_session` heard on `track` so far.
 fn heard(live_session: &LiveSession, track: Track) -> Vec<Heard> {
     let mut bodies = Vec::new();
@@ -409,8 +442,9 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
             .any(|object| object.body == b"role=member" && object.sender == a_key)
     });
 
-    // Sealed audio: five 20 ms objects, one group each, opened on the far
-    // side exactly as they were published.
+    // Sealed audio in the call both are in: five 20 ms objects, one group
+    // each, opened on the far side exactly as they were published.
+    talk(&[&a, &b], 2);
     let bodies: Vec<Vec<u8>> = (0..5_u32)
         .map(|seq| voice(seq, &[u8::try_from(seq).unwrap_or(0); 8][..]))
         .collect();
@@ -444,7 +478,7 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     authority.remove(b_key);
     wait_until("the removed member's session ends", || b.ended());
     assert_eq!(
-        a.publish(Track::Presence, 2, b"role=member"),
+        a.publish(Track::Presence, 3, b"role=member"),
         Ok(()),
         "the remaining device keeps publishing"
     );
@@ -1591,6 +1625,7 @@ async fn a_device_on_its_own_media_keys_publishes_to_the_members_and_opens_nothi
 
     // A stream it was not handed is not one it can seal: its call audio is
     // refused here rather than sealed under another device's key.
+    confined.publish(Track::Presence, 2, &in_call()).unwrap();
     assert_eq!(
         confined.publish(Track::Audio, 1, &voice(0, b"hello")),
         Err(LiveError::Refused(Refusal::NoKey(channel.epoch())))
@@ -2377,14 +2412,15 @@ async fn a_removed_members_media_stops_end_to_end_and_the_other_session_carries_
     wait_until("both sessions admitted", || relay.counters().accepted == 2);
 
     // Media flows both ways before the workspace changes.
+    talk(&[&a, &b], 1);
     for sequence in 1..=5_u32 {
         a.publish(Track::Audio, sequence, &voice(sequence, &[1; 8]))
             .unwrap();
         b.publish(Track::Audio, sequence, &voice(sequence, &[2; 8]))
             .unwrap();
     }
-    a.publish(Track::Presence, 1, b"member=a").unwrap();
-    b.publish(Track::Presence, 1, b"member=b").unwrap();
+    a.publish(Track::Presence, 2, b"member=a").unwrap();
+    b.publish(Track::Presence, 2, b"member=b").unwrap();
     let (mut a_heard, mut b_heard) = (0, 0);
     wait_until("each member's media reaches the other", || {
         a_heard += heard(&a, Track::Audio)
@@ -2438,7 +2474,7 @@ async fn a_removed_members_media_stops_end_to_end_and_the_other_session_carries_
         "the other member's session closed with the removal"
     );
     assert_eq!(
-        a.publish(Track::Presence, 2, b"still=here"),
+        a.publish(Track::Presence, 3, b"still=here"),
         Ok(()),
         "the remaining member keeps publishing"
     );
@@ -2484,6 +2520,7 @@ async fn a_silent_voice_stream_costs_the_relay_a_fraction_of_a_speaking_one() {
 
     // Each object is waited for before the next, so what arrives is exactly what was sent: a burst
     // on a loaded machine cannot hide a drop or pass one off as two.
+    talk(&[&a, &b], 1);
     let mut sequence = 1_u32;
     let mut speaking = Vec::new();
     for _ in 0..SPEECH_OBJECTS {

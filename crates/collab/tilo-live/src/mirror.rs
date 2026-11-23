@@ -4,7 +4,9 @@
 //! The session is served only from this view, never from the shared origin
 //! directly. Dropping the [`Mirror`] aborts every track it serves, so the
 //! session's subscriptions end at once: revocation cuts media to a session
-//! before the transport is torn down, whatever the client does.
+//! before the transport is torn down, whatever the client does. A call's track
+//! is served only while the call lets the session listen
+//! ([`crate::relay::SessionAuthorization::call`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -70,15 +72,18 @@ pub(crate) struct Mirror {
 impl Mirror {
     /// Mirror every broadcast `source` announces, with the given cache bound
     /// and retention for the session's copy. With a `downlink`, datagrams of
-    /// the voice track are re-bundled for that downlink's measured loss.
+    /// a call's voice are re-bundled for that downlink's measured loss. With
+    /// the session's `authorization`, a call's track is served only while the
+    /// call lets the session listen.
     pub(crate) fn start(
         source: moq_net::origin::Consumer,
         bytes: u64,
         retain: Duration,
         downlink: Option<Arc<Downlink>>,
+        authorization: Option<Arc<dyn crate::relay::SessionAuthorization>>,
     ) -> Self {
         let (origin, task) = OriginTask::produce(origin_config(bytes, retain));
-        let watch = Task::spawn(watch(source, origin.clone(), downlink));
+        let watch = Task::spawn(watch(source, origin.clone(), downlink, authorization));
         Self {
             origin,
             _watch: watch,
@@ -96,6 +101,7 @@ pub(crate) async fn watch(
     source: moq_net::origin::Consumer,
     target: moq_net::origin::Producer,
     downlink: Option<Arc<Downlink>>,
+    authorization: Option<Arc<dyn crate::relay::SessionAuthorization>>,
 ) {
     let mut announced = source.announced();
     let (ended_tx, mut ended) = tokio::sync::mpsc::unbounded_channel::<(String, u64)>();
@@ -109,8 +115,9 @@ pub(crate) async fn watch(
         let ended = ended_tx.clone();
         let task = Task::spawn({
             let (source, target, downlink) = (source.clone(), target.clone(), downlink.clone());
+            let authorization = authorization.clone();
             async move {
-                if broadcast(source, target, path.clone(), downlink).await {
+                if broadcast(source, target, path.clone(), downlink, authorization).await {
                     let _ = ended.send((path, copy));
                 }
             }
@@ -151,6 +158,7 @@ async fn broadcast(
     target: moq_net::origin::Producer,
     path: String,
     downlink: Option<Arc<Downlink>>,
+    authorization: Option<Arc<dyn crate::relay::SessionAuthorization>>,
 ) -> bool {
     let Ok(input) = source.routed_broadcast(path.as_str()).await else {
         return false;
@@ -168,11 +176,29 @@ async fn broadcast(
             request = dynamic.requested_track() => {
                 let Ok(request) = request else { break };
                 tracks.retain(|task| !task.is_finished());
-                // Only the voice track is re-bundled; any other is copied as is.
-                let voice = downlink
-                    .clone()
-                    .filter(|_| request.name() == crate::relay::VOICE_TRACK);
-                tracks.push(Task::spawn(track(input.clone(), request, voice)));
+                let call = crate::live::parse_call_track(request.name())
+                    .map(|(track, call)| (track, call.to_owned()));
+                // A call's track is served only while the call lets this session listen.
+                let held = match (&call, &authorization) {
+                    (Some((_, call)), Some(authorization)) => {
+                        if !authorization.call(crate::relay::Direction::Subscribe, call) {
+                            request.reject(moq_net::Error::Unauthorized);
+                            continue;
+                        }
+                        Some((
+                            Arc::clone(authorization),
+                            crate::relay::Direction::Subscribe,
+                            call.clone(),
+                        ))
+                    }
+                    _ => None,
+                };
+                // Only a call's voice is re-bundled; any other track is copied as is.
+                let voice = downlink.clone().filter(|_| {
+                    call.as_ref()
+                        .is_some_and(|(track, _)| *track == crate::live::Track::Audio)
+                });
+                tracks.push(Task::spawn(track(input.clone(), request, voice, held)));
             }
             _ = input.closed() => break,
         }
@@ -186,6 +212,7 @@ async fn track(
     input: moq_net::broadcast::Consumer,
     request: moq_net::track::Request,
     downlink: Option<Arc<Downlink>>,
+    held: Option<crate::relay::CallHeld>,
 ) {
     let subscription = request.subscription().unwrap_or_default();
     let attempt = match input.track(request.name()) {
@@ -200,7 +227,14 @@ async fn track(
         }
     };
     let output = request.accept(reader.info().clone());
-    copy(&mut reader, output, downlink).await;
+    let refused = output.clone();
+    tokio::select! {
+        () = copy(&mut reader, output, downlink) => {}
+        // The call no longer lets this session listen: nothing more of it is served.
+        () = crate::relay::call_refused(held.as_ref()) => {
+            let _ = refused.abort(moq_net::Error::Unauthorized);
+        }
+    }
 }
 
 enum Next {
@@ -481,7 +515,13 @@ mod tests {
             let first = source.create_broadcast("member")?;
             let _first_presence = first.create_track("presence", None)?;
             first.announce(moq_net::origin::Route::default().with_hops(first_hop(7)?))?;
-            let mirror = Mirror::start(source.consume(), 1024 * 1024, Duration::from_secs(2), None);
+            let mirror = Mirror::start(
+                source.consume(),
+                1024 * 1024,
+                Duration::from_secs(2),
+                None,
+                None,
+            );
             let view = mirror.consume();
             let mirrored =
                 tilo_test_env::within("the mirrored broadcast", view.routed_broadcast("member"))

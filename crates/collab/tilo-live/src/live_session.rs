@@ -9,13 +9,20 @@
 //! relay copies is opaque to the relay and a frame from a device the roster
 //! does not name is refused before it is decrypted.
 //!
-//! Presence, audio and the activity note are tracks every live session publishes.
-//! Pictures, a shared window and a window's page are not: a camera layer, a
-//! screen layer, a window or a page track exists only while a peer asks for it
+//! Presence and the activity note are tracks every live session publishes.
+//! A call's voice and pictures, a shared window and a window's page are not: a
+//! call's audio, a camera layer, a screen layer, a window or a page track exists
+//! only while a peer asks for it
 //! ([`LiveSession::show`]), and a device encodes a layer or a window, or captures a
 //! page, only while it is asked for ([`LiveSession::wanted_pictures`],
 //! [`LiveSession::wanted_windows`], [`LiveSession::wanted_pages`]), so a picture, a window
 //! or a page nobody watches costs no bitrate and no capture.
+//!
+//! A call's media names its call ([`crate::live::call_track`]): a device sends it, and reads it
+//! of the others, only for the call its presence says it is in, sealed under that
+//! call's keys and opened only from the devices its rule lets speak. A relay holds each call
+//! track to the call's rule too ([`crate::relay::SessionAuthorization::call`]), whatever its
+//! sender's presence says.
 //!
 //! The carrier is whatever [`Dial`] this device has: iroh to the device that
 //! serves the workspace ([`crate::native::Iroh`]). This module does not name
@@ -54,10 +61,10 @@ use crate::live::{self, Delivery, Namespace, Track, exact};
 use crate::scope::Scope;
 use crate::voice::{self, VoiceObject};
 
-/// The tracks every live session publishes: the workspace's presence, a call's audio
-/// and the activity note. A live session's pictures ([`Track::Camera`],
-/// [`Track::Screen`]) are not among them: a layer exists only while someone
-/// asks for it ([`LiveSession::show`]).
+/// The tracks a live session reads of every device it hears: the workspace's presence, the voice
+/// of the call it is in and the activity note. Presence and the activity note are published by
+/// every live session; a call's voice, like a call's pictures ([`Track::Camera`],
+/// [`Track::Screen`]), exists only while someone in the call asks for it.
 pub const TRACKS: [Track; 3] = [Track::Presence, Track::Audio, Track::Activity];
 
 /// Devices of a scope one live session reads at once: the ones it hears.
@@ -137,11 +144,30 @@ pub enum LiveError {
     /// The session has ended.
     #[error("the live session has ended")]
     Ended,
-    /// The call this device is in does not let it speak: it was ended, or its person was denied
-    /// it ([`crate::calls::Gate`]).
+    /// This device is in no call, holds none of its call's keys yet, or its call does not let it
+    /// speak ([`LiveSession::set_calls`]).
     #[error("the call does not let this device speak")]
     Withheld,
 }
+
+/// The call a live session is in: the call its own presence says, held to the call's rule.
+struct InCall {
+    /// The call's tag, as its tracks name it ([`collab_types::calls::tag`]).
+    tag: String,
+    /// The keys its media is sealed and opened under, and their epoch.
+    keys: LiveKeys,
+    /// The devices the call lets speak: the only ones whose media is opened.
+    roster: Roster,
+    /// Whether the call lets this device speak.
+    publish: bool,
+    opener: Opener,
+}
+
+/// What the workspace's calls allow, and the person each device is ([`LiveSession::set_calls`]).
+type CallRules = (
+    BTreeMap<String, crate::calls::CallRule>,
+    BTreeMap<[u8; 32], String>,
+);
 
 impl From<AdmissionError> for LiveError {
     fn from(error: AdmissionError) -> Self {
@@ -313,9 +339,14 @@ pub(crate) struct Shared {
     presence_from: Mutex<BTreeMap<[u8; 32], (u64, u64)>>,
     refusals: Mutex<BTreeMap<String, usize>>,
     ended: Mutex<bool>,
-    /// What the workspace's calls allow, and where each device says it is: what call media this
-    /// live session opens and sends.
-    gate: Mutex<crate::calls::Gate>,
+    /// What the workspace's calls allow, and the person each device is.
+    call_rules: Mutex<CallRules>,
+    /// The channel this device's own presence says it is in.
+    own_call: Mutex<Option<String>>,
+    /// The call this device is in, held to its rule: what call media it sends and reads.
+    call: Mutex<Option<InCall>>,
+    /// Advances whenever the call moves: a reader of call media reads again under the call's name.
+    call_revision: AtomicU64,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Told once, when the live session ends: what rejoins the scope elsewhere.
     ended_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -345,7 +376,11 @@ impl Shared {
             // copies the set it finds announced, and a track that appeared
             // later would never be copied to the subscribers already there.
             let mut published = std::collections::BTreeMap::new();
-            for track in TRACKS {
+            // A call's voice names its call, and is sent only while someone in it asks for it.
+            for track in TRACKS
+                .into_iter()
+                .filter(|track| !live::is_call_media(*track))
+            {
                 let name = live::track(track);
                 let producer = broadcast
                     .create_track(name.as_str(), track_info(track))
@@ -385,7 +420,10 @@ impl Shared {
             presence_from: Mutex::new(BTreeMap::new()),
             refusals: Mutex::new(BTreeMap::new()),
             ended: Mutex::new(false),
-            gate: Mutex::default(),
+            call_rules: Mutex::default(),
+            own_call: Mutex::new(None),
+            call: Mutex::new(None),
+            call_revision: AtomicU64::new(0),
             wake: Mutex::new(None),
             ended_hook: Mutex::new(None),
         }))
@@ -549,11 +587,7 @@ impl Shared {
         }
     }
     fn deliver(&self, heard: Heard) {
-        if self.withheld(&heard) {
-            return;
-        }
         if heard.track == Track::Presence {
-            self.gate.lock_recover().said(heard.sender, &heard.body);
             let left = heard.body.is_empty();
             let mut from = self.presence_from.lock_recover();
             let counts = from.entry(heard.sender).or_default();
@@ -574,36 +608,104 @@ impl Shared {
         self.heard_total.fetch_add(1, Ordering::Relaxed);
         self.wake();
     }
-    /// Whether `heard` is call media the workspace's calls do not let this device open: its sender
-    /// may not speak in its call, or this device may not listen in its own.
-    fn withheld(&self, heard: &Heard) -> bool {
-        if !matches!(
-            heard.track,
-            Track::Audio | Track::Camera(_) | Track::Screen(_)
-        ) {
-            return false;
-        }
-        let opens = self
-            .gate
+    /// The name the call media `track` of `device` is read under now, and the call's revision it
+    /// names: `None` while this device is in no call or its call does not let `device` speak.
+    fn call_name(&self, track: Track, device: [u8; 32]) -> Option<(String, u64)> {
+        let revision = self.call_revision.load(Ordering::Acquire);
+        let name = self
+            .call
             .lock_recover()
-            .opens(heard.sender, self.join.device);
-        if !opens {
-            self.refusals
-                .lock_recover()
-                .entry("withheld by the call".to_owned())
-                .and_modify(|count| *count = count.saturating_add(1))
-                .or_insert(1);
-        }
-        !opens
+            .as_ref()
+            .filter(|call| call.roster.admits(device))
+            .map(|call| live::call_track(track, &call.tag))?;
+        Some((name, revision))
     }
-    /// Whether this device may send call media on `track` now ([`LiveError::Withheld`]).
-    fn may_send(&self, track: Track) -> Result<(), LiveError> {
-        if matches!(track, Track::Audio | Track::Camera(_) | Track::Screen(_))
-            && !self.gate.lock_recover().may(self.join.device).publish
-        {
-            return Err(LiveError::Withheld);
+
+    /// Ready once the call moved past `revision`, or the live session ended.
+    fn poll_call_moved(&self, revision: u64, cx: &Context<'_>) -> Poll<()> {
+        let mut hearing = self.hearing.lock_recover();
+        if self.ended() || self.call_revision.load(Ordering::Acquire) != revision {
+            return Poll::Ready(());
         }
-        Ok(())
+        if !hearing
+            .waiting
+            .iter()
+            .any(|waiting| waiting.will_wake(cx.waker()))
+        {
+            hearing.waiting.push(cx.waker().clone());
+        }
+        Poll::Pending
+    }
+
+    /// What this device's call media on `track` is sealed with and named now: its call's keys
+    /// and the call's name for the track ([`LiveError::Withheld`] outside a call, before its keys
+    /// are here, or where it may not speak).
+    fn call_sealer(&self, track: Track) -> Result<(Sealer, String), LiveError> {
+        let (keys, name) = self
+            .call
+            .lock_recover()
+            .as_ref()
+            .filter(|call| call.publish)
+            .map(|call| (call.keys.clone(), live::call_track(track, &call.tag)))
+            .ok_or(LiveError::Withheld)?;
+        let sealer = Sealer::new(
+            &keys,
+            self.join.device,
+            stream(track),
+            TrackName::new(&self.join.scope, name.as_str()),
+        )?;
+        Ok((sealer, name))
+    }
+
+    /// Hold the call this device's presence says to the call's rule, under the keys and roster
+    /// it has now. A call that moved to another channel or other keys is read again under them,
+    /// and what was asked of this device in another call ends.
+    fn settle_call(&self) {
+        let channel = self.own_call.lock_recover().clone();
+        let next = channel.map(|channel| {
+            let (rules, persons) = &*self.call_rules.lock_recover();
+            let devices: Vec<[u8; 32]> = self.roster.lock_recover().devices().collect();
+            let roster = crate::calls::speakers(&channel, rules, persons, devices);
+            let keys = self.keys.lock_recover().clone();
+            InCall {
+                tag: collab_types::calls::tag(&channel),
+                opener: Opener::new(keys.clone(), roster.clone()),
+                keys,
+                roster,
+                publish: crate::calls::may(&channel, rules, persons, self.join.device).publish,
+            }
+        });
+        let tag = next.as_ref().map(|call| call.tag.clone());
+        let moved = {
+            let mut call = self.call.lock_recover();
+            let moved = match (&*call, &next) {
+                (Some(held), Some(next)) => {
+                    held.tag != next.tag || held.keys.epoch() != next.keys.epoch()
+                }
+                (None, None) => false,
+                _ => true,
+            };
+            *call = next;
+            moved
+        };
+        if !moved {
+            return;
+        }
+        // What was asked of this device in a call it is not in ends with it.
+        self.demands.lock_recover().out.retain(|name, _| {
+            live::parse_call_track(name).is_none_or(|(_, call)| Some(call) == tag.as_deref())
+        });
+        self.call_revision.fetch_add(1, Ordering::AcqRel);
+        self.wake_waiting();
+        self.demand_moved();
+    }
+
+    /// Whether this device is in the call `tag` names.
+    fn in_call(&self, tag: &str) -> bool {
+        self.call
+            .lock_recover()
+            .as_ref()
+            .is_some_and(|call| call.tag == tag)
     }
     /// One frame a reader got and this live session could not open, by why.
     fn refused(&self, refusal: &Refusal) {
@@ -617,9 +719,6 @@ impl Shared {
     /// keyframe when its reader fell behind: a decoder is never handed a
     /// picture whose reference was dropped.
     fn deliver_picture(&self, heard: Heard) {
-        if self.withheld(&heard) {
-            return;
-        }
         let key = (heard.sender, heard.track);
         let keyframe = VideoObject::decode(&heard.body).is_ok_and(|object| object.keyframe);
         let mut demands = self.demands.lock_recover();
@@ -671,11 +770,27 @@ impl Shared {
     fn release(&self, device: [u8; 32]) {
         self.reading.lock_recover().remove(&device);
     }
-    fn open(&self, sender: [u8; 32], track: Track, frame: &[u8]) -> Result<Vec<u8>, Refusal> {
-        let name = live::track(track);
-        let name = TrackName::new(&self.join.scope, name.as_str());
+    /// Open `sender`'s `frame` of `track`, which arrived under `name`: a call's media under its
+    /// call's keys, from the devices the call lets speak, and nothing else under them.
+    fn open(
+        &self,
+        sender: [u8; 32],
+        track: Track,
+        name: &str,
+        frame: &[u8],
+    ) -> Result<Vec<u8>, Refusal> {
+        let sealed_as = TrackName::new(&self.join.scope, name);
+        if live::is_call_media(track) {
+            let call = self.call.lock_recover();
+            let opened = call
+                .as_ref()
+                .filter(|call| live::call_track(track, &call.tag) == name)
+                .map(|call| call.opener.open(sender, stream(track), &sealed_as, frame));
+            drop(call);
+            return opened.unwrap_or(Err(Refusal::NoKey(0)));
+        }
         let opener = self.opener.lock_recover();
-        opener.open(sender, stream(track), &name, frame)
+        opener.open(sender, stream(track), &sealed_as, frame)
     }
 }
 
@@ -985,14 +1100,27 @@ impl LiveSession {
     /// [`LiveError::Refused`] when the scope's keys do not cover this
     /// device's `track`, [`LiveError::Ended`] when the session has ended,
     /// [`LiveError::Invalid`] when `body` is not a voice object of the size
-    /// the audio datagrams carry, and [`LiveError::Unavailable`] when the
+    /// the audio datagrams carry, [`LiveError::Withheld`] for audio outside a
+    /// call that lets this device speak, [`LiveError::Unwanted`] for audio
+    /// nobody in the call asks for, and [`LiveError::Unavailable`] when the
     /// broadcast is gone.
     pub fn publish(&self, track: Track, sequence: u32, body: &[u8]) -> Result<(), LiveError> {
         if track != Track::Audio {
             return self.publish_burst(track, &[(sequence, body)]);
         }
-        self.shared.may_send(track)?;
-        let (sealer, mut producer) = self.outlet(track)?;
+        if self.shared.ended() {
+            return Err(LiveError::Ended);
+        }
+        let (sealer, name) = self.shared.call_sealer(track)?;
+        // The call's voice is sent while someone in the call asks for it, and only then.
+        let mut producer = self
+            .shared
+            .demands
+            .lock_recover()
+            .out
+            .get(&name)
+            .map(|out| out.track.clone())
+            .ok_or(LiveError::Unwanted)?;
         let object = VoiceObject::decode(body).map_err(|_| LiveError::Invalid)?;
         let at = object.timestamp;
         let payload = sealer.seal(sequence, &object.payload)?;
@@ -1032,15 +1160,18 @@ impl LiveSession {
     ///
     /// As [`Self::publish`], for a track other than audio.
     pub fn publish_burst(&self, track: Track, objects: &[(u32, &[u8])]) -> Result<(), LiveError> {
-        if track == Track::Audio {
+        if live::is_call_media(track) {
             return Err(LiveError::Invalid);
         }
-        self.shared.may_send(track)?;
         if track == Track::Presence {
-            // What this device says of itself is what the calls hold it to: the call it is in.
-            let mut gate = self.shared.gate.lock_recover();
-            for (_, body) in objects {
-                gate.said(self.shared.join.device, body);
+            // The call this device says it is in is the one it sends and reads the media of.
+            let said = objects
+                .iter()
+                .rev()
+                .find_map(|(_, body)| crate::calls::said_call(body));
+            if let Some(said) = said {
+                *self.shared.own_call.lock_recover() = said;
+                self.shared.settle_call();
             }
         }
         let (sealer, producer) = self.outlet(track)?;
@@ -1173,8 +1304,21 @@ impl LiveSession {
             .lock_recover()
             .out
             .keys()
-            .filter_map(|name| video::parse_track(name))
+            .filter_map(|name| {
+                let (track, _) = live::parse_call_track(name)?;
+                Some((track.picture_of()?, track.layer()))
+            })
             .collect()
+    }
+
+    /// Whether someone in this device's call asks for its voice now: until
+    /// then [`Self::publish`] of audio has nobody to send it to. Changes with
+    /// [`Self::demand_revision`].
+    #[must_use]
+    pub fn voice_wanted(&self) -> bool {
+        self.shared.demands.lock_recover().out.keys().any(|name| {
+            live::parse_call_track(name).is_some_and(|(track, _)| track == Track::Audio)
+        })
     }
 
     /// The windows whose page someone shows of this device now: exactly what
@@ -1402,15 +1546,19 @@ impl LiveSession {
         if self.shared.ended() {
             return Err(LiveError::Ended);
         }
-        self.shared.may_send(track)?;
-        let name = live::track(track);
-        let keys = self.shared.keys.lock_recover().clone();
-        let sealer = Sealer::new(
-            &keys,
-            self.shared.join.device,
-            stream(track),
-            TrackName::new(&self.shared.join.scope, name.as_str()),
-        )?;
+        let (sealer, name) = if live::is_call_media(track) {
+            self.shared.call_sealer(track)?
+        } else {
+            let name = live::track(track);
+            let keys = self.shared.keys.lock_recover().clone();
+            let sealer = Sealer::new(
+                &keys,
+                self.shared.join.device,
+                stream(track),
+                TrackName::new(&self.shared.join.scope, name.as_str()),
+            )?;
+            (sealer, name)
+        };
         let timestamp = moq_net::Timestamp::from_scale(timestamp_us, 1_000_000)
             .map_err(|_| LiveError::Invalid)?;
         let mut demands = self.shared.demands.lock_recover();
@@ -1439,20 +1587,22 @@ impl LiveSession {
         self.shared.opener.lock_recover().set_roster(roster.clone());
         *self.shared.roster.lock_recover() = roster;
         read_roster(&self.shared, &mut self.readers.lock_recover());
+        self.shared.settle_call();
         // A reader that waits for a hold for a device the roster names no
         // longer has nothing left to wait for.
         self.shared.wake_waiting();
     }
 
     /// Hold the workspace's calls to `rules` (by channel) from now on, each device being the
-    /// person `persons` names: what call media this live session opens and sends
-    /// ([`crate::calls::Gate`]).
+    /// person `persons` names: this device sends media in its call only where the call lets it
+    /// speak, and opens the media only of the devices the call lets speak.
     pub fn set_calls(
         &self,
         rules: BTreeMap<String, crate::calls::CallRule>,
         persons: BTreeMap<[u8; 32], String>,
     ) {
-        self.shared.gate.lock_recover().set(rules, persons);
+        *self.shared.call_rules.lock_recover() = (rules, persons);
+        self.shared.settle_call();
     }
 
     /// Seal and open under `keys` from now on: a channel whose epoch moved,
@@ -1462,6 +1612,7 @@ impl LiveSession {
         let roster = self.shared.roster.lock_recover().clone();
         *self.shared.keys.lock_recover() = keys.clone();
         *self.shared.opener.lock_recover() = Opener::new(keys, roster);
+        self.shared.settle_call();
     }
 
     /// Ask `wake` to run whenever an object is heard or the session ends.
@@ -1525,25 +1676,16 @@ fn track_info(track: Track) -> moq_net::track::Info {
 /// ([`watch_unused`]), and anything else is refused.
 async fn accept_demands(shared: Arc<Shared>, mut requests: moq_net::broadcast::Dynamic) {
     while let Ok(request) = requests.requested_track().await {
-        let Some(track) = live::parse_track(request.name()) else {
+        // Only a track someone can ask this device for: the voice and pictures of the call it is
+        // in, the windows it shares and the pages of the windows it shows.
+        let accepted = match live::parse_call_track(request.name()) {
+            Some((track, call)) => shared.in_call(call).then_some(track),
+            None => live::parse_track(request.name())
+                .filter(|track| matches!(track, Track::Window(_, Layer::High) | Track::Page(_))),
+        };
+        let Some(accepted) = accepted else {
             request.reject(moq_net::Error::NotFound);
             continue;
-        };
-        // Only a track someone can ask this device for: its own pictures, the
-        // windows it shares and the pages of the windows it shows.
-        let accepted = match track {
-            Track::Camera(_)
-            | Track::Screen(_)
-            | Track::Window(_, Layer::High)
-            | Track::Page(_) => track,
-            Track::Presence
-            | Track::Audio
-            | Track::Window(..)
-            | Track::Input(_)
-            | Track::Activity => {
-                request.reject(moq_net::Error::NotFound);
-                continue;
-            }
         };
         if shared.ended() {
             request.reject(moq_net::Error::Cancel);
@@ -1565,8 +1707,10 @@ async fn accept_demands(shared: Arc<Shared>, mut requests: moq_net::broadcast::D
             },
         );
         // The new reader can start at nothing but a group's first object: a
-        // picture's keyframe, a page's whole frame.
-        demands.keyframes.insert(accepted);
+        // picture's keyframe, a page's whole frame. Voice has none.
+        if accepted != Track::Audio {
+            demands.keyframes.insert(accepted);
+        }
         drop(demands);
         shared.demand_moved();
     }
@@ -1610,11 +1754,11 @@ fn watch_unused(shared: &Arc<Shared>, name: String, track: moq_net::track::Produ
 fn open_picture(
     shared: &Shared,
     device: [u8; 32],
-    track: Track,
+    (track, name): (Track, &str),
     bytes: &[u8],
 ) -> Option<(u32, Vec<u8>)> {
     let object = VideoObject::decode(bytes).ok()?;
-    let opened = shared.open(device, track, &object.payload).ok()?;
+    let opened = shared.open(device, track, name, &object.payload).ok()?;
     let sequence = u32::try_from(object.sequence).unwrap_or(u32::MAX);
     let body = VideoObject {
         payload: opened,
@@ -1630,11 +1774,11 @@ fn open_picture(
 fn open_page(
     shared: &Shared,
     device: [u8; 32],
-    track: Track,
+    (track, name): (Track, &str),
     bytes: &[u8],
 ) -> Option<(u32, Vec<u8>)> {
     let object = PageObject::decode(bytes).ok()?;
-    let opened = shared.open(device, track, &object.payload).ok()?;
+    let opened = shared.open(device, track, name, &object.payload).ok()?;
     let sequence = u32::try_from(object.sequence).unwrap_or(u32::MAX);
     let body = PageObject {
         payload: opened,
@@ -1683,9 +1827,9 @@ pub(crate) async fn unused(track: &moq_net::track::Producer) {
 /// stops, and taken again at the newest group when it starts again.
 async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     let address = Namespace::new(&shared.join.scope, device).path();
-    let name = live::track(track);
     let takes_hold = TRACKS.contains(&track);
     let presence = track == Track::Presence;
+    let call_media = live::is_call_media(track);
     loop {
         if presence {
             std::future::poll_fn(|cx| shared.poll_presence(device, true, cx)).await;
@@ -1711,6 +1855,22 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
         } else {
             None
         };
+        // A call's media is read under the name of the call this device is in, from a device the
+        // call lets speak; outside one, the reader waits for the call to move.
+        let (name, revision) = if call_media {
+            let revision = shared.call_revision.load(Ordering::Acquire);
+            let Some(named) = shared.call_name(track, device) else {
+                let moved = std::future::poll_fn(|cx| shared.poll_call_moved(revision, cx));
+                n0_future::future::or(moved, async {
+                    let _ = broadcast.closed().await;
+                })
+                .await;
+                continue;
+            };
+            named
+        } else {
+            (live::track(track), 0)
+        };
         // A reader that attaches late starts at the newest group the track
         // holds: the presence a peer said before it joined is what it draws,
         // instead of waiting out the heartbeat.
@@ -1729,20 +1889,33 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
             Err(_) => None,
         };
         let Some(mut subscriber) = subscription else {
-            let _ = broadcast.closed().await;
+            if call_media {
+                // The device is not in this call yet, or its relay does not carry it to this
+                // one: asked again once the call moves, or a moment on.
+                call_retry(&shared, revision, &broadcast).await;
+            } else {
+                let _ = broadcast.closed().await;
+            }
             continue;
         };
-        let reading = async { Some(read(&shared, device, track, &mut subscriber).await) };
+        let reading = async { Some(read(&shared, device, (track, &name), &mut subscriber).await) };
         let said = if presence {
             let stopped = async {
                 std::future::poll_fn(|cx| shared.poll_presence(device, false, cx)).await;
                 None
             };
             n0_future::future::or(reading, stopped).await
+        } else if call_media {
+            // The call moved: what was read under its old name is let go.
+            let moved = async {
+                std::future::poll_fn(|cx| shared.poll_call_moved(revision, cx)).await;
+                None
+            };
+            n0_future::future::or(reading, moved).await
         } else {
             reading.await
         };
-        // Presence is no longer heard: the subscription goes, and the relay
+        // Presence is no longer heard, or the call moved: the subscription goes, and the relay
         // stops sending it here.
         let Some(said) = said else {
             continue;
@@ -1754,10 +1927,28 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
             // again on the broadcast that takes its place.
             shared.deliver(Heard::left(device));
         }
+        if call_media {
+            call_retry(&shared, revision, &broadcast).await;
+            continue;
+        }
         // The subscription ended with the broadcast: the one that takes its
         // place is read once announced.
         let _ = broadcast.closed().await;
     }
+}
+
+/// How long a reader of a call's media waits before it asks a device again for a call track
+/// the device did not carry: the device may have joined the call since.
+const CALL_RETRY: Duration = Duration::from_millis(500);
+
+/// Wait until the call moves past `revision`, `broadcast` ends, or [`CALL_RETRY`] passed.
+async fn call_retry(shared: &Shared, revision: u64, broadcast: &moq_net::broadcast::Consumer) {
+    let moved = std::future::poll_fn(|cx| shared.poll_call_moved(revision, cx));
+    let gone = async {
+        let _ = broadcast.closed().await;
+    };
+    let later = n0_future::time::sleep(CALL_RETRY);
+    n0_future::future::or(moved, n0_future::future::or(gone, later)).await;
 }
 
 /// Read one subscription of `track` until it ends, the live session is over or the
@@ -1769,7 +1960,7 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
 async fn read(
     shared: &Shared,
     device: [u8; 32],
-    track: Track,
+    (track, name): (Track, &str),
     subscriber: &mut moq_net::track::Subscriber,
 ) -> bool {
     // Whether a presence frame of this subscription was delivered.
@@ -1798,7 +1989,7 @@ async fn read(
                     if shared.ended() || !shared.admits(device) {
                         return false;
                     }
-                    if hear_voice(shared, device, &object) {
+                    if hear_voice(shared, device, name, &object) {
                         played = Some(object.sequence);
                     }
                 }
@@ -1818,7 +2009,7 @@ async fn read(
                         if played.is_some_and(|seen| object.sequence <= seen) {
                             continue;
                         }
-                        if hear_voice(shared, device, &object) {
+                        if hear_voice(shared, device, name, &object) {
                             played = Some(object.sequence);
                         }
                         continue;
@@ -1827,7 +2018,7 @@ async fn read(
                         // A page keeps the header the relay validated: whether
                         // it is a whole frame is what a viewer acts on.
                         if let Some((sequence, body)) =
-                            open_page(shared, device, track, &frame.payload)
+                            open_page(shared, device, (track, name), &frame.payload)
                         {
                             shared.deliver(Heard {
                                 sender: device,
@@ -1844,7 +2035,7 @@ async fn read(
                     ) {
                         // A picture keeps the header the relay validated.
                         if let Some((sequence, body)) =
-                            open_picture(shared, device, track, &frame.payload)
+                            open_picture(shared, device, (track, name), &frame.payload)
                         {
                             shared.deliver_picture(Heard {
                                 sender: device,
@@ -1859,7 +2050,7 @@ async fn read(
                         // Arrived as the subscription was let go.
                         continue;
                     }
-                    match shared.open(device, track, &frame.payload) {
+                    match shared.open(device, track, name, &frame.payload) {
                         Ok(body) => {
                             said |= track == Track::Presence;
                             shared.deliver(Heard {
@@ -1880,8 +2071,8 @@ async fn read(
 
 /// Open one voice object's payload and deliver the object: `false` when the
 /// epoch or the roster no longer opens it, which ends the read.
-fn hear_voice(shared: &Shared, device: [u8; 32], object: &VoiceObject) -> bool {
-    let opened = match shared.open(device, Track::Audio, &object.payload) {
+fn hear_voice(shared: &Shared, device: [u8; 32], name: &str, object: &VoiceObject) -> bool {
+    let opened = match shared.open(device, Track::Audio, name, &object.payload) {
         Ok(opened) => opened,
         Err(refusal) => {
             shared.refused(&refusal);

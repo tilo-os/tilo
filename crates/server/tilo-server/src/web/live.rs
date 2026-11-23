@@ -10,6 +10,12 @@
 //! stays current from the relay-wide authority epoch — a device removed from
 //! the workspace is cut on that event, not on a timer.
 //!
+//! A call's media names its call, and the live origin carries it only as the
+//! workspace's rule for that call lets each device's person: an ended call's
+//! tracks go nowhere, and a person denied a call neither sends nor is sent any
+//! of it, whatever their presence says. The rules are read from the workspace
+//! as it stands, again on every change of authority.
+//!
 //! The sessions themselves are `tilo-live`'s: this module answers who may open
 //! one, and [`Relay::serve_session`] runs the same admission preface,
 //! `moq-lite` session and copying relay for every carrier.
@@ -18,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use collab_types::calls::CallRule;
 use tilo_live::live::Namespace;
 use tilo_live::relay::{
     Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
@@ -46,10 +53,16 @@ struct Grant {
     /// call, camera, screen or other window of the workspace reaches it.
     environment: bool,
     admitted: AtomicBool,
-    /// Reports each change of `admitted`: the relay re-observes on it and cuts
-    /// a session whose answer narrowed.
+    /// What each of the workspace's calls allows, by the tag its tracks name
+    /// ([`collab_types::calls::tag`]).
+    calls: Mutex<Arc<Calls>>,
+    /// Reports each change of `admitted` or `calls`: the relay re-observes on
+    /// it and cuts a session, or a call track, whose answer narrowed.
     changed: watch::Sender<u64>,
 }
+
+/// What each call of a workspace allows, by the tag its tracks name.
+type Calls = BTreeMap<String, CallRule>;
 
 impl Grant {
     fn new(
@@ -66,7 +79,23 @@ impl Grant {
             namespace: namespace.path(),
             environment,
             admitted: AtomicBool::new(true),
+            calls: Mutex::new(Arc::default()),
             changed: watch::channel(0_u64).0,
+        }
+    }
+
+    /// Hold the workspace's calls to `calls` from now on, waking the relay
+    /// when they moved.
+    fn set_calls(&self, calls: Arc<Calls>) {
+        let moved = {
+            let mut held = self.calls.lock_recover();
+            let moved = **held != *calls;
+            *held = calls;
+            moved
+        };
+        if moved {
+            self.changed
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
         }
     }
 
@@ -121,6 +150,22 @@ impl SessionAuthorization for Grant {
     fn changed(&self) -> Option<watch::Receiver<u64>> {
         Some(self.changed.subscribe())
     }
+
+    fn call(&self, direction: Direction, call: &str) -> bool {
+        let person = hex::encode(self.peer.user_public_key);
+        let may = self
+            .calls
+            .lock_recover()
+            .get(call)
+            .map_or(collab_types::calls::Directions::BOTH, |rule| {
+                rule.may(Some(&person))
+            });
+        self.admitted()
+            && match direction {
+                Direction::Publish => may.publish,
+                Direction::Subscribe => may.subscribe,
+            }
+    }
 }
 
 /// One live session of an environment's device, as the relay counts it: while
@@ -158,6 +203,10 @@ impl SessionAuthorization for Present {
 
     fn changed(&self) -> Option<watch::Receiver<u64>> {
         self.grant.changed()
+    }
+
+    fn call(&self, direction: Direction, call: &str) -> bool {
+        self.grant.call(direction, call)
     }
 }
 
@@ -219,12 +268,45 @@ impl Authority {
     /// Called on each relay-wide authority change, never on a timer.
     async fn refresh(&self) {
         let members: Vec<Arc<Grant>> = self.members.lock_recover().values().cloned().collect();
+        let mut calls: BTreeMap<WorkspaceId, Arc<Calls>> = BTreeMap::new();
         for grant in members {
             let admitted = self
                 .admits_as(&grant.peer, grant.workspace, WorkspaceOperation::Publish)
                 .await;
             grant.set(admitted);
+            let of_workspace = if let Some(read) = calls.get(&grant.workspace) {
+                Arc::clone(read)
+            } else {
+                let read = self.calls(grant.workspace).await;
+                calls.insert(grant.workspace, Arc::clone(&read));
+                read
+            };
+            grant.set_calls(of_workspace);
         }
+    }
+
+    /// What each call of `workspace` allows now, by the tag its tracks name:
+    /// none for a workspace this relay holds no copy of, whose calls then
+    /// carry as their channels allow by default.
+    async fn calls(&self, workspace: WorkspaceId) -> Arc<Calls> {
+        let Some(workspaces) = self.server.admin.get() else {
+            return Arc::default();
+        };
+        let copy = if let Some(copy) = workspaces.governed_copy(workspace).await {
+            Some(copy)
+        } else {
+            workspaces.member_copy(workspace).await
+        };
+        let Some((_, peer)) = copy else {
+            return Arc::default();
+        };
+        Arc::new(
+            peer.governance()
+                .calls()
+                .into_iter()
+                .map(|(channel, rule)| (collab_types::calls::tag(&channel), rule))
+                .collect(),
+        )
     }
 
     /// Whether the workspace's governance admits `peer`'s device to `op` now:
@@ -309,6 +391,7 @@ impl Authority {
             self.members.lock_recover().insert(key, member.clone());
             member
         };
+        member.set_calls(self.calls(id).await);
         if !environment {
             return Ok(member);
         }
