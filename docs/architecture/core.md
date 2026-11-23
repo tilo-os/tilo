@@ -127,7 +127,12 @@ against the one app SDK. It declares resource
 types, actions (verbs with a typed input, a typed result and a kind:
 read, edit or privileged) and views (functions from a resource to UI whose
 controls name fields and actions). Installing it publishes all three into the
-workspace's tree. That tree is the only registry.
+workspace's tree. That tree is the only registry. Installing, updating,
+pinning and removing an app are actions on its resource there, admitted by
+the ordinary grants. A device keeps the packages its workspaces name in one
+content-addressed cache its daemon owns, never a store per person, and the
+daemon fetches what the tree names and starts its sandboxes; nothing else
+writes that cache while the daemon runs.
 
 An app is never "running". Any device that holds the workspace's keys and
 takes the work runs an action's code, sandboxed, when it is called; an agent
