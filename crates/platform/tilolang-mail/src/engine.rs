@@ -2,7 +2,7 @@
 //! the network and the credentials are. It runs in the process the system starts for the app
 //! ([`crate::serve`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::mpsc::{Receiver, Sender};
 
 use mail_engine::engine::{EngineEvent, EngineRequest, EngineRequestKind};
@@ -181,6 +181,45 @@ impl EngineConnector {
         self.held.get(account)?.get(*id).cloned()
     }
 
+    /// The messages held of `folder` that the server no longer has: every one of them that the
+    /// answer does not carry when it starts the folder over (a renumbered folder, or too much
+    /// missed), else the ones inside the window the answer reports and does not name.
+    fn gone_messages(
+        &self,
+        account: &str,
+        folder: Folder,
+        synced: &mail_engine::sync::Synced,
+    ) -> (Vec<String>, Vec<mail_engine::model::MessageId>) {
+        let Some(held) = self.held.get(account) else {
+            return (Vec::new(), Vec::new());
+        };
+        let here = |m: &Message| {
+            m.account == account
+                && m.folder == folder
+                && m.server.is_some_and(|at| at.folder == folder)
+        };
+        let mut gone: Vec<(String, mail_engine::model::MessageId)> = Vec::new();
+        if synced.reset {
+            let fresh: BTreeSet<String> = synced.messages.iter().map(message_key).collect();
+            for m in held.messages.values().filter(|m| here(m)) {
+                if !fresh.contains(&message_key(m)) {
+                    gone.push((message_key(m), m.id));
+                }
+            }
+        } else if let Some((oldest, newest)) = synced.window {
+            let reported: BTreeSet<u32> = synced.flags.iter().map(|(uid, ..)| *uid).collect();
+            for m in held.messages.values().filter(|m| here(m)) {
+                let Some(at) = m.server else { continue };
+                if at.uid >= oldest && at.uid <= newest && !reported.contains(&at.uid) {
+                    gone.push((message_key(m), m.id));
+                }
+            }
+        }
+        let keys = gone.iter().map(|(key, _)| key.clone()).collect();
+        let ids = gone.into_iter().map(|(_, id)| id).collect();
+        (keys, ids)
+    }
+
     fn take_in(&mut self, account: &str, folder: Folder, messages: &[Message]) -> Vec<ImapMessage> {
         let held = self.held.entry(account.to_owned()).or_default();
         let mut out = Vec::with_capacity(messages.len());
@@ -227,6 +266,20 @@ impl MailConnector for EngineConnector {
             config,
             folder,
             Want::Latest { known },
+        ))
+    }
+
+    fn older(&mut self, account: &str, mailbox: &str) -> Option<Request> {
+        let config = self.config(account)?;
+        let folder = Folder::from_key(mailbox)?;
+        let known = self
+            .held
+            .get(account)
+            .and_then(|held| Window::of(held, account, folder))?;
+        self.request(EngineRequest::fetch_wanting(
+            config,
+            folder,
+            Want::Older { known },
         ))
     }
 
@@ -388,6 +441,50 @@ impl EngineConnector {
         self.pending.contains_key(request)
     }
 
+    /// What a fetch of a mailbox brought: the messages taken in, the flags it reported of the
+    /// messages held, and the messages the server no longer has; added to `out` as its changes.
+    fn took_fetched(
+        &mut self,
+        account_id: String,
+        folder: Folder,
+        synced: &mail_engine::sync::Synced,
+        out: &mut Vec<Event>,
+    ) {
+        // What the server no longer has, found before what it brought is taken in.
+        let (removed, gone) = self.gone_messages(&account_id, folder, synced);
+        let messages = self.take_in(&account_id, folder, &synced.messages);
+        if let Some(held) = self.held.get_mut(&account_id) {
+            for id in gone {
+                held.remove(id);
+            }
+        }
+        for key in &removed {
+            self.keys.remove(&(account_id.clone(), key.clone()));
+        }
+        let mut flags = Vec::new();
+        if let Some(held) = self.held.get_mut(&account_id) {
+            for (uid, seen, flagged) in &synced.flags {
+                let found = held.messages.values_mut().find(|m| {
+                    m.server
+                        .is_some_and(|at| at.folder == folder && at.uid == *uid)
+                });
+                if let Some(m) = found {
+                    m.read = *seen;
+                    m.starred = *flagged;
+                    flags.push((message_key(m), !*seen, *flagged));
+                }
+            }
+        }
+        out.push(Event::Changes(Changes {
+            account: account_id,
+            mailbox: folder.as_key().to_owned(),
+            messages,
+            flags,
+            removed,
+            more: synced.has_older,
+        }));
+    }
+
     /// Take in what the engine said, adding what it means to `out`.
     pub fn engine_event(&mut self, event: EngineEvent, out: &mut Vec<Event>) {
         match event {
@@ -396,29 +493,7 @@ impl EngineConnector {
                 folder,
                 synced,
                 ..
-            } => {
-                let messages = self.take_in(&account_id, folder, &synced.messages);
-                let mut flags = Vec::new();
-                if let Some(held) = self.held.get_mut(&account_id) {
-                    for (uid, seen, flagged) in &synced.flags {
-                        let found = held.messages.values_mut().find(|m| {
-                            m.server
-                                .is_some_and(|at| at.folder == folder && at.uid == *uid)
-                        });
-                        if let Some(m) = found {
-                            m.read = *seen;
-                            m.starred = *flagged;
-                            flags.push((message_key(m), !*seen, *flagged));
-                        }
-                    }
-                }
-                out.push(Event::Changes(Changes {
-                    account: account_id,
-                    mailbox: folder.as_key().to_owned(),
-                    messages,
-                    flags,
-                }));
-            }
+            } => self.took_fetched(account_id, folder, &synced, out),
             EngineEvent::Found {
                 account_id,
                 messages,

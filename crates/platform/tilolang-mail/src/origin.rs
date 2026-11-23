@@ -40,7 +40,7 @@ pub const MAILBOXES: &[(&str, &str)] = &[
 ];
 
 /// The mailboxes whose changes are asked for when an account is first seen.
-const SYNCED: &[&str] = &["inbox", "archive", "sent", "trash"];
+const SYNCED: &[&str] = &["inbox", "archive", "sent", "junk", "trash"];
 
 /// What people change of a message.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -285,6 +285,8 @@ impl ImapOrigin {
                         mailbox: String::new(),
                         messages,
                         flags: Vec::new(),
+                        removed: Vec::new(),
+                        more: None,
                     };
                     polled.wrote |= self.take_changes(host, now, changes).wrote();
                 }
@@ -1121,6 +1123,8 @@ fn take_in_step(
     // The messages inserted, by their record and the server's key, to be known by their record
     // once the change is kept.
     let mut inserted: Vec<(String, String)> = Vec::new();
+    // The records of the messages the server no longer has, forgotten once the change is kept.
+    let mut gone_records: Vec<String> = Vec::new();
     host.runtime()
         .write_origin("imap", Some(now.to_owned()), |change| {
             let mut touched: BTreeSet<String> = BTreeSet::new();
@@ -1162,20 +1166,7 @@ fn take_in_step(
                 });
                 new_messages.push(m);
             }
-            for (key, unread, flagged) in &changes.flags {
-                if let Some(held) = acct.messages.get_mut(key) {
-                    let server = People {
-                        unread: *unread,
-                        flagged: *flagged,
-                        mailbox: held.confirmed.mailbox.clone(),
-                    };
-                    if !waiting(&changes.account, key) && held.confirmed != server {
-                        held.confirmed = server.clone();
-                        writes.push(people_write(t, &held.record, &server));
-                        touched.insert(held.thread.clone());
-                    }
-                }
-            }
+            take_in_flags(t, acct, changes, &waiting, &mut writes, &mut touched);
             // The inserts are in `writes` interleaved with updates; find their results by order.
             let made = change.write(writes)?;
             let mut made_iter = made.into_iter().flatten();
@@ -1204,6 +1195,19 @@ fn take_in_step(
                     },
                 );
             }
+            // What the server no longer has leaves the workspace, after what it brought: the
+            // message, and the conversation it was the last of. The mailbox says too whether
+            // its server holds mail older than what is held, so a window can offer the page
+            // before it.
+            remove_gone(
+                change,
+                host,
+                t,
+                acct,
+                threads_field,
+                changes,
+                &mut gone_records,
+            )?;
             change.write(summarize(host, t, acct, &touched))?;
             Ok(())
         })?;
@@ -1212,7 +1216,100 @@ fn take_in_step(
             .by_record
             .insert(record, (changes.account.clone(), key));
     }
+    for record in gone_records {
+        state.by_record.remove(&record);
+    }
     Ok(true)
+}
+
+/// The flags a server reported of the messages held: each one's unread and flagged brought to
+/// what the server says, unless someone changed them here and the server has not been told yet.
+fn take_in_flags(
+    t: &Types,
+    acct: &mut Acct,
+    changes: &Changes,
+    waiting: &dyn Fn(&str, &str) -> bool,
+    writes: &mut Vec<OriginWrite>,
+    touched: &mut BTreeSet<String>,
+) {
+    for (key, unread, flagged) in &changes.flags {
+        if let Some(held) = acct.messages.get_mut(key) {
+            let server = People {
+                unread: *unread,
+                flagged: *flagged,
+                mailbox: held.confirmed.mailbox.clone(),
+            };
+            if !waiting(&changes.account, key) && held.confirmed != server {
+                held.confirmed = server.clone();
+                writes.push(people_write(t, &held.record, &server));
+                touched.insert(held.thread.clone());
+            }
+        }
+    }
+}
+
+/// The messages `changes.removed` names leave the workspace with the conversation each was the
+/// last one of, written in `change`: their records are forgotten here too, and `gone_records`
+/// keeps them for the state once the change is kept. The mailbox also says whether its server
+/// holds mail older than what is held, so a window can offer the page before it.
+fn remove_gone(
+    change: &mut OriginChange<'_>,
+    host: &Host,
+    t: &Types,
+    acct: &mut Acct,
+    threads_field: &str,
+    changes: &Changes,
+    gone_records: &mut Vec<String>,
+) -> Result<(), RuntimeError> {
+    let mut writes = Vec::new();
+    let mut emptied: BTreeSet<String> = BTreeSet::new();
+    for key in &changes.removed {
+        let Some(held) = acct.messages.remove(key) else {
+            continue;
+        };
+        gone_records.push(held.record.id_string());
+        if let Some(thread) = acct.threads.get_mut(&held.thread) {
+            thread.keys.retain(|kept| kept != key);
+            if thread.keys.is_empty() {
+                emptied.insert(held.thread.clone());
+            }
+        }
+        if let (Some(field), Some(owner)) = (
+            t.thread.field("messages"),
+            acct.threads
+                .get(&held.thread)
+                .map(|thread| thread.record.clone()),
+        ) {
+            writes.push(OriginWrite::Remove {
+                owner,
+                field: field.to_owned(),
+                item: held.record,
+            });
+        }
+    }
+    for key in emptied {
+        if let Some(thread) = acct.threads.remove(&key) {
+            writes.push(OriginWrite::Remove {
+                owner: acct.record.clone(),
+                field: threads_field.to_owned(),
+                item: thread.record,
+            });
+        }
+    }
+    if let Some(more) = changes.more
+        && let Some(record) = acct.boxes.get(&changes.mailbox)
+        && t.mailbox.field("more").is_some()
+        && read_bool(host, record, &t.mailbox, "more") != more
+    {
+        let mut fields = Vec::new();
+        put(&t.mailbox, &mut fields, "more", Value::Bool(more));
+        writes.push(OriginWrite::Set {
+            target: record.clone(),
+            fields,
+        });
+    }
+    change.write(writes)?;
+    Ok(())
 }
 
 /// The conversations a server's changes start, each a record in its account, in `change`.
@@ -1411,7 +1508,7 @@ impl Origin for ImapOrigin {
     }
 
     fn serves(&self, capability: &str) -> bool {
-        matches!(capability, "smtp.send" | "imap.check")
+        matches!(capability, "smtp.send" | "imap.check" | "imap.older")
     }
 
     /// A step the workspace would not take is not a reason to poll: it is taken again with the
@@ -1524,6 +1621,28 @@ impl Origin for ImapOrigin {
     fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery {
         if capability == "imap.check" {
             return self.check_now(payload.as_str().unwrap_or_default());
+        }
+        if capability == "imap.older" {
+            let field = |i: usize| -> String {
+                payload
+                    .get(i)
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            let (account, mailbox) = (field(0), field(1));
+            let known = self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.accounts.contains_key(&account));
+            if !known {
+                return Delivery::Rejected(format!("no mail account {account} on this device"));
+            }
+            return match self.connector.older(&account, &mailbox) {
+                // The page arrives as the server's answers do, on the poll it wakes.
+                Some(_) => Delivery::Delivered,
+                None => Delivery::Rejected(format!("there is no older mail to read in {mailbox}")),
+            };
         }
         if capability != "smtp.send" {
             return Delivery::Rejected(format!(

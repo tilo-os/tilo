@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@475d66c5b44ea800";
+export const SURFACE = "so.tilo.mail@58dd056be3447224";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -157,11 +157,14 @@ export interface Mailbox extends tilo.Resource {
   xhiqdk3p: string;  // role
   dtd4czyv: number;  // unread
   rxoe5vzb: number;  // total
+  xgjbfrkl: boolean;  // more
+  /** Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message. They come in as new mail does, and the mailbox stops offering them once its first message is here. */
+  older_messages(): Promise<void>;
 }
 
 /** The actions `Mailbox` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAILBOX_ACTIONS = [] as const;
+export const MAILBOX_ACTIONS = ["older_messages"] as const;
 
 /** The `tl.so.tilo.mail.Mailbox` kind at `path`. */
 export function mailbox(ws: tilo.Workspace, path: string): Mailbox {

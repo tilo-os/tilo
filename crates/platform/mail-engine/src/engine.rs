@@ -1228,6 +1228,7 @@ pub mod live {
         }
         if exists == 0 {
             synced.reset = true;
+            synced.has_older = Some(false);
             return Ok(synced);
         }
         match want {
@@ -1273,6 +1274,8 @@ pub mod live {
                     fetched.first().map(|fetch| fetch.message)
                 };
                 let Some(position) = position.filter(|position| *position > 1) else {
+                    // The oldest message held is the folder's first: nothing is older.
+                    synced.has_older = Some(false);
                     return Ok(synced);
                 };
                 let last = position - 1;

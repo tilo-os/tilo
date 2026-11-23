@@ -281,6 +281,38 @@ impl FakeImap {
         self.announce();
     }
 
+    /// Take a message away, as another client deleting it does.
+    pub fn remove(&self, folder: &str, uid: u32) {
+        {
+            let mut state = self.state.lock().unwrap();
+            if let Some(mailbox) = state.find(folder) {
+                mailbox.messages.retain(|message| message.uid != uid);
+            }
+            drop(state);
+        }
+        self.announce();
+    }
+
+    /// Number the folder again under a new UIDVALIDITY, every message under a UID of its own
+    /// past the ones it had: what a server rebuilding a mailbox does, and a client holding the
+    /// old numbering must reconcile.
+    pub fn renumber(&self, folder: &str) {
+        {
+            let mut state = self.state.lock().unwrap();
+            if let Some(mailbox) = state.find(folder) {
+                mailbox.validity += 50;
+                let mut uid = mailbox.next_uid.max(1000);
+                for message in &mut mailbox.messages {
+                    message.uid = uid;
+                    uid += 1;
+                }
+                mailbox.next_uid = uid;
+            }
+            drop(state);
+        }
+        self.announce();
+    }
+
     pub fn idling(&self) -> usize {
         self.idling.load(std::sync::atomic::Ordering::SeqCst)
     }

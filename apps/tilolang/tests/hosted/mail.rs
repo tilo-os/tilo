@@ -669,6 +669,111 @@ fn an_account_syncs_into_mailboxes_and_conversations() {
     assert_eq!(session.threads().len(), 2);
 }
 
+// USER REQUIREMENT: a mailbox holding more than one page of messages can be read back past the
+// newest page, so mail older than the first fifty is reachable.
+#[test]
+fn a_mailbox_longer_than_a_page_reads_the_page_before_it_when_asked() {
+    let servers = empty_servers();
+    for i in 0..60 {
+        servers.imap.append(
+            "INBOX",
+            &mail(
+                &format!("note-{i}@hopper.example"),
+                "Grace Hopper <grace@hopper.example>",
+                &format!("Note {i}"),
+                "A line.",
+                None,
+            ),
+            &[],
+        );
+    }
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the newest page", |session| session.threads().len() == 50);
+    let account = session.accounts().remove(0);
+    let inbox = session.refs(&account, "mailboxes")[0].clone();
+    assert!(
+        session.flag(&inbox, "more"),
+        "the mailbox says its server holds older mail"
+    );
+    session.call("older_messages", &inbox, &json!({}));
+    session.until("the page before it", |session| {
+        session.threads().len() == 60
+    });
+    assert!(
+        !session.flag(&inbox, "more"),
+        "the folder's first message is here, and it offers no more"
+    );
+}
+
+// USER REQUIREMENT: mail that another client deletes here goes, and a folder the server
+// numbered again is read once more rather than kept stale or doubled.
+#[test]
+fn mail_deleted_elsewhere_leaves_and_a_renumbered_folder_is_read_again() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let dinner = servers
+        .imap
+        .messages("INBOX")
+        .into_iter()
+        .find(|held| String::from_utf8_lossy(&held.raw).contains("Dinner on Friday?"))
+        .expect("the dinner message");
+    servers.imap.remove("INBOX", dinner.uid);
+    session.until("the deleted message to leave", |session| {
+        session
+            .threads()
+            .iter()
+            .all(|thread| session.text(thread, "subject") != "Dinner on Friday?")
+    });
+    servers.imap.renumber("INBOX");
+    servers.imap.append("INBOX", &lease(), &[]);
+    session.until("the renumbered inbox", |session| {
+        let threads = session.threads();
+        threads.len() == 2
+            && threads
+                .iter()
+                .filter(|thread| session.text(thread, "subject") == "Launch plan")
+                .count()
+                == 1
+            && threads
+                .iter()
+                .any(|thread| session.text(thread, "subject") == "Your lease renewal")
+    });
+}
+
+// USER REQUIREMENT: mail the server files as junk shows in Mail, under its Junk place.
+#[test]
+fn junk_the_server_holds_shows_in_its_place() {
+    let servers = servers();
+    servers.imap.append(
+        "[Gmail]/Spam",
+        &mail(
+            "offer@deals.example",
+            "Prize Draw <win@deals.example>",
+            "You have won a cruise",
+            "Claim your prize.",
+            None,
+        ),
+        &[],
+    );
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the mail to sync", |session| session.threads().len() == 3);
+    let account = session.accounts().remove(0);
+    assert!(
+        session.threads().iter().any(|thread| {
+            session.text(thread, "subject") == "You have won a cruise"
+                && matches!(session.value_of(thread, "boxes"), RtValue::List(boxes)
+                    if boxes.contains(&RtValue::text("junk")))
+        }),
+        "the junk is filed under junk"
+    );
+    assert_eq!(
+        session.place_count(&account, "Junk"),
+        Some(1),
+        "the Junk place lists it"
+    );
+}
+
 /// An editor of the workspace's mailbox, which holds its own keys, is offered Check now like
 /// its owner; the rules ask an editor before what reaches outside, so the press stops on the
 /// window's Ask bar rather than the action showing dimmed.
@@ -1296,6 +1401,44 @@ fn every_account_shows_in_the_sidebar_and_opens_its_own_mail() {
             .iter()
             .any(|t| session.text(t, "subject") == "Team holiday"),
         "the second account holds its own mail"
+    );
+}
+
+// USER REQUIREMENT: All inboxes is every account's inbox in one list, not only the first
+// account's.
+#[test]
+fn all_inboxes_lists_every_accounts_inbox_in_one_list() {
+    let servers = servers();
+    let second = second_account();
+    let connector = MailConnector::new(move || vec![account(&servers), work_account(&second)]);
+    let mut session = connector.window();
+    session.until("both accounts' mail", |session| {
+        session.accounts().len() == 2
+            && session
+                .accounts()
+                .iter()
+                .all(|a| !session.refs(a, "threads").is_empty())
+    });
+    // The window opens on All inboxes: the conversations of both accounts stand in its one
+    // list.
+    session.until("both inboxes in one list", |session| {
+        let titles = session.titles();
+        titles.len() == 3
+            && titles
+                .iter()
+                .any(|title| title == "Ada Lovelace, Grace Hopper")
+            && titles.iter().any(|title| title == "Bo Chen")
+            && titles.iter().any(|title| title == "holiday@team.example")
+    });
+    let root = session.mail_root();
+    let view = session
+        .instance_host()
+        .open_resource(&root, None)
+        .expect("the mail window opens");
+    assert_eq!(
+        count_in(view.tree(), "ui.NavShell"),
+        Some(3),
+        "the list counts both accounts' inboxes"
     );
 }
 

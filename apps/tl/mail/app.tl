@@ -30,6 +30,9 @@ type Mailbox (origin: imap.mailbox) {
     role: Text merge register
     unread: Int
     total: Int
+    /// Whether the account's server holds messages older than the ones this workspace holds:
+    /// what "Show older messages" reads the page before them for.
+    more: Bool
 }
 
 /// A conversation: messages that answer each other, newest last.
@@ -219,6 +222,16 @@ action set_hold(m: Mail, seconds: Int) (icon: .clock, label: "Undo send time") {
 /// how it stands once it answers.
 action check_now(a: Account) (icon: .refresh, label: "Check now") {
     outside("imap.check", a.key)
+}
+
+/// Asks the account's server for the messages older than the oldest this workspace holds in the
+/// mailbox, so a folder longer than one page can be read back to its first message. They come in
+/// as new mail does, and the mailbox stops offering them once its first message is here.
+action older_messages(b: Mailbox) (icon: .arrow_down, label: "Show older messages") {
+    let m = root Mail
+    if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
+        outside("imap.older", (a.key, b.key))
+    }
 }
 
 /// Starts a message from the account.
@@ -967,71 +980,67 @@ view unified(m: Mail) {
     state query: Text = "is:inbox"
     let places = filters(Thread).filter(f -> f.toggle)
     let title = place_title(m, query)
-    if let a = m.accounts.first() {
-        let shown = a.threads.matching(query)
-        ui.NavShell(
-            content_kind: .document,
-            title: if query == "recovered" { "Recovered mail" } else { title },
-            sidebar_title: "All accounts",
-            overview_title: if query == "recovered" { "Recovered mail" } else { title },
-            overview_count: if query == "recovered" {
-                m.recovered_mail.len()
-            } else { shown.len() },
-            actions: [new_draft],
-        ) {
-            sidebar_actions: {
-                // The accounts whose server does not stand well, beside the name of the accounts
-                // they are: each mark names its own account on hover, so none is passed over.
+    let shown = everywhere(m, query)
+    ui.NavShell(
+        content_kind: .document,
+        title: if query == "recovered" { "Recovered mail" } else { title },
+        sidebar_title: "All accounts",
+        overview_title: if query == "recovered" { "Recovered mail" } else { title },
+        overview_count: if query == "recovered" { m.recovered_mail.len() } else { shown.len() },
+        actions: [new_draft],
+    ) {
+        sidebar_actions: {
+            // The accounts whose server does not stand well, beside the name of the accounts
+            // they are: each mark names its own account on hover, so none is passed over.
+            for acct in m.accounts {
+                std.service_mark(acct.address, acct.online, acct.trouble)
+            }
+        }
+        sidebar: {
+            ui.NavList(selected: query) {
+                ui.NavItem("is:inbox", "All inboxes", icon: .inbox) {
+                    on select: set(query, "is:inbox")
+                }
+                ui.NavItem("all", "All mail", icon: .mail) {
+                    on select: set(query, "")
+                }
+                if not m.recovered_mail.is_empty() {
+                    ui.NavItem("recovered", "Recovered mail", icon: .archive) {
+                        on select: set(query, "recovered")
+                    }
+                }
+                if not m.labels.is_empty() {
+                    ui.NavSection("Labels") {
+                        for l in m.labels {
+                            ui.NavItem(
+                                label_query(l.name),
+                                l.name,
+                                icon: .tag,
+                                count: everywhere(m, label_query(l.name)).len(),
+                            ) {
+                                on select: set(query, label_query(l.name))
+                            }
+                        }
+                    }
+                }
                 for acct in m.accounts {
-                    std.service_mark(acct.address, acct.online, acct.trouble)
-                }
-            }
-            sidebar: {
-                ui.NavList(selected: query) {
-                    ui.NavItem("is:inbox", "All inboxes", icon: .inbox) {
-                        on select: set(query, "is:inbox")
-                    }
-                    ui.NavItem("all", "All mail", icon: .mail) {
-                        on select: set(query, "")
-                    }
-                    if not m.recovered_mail.is_empty() {
-                        ui.NavItem("recovered", "Recovered mail", icon: .archive) {
-                            on select: set(query, "recovered")
-                        }
-                    }
-                    if not m.labels.is_empty() {
-                        ui.NavSection("Labels") {
-                            for l in m.labels {
-                                ui.NavItem(
-                                    label_query(l.name),
-                                    l.name,
-                                    icon: .tag,
-                                    count: a.threads.matching(label_query(l.name)).len(),
-                                ) {
-                                    on select: set(query, label_query(l.name))
-                                }
-                            }
-                        }
-                    }
-                    for acct in m.accounts {
-                        ui.NavSection(acct.address) {
-                            for p in places {
-                                ui.NavItem("{acct.key}/{p.query}", p.label, icon: p.icon) {
-                                    on select: open(acct)
-                                }
+                    ui.NavSection(acct.address) {
+                        for p in places {
+                            ui.NavItem("{acct.key}/{p.query}", p.label, icon: p.icon) {
+                                on select: open(acct)
                             }
                         }
                     }
                 }
             }
-            overview: {
-                // The list shows `a`'s mail, so what the account's server says of itself is
-                // said over it, and `Try again` asks the server that account reads from.
-                if query == "recovered" {
-                    recovered_mail(m)
-                } else {
-                    account_threads(a, shown)
-                }
+        }
+        overview: {
+            // Every account's mail of the place is one list, so a conversation of any of them
+            // stands in it, and what each account's server says of itself is said over it.
+            if query == "recovered" {
+                recovered_mail(m)
+            } else {
+                accounts_threads(m, shown, query)
             }
         }
     }
@@ -1045,20 +1054,71 @@ view recovered_mail(m: Mail) {
 /// list of conversations, newest first, with none of the window's sidebar or bar around it. The
 /// mail window shows the same list under its places (`unified`).
 view all_inboxes(m: Mail) {
-    if let a = m.accounts.first() {
-        account_threads(a, a.threads.matching("is:inbox"))
-    } else {
+    if m.accounts.is_empty() {
         ui.EmptyState("Add a mail account in Settings", icon: .mail)
+    } else {
+        accounts_threads(m, everywhere(m, "is:inbox"), "is:inbox")
     }
+}
+
+/// Every account's conversations of the place `query`, newest first: the union a window over all
+/// the accounts reads, so a conversation of any of them stands in it and counts with the rest.
+/// Each account's list is taken newest first, as its collection is read, and the union again
+/// after the join.
+fn everywhere(m: Mail, query: Text) -> List<Thread> {
+    m.accounts
+        .flat_map(a -> a.threads.matching(query).sort_by(x -> x.latest, desc))
+        .sort_by(t -> t.latest, desc)
+}
+
+/// Every account's conversations of the place `query` as one list, newest first: what a window
+/// over all the accounts lists, so a conversation of any of them stands in it and counts with
+/// the rest. Under the list, each account whose mailbox holds more on its server says so, and the
+/// page before what is here is read from it.
+view accounts_threads(m: Mail, shown: List<Thread>, query: Text) {
+    stack(fill, gap: .none) {
+        for a in m.accounts {
+            account_notice(a)
+        }
+        thread_list(shown, fill)
+        for a in m.accounts {
+            if let b = mailbox_place(a, query) {
+                if b.more {
+                    row {
+                        spacer()
+                        ui.Button("Show older messages from {a.address}", icon: .arrow_down) {
+                            on press: older_messages(b)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The mailbox a place shows of the account `a`, when the place is one of its mailboxes.
+fn mailbox_place(a: Account, query: Text) -> Option<Mailbox> {
+    a.mailboxes.find(b -> "is:{b.key}" == query)
 }
 
 /// Conversations of the account `a` as a list, under what its server says of itself, and
 /// `Try again` asks the server that account reads from. The notice keeps its own gutter, so the
-/// list stands under it with none between.
-view account_threads(a: Account, shown: List<Thread>) {
+/// list stands under it with none between. When the mailbox `a`'s place shows holds more on the
+/// server than here, the list's foot reads the page before what it shows.
+view account_threads(a: Account, shown: List<Thread>, query: Text) {
     stack(fill, gap: .none) {
         account_notice(a)
         thread_list(shown, fill)
+        if let b = mailbox_place(a, query) {
+            if b.more {
+                row {
+                    spacer()
+                    ui.Button("Show older messages", icon: .arrow_down) {
+                        on press: older_messages(b)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1115,7 +1175,7 @@ view mailboxes(a: Account) {
             }
         }
         overview: {
-            account_threads(a, shown)
+            account_threads(a, shown, query)
         }
     }
 }
@@ -1126,7 +1186,7 @@ view mailboxes(a: Account) {
 view inbox(b: Mailbox) {
     let m = root Mail
     if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
-        account_threads(a, in_mailbox(a, b))
+        account_threads(a, in_mailbox(a, b), "is:{b.key}")
     } else {
         ui.EmptyState("Nothing here", icon: .inbox)
     }

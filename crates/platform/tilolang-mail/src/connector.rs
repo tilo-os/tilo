@@ -48,6 +48,14 @@ pub struct Changes {
     pub messages: Vec<ImapMessage>,
     /// `(key, unread, flagged)` of the messages held that the server still has.
     pub flags: Vec<(String, bool, bool)>,
+    /// The keys of the messages held that the server no longer has: deleted, or moved away by
+    /// another client.
+    #[serde(default)]
+    pub removed: Vec<String>,
+    /// Whether the server holds messages older than the oldest one held: `None` when the answer
+    /// says nothing of them.
+    #[serde(default)]
+    pub more: Option<bool>,
 }
 
 /// A message to send.
@@ -117,6 +125,9 @@ pub trait MailConnector {
     fn accounts(&self) -> Vec<AccountRef>;
     /// Ask for what changed in `mailbox` of `account` since what is held.
     fn changes(&mut self, account: &str, mailbox: &str) -> Option<Request>;
+    /// Ask for the messages older than the oldest one held in `mailbox` of `account`: the page
+    /// before what is held.
+    fn older(&mut self, account: &str, mailbox: &str) -> Option<Request>;
     /// Mark a message read or unread, flagged or not.
     fn flag(&mut self, account: &str, key: &str, unread: bool, flagged: bool) -> Option<Request>;
     /// Move a message to another mailbox.

@@ -52,6 +52,12 @@ pub enum ToConnector {
     Watch {
         account: String,
     },
+    /// The messages older than the oldest one held in a mailbox.
+    Older {
+        request: Request,
+        account: String,
+        mailbox: String,
+    },
 }
 
 /// What the connector tells the origin.

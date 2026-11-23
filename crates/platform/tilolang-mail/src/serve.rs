@@ -271,12 +271,18 @@ impl Connector {
             return;
         };
         let write = matches!(asked, ToConnector::Flag { .. } | ToConnector::Move { .. });
+        let older = matches!(asked, ToConnector::Older { .. });
         let (host, engine) = match asked {
             ToConnector::Changes {
                 request,
                 account,
                 mailbox,
             } => (request, attached.connector.changes(&account, &mailbox)),
+            ToConnector::Older {
+                request,
+                account,
+                mailbox,
+            } => (request, attached.connector.older(&account, &mailbox)),
             ToConnector::Flag {
                 request,
                 account,
@@ -317,9 +323,14 @@ impl Connector {
             }
             Some(_) => {}
             None => {
+                let reason = if older {
+                    "there is no older mail to fetch".to_owned()
+                } else {
+                    "the account is not one of the settings' mail accounts".to_owned()
+                };
                 let refused = FromConnector::Event(Event::Refused {
                     request: host,
-                    reason: "the account is not one of the settings' mail accounts".to_owned(),
+                    reason,
                 });
                 self.tell(session, &refused);
             }

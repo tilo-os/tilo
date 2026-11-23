@@ -29332,7 +29332,9 @@
         "properties": {
           "field": {
             "description": "The name of the field to set.",
-            "enum": [],
+            "enum": [
+              "more"
+            ],
             "type": "string"
           },
           "value": {
@@ -29350,6 +29352,12 @@
         "properties": {},
         "required": [],
         "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.mail.Mailbox.older_messages.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the account's server for the messages older than the oldest this workspace holds in the\nmailbox, so a folder longer than one page can be read back to its first message. They come in\nas new mail does, and the mailbox stops offering them once its first message is here."
       },
       "tl.so.tilo.mail.Thread.$create.Arguments": {
         "type": "object",
@@ -40773,6 +40781,12 @@
       "resource": "tl.so.tilo.mail.Mailbox",
       "action": "$origin",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mailbox.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mailbox",
+      "action": "older_messages",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mailbox.older_messages.Arguments"
     },
     {
       "app": "so.tilo.mail",

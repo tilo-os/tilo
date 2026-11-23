@@ -517,6 +517,14 @@ impl Mailbox {
         self.messages.get(&id)
     }
 
+    /// A message its server no longer holds leaves the mailbox.
+    pub fn remove(&mut self, id: MessageId) {
+        if self.messages.remove(&id).is_some() {
+            self.order.retain(|kept| *kept != id);
+            self.touch_search_revision();
+        }
+    }
+
     /// The messages loaded since this was last asked, oldest first.
     pub fn take_loaded(&mut self) -> Vec<MessageId> {
         std::mem::take(&mut self.loaded)

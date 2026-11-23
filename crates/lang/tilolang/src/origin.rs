@@ -68,6 +68,11 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          in as it does when the server is heard from, and the account says how it stands.",
     ),
     (
+        "imap.older",
+        "Asks a mail account's server for the messages older than the oldest one the workspace \
+         holds: (the account's key, the mailbox's key). They come in as the server's changes do.",
+    ),
+    (
         "youtube.search",
         "Searches YouTube's catalogue for the query, as typed: (the query). The channels, \
          playlists and videos it answers are written where the search's field says.",
@@ -449,6 +454,11 @@ pub const KINDS: &[OriginKind] = &[
             ),
             field("unread", "Int", "How many unread messages it holds."),
             field("total", "Int", "How many messages it holds."),
+            field(
+                "more",
+                "Bool",
+                "Whether its server holds messages older than the ones the workspace holds.",
+            ),
         ],
     },
     OriginKind {

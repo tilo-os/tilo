@@ -51,9 +51,14 @@ d-dtd4czyv = Unread
 
 d-rxoe5vzb = Total
 
+d-xgjbfrkl = More
+    .doc = Whether the account's server holds messages older than the ones this workspace holds: what "Show older messages" reads the page before them for.
+
 d-ecbhcqdr-filter-unread = Unread
 
 d-ecbhcqdr-filter-total = Total
+
+d-ecbhcqdr-filter-more = More
 
 d-xnczt27x = Thread
     .doc = A conversation: messages that answer each other, newest last.
@@ -247,6 +252,9 @@ d-546ahgq6-seconds = Seconds
 
 d-arnkrvgw = Check now
     .doc = Asks the account's server for its mail now: what a person presses when the window says the server could not be reached, or that what it fetched could not be saved.
+
+d-cu55z6kf = Show older messages
+    .doc = Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message.
 
 d-eon6gbrn = New message
     .doc = Starts a message from the account.
@@ -528,14 +536,19 @@ d-3k7hkyhl = Recovered mail
 
 d-m5y6nl2m = All inboxes
     .w-add-a-mail-account-in-settings = Add a mail account in Settings
+    .w-is-inbox = is:inbox
+
+d-2wbh3b3o = Accounts threads
 
 d-tfom3oeo = Account threads
+    .w-show-older-messages = Show older messages
 
 d-gka45our = Mailboxes
     .w-all-mail = All mail
     .w-labels = Labels
 
 d-zp2cy2sc = Inbox
+    .w-is = is:{ $key }
     .w-nothing-here = Nothing here
 
 d-jgdzx3la = Thread list
