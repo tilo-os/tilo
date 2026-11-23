@@ -131,6 +131,38 @@
     "to": "so.tilo.notes tl.so.tilo.notes.Note#tag",
     "test": "crates/lang/tilolang-runtime/tests/e2e_notes.rs:343"
   },
+  "so.tilo.session notifications.banners#open": {
+    "to": "so.tilo.session notifications.banners#open-banner",
+    "test": "crates/session/session/src/notifications/tests.rs:1666"
+  },
+  "so.tilo.settings settings.mcp-server#apply": {
+    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
+    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+  },
+  "so.tilo.settings settings.mcp-server#field-edit": {
+    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
+    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+  },
+  "so.tilo.settings settings.mcp-server#group": {
+    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
+    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+  },
+  "so.tilo.settings settings.mcp-server#redo": {
+    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
+    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+  },
+  "so.tilo.settings settings.mcp-server#set-accept-own-devices": {
+    "to": "an agent with its own key is let in by the grant its person's device made with that key, on every device of the person; the person lists, stops and revokes it",
+    "test": "crates/session/client/tests/mcp_server.rs:213"
+  },
+  "so.tilo.settings settings.mcp-server#set-act-without-asking": {
+    "to": "an agent's ask on the person's device: an answer to always allow stands for that agent, that action and that workspace, listed with the person's permissions and taken back there",
+    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+  },
+  "so.tilo.settings settings.mcp-server#undo": {
+    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
+    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+  },
   "so.tilo.tube tube.library#open-creator": {
     "to": "so.tilo.tube tl.so.tilo.tube.Channel#open",
     "test": "crates/session/session/tests/youtube_client.rs:57"
@@ -170,9 +202,5 @@
   "so.tilo.tube tube.watch-history#progress": {
     "to": "so.tilo.tube tl.so.tilo.tube.Video#progress",
     "test": "crates/session/session/tests/youtube_client.rs:225"
-  },
-  "so.tilo.session notifications.banners#open": {
-    "to": "so.tilo.session notifications.banners#open-banner",
-    "test": "crates/session/session/src/notifications/tests.rs:1666"
   }
 }
