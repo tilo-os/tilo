@@ -10,12 +10,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tilo_agent_session::bot::event::Definition;
+use crate::agents::programs::event::Definition;
 use tilo_clock::Clock as _;
 
 use super::times::person_with_an_assistant;
 use super::*;
-use tilo_workspace_service::agents::events::watched_address;
+use crate::agents::events::watched_address;
 
 /// When the tests' clock starts, ms since the epoch.
 const START: u64 = 1_800_000_000_000;
@@ -134,7 +134,7 @@ struct Server {
 
 impl Server {
     /// The server, the person who keeps an assistant on it, and what keeps
-    /// its holder going while it is held.
+    /// its holder going while it is loaded.
     async fn on(scratch: &std::path::Path) -> (Self, String, impl Sized) {
         let (workspaces, workspace, cert, holder) = person_with_an_assistant(scratch).await;
         let server = Self {

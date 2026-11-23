@@ -143,21 +143,19 @@ impl ProgramRunner {
             return Ok(Vec::new());
         }
         // A program carried out for nobody has nobody's calendars.
-        let Some(person) = self.person.as_deref().and_then(|person| {
-            hex::decode(person)
-                .ok()
-                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-        }) else {
+        let Some(person) = self.person.as_deref() else {
             return Ok(Vec::new());
         };
+        let person: [u8; 32] = hex::decode(person)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                <[u8; 32]>::try_from(bytes).map_err(|_| "not 32 bytes long".to_owned())
+            })
+            .map_err(|error| format!("the program's person {person} is no root key: {error}"))?;
         // What an entry says is handed to its person's assistant: none, nothing read.
-        if tilo_workspace_service::agents::assistant::assistant_of(
-            &self.workspaces,
-            &self.workspace,
-            &person,
-        )
-        .await?
-        .is_none()
+        if crate::agents::assistant::assistant_of(&self.workspaces, &self.workspace, &person)
+            .await?
+            .is_none()
         {
             return Ok(Vec::new());
         }

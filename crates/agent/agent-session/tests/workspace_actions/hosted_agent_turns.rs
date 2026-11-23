@@ -1439,11 +1439,7 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await
         .unwrap();
-    let events = WorkspaceEvents::start(
-        workspaces.clone(),
-        None,
-        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
-    );
+    let events = WorkspaceEvents::start(workspaces.clone(), None);
 
     write_to_agent(
         &actions,

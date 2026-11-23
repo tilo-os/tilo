@@ -248,7 +248,7 @@ fn changes_in(
         .map(|checkout| checkout.kind.as_str().to_owned())
         .unwrap_or_default();
     let events =
-        tilo_agent_session::bot::events_since(workspace, document, &kind, doc.document(), since);
+        crate::agents::programs::events_since(workspace, document, &kind, doc.document(), since);
     let theirs: Vec<&DocumentEvent> = events
         .iter()
         .map(|(event, _)| event)

@@ -1,5 +1,5 @@
 //! What this server answers for the programs that run for a person
-//! ([`tilo_agent_session::bot::host_steps`]).
+//! ([`crate::agents::programs::host_steps`]).
 //!
 //! Calling a person's own model is one entry of the server's
 //! ([`Workspaces::person_model`]), and starting a turn of a person's
@@ -35,13 +35,13 @@ pub use transforms::Transforms;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde_json::{Map, Value, json};
-use tilo_actions::remote::Caller;
-use tilo_agent_session::bot::host_steps::{
+use crate::agents::programs::host_steps::{
     HostStepError as StepError, HostSteps as Steps, Instruction, Judgement,
 };
-use tilo_agent_session::bot::judging;
-use tilo_agent_session::bot::kept::Note;
+use crate::agents::programs::judging;
+use crate::agents::programs::kept::Note;
+use serde_json::{Map, Value, json};
+use tilo_actions::remote::Caller;
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
@@ -463,8 +463,8 @@ fn not_answered(refusal: &ModelRefusal) -> StepError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::programs::host_steps::StepCause;
     use crate::workspaces::person_model::protocol::ModelError;
-    use tilo_agent_session::bot::host_steps::StepCause;
 
     #[test]
     fn an_instruction_is_one_turn_in_its_persons_conversation_with_their_assistant() {

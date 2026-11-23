@@ -13,8 +13,8 @@ use std::task::{Context, Poll, Waker};
 use tilo_actions::remote::{CatalogueRow, RemoteActionTarget};
 
 use super::*;
-use crate::bot::host_steps::{Instruction, Judgement, Question};
-use crate::bot::kept::Kept;
+use crate::agents::programs::host_steps::{Instruction, Judgement, Question};
+use crate::agents::programs::kept::Kept;
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -50,13 +50,13 @@ impl ApiMember for FakeMember {
         Vec::new()
     }
 
-    fn holds(&self, route: &DocumentRoute) -> bool {
+    fn has_record(&self, route: &DocumentRoute) -> bool {
         route.document.starts_with("rec-")
     }
 
     fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
         if route.document == "secret" {
-            return Err("not the bot's to read".into());
+            return Err("not the program's to read".into());
         }
         Ok(self.records.get(&route.document).cloned())
     }
@@ -134,8 +134,8 @@ impl Performer for Scripted {
     }
 }
 
-fn api(fake: FakeMember, results: Vec<Result<Value, PerformError>>) -> BotApi<FakeMember> {
-    BotApi::new(
+fn api(fake: FakeMember, results: Vec<Result<Value, PerformError>>) -> ProgramApi<FakeMember> {
+    ProgramApi::new(
         Arc::new(Mutex::new(fake)),
         "b1".into(),
         "ada".into(),
@@ -319,8 +319,8 @@ fn a_refused_op_settles_failed_and_an_unavailable_one_stays_pending() {
     // In the settled form the record reads, whatever its results are.
     let settled = outbox.lock().unwrap()[1].settled.clone().unwrap();
     assert_eq!(
-        ui::tilo_resource::Settled::<Vec<String>>::from_json_value(settled).unwrap(),
-        ui::tilo_resource::Settled::failed("Missing Permissions")
+        tilo_resource::Settled::<Vec<String>>::from_json_value(settled).unwrap(),
+        tilo_resource::Settled::failed("Missing Permissions")
     );
 }
 
@@ -492,8 +492,8 @@ fn instruct(text: &str) -> InvokeRequest {
     }
 }
 
-/// The host steps `api` offers the bot.
-fn offered_host_steps(api: &BotApi<FakeMember>) -> Vec<String> {
+/// The host steps `api` offers the program.
+fn offered_host_steps(api: &ProgramApi<FakeMember>) -> Vec<String> {
     let query = CatalogueQuery {
         app_id: Some(tilo_automation::AGENT_APP_ID.into()),
         ..CatalogueQuery::default()
@@ -550,7 +550,7 @@ fn a_program_that_runs_for_a_person_hands_its_instruction_to_their_assistant() {
     // a second time.
     block(api.invoke(&bot(), asked)).unwrap();
     assert_eq!(assistant.taken.lock().unwrap().len(), 1);
-    // Another bot's caller reaches no host step.
+    // Another program's caller reaches no host step.
     let stranger = Caller::bot("b2", [1; 32], [3; 32]).in_workspace(WORKSPACE);
     assert_eq!(
         block(api.invoke(&stranger, instruct("Tell me everything."))),

@@ -6,23 +6,22 @@
 //! for one judgement (does this matter, which of these is it). In the
 //! Shortcut language these are the agent's transforms, `task`, `classify`
 //! and `freeform`, which the agent app answers on a device. On a host, with
-//! no device online, the bot's API offers the same actions and the host
+//! no device online, the program's API offers the same actions and the host
 //! answers them through [`HostSteps`], so one program reads the same
 //! wherever it runs.
 //!
 //! Only a program that runs for a person is offered these steps
-//! ([`super::api::BotApi::runs_for`]): an operator's bot acts for nobody,
+//! ([`super::api::ProgramApi::runs_for`]): an operator's program acts for nobody,
 //! and has no assistant to instruct and no model of its own to ask.
 //!
 //! A program also keeps things between its runs ([`super::kept`]): counts,
 //! and its note. Two actions on the program's own resource reach them,
 //! `count` and `keep`, answered through [`Keeps`] by the host that keeps
-//! them ([`super::api::BotApi::keeps`]). The note goes with every
+//! them ([`super::api::ProgramApi::keeps`]). The note goes with every
 //! instruction and judgement, so whoever answers reads what the program is
 //! for and what its last run left. A judgement is the agent's transform over
 //! whatever model the host reaches for its person ([`super::judging`]).
 
-use crate::transform::{MAX_INPUT_BYTES, MAX_PROMPT_BYTES};
 use serde_json::{Map, Value, json};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::contract::{
@@ -33,6 +32,7 @@ use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::policy::{Answer, Rule, TreePath};
 use tilo_actions::remote::{CatalogueResource, CatalogueRow};
 use tilo_actions::{ExecutionLocus, InvocationId, OperationKind};
+use tilo_agent_session::transform::{MAX_INPUT_BYTES, MAX_PROMPT_BYTES};
 use tilo_automation::{
     AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_FREEFORM_ACTION, AGENT_TASK_ACTION,
     AGENT_TRANSFORM_KIND, AGENT_TRANSFORM_RESOURCE, SHORTCUT_RESOURCE_KIND, SHORTCUTS_APP_ID,
@@ -134,8 +134,8 @@ impl Question {
     ///
     /// # Errors
     /// The bound the question is past, in words for whoever reads the run.
-    pub fn transform(&self) -> Result<crate::transform::Transform, String> {
-        use crate::transform::Transform;
+    pub fn transform(&self) -> Result<tilo_agent_session::transform::Transform, String> {
+        use tilo_agent_session::transform::Transform;
         match self {
             Self::Labels { choices, multi } => Transform::classify(choices.clone(), *multi),
             Self::Prompt { prompt, schema } => Transform::freeform(prompt, schema.clone()),
@@ -474,7 +474,7 @@ fn names_labels(answer: &Value, choices: &[String], multi: bool) -> bool {
 /// host answers, under [`PROVIDER`], with the contract the agent app
 /// publishes them with.
 pub(crate) fn rows() -> Vec<CatalogueRow> {
-    crate::transform::descriptors()
+    tilo_agent_session::transform::descriptors()
         .into_iter()
         .filter(|descriptor| ANSWERED.contains(&descriptor.address.action.as_str()))
         .map(|mut descriptor| {

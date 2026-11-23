@@ -1,5 +1,5 @@
 //! A workspace's events through the host's own actions
-//! ([`tilo_workspace_service::agents::events`]), as a device and an agent's turn take
+//! ([`crate::agents::events`]), as a device and an agent's turn take
 //! them: who may set one up and reach it, what a listing says of it, that
 //! every member the workspace's policy lets sees and changes the same ones,
 //! and that the host fires what was set up, once, also across a restart.
@@ -17,7 +17,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::workspaces::Role;
 
 use super::*;
-use tilo_workspace_service::agents::events::{Authority, WorkspaceEvents};
+use crate::agents::events::{Authority, WorkspaceEvents};
 
 /// One action on a workspace's events as `caller` on `certificate`'s device
 /// takes it, through what the host's app action server answers with.
@@ -184,11 +184,7 @@ impl Theirs {
     /// Its events, with nothing taking what they hand over.
     fn on(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert) -> Self {
         Self {
-            events: WorkspaceEvents::start_with(
-                workspaces.clone(),
-                Assistant::answering(vec![]),
-                std::sync::Arc::new(crate::event_runner::EventRunner),
-            ),
+            events: WorkspaceEvents::start_with(workspaces.clone(), Assistant::answering(vec![])),
             workspace: workspace.to_owned(),
             cert: cert.clone(),
         }
@@ -587,11 +583,7 @@ async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_ag
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
-    let events = WorkspaceEvents::start_with(
-        workspaces.clone(),
-        assistant.clone(),
-        std::sync::Arc::new(crate::event_runner::EventRunner),
-    );
+    let events = WorkspaceEvents::start_with(workspaces.clone(), assistant.clone());
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
 
@@ -649,11 +641,7 @@ async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_ag
     // The host starts again: it still keeps the event, and hands nothing
     // over a second time.
     drop(events);
-    let events = WorkspaceEvents::start_with(
-        workspaces.clone(),
-        assistant.clone(),
-        std::sync::Arc::new(crate::event_runner::EventRunner),
-    );
+    let events = WorkspaceEvents::start_with(workspaces.clone(), assistant.clone());
     let kept = listed(&events, &workspace, &cert, &me).await;
     assert_eq!(kept.len(), 1, "{kept:?}");
     assert_eq!((kept[0].id.as_str(), kept[0].runs), (made.id.as_str(), 1));
@@ -672,11 +660,7 @@ async fn a_paused_event_fires_nothing_and_a_refused_run_says_why() {
     let assistant = Assistant::answering(vec![Err(HostStepError::Refused(
         "this workspace keeps no assistant".into(),
     ))]);
-    let events = WorkspaceEvents::start_with(
-        workspaces.clone(),
-        assistant.clone(),
-        std::sync::Arc::new(crate::event_runner::EventRunner),
-    );
+    let events = WorkspaceEvents::start_with(workspaces.clone(), assistant.clone());
     let theirs = as_their_agent(&cert, &workspace);
 
     // Paused before its moment, it never fires, also not once it goes on. It

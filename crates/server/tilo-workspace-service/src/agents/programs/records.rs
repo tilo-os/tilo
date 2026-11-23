@@ -1,18 +1,18 @@
-//! The records a bot acts on where they are kept: on the host that governs
-//! the workspace, which holds each record itself and needs no session.
+//! The records a program acts on where they are kept: on the host that governs
+//! the workspace, which keeps each record itself and needs no session.
 //!
-//! Each record is a confined replica opened as the bot for its installer.
-//! The host brings a replica up to date before a run ([`HeldDocuments::hold`])
+//! Each record is a confined replica opened as the program for its installer.
+//! The host brings a replica up to date before a run ([`ProgramRecords::load`])
 //! and publishes what the run changed afterwards
-//! ([`HeldDocuments::take_changes`]) as the record's governor publishes any
-//! change, so the changes keep the bot's entries. The parts of a chain an
-//! app keeps beside its record (a chat's messages) are held in that
+//! ([`ProgramRecords::take_changes`]) as the record's governor publishes any
+//! change, so the changes keep the program's entries. The parts of a chain an
+//! app keeps beside its record (a chat's messages) are loaded in that
 //! record's replica, reached through the chain the app publishes, and
 //! their changes published on their own routes.
 //!
-//! Each record held keeps a copy of its whole document, as the workspace
-//! has it with what the bot's runs changed since: what the bot's record reads
-//! answer ([`ApiMember::record`]), for any record the bot follows,
+//! Each record loaded keeps a copy of its whole document, as the workspace
+//! has it with what the program's runs changed since: what the program's record reads
+//! answer ([`ApiMember::record`]), for any record the program follows,
 //! whether or not it acts on it.
 
 use std::collections::BTreeMap;
@@ -26,22 +26,22 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::api::{ApiMember, AutomationStep};
 use super::item_json::{OutboxRow, outbox_entries};
-use crate::apps::{AppCatalogue, ReplicaActor, Seed};
-use crate::worker::ConfinedReplica;
+use tilo_agent_session::ConfinedReplica;
+use tilo_agent_session::apps::{AppCatalogue, ReplicaActor, Seed};
 use ui::permissions::policy;
 
 /// One installation's replicas of the workspace's records.
-pub struct HeldDocuments {
+pub struct ProgramRecords {
     catalogue: AppCatalogue,
     workspace: String,
     member: MemberId,
     actor: ReplicaActor,
     replicas: BTreeMap<DocumentRoute, ConfinedReplica>,
-    /// The records held beside another (the parts of a chain its app
-    /// keeps), each with the route of the replica that holds it.
+    /// The records loaded beside another (the parts of a chain its app
+    /// keeps), each with the route of the replica that keeps it.
     beside: BTreeMap<DocumentRoute, DocumentRoute>,
-    /// Records that are parts of a chain whose app's record is not held
-    /// yet: held with it once it is.
+    /// Records that are parts of a chain whose app's record is not loaded
+    /// yet: loaded with it once it is.
     waiting: BTreeMap<DocumentRoute, Vec<u8>>,
     /// What runs changed, by record, not yet taken by the host.
     changed: Vec<(DocumentRoute, DocumentMutation)>,
@@ -49,8 +49,8 @@ pub struct HeldDocuments {
     copies: BTreeMap<DocumentRoute, Vec<u8>>,
 }
 
-impl HeldDocuments {
-    /// No records yet, for `workspace`, held by `member` acting as `actor`.
+impl ProgramRecords {
+    /// No records yet, for `workspace`, kept by `member` acting as `actor`.
     #[must_use]
     pub fn new(
         catalogue: AppCatalogue,
@@ -78,7 +78,7 @@ impl HeldDocuments {
             self.copies.insert(route.clone(), bytes.to_vec());
             return Ok(());
         };
-        // The record as it was held before, unchanged since.
+        // The record as it was loaded before, unchanged since.
         if copy.as_slice() == bytes {
             return Ok(());
         }
@@ -89,7 +89,7 @@ impl HeldDocuments {
         Ok(())
     }
 
-    /// Whether the bot may read the record at `route` now: decided at the
+    /// Whether the program may read the record at `route` now: decided at the
     /// record's node as the workspace decides any reader's read of it.
     fn may_read(&self, route: &DocumentRoute) -> bool {
         use policy::{ActionKind, Answer, Context};
@@ -103,13 +103,13 @@ impl HeldDocuments {
         access.answer(&node, ActionKind::Read, &Context::at(now)) == Answer::Allow
     }
 
-    /// Hold the record at `route` as `saved` (the record's whole document)
+    /// Load the record at `route` as `saved` (the record's whole document)
     /// has it: open it the first time, merge what changed since after. A
     /// part of a chain an app keeps beside its record (a chat's messages)
-    /// is held with that record, in its replica, so the app's actions reach
+    /// is loaded with that record, in its replica, so the app's actions reach
     /// it through the chain as in a window; one whose app's record is not
-    /// held yet is held with it once it is.
-    pub fn hold(&mut self, route: &DocumentRoute, saved: Vec<u8>) -> Result<(), String> {
+    /// loaded yet is loaded with it once it is.
+    pub fn load(&mut self, route: &DocumentRoute, saved: Vec<u8>) -> Result<(), String> {
         self.keep(route, &saved)?;
         if let Some(replica) = self.replicas.get(route) {
             return replica
@@ -118,7 +118,7 @@ impl HeldDocuments {
         }
         // A record every app of the workspace opens beside its own (the
         // workspace's emoji) is kept under its owner's routes but is no
-        // record of the owner's kind: a bot acts on the app's own records,
+        // record of the owner's kind: a program acts on the app's own records,
         // and reads what such a record says through the app's actions.
         if collab_types::workspace_document(&route.app_id, &route.document).is_some() {
             return Ok(());
@@ -126,7 +126,7 @@ impl HeldDocuments {
         let record = ui::resource::DocumentId::from_route(&route.document)
             .ok_or_else(|| format!("{} is not a record route", route.document))?;
         if record.chain_part().is_some() {
-            return self.hold_beside(route, &record, saved);
+            return self.load_beside(route, &record, saved);
         }
         let replica = ConfinedReplica::open(
             &self.catalogue,
@@ -142,7 +142,7 @@ impl HeldDocuments {
         )
         .map_err(|error| error.to_string())?;
         self.replicas.insert(route.clone(), replica);
-        // The parts that waited for this record are held with it now.
+        // The parts that waited for this record are loaded with it now.
         let waiting: Vec<DocumentRoute> = self
             .waiting
             .keys()
@@ -151,38 +151,38 @@ impl HeldDocuments {
             .collect();
         for part in waiting {
             if let Some(saved) = self.waiting.remove(&part)
-                && let Err(error) = self.hold(&part, saved)
+                && let Err(error) = self.load(&part, saved)
             {
-                tracing::warn!(record = %part.document, %error, "a part of a chain could not be held");
+                tracing::warn!(record = %part.document, %error, "a part of a chain could not be loaded");
             }
         }
         Ok(())
     }
 
-    /// Hold `record`, a part of a chain, in the replica of its app's record
+    /// Load `record`, a part of a chain, in the replica of its app's record
     /// that keeps it beside its own.
-    fn hold_beside(
+    fn load_beside(
         &mut self,
         route: &DocumentRoute,
         record: &ui::resource::DocumentId,
         saved: Vec<u8>,
     ) -> Result<(), String> {
         let mutation = DocumentMutation::Snapshot(saved);
-        if let Some(holder) = self.beside.get(route)
-            && let Some(replica) = self.replicas.get(holder)
+        if let Some(owner) = self.beside.get(route)
+            && let Some(replica) = self.replicas.get(owner)
         {
             return replica
                 .apply_document(record, &mutation)
                 .map_err(|error| error.to_string());
         }
         let mut refusals = Vec::new();
-        for (holder, replica) in &self.replicas {
-            if holder.app_id != route.app_id || holder.cluster_id != route.cluster_id {
+        for (owner, replica) in &self.replicas {
+            if owner.app_id != route.app_id || owner.cluster_id != route.cluster_id {
                 continue;
             }
             match replica.apply_document(record, &mutation) {
                 Ok(()) => {
-                    self.beside.insert(route.clone(), holder.clone());
+                    self.beside.insert(route.clone(), owner.clone());
                     return Ok(());
                 }
                 Err(error) => refusals.push(error.to_string()),
@@ -204,22 +204,22 @@ impl HeldDocuments {
     }
 
     /// The route of the replica that holds `route`'s record: its own, or
-    /// the one it is held beside.
-    fn holder<'a>(&'a self, route: &'a DocumentRoute) -> &'a DocumentRoute {
+    /// the one it is loaded beside.
+    fn owner_of<'a>(&'a self, route: &'a DocumentRoute) -> &'a DocumentRoute {
         self.beside.get(route).unwrap_or(route)
     }
 
-    /// Drop the replica of `route` (or the one it is held beside, with
-    /// every record held there) and anything it changed that was not
-    /// taken: the next [`Self::hold`] opens it afresh from the record as
+    /// Drop the replica of `route` (or the one it is loaded beside, with
+    /// every record loaded there) and anything it changed that was not
+    /// taken: the next [`Self::load`] opens it afresh from the record as
     /// the workspace keeps it. For a change the workspace refused, which must not
-    /// stay in the bot's copy under its later changes.
+    /// stay in the program's copy under its later changes.
     pub fn forget(&mut self, route: &DocumentRoute) {
-        let holder = self.holder(route).clone();
-        self.replicas.remove(&holder);
-        let mut dropped = vec![holder.clone()];
-        self.beside.retain(|part, held_by| {
-            let kept = *held_by != holder;
+        let owner = self.owner_of(route).clone();
+        self.replicas.remove(&owner);
+        let mut dropped = vec![owner.clone()];
+        self.beside.retain(|part, beside| {
+            let kept = *beside != owner;
             if !kept {
                 dropped.push(part.clone());
             }
@@ -239,13 +239,13 @@ impl HeldDocuments {
     }
 }
 
-impl ApiMember for HeldDocuments {
+impl ApiMember for ProgramRecords {
     fn workspace(&self) -> &str {
         &self.workspace
     }
 
     fn offered(&self) -> Vec<(DocumentRoute, Vec<CatalogueRow>)> {
-        // A record held beside another is offered through it: the chain
+        // A record loaded beside another is offered through it: the chain
         // its app publishes, as in a window.
         self.replicas
             .iter()
@@ -253,7 +253,7 @@ impl ApiMember for HeldDocuments {
             .collect()
     }
 
-    fn holds(&self, route: &DocumentRoute) -> bool {
+    fn has_record(&self, route: &DocumentRoute) -> bool {
         self.replicas.contains_key(route)
     }
 
@@ -285,7 +285,7 @@ impl ApiMember for HeldDocuments {
             arguments,
             confirmed,
         )?;
-        let commit = |error: crate::apps::AppError| ApiError::Unavailable {
+        let commit = |error: tilo_agent_session::apps::AppError| ApiError::Unavailable {
             code: "commit".into(),
             reason: error.to_string(),
         };
@@ -297,7 +297,7 @@ impl ApiMember for HeldDocuments {
         if let Some(mutation) = taken {
             kept.push((route.clone(), mutation));
         }
-        // What the step changed of the records held beside it (a post in
+        // What the step changed of the records loaded beside it (a post in
         // a chat's part, a part it started) goes on their own routes.
         for (record, mutation) in beside {
             let part = DocumentRoute {
@@ -335,7 +335,7 @@ impl ApiMember for HeldDocuments {
             })
         };
         self.replicas.iter().find_map(|(route, replica)| {
-            // A step on a record held beside this one is recorded there,
+            // A step on a record loaded beside this one is recorded there,
             // and answered for the route it was invoked on.
             replica
                 .read_history(recorded)
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn a_workspace_record_under_a_watched_apps_routes_is_left_alone() {
-        let mut held = HeldDocuments::new(
+        let mut records = ProgramRecords::new(
             AppCatalogue::native(),
             "workspace-1".into(),
             MemberId::person("ada"),
@@ -384,11 +384,11 @@ mod tests {
             cluster_id: "workspace-1".into(),
             document: collab_types::workspace_document_id("tilo.workspace.emoji"),
         };
-        assert_eq!(held.hold(&emoji, b"not chat's record".to_vec()), Ok(()));
-        assert!(held.offered().is_empty(), "nothing is held for it");
+        assert_eq!(records.load(&emoji, b"not chat's record".to_vec()), Ok(()));
+        assert!(records.offered().is_empty(), "nothing is loaded for it");
     }
 
-    /// A bot reads the copy of each record it follows, as far as its grant
+    /// A program reads the copy of each record it follows, as far as its grant
     /// and its installer's access reach.
     #[test]
     fn a_bot_reads_what_it_holds_inside_its_grant() {
@@ -413,7 +413,7 @@ mod tests {
         )];
         let access = MemberAccess::person(policy::WorkspacePolicy::new(workspace, "ada"), "ada")
             .acting_as(policy::Actor::Member(policy::MemberId::bot("b1")), grants);
-        let mut held = HeldDocuments::new(
+        let mut records = ProgramRecords::new(
             AppCatalogue::native(),
             workspace.into(),
             MemberId::bot("b1"),
@@ -428,14 +428,15 @@ mod tests {
             cluster_id: workspace.into(),
             document: collab_types::workspace_document_id("tilo.workspace.emoji"),
         };
-        held.hold(&route("so.tilo.chat"), b"emoji".to_vec())
+        records
+            .load(&route("so.tilo.chat"), b"emoji".to_vec())
             .unwrap();
         assert_eq!(
-            held.record(&route("so.tilo.chat")),
+            records.record(&route("so.tilo.chat")),
             Ok(Some(b"emoji".to_vec()))
         );
-        assert_eq!(held.record(&route("so.tilo.notes")).ok(), None);
-        held.forget(&route("so.tilo.chat"));
-        assert_eq!(held.record(&route("so.tilo.chat")), Ok(None));
+        assert_eq!(records.record(&route("so.tilo.notes")).ok(), None);
+        records.forget(&route("so.tilo.chat"));
+        assert_eq!(records.record(&route("so.tilo.chat")), Ok(None));
     }
 }

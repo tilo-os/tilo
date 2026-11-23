@@ -11,9 +11,6 @@ use tilo_actions::remote::workspace_initiative::{
     self, LookEnded, LookRound, Proposal, Proposals, State,
 };
 use tilo_actions::remote::{ActionCallError, Caller, ReceiptStatus};
-use tilo_agent_session::bot::host_steps::{
-    HostStepError as StepError, HostSteps as Steps, Instruction, Judgement, StepCause,
-};
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_server::workspaces::{
     Workspaces,
@@ -21,6 +18,9 @@ use tilo_server::workspaces::{
         ProviderProtocol,
         scripted::{Linking, Reply, ScriptedProvider},
     },
+};
+use tilo_workspace_service::agents::programs::host_steps::{
+    HostStepError as StepError, HostSteps as Steps, Instruction, Judgement, StepCause,
 };
 use tilo_workspace_service::agents::{
     Ask, WorkspaceActionProvider, events::Authority, initiative::Initiative, invoke_named,
@@ -179,11 +179,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
     let issues = furnished(&page, &workspaces, &workspace, &person).await;
 
     // What the assistant finds to do on its own, on this server, with the server's action service.
-    let (initiative, _events) = Initiative::start(
-        workspaces.clone(),
-        Some(actions.clone()),
-        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
-    );
+    let (initiative, _events) = Initiative::start(workspaces.clone(), Some(actions.clone()));
 
     // The person writes to their assistant, and the server owes it a turn. The assistant acts as
     // that turn's caller: the person's device behind it, the session handed to the agent.
@@ -345,11 +341,7 @@ async fn the_model_of_a_hosted_turn_proposes_through_the_tools_its_turn_has() {
     let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let issues = furnished(&page, &workspaces, &workspace, &person).await;
-    let (initiative, events) = Initiative::start(
-        workspaces.clone(),
-        Some(actions.clone()),
-        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
-    );
+    let (initiative, events) = Initiative::start(workspaces.clone(), Some(actions.clone()));
 
     // The person asks, and the server answers the turn with what its agents are given: the
     // workspace's resources, the person's events and what their assistant does on its own.
@@ -448,11 +440,7 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     furnished(&page, &workspaces, &workspace, &person).await;
-    let (initiative, events) = Initiative::start(
-        workspaces.clone(),
-        Some(actions.clone()),
-        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
-    );
+    let (initiative, events) = Initiative::start(workspaces.clone(), Some(actions.clone()));
 
     write_to_agent(
         &actions,
@@ -673,11 +661,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         .to_owned(),
         handed: Mutex::default(),
     });
-    let (initiative, events) = Initiative::start_with(
-        workspaces.clone(),
-        hands.clone(),
-        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
-    );
+    let (initiative, events) = Initiative::start_with(workspaces.clone(), hands.clone());
     let steps = (initiative.before())(hands.clone());
 
     // Its person turns the look-round on, with a day of its own.

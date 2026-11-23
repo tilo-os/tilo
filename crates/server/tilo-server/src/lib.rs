@@ -80,8 +80,6 @@ pub mod daemon;
 #[cfg(feature = "web")]
 pub mod entry;
 #[cfg(feature = "agents")]
-pub mod event_runner;
-#[cfg(feature = "agents")]
 pub mod hosted_browser;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod kept_content;

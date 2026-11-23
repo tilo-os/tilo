@@ -1,5 +1,5 @@
 //! What an installed program keeps between its runs
-//! ([`tilo_agent_session::bot::kept`]), in a file of its installation.
+//! ([`crate::agents::programs::kept`]), in a file of its installation.
 //!
 //! The file is written before a change is answered: a count a step was
 //! told, and a note a person's assistant was told is kept, are still there
@@ -11,11 +11,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::agents::programs::api::AutomationStep;
+use crate::agents::programs::host_steps::{HostStepError, Keeps};
+use crate::agents::programs::kept::{Kept, LastRun, NoteChange, note_value};
 use serde_json::Value;
 use tilo_action_policy::Rule;
-use tilo_agent_session::bot::api::AutomationStep;
-use tilo_agent_session::bot::host_steps::{HostStepError, Keeps};
-use tilo_agent_session::bot::kept::{Kept, LastRun, NoteChange, note_value};
 use tilo_lock::MutexRecover as _;
 
 /// One installation's kept state and the file it is written to.

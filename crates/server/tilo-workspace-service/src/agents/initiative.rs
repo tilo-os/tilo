@@ -35,6 +35,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use crate::agents::programs::host_steps::{
+    HostStepError as StepError, HostSteps as Steps, Instruction, Judgement,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
@@ -54,15 +57,12 @@ use tilo_actions::remote::{
     RemoteActionMessage, pending,
 };
 use tilo_actions::{ActionOutput, ExecutionLocus, OperationKind};
-use tilo_agent_session::bot::host_steps::{
-    HostStepError as StepError, HostSteps as Steps, Instruction, Judgement,
-};
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_automation::{Schedule, TriggerSpec};
 use tilo_lock::MutexRecover as _;
 
 use super::assistant::assistant_of;
-use super::events::{Asker, Authority, Runner, WorkspaceEvents};
+use super::events::{Asker, Authority, WorkspaceEvents};
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{Interaction, Spender};
 use tilo_server_protocol::WorkspaceId;
@@ -237,31 +237,26 @@ impl Initiative {
     /// keeps in each workspace's store. With `actions`, the server's action
     /// service, an instruction an event hands over starts a turn of its
     /// author's assistant, and a proposed piece of work is filed in the
-    /// workspace's tracker. `runner` runs each event's program. Called on
-    /// the runtime the events are carried out on.
+    /// workspace's tracker. Called on the runtime the events are carried
+    /// out on.
     #[must_use]
     pub fn start(
         workspaces: Workspaces,
         actions: Option<WorkspaceActions>,
-        runner: Arc<dyn Runner>,
     ) -> (Self, WorkspaceEvents) {
         let initiative = Self::new(workspaces.clone(), actions.clone());
         let before = Some(initiative.before());
-        let events = WorkspaceEvents::start_behind(workspaces, actions, before, runner);
+        let events = WorkspaceEvents::start_behind(workspaces, actions, before);
         let _ = initiative.inner.events.set(events.clone());
         (initiative, events)
     }
 
     /// [`Self::start`], with what answers the events' steps given.
     #[must_use]
-    pub fn start_with(
-        workspaces: Workspaces,
-        steps: Arc<dyn Steps>,
-        runner: Arc<dyn Runner>,
-    ) -> (Self, WorkspaceEvents) {
+    pub fn start_with(workspaces: Workspaces, steps: Arc<dyn Steps>) -> (Self, WorkspaceEvents) {
         let initiative = Self::new(workspaces.clone(), None);
         let looking = (initiative.before())(steps);
-        let events = WorkspaceEvents::start_with(workspaces, looking, runner);
+        let events = WorkspaceEvents::start_with(workspaces, looking);
         let _ = initiative.inner.events.set(events.clone());
         (initiative, events)
     }
@@ -1685,7 +1680,7 @@ mod tests {
             "{told}"
         );
         assert!(
-            TOLD.len() <= tilo_agent_session::bot::event::MAX_INSTRUCTION_BYTES,
+            TOLD.len() <= crate::agents::programs::event::MAX_INSTRUCTION_BYTES,
             "the event takes what it is told"
         );
     }

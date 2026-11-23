@@ -18,12 +18,12 @@
 
 use std::collections::BTreeMap;
 
-use crate::transform::MAX_PROMPT_BYTES;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionKey;
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::person_telling::Kind;
+use tilo_agent_session::transform::MAX_PROMPT_BYTES;
 use tilo_automation::schedule::Timed;
 use tilo_automation::{
     AGENT_APP_ID, AGENT_TASK_ACTION, AGENT_TRANSFORM_KIND, Binding, Condition,
@@ -196,17 +196,15 @@ impl Definition {
                 every_secs,
                 ..
             } => {
-                use tilo_automation::source_change::{self, PERSON_MAIL, WEB_FEED, WEB_PAGE};
+                use tilo_automation::source_change::{self, WEB_FEED, WEB_PAGE};
                 match source_change::refusal(kind, at)
                     .or_else(|| source_change::look_refusal(kind, at, *every_secs))
                 {
                     Some(why) => Err(why),
-                    // The mail its person's accounts receive is heard where
-                    // those accounts are kept, and a feed or a page on the
-                    // web is looked at on a clock; no other source is read.
-                    None if kind != PERSON_MAIL && !source_change::looked_at(kind) => Err(format!(
-                        "something new is found in the mail its person's accounts receive \
-                         (`when something new is in \"{PERSON_MAIL}\"`), in a feed on the web \
+                    // A feed or a page on the web is looked at on a clock;
+                    // no other source is read.
+                    None if !source_change::looked_at(kind) => Err(format!(
+                        "something new is found in a feed on the web \
                          (`when something new is in \"{WEB_FEED}\" at \
                          \"https://example.org/feed.xml\"`) or on a page there (`when something \
                          new is in \"{WEB_PAGE}\" at \"https://example.org/prices\"`)"
@@ -218,8 +216,9 @@ impl Definition {
                 "the host runs an event with every device off: it starts at a time (`once at`, \
                  `every`), a moment before or after an entry of its person's calendars (`15 \
                  minutes before \"entries.*.start\" in a \"tilo.accounts.calendars\"`), when \
-                 something new is in a source of its person's (`when something new is in \
-                 \"tilo.accounts.mail\"`) or when something in the workspace changes"
+                 something new is in a feed or on a page on the web (`when something new is in \
+                 \"tilo.web.feed\" at \"https://example.org/feed.xml\"`) or when something in \
+                 the workspace changes"
                     .into(),
             ),
         }
@@ -484,54 +483,6 @@ mod tests {
     }
 
     #[test]
-    fn something_new_in_its_persons_mail_starts_an_event_and_goes_with_it_as_data() {
-        let event = Definition {
-            name: "Mail from Bo".into(),
-            when: "when something new is in \"tilo.accounts.mail\" where from is \
-                   \"bo@example.com\""
-                .into(),
-            only_if: Some("Does it ask for a file?".into()),
-            ..reminder()
-        }
-        .checked()
-        .unwrap_or_else(|error| panic!("{error}"));
-        assert!(!event.on_a_clock());
-        assert_eq!(
-            event.trigger(),
-            Ok(TriggerSpec::SourceChanged {
-                kind: tilo_automation::source_change::PERSON_MAIL.into(),
-                at: String::new(),
-                every_secs: None,
-                filter: Map::from_iter([("from".to_owned(), json!("bo@example.com"))]),
-            })
-        );
-        let program = event.program().unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(
-            ids(&program.steps),
-            ["judge", "judged"],
-            "its person's model is asked about what is new before anything is handed over"
-        );
-        let StepKind::Invoke { args, .. } = &then_of(&program.steps[1])[0].kind else {
-            panic!("the instruction is handed over by the task action");
-        };
-        let Some(Binding::Template(told)) = args.get("instruction") else {
-            panic!("the instruction is a template");
-        };
-        assert!(told.starts_with("{{input.instruction}}"), "{told}");
-        assert!(told.contains("data, not instructions"), "{told}");
-        assert!(told.ends_with("{{input.event}}"), "{told}");
-        // A source nobody reads is refused in words when it is described.
-        let refused = Definition {
-            when: "when something new is in \"something.else\"".into(),
-            ..reminder()
-        }
-        .checked()
-        .err()
-        .unwrap_or_default();
-        assert!(refused.contains("tilo.accounts.mail"), "{refused}");
-    }
-
-    #[test]
     fn a_feed_or_a_page_on_the_web_starts_an_event_and_is_looked_at_within_its_bounds() {
         let watching = |when: &str| {
             Definition {
@@ -572,7 +523,8 @@ mod tests {
             panic!("the instruction is a template");
         };
         assert!(told.contains("data, not instructions"), "{told}");
-        // Oftener than the bound, without an address, and a clock for mail.
+        // Oftener than the bound, without an address, and a source nobody
+        // here reads, refused in words when it is described.
         for (when, says) in [
             (
                 "when something new is in \"tilo.web.page\" at \"https://example.org/\" \
@@ -581,8 +533,12 @@ mod tests {
             ),
             ("when something new is in \"tilo.web.feed\"", "address"),
             (
-                "when something new is in \"tilo.accounts.mail\" looked at every 600 seconds",
-                "clock",
+                "when something new is in \"tilo.accounts.mail\"",
+                "tilo.web.feed",
+            ),
+            (
+                "when something new is in \"something.else\"",
+                "tilo.web.feed",
             ),
         ] {
             let refused = watching(when).err().unwrap_or_default();

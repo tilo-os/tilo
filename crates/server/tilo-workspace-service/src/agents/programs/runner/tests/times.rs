@@ -74,7 +74,7 @@ fn handed(assistant: &Assistant) -> Vec<(String, u64)> {
 
 /// A person who keeps an assistant in a workspace of theirs, on a holder no
 /// device is connected to: the holder's workspaces, the workspace, the
-/// person's certificate, and what keeps the holder going while it is held.
+/// person's certificate, and what keeps the holder going while it is loaded.
 pub(super) async fn person_with_an_assistant(
     scratch: &std::path::Path,
 ) -> (Workspaces, String, DeviceCert, impl Sized) {

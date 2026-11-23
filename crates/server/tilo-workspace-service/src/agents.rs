@@ -77,6 +77,7 @@ pub mod assistant;
 pub mod events;
 pub mod initiative;
 pub mod kept;
+pub mod programs;
 pub mod telling;
 
 mod across;

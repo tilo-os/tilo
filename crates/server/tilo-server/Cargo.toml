@@ -19,7 +19,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (`--workspace-documents`):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
-agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:chat", "dep:tilo-automation", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
+agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:collaboration", "dep:chat", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-sheets"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 [[bin]]
@@ -134,8 +134,6 @@ tilo-rollback = { path = "../../os/tilo-rollback" }
 tilo-unlock-protocol = { path = "../../os/tilo-unlock-protocol" }
 tilo-crypto = { path = "../../system/tilo-crypto", default-features = false }
 uuid.workspace = true
-# A bot's calendar schedules fire on this host's wall clock.
-jiff.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
@@ -193,16 +191,8 @@ tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 tilo-sheets = { path = "../../session/sheets", optional = true }
 # A persistent public workspace's chat opens with the operator's channels.
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
-tilo-automation = { path = "../../collab/automation", optional = true }
-# A source outside that an event waits on is read through the one fetch an
-# agent's own read of a page goes through, and a feed's entries by the parser
-# the Feeds app reads them with.
-tilo-web-search = { path = "../../integrations/tilo-web-search", optional = true }
-feed-rs = { version = "2.4", optional = true }
 # The admin workspace's record of the person's servers, and its actions.
 tilo-resource = { path = "../../sdk/tilo-resource" }
-# The workspace's emoji, which an event's program may be told of.
-tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional = true }
 # Who the agents a workspace's host runs are (the workspace's record of its agents), and the
 # tools an agent on a machine of the workspace acts through (the MCP server's agent surface).
 tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent", optional = true }
@@ -323,9 +313,6 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 hyper = { version = "1", features = ["client", "http1"] }
 # The fetch proxy test's target.
 test-http = { path = "../../../tools/test-http" }
-# The sources a test has an event look at are servers the test starts, which
-# the fetch reaches only through its fixture entry.
-tilo-web-search = { path = "../../integrations/tilo-web-search", features = ["fixture-servers"] }
 # The packet relay on this machine's loopback these tests run their hosts and devices on, and
 # the keys no two runs share: no test reaches a relay or directory out on the internet.
 test-server = { path = "../../../tools/test-server" }

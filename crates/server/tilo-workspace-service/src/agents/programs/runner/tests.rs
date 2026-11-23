@@ -5,31 +5,25 @@
 )]
 
 use chat::projection::ChatProjection as _;
-use collab_types::DocumentMutation;
-use tilo_agent_session::{Replica, Seed};
 use tilo_app_id::apps::CHAT;
 
 use super::*;
+use crate::agents::assistant;
+use crate::agents::programs::host_steps::{
+    HostStepError, HostSteps, Instruction, Judgement, Question,
+};
 use crate::workspaces::fixtures::{governor, test_host};
 use serde_json::Value;
 use tilo_action_policy::{Answer, KindSet, TreePath};
 use tilo_actions::MemberId;
-use tilo_agent_session::bot::host_steps::{
-    HostStepError, HostSteps, Instruction, Judgement, Question,
-};
-use tilo_workspace_service::agents::assistant;
 
 /// A workspace's events through the host's own actions.
 mod events;
 mod initiative;
 /// The host's own answers for the programs it runs for a person.
 mod judging;
-/// Reading a chat's messages.
-mod messages;
 /// A person's event that waits on a feed or a page outside.
 mod outside;
-/// A person's event that waits on their mail.
-mod sources;
 /// A program's triggers at a time its person's calendars hold.
 mod times;
 
@@ -119,141 +113,7 @@ async fn program_runner(
     .unwrap()
 }
 
-pub(super) use messages::{first_part, message_ids, posts};
-
-/// Post `text` in `channel` of `workspace` as `author`, as their page does: a
-/// view of the chat record and the parts of its messages, posting through
-/// the chain into the head (starting the first part), its change carried
-/// to the workspace on the part's own route. The new message's id.
-async fn post_in(
-    workspaces: &Workspaces,
-    workspace: &str,
-    cert: &DeviceCert,
-    (author, channel, text): (&str, &str, &str),
-) -> String {
-    post_with(workspaces, workspace, cert, (author, channel, text), None).await
-}
-
-/// Introduce `person` to `workspace` as an editor, as a server admits a
-/// member before their page writes: a member's change is decided as a
-/// member's, never as the server's device alone.
-async fn introduce(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert, person: &str) {
-    let Ok(bytes) = hex::decode(person) else {
-        return;
-    };
-    let Ok(key) = <[u8; 32]>::try_from(bytes) else {
-        return;
-    };
-    let Ok((_, members)) = workspaces.membership(workspace).await else {
-        return;
-    };
-    if members.contains_key(person) {
-        return;
-    }
-    workspaces
-        .add_member(
-            workspace,
-            cert,
-            crate::workspaces::AddMemberRequest {
-                request_id: *blake3::hash(person.as_bytes()).as_bytes(),
-                user_public_key: key,
-                place: crate::workspaces::MemberPlace::Role(tilo_peer_state::join::Role::Editor),
-                name: None,
-            },
-        )
-        .await
-        .unwrap();
-}
-
-/// [`post_in`] with `attachment`, a file another action put in the store.
-async fn post_with(
-    workspaces: &Workspaces,
-    workspace: &str,
-    cert: &DeviceCert,
-    (author, channel, text): (&str, &str, &str),
-    attachment: Option<serde_json::Value>,
-) -> String {
-    introduce(workspaces, workspace, cert, author).await;
-    let catalogue = AppCatalogue::native();
-    let chat = workspaces
-        .resource_document(workspace, CHAT, "")
-        .await
-        .unwrap()
-        .unwrap();
-    let mut held = Vec::new();
-    for (app, record) in workspaces.document_routes(workspace).await.unwrap() {
-        let Some(part) = collab_types::document::DocumentId::parse(&record)
-            .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
-        else {
-            continue;
-        };
-        let bytes = workspaces
-            .resource_document(workspace, CHAT, &record)
-            .await
-            .unwrap()
-            .unwrap();
-        held.push((part, bytes));
-    }
-    // The page lives on this thread only; what it changed leaves with it.
-    let (id, taken) = {
-        let mut page = Replica::open(
-            &catalogue,
-            CHAT,
-            workspace,
-            &MemberId::person(author),
-            ReplicaActor::Owner,
-            Seed::Existing {
-                record: collab_types::document::DocumentId::package_primary(),
-                changes: vec![chat],
-            },
-        )
-        .unwrap();
-        for (part, bytes) in held {
-            page.apply_document(&part, &DocumentMutation::Snapshot(bytes))
-                .unwrap();
-        }
-        let before = message_ids(&page);
-        let mut arguments = serde_json::json!({ "channel": channel, "text": text });
-        if let Some(attachment) = attachment {
-            arguments["attachments"] = serde_json::json!([attachment]);
-        }
-        page.invoke(
-            &tilo_actions::api::ActionAddress::new(
-                collab_types::document::chain_resource_id(&chat::parts::chain()),
-                "post",
-            ),
-            arguments.as_object().unwrap(),
-            false,
-        )
-        .unwrap();
-        let id = message_ids(&page)
-            .into_iter()
-            .find(|id| !before.contains(id))
-            .expect("the post is in a part");
-        (id, page.take_document_mutations().unwrap())
-    };
-    for (record, mutation) in taken {
-        match mutation {
-            DocumentMutation::Snapshot(bytes) => workspaces
-                .author_workspace_document(workspace, cert, (CHAT, record.as_str()), |doc| {
-                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                        .map(drop)
-                        .map_err(|error| error.to_string())
-                })
-                .await
-                .unwrap(),
-            DocumentMutation::Incremental(bytes) => workspaces
-                .author_application(workspace, cert, &catalogue, CHAT, record.as_str(), |doc| {
-                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                        .map(drop)
-                        .map_err(|error| error.to_string())
-                })
-                .await
-                .unwrap(),
-        }
-    }
-    id
-}
+pub(super) use crate::workspaces::fixtures::chat::{chat_workspace, post_in, posts};
 
 /// A program that reads the chat on every person's post.
 fn greeter() -> Program {
@@ -427,39 +287,6 @@ async fn an_event_answers_a_post_in_the_workspace_once() {
         runner.step().await.unwrap().is_empty(),
         "one answer to one post"
     );
-}
-
-/// A workspace with the chat, Ada introduced, and `#general`'s id.
-async fn chat_workspace(workspaces: &Workspaces, cert: &DeviceCert) -> (String, String) {
-    let catalogue = AppCatalogue::native();
-    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-    workspaces
-        .prepare_application(&workspace, cert, &catalogue, CHAT, "")
-        .await
-        .unwrap();
-    let general = workspaces
-        .author_application(&workspace, cert, &catalogue, CHAT, "", |doc| {
-            chat::demo::apply_as(
-                doc,
-                &hex::encode(cert.user_public_key),
-                chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-                    name: "general".parse().unwrap(),
-                    category: None,
-                    kind: None,
-                    topic: None,
-                }),
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(chat::projection::read(doc)
-                .channel_rows()
-                .into_iter()
-                .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-                .expect("the chat has a text channel")
-                .id)
-        })
-        .await
-        .unwrap();
-    (workspace, general)
 }
 
 async fn ada_says(
@@ -1052,8 +879,8 @@ async fn a_program_acts_on_every_tenth_firing_and_its_count_survives_a_restart()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_programs_note_is_read_by_every_run_and_changed_by_one_typed_change() {
-    use tilo_agent_session::bot::host_steps::Keeps as _;
-    use tilo_agent_session::bot::kept::NoteChange;
+    use crate::agents::programs::host_steps::Keeps as _;
+    use crate::agents::programs::kept::NoteChange;
     use tilo_automation::{Binding, Condition};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -1868,216 +1695,4 @@ fn membership_changes_fire_a_programs_workspace_triggers() {
         fired[1].inputs["event"].pointer("/arguments/person"),
         Some(&serde_json::json!("bob"))
     );
-}
-
-/// The files the chat's first part references, as the workspace holds it.
-async fn referenced_in(
-    workspaces: &Workspaces,
-    workspace: &str,
-) -> Vec<crate::chat_attachments::Referenced> {
-    crate::chat_attachments::referenced(
-        &workspaces
-            .resource_document(workspace, CHAT, &first_part())
-            .await
-            .unwrap()
-            .unwrap(),
-    )
-}
-
-/// The file `bytes` as a message's attachment.
-fn file(name: &str, bytes: &[u8]) -> serde_json::Value {
-    serde_json::json!({
-        "kind": "file",
-        "name": name,
-        "blob": blake3::hash(bytes).to_hex().to_string(),
-        "size": bytes.len(),
-    })
-}
-
-/// The one piece `device` answers `want` with when it keeps `bytes`, as a
-/// member's device answers.
-fn answer(want: &[u8], device: [u8; 32], bytes: &[u8]) -> Vec<u8> {
-    let neighbour_wire::NeighbourMsg::DocumentContentWant {
-        requester,
-        app_id,
-        cluster_id,
-        hash,
-        ..
-    } = postcard::from_bytes(want).unwrap()
-    else {
-        panic!("a request for content")
-    };
-    postcard::to_allocvec(&neighbour_wire::NeighbourMsg::DocumentContentPiece {
-        responder: tilo_peer_state::peer_handle(&device),
-        requester,
-        app_id,
-        cluster_id,
-        hash,
-        total: u64::try_from(bytes.len()).unwrap(),
-        offset: 0,
-        bytes: bytes.to_vec(),
-    })
-    .unwrap()
-}
-
-/// What the workspace answers `device` asking it for `bytes`, assembled.
-fn opened(
-    workspaces: &Workspaces,
-    workspace: &str,
-    device: [u8; 32],
-    bytes: &[u8],
-) -> Option<Vec<u8>> {
-    let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::DocumentContentWant {
-        requester: tilo_peer_state::peer_handle(&device),
-        app_id: CHAT.into(),
-        cluster_id: workspace.into(),
-        hash: blake3::hash(bytes).to_hex().to_string(),
-        have: Vec::new(),
-    })
-    .unwrap();
-    let mut whole = Vec::new();
-    for frame in workspaces.content_answer(workspace, &device, &want) {
-        match postcard::from_bytes(&frame).unwrap() {
-            neighbour_wire::NeighbourMsg::DocumentContentPiece { bytes, .. } => whole.extend(bytes),
-            neighbour_wire::NeighbourMsg::DocumentContentLacks { .. } => return None,
-            _ => panic!("a piece of content, or word that the host keeps none"),
-        }
-    }
-    (!whole.is_empty()).then_some(whole)
-}
-
-/// Ada posts a file in the workspace's Chat. While her device is online it
-/// answers the host's request for it; once she left, Bo opens the file
-/// from the host's copy. Past Ada's quota her oldest file goes, and a file
-/// over the cap is not asked for at all.
-#[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one story: posting, leaving, the host's copy, the quota and the cap"
-)]
-async fn a_file_a_member_posted_stays_in_the_workspace_after_they_leave() {
-    const BO: [u8; 32] = [9; 32];
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = event_server(scratch.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    let content = crate::content::stores(scratch.path());
-    workspaces.serve_content(std::sync::Arc::new(crate::content::StoresContent(
-        content.clone(),
-    )));
-    let blobs = content.get(&workspace).unwrap();
-    let attachments_of = |limits| {
-        crate::chat_attachments::WorkspaceAttachments::new(
-            workspaces.clone(),
-            workspace.clone(),
-            cert.device_public_key,
-            blobs.clone(),
-            scratch.path().join("attachments.json"),
-            limits,
-        )
-    };
-    let keeper = attachments_of(crate::chat_attachments::AttachmentLimits {
-        file_bytes: 64,
-        member_bytes: 40,
-        workspace_bytes: 1000,
-    });
-    let kept: std::sync::Arc<dyn crate::workspaces::ContentKeeper> = keeper.clone();
-    workspaces.keep_content(&kept);
-    let ada = hex::encode(ADA);
-
-    let notes = b"the meeting notes, version one".to_vec();
-    post_with(
-        &workspaces,
-        &workspace,
-        &cert,
-        (&ada, &general, "notes"),
-        Some(file("notes.txt", &notes)),
-    )
-    .await;
-    let asks = keeper.asks(&referenced_in(&workspaces, &workspace).await, 0);
-    assert_eq!(
-        asks.len(),
-        1,
-        "the host asks the workspace for the file it lacks"
-    );
-    assert!(
-        keeper
-            .asks(&referenced_in(&workspaces, &workspace).await, 1)
-            .is_empty(),
-        "and only once a while"
-    );
-    // Ada's device answers the host; then she leaves.
-    workspaces.content_for_host(&workspace, ADA, &answer(&asks[0], ADA, &notes));
-    assert_eq!(
-        keeper.kept_for(&blake3::hash(&notes).to_hex()),
-        Some(MemberId::person(ada.as_str()))
-    );
-    assert_eq!(
-        opened(&workspaces, &workspace, BO, &notes),
-        Some(notes.clone()),
-        "Bo opens it from the host"
-    );
-
-    // A second file takes Ada past her quota: her oldest goes.
-    let slides = b"the slides that came after them".to_vec();
-    post_with(
-        &workspaces,
-        &workspace,
-        &cert,
-        (&ada, &general, "slides"),
-        Some(file("slides.txt", &slides)),
-    )
-    .await;
-    assert!(
-        keeper
-            .asks(&referenced_in(&workspaces, &workspace).await, 2)
-            .is_empty(),
-        "within the hour her quota has no workspace for it"
-    );
-    let an_hour_later = 3_600_000 + 2;
-    let asks = keeper.asks(&referenced_in(&workspaces, &workspace).await, an_hour_later);
-    assert_eq!(
-        asks.len(),
-        1,
-        "an hour later only the new file is asked for"
-    );
-    workspaces.content_for_host(&workspace, ADA, &answer(&asks[0], ADA, &slides));
-    assert_eq!(
-        opened(&workspaces, &workspace, BO, &slides),
-        Some(slides.clone())
-    );
-    assert_eq!(
-        opened(&workspaces, &workspace, BO, &notes),
-        None,
-        "the oldest went past her quota"
-    );
-
-    // A file over the cap stays with its poster.
-    let video = vec![7_u8; 65];
-    post_with(
-        &workspaces,
-        &workspace,
-        &cert,
-        (&ada, &general, "a video"),
-        Some(file("big.bin", &video)),
-    )
-    .await;
-    assert!(
-        keeper
-            .asks(
-                &referenced_in(&workspaces, &workspace).await,
-                an_hour_later + 1
-            )
-            .is_empty()
-    );
-
-    // A restart keeps counting what it kept.
-    drop(keeper);
-    let again = attachments_of(crate::chat_attachments::AttachmentLimits::default());
-    assert_eq!(
-        again.kept_for(&blake3::hash(&slides).to_hex()),
-        Some(MemberId::person(ada.as_str()))
-    );
-    assert_eq!(again.kept_for(&blake3::hash(&notes).to_hex()), None);
 }

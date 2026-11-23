@@ -555,6 +555,8 @@ mod tests {
 
     use super::*;
 
+    mod posted;
+
     tilo_test_env::scenario! {
         fn the_host_keeps_reported_files_for_their_reporters_within_a_quota;
 

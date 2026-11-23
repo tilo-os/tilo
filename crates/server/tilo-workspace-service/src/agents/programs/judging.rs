@@ -4,7 +4,7 @@
 //! transform the agent app answers on a device: the same instructions, the
 //! same bounds, and an answer held to the shape the step asked for, sent
 //! back once with the reason when it does not fit
-//! ([`crate::transform::run`]). What differs on a host is who answers:
+//! ([`tilo_agent_session::transform::run`]). What differs on a host is who answers:
 //! the model of the person the program runs for, which the host reaches for
 //! them. [`answer`] is that transform over whatever asks the model.
 //!
@@ -16,10 +16,10 @@
 use std::fmt::Write as _;
 use std::sync::Mutex;
 
-use crate::transform::{self, Call, Interaction, TransformModel};
 use serde_json::Value;
+use std::time::Duration;
+use tilo_agent_session::transform::{self, Call, Interaction, TransformModel};
 use tilo_lock::MutexRecover as _;
-use ui::time::Duration;
 
 use super::host_steps::{HostStepError, Judgement};
 use super::kept::Note;
@@ -65,7 +65,14 @@ pub fn answer(judgement: &Judgement, say: Say<'_>) -> Result<Value, HostStepErro
         transform,
         input: judgement.input.clone(),
     };
-    let note = serde_json::from_value::<Note>(judgement.note.clone()).unwrap_or_default();
+    // A program that keeps no note has the empty one.
+    let note = if judgement.note.is_null() {
+        Note::default()
+    } else {
+        serde_json::from_value::<Note>(judgement.note.clone()).map_err(|error| {
+            HostStepError::Refused(format!("the program's note does not read: {error}"))
+        })?
+    };
     let model = Told {
         say,
         note: told(&note),

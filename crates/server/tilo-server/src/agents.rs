@@ -1872,7 +1872,6 @@ impl WorkspaceActionsServer {
                 tilo_workspace_service::agents::initiative::Initiative::start(
                     workspaces,
                     Some(self.actions.clone()),
-                    std::sync::Arc::new(crate::event_runner::EventRunner),
                 )
             })
             .unzip();

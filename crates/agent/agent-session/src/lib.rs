@@ -33,7 +33,6 @@
 #![deny(rust_2018_idioms)]
 
 pub mod apps;
-pub mod bot;
 pub mod facts;
 pub mod grants;
 pub mod model;

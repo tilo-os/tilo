@@ -1,26 +1,26 @@
-//! The API a bot's runs act through.
+//! The API a program's runs act through.
 //!
-//! Every step of a bot's run is an invocation here, as the bot: the caller
-//! must be this installation's `Caller::bot`. The change names the bot, its
+//! Every step of a program's run is an invocation here, as the program: the caller
+//! must be this installation's `Caller::bot`. The change names the program, its
 //! installer, the invocation it came from and the run's cause. The replica
-//! decides with the installer's access bounded by the bot's grants, so a
-//! bot never does more than its installer can now.
+//! decides with the installer's access bounded by the program's grants, so a
+//! program never does more than its installer can now.
 //!
 //! A step its run already took (the host restarted mid-run) is found in the
 //! record's history by its derived invocation id and observed instead of
 //! taken again. An outside step completes when the outbox entries it
 //! queued are settled: the API hands each entry to the connector's worker
-//! and settles it as the bot with what came back, so the request, its
-//! result and the settle are all the bot's, and the step's value is the
+//! and settles it as the program with what came back, so the request, its
+//! result and the settle are all the program's, and the step's value is the
 //! result the next step reads. A refusal settles failed; an unavailable
 //! service leaves the entry pending and the step unavailable, so the run
 //! is retried in order and the entry performed again.
 //!
-//! A program that runs for a person ([`BotApi::runs_for`]) is also offered
+//! A program that runs for a person ([`ProgramApi::runs_for`]) is also offered
 //! the steps the host answers itself for that person
 //! ([`super::host_steps`]): an instruction handed to their assistant, and a
 //! judgement asked of their model. Any program whose host keeps things for
-//! it between its runs ([`BotApi::keeps`]) is offered its counts and its
+//! it between its runs ([`ProgramApi::keeps`]) is offered its counts and its
 //! note.
 
 use std::collections::HashMap;
@@ -42,22 +42,22 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::host_steps::{self, Asked, AskedFor, HostStepError, HostSteps, Keeps, StepCause};
 use super::item_json::OutboxRow;
-use crate::record_actions::{api_status, resource_of, resource_provider};
+use tilo_agent_session::record_actions::{api_status, resource_of, resource_provider};
 use tilo_lock::MutexRecover as _;
 
-/// What the API needs of the bot's session and replicas.
+/// What the API needs of the program's session and replicas.
 pub trait ApiMember: Send {
     fn workspace(&self) -> &str;
-    /// The held records and what each offers the bot now.
-    /// Every operation of each held record, each in the row of the resource
+    /// The loaded records and what each offers the program now.
+    /// Every operation of each loaded record, each in the row of the resource
     /// holding it: what a caller listing one resource of a record reads its
     /// children by.
     fn offered(&self) -> Vec<(DocumentRoute, Vec<CatalogueRow>)>;
-    /// Whether the record at `route` is held.
-    fn holds(&self, route: &DocumentRoute) -> bool;
-    /// The record at `route` as the bot may read it now: its whole document,
+    /// Whether the record at `route` is loaded.
+    fn has_record(&self, route: &DocumentRoute) -> bool;
+    /// The record at `route` as the program may read it now: its whole document,
     /// `None` for one the workspace holds none of, the refusal for one the
-    /// bot may not read.
+    /// program may not read.
     fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String>;
     /// Invoke as `invoker` within `context` and commit the change.
     /// `confirmed`: the run confirmed it, from the grant's advance consent,
@@ -71,7 +71,7 @@ pub trait ApiMember: Send {
         context: &ActionContext,
         confirmed: bool,
     ) -> Result<ActionOutput, ApiError>;
-    /// The entry `actor` recorded for step `step` of run `run` in any held
+    /// The entry `actor` recorded for step `step` of run `run` in any loaded
     /// record.
     fn find_in_history(
         &self,
@@ -183,7 +183,7 @@ pub struct OutboxSpec {
 }
 
 /// The `ActionProvider` one installation's runs act through.
-pub struct BotApi<P: ApiMember> {
+pub struct ProgramApi<P: ApiMember> {
     member: Arc<Mutex<P>>,
     installation: String,
     installer: String,
@@ -198,7 +198,7 @@ pub struct BotApi<P: ApiMember> {
     keeps: OnceLock<Arc<dyn Keeps>>,
 }
 
-impl<P: ApiMember> BotApi<P> {
+impl<P: ApiMember> ProgramApi<P> {
     /// The API of installation `installation`, installed by `installer`.
     pub fn new(
         member: Arc<Mutex<P>>,
@@ -320,11 +320,11 @@ impl<P: ApiMember> BotApi<P> {
             return self.host_step(request);
         }
         // The name the step shows, if any: every member admits it only from
-        // a bot its installation lets post under other names.
+        // a program its installation lets post under other names.
         let invoker = self.invoker().with_appearance(request.appearance.clone());
         let mut member = self.lock();
         let route = resource_of(&request.target.provider, member.workspace())
-            .filter(|route| member.holds(route))
+            .filter(|route| member.has_record(route))
             .ok_or(ActionCallError::UnknownAction)?;
         let step = request.context.as_ref().and_then(AutomationStep::of);
         if let Some(step) = step.as_ref()
@@ -337,7 +337,7 @@ impl<P: ApiMember> BotApi<P> {
             InvokeArgument::None => Map::new(),
             InvokeArgument::Text(_) => {
                 return Err(ActionCallError::InvalidRequest {
-                    reason: "a bot's step takes JSON arguments".into(),
+                    reason: "a program's step takes JSON arguments".into(),
                 });
             }
         };
@@ -485,7 +485,7 @@ impl<P: ApiMember> BotApi<P> {
         })
     }
 
-    /// Record how entry `entry` settled, as the bot.
+    /// Record how entry `entry` settled, as the program.
     fn settle(
         &self,
         route: &DocumentRoute,
@@ -494,10 +494,10 @@ impl<P: ApiMember> BotApi<P> {
         entry: &str,
         outcome: &Value,
     ) -> Result<(), ActionCallError> {
-        let arguments = ui::tilo_resource::outbox_settle_arguments(&spec.field, entry, outcome);
+        let arguments = tilo_resource::outbox_settle_arguments(&spec.field, entry, outcome);
         let edit = ActionAddress::new(
             address.resource.clone(),
-            ui::tilo_resource::FIELD_EDIT.to_owned(),
+            tilo_resource::FIELD_EDIT.to_owned(),
         );
         let context = ActionContext::default().with_caused_by(self.cause());
         self.lock()
@@ -566,12 +566,12 @@ impl<P: ApiMember> BotApi<P> {
     }
 }
 
-/// Whether `caller` is the bot of `installation`.
+/// Whether `caller` is the program of `installation`.
 fn is_bot(caller: &Caller, installation: &str) -> bool {
     caller.acting().bot_id() == Some(installation)
 }
 
-/// The bot's record reads: what its runs read of the records it follows,
+/// The program's record reads: what its runs read of the records it follows,
 /// from the copies it holds ([`ApiMember::record`]). A run reads the
 /// records as they were brought up to before it, with its own changes since.
 struct BotReads<P: ApiMember> {
@@ -653,7 +653,7 @@ fn update_of(invocation: InvocationId, status: &ReceiptStatus) -> Option<Invocat
     }
 }
 
-impl<P: ApiMember + 'static> ActionProvider for BotApi<P> {
+impl<P: ApiMember + 'static> ActionProvider for ProgramApi<P> {
     fn query(
         &self,
         caller: &Caller,
@@ -715,11 +715,11 @@ impl<P: ApiMember + 'static> ActionProvider for BotApi<P> {
         _id: &InvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Err(ActionCallError::NotCancellable {
-            reason: "a bot's step runs to its end".into(),
+            reason: "a program's step runs to its end".into(),
         }))
     }
 
-    // `confirm` keeps the default: nobody answers for a bot, so an action
+    // `confirm` keeps the default: nobody answers for a program, so an action
     // that asks first is refused.
 }
 

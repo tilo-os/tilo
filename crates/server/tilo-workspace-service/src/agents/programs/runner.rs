@@ -1,9 +1,9 @@
 //! A workspace's events, run on this server: each event's program, carried
-//! out for the member who set it up ([`tilo_workspace_service::agents::events`]).
+//! out for the member who set it up ([`crate::agents::events`]).
 //!
 //! The runner follows the records of the apps the program names. Each change
 //! goes through the dispatcher; every firing is queued and run unattended
-//! through the program's API ([`BotApi`]) over its own replicas of the
+//! through the program's API ([`ProgramApi`]) over its own replicas of the
 //! workspace's records. A schedule's fire time and a trigger's one moment come
 //! round on this server too: each fires the program the same way.
 //!
@@ -19,7 +19,7 @@
 //! already in history instead of repeating them.
 //!
 //! What the program itself keeps between its runs, its counts and its note,
-//! is in a file beside that one ([`tilo_workspace_service::agents::kept`]), written whenever it
+//! is in a file beside that one ([`crate::agents::kept`]), written whenever it
 //! changes.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -27,14 +27,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use crate::agents::programs::api::ProgramApi;
+use crate::agents::programs::host_steps::{HostSteps, Keeps};
+use crate::agents::programs::kept::{Ended, LastRun};
+use crate::agents::programs::records::ProgramRecords;
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::remote::{Caller, Pending};
-use tilo_agent_session::bot::api::BotApi;
-use tilo_agent_session::bot::held::HeldDocuments;
-use tilo_agent_session::bot::host_steps::{HostSteps, Keeps};
-use tilo_agent_session::bot::kept::{Ended, LastRun};
 use tilo_agent_session::{AppCatalogue, ReplicaActor};
 use tilo_automation::dispatch::queue::{DeadLetter, FailureClass, Finished, FiringQueue, classify};
 use tilo_automation::dispatch::{Armed, Event, Firer, Firing, ScheduleEvent};
@@ -46,8 +46,8 @@ use tilo_automation::{
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
+use crate::agents::kept::KeptFile;
 use crate::workspaces::{MemberMark, Workspaces};
-use tilo_workspace_service::agents::kept::KeptFile;
 
 use tilo_lock::MutexRecover as _;
 
@@ -85,36 +85,35 @@ pub struct Program {
     pub inputs: Map<String, Value>,
 }
 
-/// What runs a workspace's events here: each one's program, for the member who set it up.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct EventRunner;
-
-impl tilo_workspace_service::agents::events::Runner for EventRunner {
-    fn run(
-        &self,
-        workspaces: &Workspaces,
-        workspace: &str,
-        definition: &tilo_agent_session::bot::event::Definition,
-        person: String,
-        steps: Arc<dyn HostSteps>,
-        progress: PathBuf,
-    ) -> Result<(Arc<KeptFile>, tokio::task::JoinHandle<()>), String> {
-        let program = Program {
-            id: definition.id.clone(),
-            program: definition.program_text()?,
-            inputs: definition.inputs(),
-        };
-        let runner = ProgramRunner::new(
-            workspaces.clone(),
-            workspace.to_owned(),
-            workspaces.governor().clone(),
-            program,
-            progress,
-        )?
-        .runs_for(person, steps);
-        let kept = runner.kept();
-        Ok((kept, tokio::spawn(runner.run())))
-    }
+/// Run `definition`'s program in `workspace` of `workspaces` for `person` (hex root), the
+/// steps that ask this server answered by `steps`, where its runner had read up to kept in
+/// `progress`: what the program keeps between its runs, and the task it runs on.
+///
+/// # Errors
+/// The program does not read, or what it kept does not.
+pub fn run(
+    workspaces: &Workspaces,
+    workspace: &str,
+    definition: &crate::agents::programs::event::Definition,
+    person: String,
+    steps: Arc<dyn HostSteps>,
+    progress: PathBuf,
+) -> Result<(Arc<KeptFile>, tokio::task::JoinHandle<()>), String> {
+    let program = Program {
+        id: definition.id.clone(),
+        program: definition.program_text()?,
+        inputs: definition.inputs(),
+    };
+    let runner = ProgramRunner::new(
+        workspaces.clone(),
+        workspace.to_owned(),
+        workspaces.governor().clone(),
+        program,
+        progress,
+    )?
+    .runs_for(person, steps);
+    let kept = runner.kept();
+    Ok((kept, tokio::spawn(runner.run())))
 }
 
 impl Program {
@@ -206,8 +205,8 @@ pub struct ProgramRunner {
     shortcut: Arc<Shortcut>,
     /// Apps whose records the program reads.
     apps: BTreeSet<String>,
-    held: Arc<Mutex<HeldDocuments>>,
-    api: Arc<BotApi<HeldDocuments>>,
+    records: Arc<Mutex<ProgramRecords>>,
+    api: Arc<ProgramApi<ProgramRecords>>,
     /// What the program keeps between its runs: its counts and its note.
     keeps: Arc<KeptFile>,
     progress: Progress,
@@ -223,9 +222,6 @@ pub struct ProgramRunner {
     /// The next moment of a time a resource holds that the program waits
     /// for, ms since the epoch, so its idle wait ends at it too.
     next_time_ms: Option<i64>,
-    /// The mail of the person the program is carried out for, heard for as
-    /// long as one of its triggers waits on it.
-    mail: Option<sources::Mail>,
     /// What looks at the sources outside the program waits on.
     outside: sources::Outside,
     /// The next look at a source outside the program waits on, ms since the
@@ -273,7 +269,7 @@ impl ProgramRunner {
         );
         let installer = hex::encode(host.user_public_key);
         let access = program_access(&workspace, &installer, &program.id, &shortcut);
-        let held = Arc::new(Mutex::new(HeldDocuments::new(
+        let records = Arc::new(Mutex::new(ProgramRecords::new(
             catalogue.clone(),
             workspace.clone(),
             tilo_actions::MemberId::bot(program.id.clone()),
@@ -283,8 +279,8 @@ impl ProgramRunner {
                 access,
             },
         )));
-        let api = Arc::new(BotApi::new(
-            Arc::clone(&held),
+        let api = Arc::new(ProgramApi::new(
+            Arc::clone(&records),
             program.id.clone(),
             installer,
             Vec::new(),
@@ -301,7 +297,7 @@ impl ProgramRunner {
             program,
             shortcut: Arc::new(shortcut),
             apps,
-            held,
+            records,
             api,
             keeps,
             progress,
@@ -310,7 +306,6 @@ impl ProgramRunner {
             next_schedule_ms: None,
             person: None,
             next_time_ms: None,
-            mail: None,
             outside: sources::Outside::default(),
             next_source_ms: None,
             gone_said: None,
@@ -326,7 +321,6 @@ impl ProgramRunner {
     pub fn runs_for(mut self, person: String, steps: Arc<dyn HostSteps>) -> Self {
         self.person = Some(person.clone());
         self.api.runs_for(person, steps);
-        self.hear_sources();
         self
     }
 
@@ -371,9 +365,6 @@ impl ProgramRunner {
                 && !times::waits_on_a_time(trigger)
                 && !sources::waits_on_a_source(trigger)
         });
-        // Mail that arrives wakes a program that waits on its person's.
-        let hears_mail = self.hears_mail();
-        let mut mail = self.workspaces.mail_arrival_changes();
         loop {
             if let Err(error) = self.step().await {
                 tracing::warn!(event = %self.program.id, %error, "an event's runner did not finish a pass");
@@ -403,11 +394,6 @@ impl ProgramRunner {
                 }
                 changed = governance.recv() => {
                     if matches!(changed, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
-                        return;
-                    }
-                }
-                arrived = mail.changed(), if hears_mail => {
-                    if arrived.is_err() {
                         return;
                     }
                 }
@@ -559,7 +545,7 @@ impl ProgramRunner {
                         .map(|definition| definition.resource_type.as_str().to_owned())
                 })
                 .unwrap_or_default();
-            for (event, _) in tilo_agent_session::bot::events_since(
+            for (event, _) in crate::agents::programs::events_since(
                 &self.workspace,
                 &record,
                 &kind,
@@ -618,12 +604,12 @@ impl ProgramRunner {
             let Some(state) = self.workspaces.state(&workspace).await else {
                 continue;
             };
-            let held = state
+            let ours = state
                 .workspace()
                 .lease(&lease, now)
                 .holder
                 .is_some_and(|holder| holder.device == self.host.device_public_key);
-            if !held {
+            if !ours {
                 continue;
             }
             let answered = state
@@ -793,14 +779,15 @@ impl ProgramRunner {
                     cluster_id: self.workspace.clone(),
                     document: record,
                 };
-                let held = Arc::clone(&self.held);
-                let holding = route.clone();
-                let held =
-                    tokio::task::spawn_blocking(move || held.lock_recover().hold(&holding, saved))
-                        .await
-                        .map_err(|error| error.to_string())?;
-                if let Err(error) = held {
-                    tracing::warn!(event = %self.program.id, app = %route.app_id, record = %route.document, %error, "an event's run leaves out a record it could not hold");
+                let records = Arc::clone(&self.records);
+                let loading = route.clone();
+                let loaded = tokio::task::spawn_blocking(move || {
+                    records.lock_recover().load(&loading, saved)
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                if let Err(error) = loaded {
+                    tracing::warn!(event = %self.program.id, app = %route.app_id, record = %route.document, %error, "an event's run leaves out a record it could not load");
                 }
             }
         }
@@ -846,17 +833,17 @@ impl ProgramRunner {
         })
         .await
         .map_err(|error| error.to_string())?;
-        let changes = self.held.lock_recover().take_changes();
+        let changes = self.records.lock_recover().take_changes();
         if let Some((route, _)) = changes.first() {
             // Its replicas start over from the workspace's records, or every
             // later run would carry the change too.
             let touched: BTreeSet<DocumentRoute> =
                 changes.iter().map(|(route, _)| route.clone()).collect();
-            let mut held = self.held.lock_recover();
+            let mut records = self.records.lock_recover();
             for route in &touched {
-                held.forget(route);
+                records.forget(route);
             }
-            drop(held);
+            drop(records);
             self.api.forget_steps();
             let reason = format!(
                 "an event changes no record, and this run changed {}/{}",
@@ -914,7 +901,7 @@ impl ProgramRunner {
     /// The workspace's own emoji as the workspace holds them now: `{"emoji":
     /// [{"name", "picture"}]}`, each picture its content address. The
     /// pictures live in the emoji record itself, which a run does not hold
-    /// (`HeldDocuments`), so the server reads them.
+    /// (`ProgramRecords`), so the server reads them.
     pub(crate) async fn emoji_input(&self) -> Result<Value, String> {
         use tilo_resource::Resource as _;
         use tilo_workspace_emoji::{KIND, OWNER, WorkspaceEmoji};

@@ -2,9 +2,8 @@
 //! actions ([`tilo_actions::remote::workspace_events`]).
 //!
 //! An event is a Shortcut the server runs with no device of anyone's on
-//! ([`tilo_agent_session::bot::event`]). It is run by the engine that runs a
-//! workspace's bots ([`Runner`]) for the member who set
-//! it up, and is no member of the workspace: its program's steps are the
+//! ([`super::programs::event`]). Its program is run
+//! ([`super::programs::runner`]) for the member who set it up, and is no member of the workspace: its program's steps are the
 //! server's own (a judgement, a count, an instruction handed to that
 //! member's assistant), so it changes no record and nothing has to admit it.
 //! What it starts is the assistant's own work, under the assistant's own
@@ -32,6 +31,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::agents::programs::event::{Definition, told_as_of};
+use crate::agents::programs::host_steps::{HostStepError, HostSteps, Keeps as _};
+use crate::agents::programs::kept::{self, NoteChange};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
@@ -48,9 +50,6 @@ use tilo_actions::remote::{
     RemoteActionMessage, pending,
 };
 use tilo_actions::{ActionOutput, ExecutionLocus, MemberId, OperationKind};
-use tilo_agent_session::bot::event::{Definition, told_as_of};
-use tilo_agent_session::bot::host_steps::{HostStepError, HostSteps, Keeps as _};
-use tilo_agent_session::bot::kept::{self, NoteChange};
 use tilo_automation::TriggerSpec;
 use tilo_automation::schedule::Timed;
 use tilo_lock::MutexRecover as _;
@@ -71,25 +70,6 @@ const FOLDER: &str = "events";
 
 /// What answers the steps of one event.
 type StepsFor = Arc<dyn Fn(&Definition) -> Arc<dyn HostSteps> + Send + Sync>;
-
-/// What runs an event's program: the engine that runs a workspace's bots.
-pub trait Runner: Send + Sync {
-    /// Run `definition`'s program in `workspace` of `workspaces` for `person` (hex root), the
-    /// steps that ask this server answered by `steps`, where its runner had read up to kept in
-    /// `progress`: what the program keeps between its runs, and the task it runs on.
-    ///
-    /// # Errors
-    /// The program does not read, or what it kept does not.
-    fn run(
-        &self,
-        workspaces: &Workspaces,
-        workspace: &str,
-        definition: &Definition,
-        person: String,
-        steps: Arc<dyn HostSteps>,
-        progress: PathBuf,
-    ) -> Result<(Arc<KeptFile>, tokio::task::JoinHandle<()>), String>;
-}
 
 /// Whether `message` is for a workspace's events.
 #[must_use]
@@ -201,14 +181,12 @@ struct Inner {
     workspaces: Workspaces,
     /// What the server answers an event's steps with.
     steps: StepsFor,
-    /// What runs each event's program.
-    runner: Arc<dyn Runner>,
     /// The events running in each workspace, by their id.
     running: Mutex<BTreeMap<String, BTreeMap<String, Running>>>,
 }
 
 /// The events of this server's workspaces: every one it keeps runs for as
-/// long as this, or a clone of it, is held.
+/// long as this, or a clone of it, is loaded.
 #[derive(Clone)]
 pub struct WorkspaceEvents {
     inner: Arc<Inner>,
@@ -219,14 +197,13 @@ impl WorkspaceEvents {
     /// there. Their steps are answered by this server
     /// ([`super::assistant`]): with `actions`, the server's action service,
     /// an instruction an event hands over starts a turn of its author's
-    /// assistant. `runner` runs each event's program. Called on the runtime the events work on.
+    /// assistant. Called on the runtime the events work on.
     #[must_use]
     pub fn start(
         workspaces: Workspaces,
         actions: Option<tilo_agent_session::workspace_actions::WorkspaceActions>,
-        runner: Arc<dyn Runner>,
     ) -> Self {
-        Self::start_behind(workspaces, actions, None, runner)
+        Self::start_behind(workspaces, actions, None)
     }
 
     /// [`Self::start`], with `before` put in front of what answers each
@@ -237,7 +214,6 @@ impl WorkspaceEvents {
         workspaces: Workspaces,
         actions: Option<tilo_agent_session::workspace_actions::WorkspaceActions>,
         before: Option<super::initiative::Before>,
-        runner: Arc<dyn Runner>,
     ) -> Self {
         use super::assistant::{self, Starter};
         let plain = || -> StepsFor {
@@ -268,29 +244,23 @@ impl WorkspaceEvents {
             Some(before) => Arc::new(move |event: &Definition| before(steps(event))),
             None => steps,
         };
-        Self::started(workspaces, steps, runner)
+        Self::started(workspaces, steps)
     }
 
     /// [`Self::start`], with what answers the events' steps given.
     #[must_use]
-    pub fn start_with(
-        workspaces: Workspaces,
-        steps: Arc<dyn HostSteps>,
-        runner: Arc<dyn Runner>,
-    ) -> Self {
+    pub fn start_with(workspaces: Workspaces, steps: Arc<dyn HostSteps>) -> Self {
         Self::started(
             workspaces,
             Arc::new(move |_: &Definition| Arc::clone(&steps)),
-            runner,
         )
     }
 
-    fn started(workspaces: Workspaces, steps: StepsFor, runner: Arc<dyn Runner>) -> Self {
+    fn started(workspaces: Workspaces, steps: StepsFor) -> Self {
         let events = Self {
             inner: Arc::new(Inner {
                 workspaces,
                 steps,
-                runner,
                 running: Mutex::default(),
             }),
         };
@@ -344,7 +314,7 @@ impl WorkspaceEvents {
     /// Run `stored` for its author's person from what `dir` keeps: where its
     /// runner had read up to, its counts and its note.
     fn run(&self, workspace: &str, stored: Stored, dir: &Path) -> Result<Running, String> {
-        let (kept, task) = self.inner.runner.run(
+        let (kept, task) = super::programs::runner::run(
             &self.inner.workspaces,
             workspace,
             &stored.definition,
@@ -502,7 +472,7 @@ impl WorkspaceEvents {
     /// Who `caller` asks for and as what, as the workspace's policy decides
     /// it: the member themselves on a device the handshake verified (an
     /// agent's change first put to their person where the policy asks), or a
-    /// turn this server carries out for them. A bot, an app, and an agent no
+    /// turn this server carries out for them. A program, an app, and an agent no
     /// person's session stands behind are told what a caller asking for
     /// something that does not exist is told.
     ///
@@ -994,11 +964,7 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
              or after the start or the end, `entries.*.end`, of each entry in the workspace's \
              calendars, every occurrence of one that repeats; each `where` names a field of the \
              entry and the value it holds, and what the assistant is told carries the entry), \
-             `when something new is in \"tilo.accounts.mail\"` (a message arrives in a mail \
-             account named for its assistant; `at \"ACCOUNT\"` after the kind keeps it to one \
-             account, and each `where` names a field of the message and the value it holds, \
-             such as `from` for the sender's address; what you are told carries who wrote, \
-             what about and the start of the words, as data), `when something new is in \
+             `when something new is in \
              \"tilo.web.feed\" at \"https://example.org/feed.xml\"` (a feed on the public web \
              lists an entry it did not list before; you are told its title, link, date and \
              summary, as data), `when something new is in \"tilo.web.page\" at \

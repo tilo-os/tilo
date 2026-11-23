@@ -1,13 +1,15 @@
-//! Installed bots on the workspace's host: what a bot reads of the records it
-//! watches.
+//! The programs a workspace's events run on this server: how an event is
+//! described, the API its program calls, what it keeps between its runs, the
+//! steps the server answers itself, and what runs it.
 
 pub mod api;
 pub mod event;
-pub mod held;
 pub mod host_steps;
 pub mod judging;
 pub mod kept;
-/// What a bot reads of an item: its stored shape, as every host reads it.
+pub mod records;
+pub mod runner;
+/// What a program reads of an item: its stored shape, as every host reads it.
 pub use tilo_automerge::items as item_json;
 
 use automerge::ChangeHash;
@@ -30,7 +32,15 @@ pub fn events_since(
     doc: &automerge::Automerge,
     since: &[String],
 ) -> Vec<(DocumentEvent, Vec<String>)> {
-    let since: Vec<ChangeHash> = since.iter().filter_map(|hex| hex.parse().ok()).collect();
+    let since: Vec<ChangeHash> = since
+        .iter()
+        .filter_map(|hex| {
+            tilo_failure::ignored!(
+                "a head that does not parse names no change, so the changes are read from before it, none skipped",
+                hex.parse().ok()
+            )
+        })
+        .collect();
     let mut heads: Vec<ChangeHash> = since.clone();
     let mut out = Vec::new();
     for change in doc.get_changes(&since) {

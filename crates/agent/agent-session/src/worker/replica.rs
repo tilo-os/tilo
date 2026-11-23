@@ -1115,7 +1115,7 @@ impl ConfinedReplica {
 
     /// [`Self::invoke_with`] showing `appearance`, which only an API that
     /// admitted it passes.
-    pub(crate) fn invoke_within(
+    pub fn invoke_within(
         &self,
         invoker: Option<&tilo_actions::ActionInvoker>,
         context: Option<&tilo_actions::ActionContext>,
