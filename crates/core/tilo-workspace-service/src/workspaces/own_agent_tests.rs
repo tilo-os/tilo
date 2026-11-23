@@ -24,6 +24,7 @@ use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, Usage,
 };
+use tilo_resource_store::Query;
 use tilo_resource_store::wire::{Command, Edit};
 use tilo_resource_store::{Cell, Resource, Stamp, Value};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -297,27 +298,74 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let _ = beas.own_route_keys(&route, true).await;
     runner.arm().await;
 
-    // Bea mentions it in a channel, as Chat writes her `send`.
+    // Chat, built into this build, answers for its record on Bea's device, as the daemon serves
+    // it: its own package runs each action over the device's store. Bea opens it and makes a
+    // channel with it.
+    crate::tl_records::provided::register(beas);
+    let chat = crate::tl_records::built_in(CHAT)
+        .unwrap()
+        .expect("Chat is built in");
+    let as_bea = crate::tl_records::member(tilo_actions::MemberId::person(bea_person.clone()));
+    beas.with_tl_record(&workspace, &chat, as_bea, |opened| {
+        opened.open_root().map(drop)
+    })
+    .await
+    .expect("Bea opens Chat");
+    let chat_provider = format!("{}:{CHAT}:", tilo_actions::remote::RESOURCE_PROVIDER);
+    let chat_answers = beas
+        .providers()
+        .get(&chat_provider)
+        .expect("Chat answers on Bea's device")
+        .answers;
     let caller_bea = Caller::authenticated(bea_cert.user_public_key, bea_cert.device_public_key)
         .in_workspace(&workspace);
+    let new_channel = beas
+        .record_rows(&workspace, &route, &bea_person)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|row| row.action)
+        .find(|action| action.address.action == "new_channel")
+        .expect("Chat offers Bea a new channel");
+    let made = settled(chat_answers.invoke(
+        &caller_bea,
+        InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: chat_provider.clone(),
+                address: new_channel.address,
+            },
+            argument: InvokeArgument::Json(
+                json!({ "name": "general" }).as_object().unwrap().clone(),
+            ),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        },
+    ))
+    .await
+    .expect("Chat makes the channel");
+    let ReceiptStatus::Completed { output } = made.status else {
+        panic!("making a channel completes at once: {made:?}");
+    };
+    let general = output
+        .resources
+        .first()
+        .and_then(|made| made.strip_prefix(&format!("tl:{CHAT}:")))
+        .expect("the channel Chat made")
+        .to_owned();
+
+    // Bea mentions her agent in the channel, as Chat writes her `send`.
     let bea_who = tilo_actions::Acting::person(bea_person.clone()).by;
     chat_writes(
         beas,
         &workspace,
         &caller_bea,
         &bea_who,
-        ("tl.so.tilo.chat.TextChannel", "general", None),
-        vec![("name", "general".to_owned())],
-        None,
-    )
-    .await
-    .unwrap();
-    chat_writes(
-        beas,
-        &workspace,
-        &caller_bea,
-        &bea_who,
-        (MESSAGE, "m-1", Some("general")),
+        (MESSAGE, "m-1", Some(general.as_str())),
         Vec::new(),
         Some(mentioning("Scout, what is planned?", SCOUT)),
     )
@@ -339,67 +387,20 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     assert_eq!(firing.saver, bea_person, "the trigger is Bea's");
 
     // The firing starts the agent's answer on her device; the engine there takes the turn, and
-    // its tools go through the device's dispatch. Chat's `send` there is carried out as Chat
-    // writes it: the reply, as whoever invoked it.
-    let replied: Arc<Mutex<Option<Result<(), String>>>> = Arc::default();
+    // its tools go through the device's dispatch, which hands a call the workspace's grants
+    // admit to the provider that answers it here: Chat's `send` is carried out by Chat.
     let dispatch = {
-        let replied = Arc::clone(&replied);
-        let chat_connection = caller_bea.clone();
-        let beas = beas.clone();
-        let workspace = workspace.clone();
+        let providers = beas.providers();
         Arc::new(TestProvider::new().answering(move |caller, request| {
-            let sent = request.target.address.action == "send"
-                && request.target.address.resource == format!("tl:{CHAT}:general");
-            if !sent {
-                return Pending::ready(Ok(tilo_actions::remote::InvocationReceipt {
+            match providers.get(&request.target.provider) {
+                Some(registered) => registered.answers.invoke(caller, request.clone()),
+                None => Pending::ready(Ok(tilo_actions::remote::InvocationReceipt {
                     invocation: request.invocation,
                     status: ReceiptStatus::Completed {
                         output: tilo_actions::ActionOutput::default(),
                     },
-                }));
+                })),
             }
-            let (beas, workspace, caller, request, replied, connection) = (
-                beas.clone(),
-                workspace.clone(),
-                caller.clone(),
-                request.clone(),
-                Arc::clone(&replied),
-                chat_connection.clone(),
-            );
-            let (done, answer) = tilo_actions::remote::pending();
-            tokio::spawn(async move {
-                let by = caller.acting().by.clone();
-                let words = argument(&request, "body");
-                // Chat writes through its own connection to the device's store, under the
-                // invocation the dispatch delivered to it: the write is the invoker's.
-                let written = chat_writes(
-                    &beas,
-                    &workspace,
-                    &connection,
-                    &by,
-                    (MESSAGE, "reply-1", Some("general")),
-                    vec![(
-                        "reply_to",
-                        argument(&request, "reply_to")
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_owned(),
-                    )],
-                    Some(json!({"blocks": [{"text": words, "marks": []}]})),
-                )
-                .await;
-                *replied.lock().unwrap() = Some(written.clone());
-                done.complete(match written {
-                    Ok(()) => Ok(tilo_actions::remote::InvocationReceipt {
-                        invocation: request.invocation,
-                        status: ReceiptStatus::Completed {
-                            output: tilo_actions::ActionOutput::default(),
-                        },
-                    }),
-                    Err(reason) => Err(ActionCallError::Refused { reason }),
-                });
-            });
-            answer
         }))
     };
     let model: Model = Arc::new(|| Some(Box::new(Answers) as Box<dyn PlanTurns>));
@@ -438,7 +439,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let (request, caller) = sent;
     assert_eq!(
         request.target.address.resource,
-        format!("tl:{CHAT}:general"),
+        format!("tl:{CHAT}:{general}"),
         "it answers in the channel she wrote in"
     );
     assert_eq!(
@@ -462,11 +463,25 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         "Scout acts for Bea"
     );
 
-    // Its reply is a message of the channel, to her message, written by Scout for Bea.
+    // Its reply is Chat's own write: a message of the channel, to her message, stamped as Scout's
+    // `send` for Bea.
+    let context =
+        crate::apps::services::ResourceRequestContext::authenticated(CHAT, &workspace, caller_bea);
     let deadline = tilo_test_env::hang_deadline();
-    let written = loop {
-        if let Some(written) = replied.lock().unwrap().clone() {
-            break written;
+    let (reply_id, reply) = loop {
+        let page = beas
+            .resource_command(&context, Command::Query(Query::of(MESSAGE, 50)))
+            .await
+            .unwrap();
+        let tilo_resource_store::wire::Reply::Page(page) = page else {
+            panic!("a query answers a page: {page:?}");
+        };
+        if let Some(reply) = page
+            .resources
+            .into_iter()
+            .find(|(id, message)| id != "m-1" && message.parent.as_deref() == Some(&general))
+        {
+            break reply;
         }
         assert!(
             std::time::Instant::now() < deadline,
@@ -474,27 +489,38 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
-    written.expect("Chat writes the reply as Scout for Bea");
-    let context =
-        crate::apps::services::ResourceRequestContext::authenticated(CHAT, &workspace, caller_bea);
-    let reply = beas
+    assert_eq!(
+        reply.fields.get("reply_to"),
+        Some(&Cell::One(Value::Text("m-1".to_owned()))),
+        "{reply:?}"
+    );
+    let versions = beas
         .resource_command(
             &context,
-            Command::Get {
+            Command::Versions {
                 kind: MESSAGE.into(),
-                id: "reply-1".into(),
+                id: reply_id.clone(),
             },
         )
         .await
         .unwrap();
-    let tilo_resource_store::wire::Reply::Resource(Some(reply)) = reply else {
-        panic!("the reply is a message of the channel: {reply:?}");
+    let tilo_resource_store::wire::Reply::Versions(versions) = versions else {
+        panic!("the reply has a history: {versions:?}");
     };
-    assert_eq!(reply.parent.as_deref(), Some("general"));
+    let made = versions
+        .first()
+        .and_then(|version| version.stamp.clone())
+        .expect("the reply names the action that made it");
+    assert_eq!(made.verb, "send", "{made:?}");
     assert_eq!(
-        reply.fields.get("reply_to"),
-        Some(&Cell::One(Value::Text(format!("tl:{CHAT}:m-1")))),
-        "{reply:?}"
+        made.invoker,
+        Stamp::by(&caller.acting().by),
+        "Scout wrote it: {made:?}"
+    );
+    assert_eq!(
+        made.acted_for.as_deref(),
+        Some(bea_person.as_str()),
+        "for Bea"
     );
     bea.shutdown().await;
     ada.shutdown().await;
