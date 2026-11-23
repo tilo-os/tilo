@@ -371,6 +371,31 @@ impl Core {
         }
     }
 
+    /// The content `file` names, when this device holds it.
+    pub(crate) fn file_bytes(&self, file: &FileValue) -> Result<Vec<u8>, String> {
+        let blobs = self.blobs.borrow();
+        let Some(blobs) = blobs.as_ref() else {
+            return Err("this host holds no content store".to_owned());
+        };
+        blobs
+            .read(&file.hash)
+            .ok_or_else(|| format!("the content of `{}` is not on this device", file.name))
+    }
+
+    /// `bytes` of `media` kept in the content store as a file called `name`.
+    pub(crate) fn keep_bytes(
+        &self,
+        name: &str,
+        media: &str,
+        bytes: &[u8],
+    ) -> Result<FileValue, String> {
+        let blobs = self.blobs.borrow();
+        let Some(blobs) = blobs.as_ref() else {
+            return Err("this host keeps no files".to_owned());
+        };
+        blobs.keep(name, media, bytes)
+    }
+
     /// A file an action makes of what it holds: the text, the bytes, the content an address
     /// names, or an archive of the files it holds, each under the name the file has. Its bytes
     /// are kept in the device's content store, under the name it is made as, and the `File` it

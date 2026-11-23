@@ -1,0 +1,27 @@
+[package]
+name = "tilo-pdf-reader"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A PDF as a reader works with it: its pages, text, links, contents, forms, the markup the file already carries, and the pages and markup a save writes back. The reader has no UI; the window that shows it is an app of its own."
+
+[dependencies]
+# The one PDF engine API: rasterising, the text layer, links, outline, forms, annotations and
+# export, through pdfium in a sandboxed helper or the portable renderer.
+tilo-pdf = { path = "../tilo-pdf" }
+# A page kept as a picture is a PNG whatever platform the reader runs on.
+tilo-image-codec = { path = "../tilo-image-codec" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The engine's tests open the fixtures tilo-pdf keeps.
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -21,6 +21,8 @@ const CLIPBOARD: &str = "clipboard";
 
 const PAGE: &str = "page";
 
+const PDF: &str = "pdf";
+
 impl Checker<'_> {
     pub(super) fn call(
         &mut self,
@@ -113,6 +115,12 @@ impl Checker<'_> {
                     && self.env.find_import(CLIPBOARD).is_none()
                 {
                     return self.builtin_clipboard(name, args, span);
+                }
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == PDF)
+                    && self.lookup(PDF).is_none()
+                    && self.env.find_import(PDF).is_none()
+                {
+                    return self.builtin_pdf(name, args, span);
                 }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
@@ -2408,6 +2416,93 @@ impl Checker<'_> {
     /// `clipboard.paste_image()`: the person's clipboard. A copy reaches their device and a paste
     /// reads what is on it now, so an action that does either declares `uses clipboard`, and
     /// neither is written in a view, which is drawn again from what it is shown.
+    fn builtin_pdf(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let result = |held: Ty| Ty::Result(Box::new(held), Box::new(Ty::Text));
+        let what = format!("`pdf.{}`", name.name);
+        let (imp, held, takes) = match name.name.as_str() {
+            "pages" => (Imp::PdfPages, result(Ty::Text), "the file it reads"),
+            "outline" => (Imp::PdfOutline, result(Ty::Text), "the file it reads"),
+            "fields" => (Imp::PdfFields, result(Ty::Text), "the file it reads"),
+            "markup" => (Imp::PdfMarkup, result(Ty::Text), "the file it reads"),
+            "import" => (Imp::PdfImport, result(Ty::Text), "the file it takes pages from"),
+            "text" => (
+                Imp::PdfText,
+                result(Ty::Text),
+                "the file and the page, counted from 1",
+            ),
+            "links" => (
+                Imp::PdfLinks,
+                result(Ty::Text),
+                "the file and the page, counted from 1",
+            ),
+            "picture" => (
+                Imp::PdfPicture,
+                result(Ty::File),
+                "the file, the page counted from 1, and the picture's width in pixels",
+            ),
+            "save" => (
+                Imp::PdfSave,
+                result(Ty::File),
+                "the files, the document's first, and the save request as JSON",
+            ),
+            other => {
+                self.err(
+                    "E022",
+                    name.span,
+                    format!(
+                        "`pdf` has `pages`, `outline`, `text`, `links`, `fields`, `markup`, \
+                         `import`, `picture` and `save`, not `{other}`: \
+                         `pdf.pages(file)` answers a document's pages"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        // The file first, by position; then the numbers `text`, `links` and `picture` take.
+        let wanted = match name.name.as_str() {
+            "save" | "text" | "links" => 2,
+            "picture" => 3,
+            _ => 1,
+        };
+        if args.len() != wanted {
+            self.err(
+                "E022",
+                span,
+                format!("{what} takes {takes}: `pdf.{}(\u{2026})`", name.name),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let mut given: Vec<Ex> = Vec::with_capacity(wanted);
+        for (at, arg) in args.iter().enumerate() {
+            if let Some(named) = &arg.name {
+                self.err(
+                    "E022",
+                    named.span,
+                    format!("{what} takes {takes} by position"),
+                );
+            }
+            if at == 0 {
+                let held = if name.name == "save" {
+                    Ty::List(Box::new(Ty::File))
+                } else {
+                    Ty::File
+                };
+                given.push(self.expr_as(&arg.value, &held));
+            } else if name.name == "save" {
+                given.push(self.expr_as(&arg.value, &Ty::Text));
+            } else {
+                given.push(self.expr_as(&arg.value, &Ty::Int));
+            }
+        }
+        Ex::host(imp, given, held)
+    }
+
     fn builtin_clipboard(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let (imp, ty) = match name.name.as_str() {
             "copy" => (Imp::ClipboardCopyText, Ty::Bool),

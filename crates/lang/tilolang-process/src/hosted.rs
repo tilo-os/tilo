@@ -600,6 +600,11 @@ impl Platform for HostPlatform {
     fn read_content(&self, hash: &str) -> Option<Vec<u8>> {
         crate::files::read(self.content.as_ref()?, hash)
     }
+    /// The device's PDF engine: the one reader crate over the one PDF engine, answering every
+    /// `pdf.*` call from the bytes the runtime read out of the content store.
+    fn pdf(&self) -> Option<std::rc::Rc<dyn tilolang_tilo::runtime::pdf::PdfHost>> {
+        Some(crate::pdf::Engine::host())
+    }
 
     fn choose_files(
         &self,

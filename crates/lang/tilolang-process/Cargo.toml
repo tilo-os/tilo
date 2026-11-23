@@ -47,6 +47,7 @@ tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+serde.workspace = true
 serde_json.workspace = true
 # What the person may do in an app, as the session hands it with each instance.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
@@ -73,6 +74,9 @@ tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
 # The device's preview cache: what `File.thumbnail` answers.
 tilo-thumbnail = { version = "0.1.0", path = "../../engines/thumbnail" }
+# A PDF as a reader works with it: the pages, text, links, forms, markup and pictures an app
+# reads through `pdf.*`, over the one PDF engine.
+tilo-pdf-reader = { path = "../../engines/pdf" }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 

@@ -26,6 +26,7 @@ pub mod call;
 pub mod connection;
 pub mod files;
 pub mod hosted;
+pub mod pdf;
 pub mod personal;
 pub mod phrases;
 pub mod presence;

@@ -323,6 +323,16 @@ imports! {
     (ActChoose, "act_choose", "ii", "i"),
     (ActChooseFolder, "act_choose_folder", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),
+    // A PDF, read by the device's engine.
+    (PdfPages, "pdf_pages", "i", "i"),
+    (PdfOutline, "pdf_outline", "i", "i"),
+    (PdfText, "pdf_text", "il", "i"),
+    (PdfLinks, "pdf_links", "il", "i"),
+    (PdfFields, "pdf_fields", "i", "i"),
+    (PdfMarkup, "pdf_markup", "i", "i"),
+    (PdfImport, "pdf_import", "i", "i"),
+    (PdfPicture, "pdf_picture", "ill", "i"),
+    (PdfSave, "pdf_save", "ii", "i"),
 
     // The clipboard: text or an image offered as the person's copy, and what is on it now.
     (ClipboardCopyText, "clipboard_copy_text", "i", "i"),

@@ -1178,6 +1178,12 @@ impl Runtime {
         *self.core.notices.borrow_mut() = Some(Box::new(host));
     }
 
+    /// The device's PDF engine ([`crate::pdf`]): what `pdf.*` asks of a PDF's bytes. Until it is
+    /// set, every call says this device reads no PDFs.
+    pub fn set_pdf(&self, host: impl crate::pdf::PdfHost + 'static) {
+        *self.core.pdf.borrow_mut() = Box::new(host);
+    }
+
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));

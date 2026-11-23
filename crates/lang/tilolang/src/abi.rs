@@ -368,6 +368,20 @@ imports! {
     ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);
 
+    // A PDF, read by the device's engine: its pages, contents, a page's text and links, its
+    // forms, the markup the file carries, one page as a picture, what the file holds as pages,
+    // and a copy with the reader's markup in it. Each answer is JSON text the package reads into
+    // its own records, and none of it is an effect: the bytes are all it reads.
+    PdfPages = "pdf_pages" ([H] -> [H]);
+    PdfOutline = "pdf_outline" ([H] -> [H]);
+    PdfText = "pdf_text" ([H, I64] -> [H]);
+    PdfLinks = "pdf_links" ([H, I64] -> [H]);
+    PdfFields = "pdf_fields" ([H] -> [H]);
+    PdfMarkup = "pdf_markup" ([H] -> [H]);
+    PdfImport = "pdf_import" ([H] -> [H]);
+    PdfPicture = "pdf_picture" ([H, I64, I64] -> [H]);
+    PdfSave = "pdf_save" ([H, H] -> [H]);
+
     // The clipboard: text or an image file offered as the person's copy, and the text or the image
     // on it now (an `Option`).
     ClipboardCopyText = "clipboard_copy_text" ([H] -> [I32]);

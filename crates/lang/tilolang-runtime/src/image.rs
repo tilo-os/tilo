@@ -177,30 +177,6 @@ impl Core {
             .map_err(|why| format!("`{}` did not decode: {why}", file.name))
     }
 
-    /// The content `file` names, when this device holds it.
-    fn file_bytes(&self, file: &crate::blob::FileValue) -> Result<Vec<u8>, String> {
-        let blobs = self.blobs.borrow();
-        let Some(blobs) = blobs.as_ref() else {
-            return Err("this host holds no content store".to_owned());
-        };
-        blobs
-            .read(&file.hash)
-            .ok_or_else(|| format!("the content of `{}` is not on this device", file.name))
-    }
-
-    /// `bytes` of `media` kept in the content store as a file called `name`.
-    fn keep_bytes(
-        &self,
-        name: &str,
-        media: &str,
-        bytes: &[u8],
-    ) -> Result<crate::blob::FileValue, String> {
-        let blobs = self.blobs.borrow();
-        let Some(blobs) = blobs.as_ref() else {
-            return Err("this host keeps no files".to_owned());
-        };
-        blobs.keep(name, media, bytes)
-    }
 }
 
 /// What a program asks a file's pixels: the arguments read where a trap is still the answer,

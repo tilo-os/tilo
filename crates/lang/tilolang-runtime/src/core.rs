@@ -38,6 +38,7 @@ use Imp::{
     MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
     MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
     MissingV, ModelCall, NoneV, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PageCall,
+    PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave, PdfText,
     PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
     RandomFloat, RandomId,
     RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
@@ -163,6 +164,9 @@ pub struct Core {
     /// The host a notice is raised to (`Runtime::set_notices`): the desktop's notifications, or
     /// a test's record. Until the host sets one, a notice is only the record the run wrote.
     pub notices: RefCell<Option<Box<dyn crate::notify::Notices>>>,
+    /// The device's PDF engine (`Runtime::set_pdf`): what a reader asks of a PDF's bytes. Until
+    /// the host sets one, every `pdf.*` call says this device reads no PDFs.
+    pub pdf: RefCell<Box<dyn crate::pdf::PdfHost>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -358,6 +362,7 @@ impl Core {
             blobs: RefCell::new(None),
             clipboard: RefCell::new(None),
             notices: RefCell::new(None),
+            pdf: RefCell::new(Box::new(crate::pdf::NoPdf)),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
@@ -565,6 +570,8 @@ impl Core {
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }
+            PdfPages | PdfOutline | PdfText | PdfLinks | PdfFields | PdfMarkup | PdfImport
+            | PdfPicture | PdfSave => self.pdf_import(imp, a),
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
             | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt

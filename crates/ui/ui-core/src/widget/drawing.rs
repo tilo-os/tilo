@@ -173,6 +173,46 @@ pub enum Shape {
         anchor: Anchor,
         strong: bool,
     },
+    /// A rectangle filled in a colour the content brings (`#rrggbb`, `#rrggbbaa`): a highlight,
+    /// a selection or a find hit over a page. Its colour is the content's, never the theme's, so
+    /// what a reader marked there shows as the person marked it in every theme.
+    Area {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        round: f64,
+        colour: String,
+    },
+    /// A line through `points` (x and y in turn), `width` of the box's shorter side thick, in a
+    /// colour the content brings: an ink stroke, an underline, a signature.
+    Stroke {
+        points: Vec<f64>,
+        colour: String,
+        width: f64,
+    },
+    /// Words at (x, y) in a colour the content brings, `size` of the box's height: a page's own
+    /// text, a signature's name.
+    Label {
+        x: f64,
+        y: f64,
+        text: String,
+        colour: String,
+        size: f64,
+        anchor: Anchor,
+    },
+}
+
+/// The colour a shape's own text names (`#rrggbb` or `#rrggbbaa`); black for one nothing reads.
+#[must_use]
+pub fn colour_of(text: &str) -> Color {
+    let hex = text.trim().trim_start_matches('#');
+    let byte = |at: usize| u8::from_str_radix(hex.get(at..at + 2).unwrap_or("00"), 16).unwrap_or(0);
+    if hex.len() < 6 {
+        return Color::from_rgba8(0, 0, 0, 255);
+    }
+    let alpha = if hex.len() >= 8 { byte(6) } else { 255 };
+    Color::from_rgba8(byte(0), byte(2), byte(4), alpha)
 }
 
 enum Lowered {
@@ -228,6 +268,29 @@ impl Shape {
             Self::Line { x1, y1, x2, y2, .. } => Some(Lowered::Outline(
                 Line::new(at(*x1, *y1), at(*x2, *y2)).to_path(0.1),
             )),
+            Self::Area {
+                x, y, w, h, round, ..
+            } => {
+                let rect = Rect::from_points(at(*x, *y), at(x + w, y + h));
+                let radius = round.clamp(0.0, 0.5) * rect.width().min(rect.height());
+                Some(Lowered::Area(
+                    RoundedRect::from_rect(rect, radius).to_path(0.1),
+                ))
+            }
+            Self::Stroke { points, .. } => {
+                let pts: Vec<Point> = points.chunks_exact(2).map(|p| at(p[0], p[1])).collect();
+                if pts.len() < 2 {
+                    return None;
+                }
+                let mut path = BezPath::new();
+                path.move_to(pts[0]);
+                for pair in pts.windows(2) {
+                    path.line_to(pair[1]);
+                }
+                Some(Lowered::Outline(path))
+            }
+            // Only the path's own lowered form, never the arms before it: this one comes after
+            // the text's, so a shape is lowered once.
             Self::Path {
                 points,
                 smooth,
@@ -260,7 +323,7 @@ impl Shape {
                     Lowered::Outline(path)
                 })
             }
-            Self::Text { .. } => None,
+            Self::Text { .. } | Self::Label { .. } => None,
         }
     }
 
@@ -281,7 +344,11 @@ impl Shape {
             } => out.extend([*cx, *cy, *radius, *from, *to]),
             Self::Line { x1, y1, x2, y2, .. } => out.extend([*x1, *y1, *x2, *y2]),
             Self::Path { points, .. } => out.extend(points.iter().copied()),
-            Self::Text { x, y, .. } => out.extend([*x, *y]),
+            Self::Text { x, y, .. } | Self::Label { x, y, .. } => out.extend([*x, *y]),
+            Self::Area {
+                x, y, w, h, round, ..
+            } => out.extend([*x, *y, *w, *h, *round]),
+            Self::Stroke { points, .. } => out.extend(points.iter().copied()),
         }
     }
 
@@ -325,11 +392,19 @@ impl Shape {
                 }
             }
             Self::Path { points, .. } => points.iter_mut().for_each(next),
-            Self::Text { x, y, .. } => {
+            Self::Text { x, y, .. } | Self::Label { x, y, .. } => {
                 for slot in [x, y] {
                     next(slot);
                 }
             }
+            Self::Area {
+                x, y, w, h, round, ..
+            } => {
+                for slot in [x, y, w, h, round] {
+                    next(slot);
+                }
+            }
+            Self::Stroke { points, .. } => points.iter_mut().for_each(next),
         }
     }
 
@@ -338,6 +413,7 @@ impl Shape {
     fn same_form(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Path { points: a, .. }, Self::Path { points: b, .. }) => a.len() == b.len(),
+            (Self::Stroke { points: a, .. }, Self::Stroke { points: b, .. }) => a.len() == b.len(),
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
     }
@@ -345,7 +421,12 @@ impl Shape {
     fn fill(&self) -> Option<Ink> {
         match self {
             Self::Rect { fill, .. } | Self::Ellipse { fill, .. } | Self::Path { fill, .. } => *fill,
-            Self::Arc { .. } | Self::Line { .. } | Self::Text { .. } => None,
+            Self::Arc { .. }
+            | Self::Line { .. }
+            | Self::Text { .. }
+            | Self::Area { .. }
+            | Self::Stroke { .. }
+            | Self::Label { .. } => None,
         }
     }
 
@@ -357,7 +438,7 @@ impl Shape {
             Self::Arc { stroke, weight, .. } | Self::Line { stroke, weight, .. } => {
                 Some((*stroke, *weight))
             }
-            Self::Text { .. } => None,
+            Self::Text { .. } | Self::Area { .. } | Self::Stroke { .. } | Self::Label { .. } => None,
         }
     }
 
@@ -394,9 +475,28 @@ pub struct Drawing {
     pub(crate) layout_dirty: bool,
     pub(crate) on_press: Option<Box<dyn FnMut(usize)>>,
     pub(crate) on_hover: Option<Box<dyn FnMut(Option<usize>)>>,
+    /// The pointer pressed on the drawing, moved while pressed and let go: each is handed the
+    /// point as fractions of the box, x first (`drawing_point`).
+    pub(crate) on_press_at: Option<Box<dyn FnMut(f64, f64)>>,
+    pub(crate) on_drag_at: Option<Box<dyn FnMut(f64, f64)>>,
+    pub(crate) on_release_at: Option<Box<dyn FnMut(f64, f64)>>,
+    /// Whether the pointer is down on the drawing, so a move is a drag.
+    pressed: bool,
 }
 
 impl Drawing {
+    /// `p` as the drawing's own point: fractions of its box, x then y, from its top-left
+    /// corner. A point outside the box is told as it is, so a drag that leaves the box keeps
+    /// following the pointer.
+    fn point_of(&self, p: Point) -> (f64, f64) {
+        let w = self.rect.width();
+        let h = self.rect.height();
+        if w <= 0.0 || h <= 0.0 {
+            return (0.0, 0.0);
+        }
+        ((p.x - self.rect.x0) / w, (p.y - self.rect.y0) / h)
+    }
+
     /// The index of the topmost shape at `point`: inside an area or a text, or within reach of an
     /// outline's line.
     #[must_use]
@@ -537,10 +637,61 @@ impl Drawing {
                     );
                     return Some(Rect::new(left, top, left + width, top + height));
                 }
+                // Words in a colour the content brings are set where the shape says, at its
+                // own size, and are no path: a page's text, a signature's name.
+                if let Shape::Label {
+                    x,
+                    y,
+                    text,
+                    colour,
+                    size,
+                    anchor,
+                } = shape
+                {
+                    let mut style = theme.text(TextRole::Body);
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a size inside a drawing's box, far below f32's range"
+                    )]
+                    let set = (size * bounds.height()) as f32;
+                    style.size = set;
+                    style.line_height = set * 1.2;
+                    let (width, height) = text_renderer.measure_style(text, None, &style);
+                    let (width, height) = (f64::from(width), f64::from(height));
+                    let px = bounds.x0 + x * bounds.width();
+                    let left = match anchor {
+                        Anchor::Start => px,
+                        Anchor::Middle => px - width / 2.0,
+                        Anchor::End => px - width,
+                    };
+                    let top = bounds.y0 + y * bounds.height() - height / 2.0;
+                    text_renderer.draw_style(
+                        scene,
+                        text,
+                        colour_of(colour),
+                        transform.pre_translate((left, top).into()),
+                        None,
+                        &style,
+                    );
+                    return Some(Rect::new(left, top, left + width, top + height));
+                }
                 let Some(Lowered::Area(path) | Lowered::Outline(path)) = shape.lowered(bounds)
                 else {
                     return None;
                 };
+                // A shape whose colour the content brings is filled and stroked in it, and one
+                // of the theme's inks otherwise.
+                if let Shape::Area { colour, .. } = shape {
+                    scene.fill(Fill::NonZero, transform, colour_of(colour), None, &path);
+                    return None;
+                }
+                if let Shape::Stroke { colour, width, .. } = shape {
+                    let stroke = Stroke::new(width.clamp(0.0, 1.0) * bounds.width().min(bounds.height()))
+                        .with_caps(vello::kurbo::Cap::Round)
+                        .with_join(vello::kurbo::Join::Round);
+                    scene.stroke(&stroke, transform, colour_of(colour), None, &path);
+                    return None;
+                }
                 if let Some(ink) = shape.fill() {
                     let colour = ink.colour(theme);
                     if shape.washed() {
@@ -572,6 +723,12 @@ impl Drawing {
 }
 
 impl Widget for Drawing {
+    /// What it draws: a picture, named by its label.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("span");
+        cx.picture();
+    }
+
     crate::described!();
 
     fn build_layout(
@@ -627,6 +784,13 @@ impl Widget for Drawing {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                if self.pressed
+                    && let Some(drag) = self.on_drag_at.as_mut()
+                {
+                    let (x, y) = self.point_of(self.last_cursor);
+                    drag(x, y);
+                    *ctx.handled = true;
+                }
                 if self.on_hover.is_some() {
                     let under = if self.rect.contains(self.last_cursor) {
                         self.shape_at(self.last_cursor, 1.0)
@@ -642,12 +806,32 @@ impl Widget for Drawing {
                 button: MouseButton::Left,
                 ..
             } if self.rect.contains(self.last_cursor) => {
+                self.pressed = true;
+                if let Some(press) = self.on_press_at.as_mut() {
+                    let (x, y) = self.point_of(self.last_cursor);
+                    press(x, y);
+                    *ctx.handled = true;
+                }
                 if let Some(index) = self.shape_at(self.last_cursor, 1.0)
                     && let Some(press) = self.on_press.as_mut()
                 {
                     press(index);
                     *ctx.handled = true;
                 }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.pressed
+                    && let Some(release) = self.on_release_at.as_mut()
+                {
+                    let (x, y) = self.point_of(self.last_cursor);
+                    release(x, y);
+                    *ctx.handled = true;
+                }
+                self.pressed = false;
             }
             _ => {}
         }
