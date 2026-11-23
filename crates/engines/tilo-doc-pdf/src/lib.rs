@@ -870,7 +870,9 @@ fn wrap_paragraph(source: &[Styled], max_w: f32, size: f32, justify: bool) -> Ve
         {
             chars.push((
                 '-',
-                chars.last().map_or(Style::default(), |&(_, style)| style),
+                chars
+                    .last()
+                    .map_or_else(Style::default, |&(_, style)| style),
             ));
         }
         lines.push(Wrapped {
