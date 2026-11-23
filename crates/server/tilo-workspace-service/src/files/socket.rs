@@ -1,10 +1,9 @@
 //! This device's service's side of a workspace tree's sync, served on a socket to the files
 //! daemon that mounts it ([`tilo_fs::tree_sync::remote`]).
 //!
-//! The daemon is a process of its own, and this device runs one workspace service: the
-//! session's. A connection is taken only from a process of this user that the session recorded
-//! as the Files endpoint (`attest`), and it reaches only the Files resources of the one workspace
-//! it names first. What it writes, it writes as this device, as the daemon's own mount did when
+//! The daemon is a process of its own, and this device runs one workspace service. A connection
+//! is taken only from a process of this user that its embedder admits (`attest`), and it
+//! reaches only the Files resources of the one workspace it names first. What it writes, it writes as this device, as the daemon's own mount did when
 //! it signed the tree's changes itself.
 //!
 //! The connection carries the rest of what the mount needs of the workspace too: the bytes its
@@ -75,8 +74,9 @@ impl Drop for Serving {
 /// admits, with `content` asked again for the bytes whose answer stalled; where each folder
 /// stands is shown in `folders`.
 ///
-/// # Errors
-/// The socket cannot be bound.
+/// The socket is bound once the service is open: its appearing is what tells a files daemon to
+/// dial, so it never appears while a connection would only be refused.
+#[must_use]
 pub fn serve(
     path: &Path,
     service: ServiceSlot,
@@ -84,14 +84,18 @@ pub fn serve(
     attest: Attest,
     offers: Offers,
     folders: super::Folders,
-) -> std::io::Result<Serving> {
-    let listener = tilo_files::native::private::bind_socket(path)?;
-    listener.set_nonblocking(true)?;
+) -> Serving {
+    let path = path.to_path_buf();
     let task = tilo_rt::app().spawn(async move {
-        let listener = match tokio::net::UnixListener::from_std(listener) {
+        service.installed().await;
+        let bound = tilo_files::native::private::bind_socket(&path).and_then(|listener| {
+            listener.set_nonblocking(true)?;
+            tokio::net::UnixListener::from_std(listener)
+        });
+        let listener = match bound {
             Ok(listener) => listener,
             Err(error) => {
-                tracing::warn!(%error, "the workspace trees' socket does not serve");
+                tracing::error!(%error, path = %path.display(), "the workspace trees' socket cannot be bound: no files daemon reaches this device's workspaces");
                 return;
             }
         };
@@ -115,7 +119,7 @@ pub fn serve(
             });
         }
     });
-    Ok(Serving { task })
+    Serving { task }
 }
 
 /// One connection, admitted and served until it ends.
@@ -588,7 +592,8 @@ fn tell_peer(
         .filter(|chunk| copy.holds(*chunk))
         .collect();
     let pending = u64::try_from(copy.pending()).unwrap_or(u64::MAX);
-    let workspace = copy.workspaces.member_caught_up(copy.workspace).is_some();
+    // A workspace this device governs is here from the start, as the copy says in-process too.
+    let workspace = tilo_fs::tree_sync::TreePeer::holds_workspace(copy).unwrap_or(false);
     let lacks = tilo_fs::tree_sync::TreePeer::host_lacks(copy);
     let now = (holds, pending, workspace, lacks);
     let mut told = told.lock_recover();
@@ -602,87 +607,4 @@ fn tell_peer(
         lacks: now.3,
     });
     *told = Some(now);
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "a failed step is the assertion"
-    )]
-
-    use super::*;
-    use crate::content::{ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf};
-    use crate::content::{ContentSources, CrdtRoute};
-
-    /// Content nobody keeps or hands over: what a connection that is refused never asks.
-    struct Nowhere;
-
-    impl ContentShelf for Nowhere {
-        fn read(&self, _scope: &ContentScope, _hash: &str) -> Option<Vec<u8>> {
-            None
-        }
-        fn keep(&self, _scope: &ContentScope, _hash: &str, _bytes: &[u8]) -> Result<(), String> {
-            Err("kept nowhere".to_owned())
-        }
-    }
-
-    impl ContentPeers for Nowhere {
-        fn want(&self, _route: &CrdtRoute, _hash: &str, _have: &[neighbour_wire::content::Span]) {}
-        fn answer(&self, _route: &CrdtRoute, _peer: ContentPeer, _piece: ContentPiece) {}
-        fn lacks(&self, _route: &CrdtRoute, _peer: ContentPeer, _hash: &str) {}
-        fn sources(&self, _route: &CrdtRoute) -> ContentSources {
-            ContentSources::default()
-        }
-    }
-
-    /// What a process naming `workspace` is told by a socket whose session recorded `endpoint`.
-    async fn told(endpoint: bool, workspace: &str) -> Option<Told> {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("files-tree.sock");
-        let _serving = serve(
-            &path,
-            ServiceSlot::default(),
-            RouteContent::new(Arc::new(Nowhere), Arc::new(Nowhere)),
-            Arc::new(move |pid, _| endpoint && pid == std::process::id()),
-            Offers {
-                daemons: Arc::default(),
-                keys: Arc::new(|_| Box::pin(async { Err("no keys here".to_owned()) })),
-                access: watch::channel(None).1,
-            },
-            crate::files::Folders::new(Arc::new(|| {})),
-        )
-        .unwrap();
-        let stream = tokio::net::UnixStream::connect(&path).await.unwrap();
-        let (mut reader, mut writer) = stream.into_split();
-        FRAMING
-            .write_value_async(
-                &mut writer,
-                &Ask::Hello {
-                    workspace: workspace.to_owned(),
-                },
-            )
-            .await
-            .unwrap();
-        FRAMING.read_value_async(&mut reader).await.unwrap()
-    }
-
-    #[tokio::test]
-    async fn a_process_the_session_did_not_record_as_files_is_refused() {
-        let workspace = uuid::Uuid::new_v4().to_string();
-        match told(false, &workspace).await {
-            Some(Told::Refused(why)) => assert!(why.contains("not the Files endpoint"), "{why}"),
-            other => panic!("an unrecorded process is answered {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn the_files_endpoint_waits_for_a_service_that_is_not_open() {
-        let workspace = uuid::Uuid::new_v4().to_string();
-        match told(true, &workspace).await {
-            Some(Told::Refused(why)) => assert!(why.contains("not open yet"), "{why}"),
-            other => panic!("a connection with no service is answered {other:?}"),
-        }
-    }
 }

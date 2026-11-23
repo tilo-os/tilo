@@ -4,131 +4,24 @@
 //! on every change, over the workspace trees' socket, so taking a folder away stops the app that
 //! holds it at its next open — without closing the app, restarting it, or asking it to notice
 //! anything.
-//! The list is the workspace's own permissions in the mount's terms: the grants apps hold through
-//! portals, and what each member may do to the workspace's files as the workspace's people and
-//! grants decide it ([`tilo_workspace_service::files::access`]). Both follow the shell's
-//! revision, so a role change, a grant or a removed member reaches the mounts in the same pass,
-//! never on a timer.
+//! The list is the workspace's own permissions in the mount's terms
+//! ([`tilo_workspace_service::files::access::list`]). It follows the shell's revision, so a role
+//! change, a grant or a removed member reaches the mounts in the same pass, never on a timer.
 
 use std::sync::OnceLock;
 
-use collab_types::caps::{Access, CapOverride, Effect, FsAuthority, Scope};
-use collab_types::crypto::Ed25519PublicKey;
-use tilo_action_policy::{Acting, Context, Grantee, Lifetime, MemberId};
+use collab_types::caps::FsAuthority;
 use tilo_desktop_model::Layout;
 
-/// The shell's file capabilities and each workspace's readers, as the Files daemon enforces them for
-/// this device.
-/// Role access is scoped to the workspace's own directory within the shared mount.
-/// A grant to this person is exported twice: once by the
-/// person's key and once by this device's, which is the identity the mount itself authenticates as,
-/// so translation can never widen a grant and a revoked one takes both away.
+/// The shell's file capabilities and each workspace's readers, as the Files daemon enforces them
+/// for this device; a member's grant that lapses wakes the shell to make the list again then.
 #[must_use]
 pub(crate) fn list(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsAuthority {
-    let acting = person_key(person).map(|key| Acting::person(hex::encode(key.0)));
-    let mut capabilities = Vec::new();
-    let context = Context::at_time(tilo_clock::wall());
-    for workspace in &tree.workspaces {
-        for capability in workspace.sandbox.iter().filter(|capability| {
-            capability.is_durable()
-                && matches!(capability.scope, Scope::FsPath(_))
-                && matches!(capability.effect, Effect::Grant | Effect::Restrict)
-        }) {
-            push_with_device(&mut capabilities, capability, acting.as_ref(), device);
-        }
-        let id = workspace.id().to_string();
-        let Some(path) = tilo_paths::workspace_tree(std::path::Path::new(WORKSPACE_FILES), &id)
-        else {
-            continue;
-        };
-        let [node, listing, writing] = tilo_workspace_service::files::access::nodes(&id);
-        let refresh_at = workspace
-            .policy
-            .grants
-            .iter()
-            .filter_map(|grant| match grant.lifetime {
-                Lifetime::Until(at)
-                    if at > context.now_unix_ms
-                        && [&node, &listing, &writing]
-                            .into_iter()
-                            .any(|target| context.covers(&grant.node, target)) =>
-                {
-                    Some(at)
-                }
-                _ => None,
-            })
-            .min();
-        if let Some(at) = refresh_at {
-            tilo_identity::policy_change::wake_at(at.saturating_mul(1_000_000));
-        }
-        let scope = Scope::FsPath(path.to_string_lossy().into_owned());
-        capabilities.push(
-            CapOverride::new(
-                Grantee::role(tilo_action_policy::Role::Viewer),
-                scope.clone(),
-                Effect::WorkspaceFileBoundary,
-                Access::Read,
-            )
-            .with_id(format!("workspace-files:{id}"))
-            .lasting(Lifetime::UntilRevoked),
-        );
-        for (member, _) in workspace.roster() {
-            let Some(access) = tilo_workspace_service::files::access::decide(
-                &workspace.policy,
-                &id,
-                &member,
-                &context,
-            ) else {
-                continue;
-            };
-            let capability = CapOverride::new(
-                Grantee::person(member.clone()),
-                scope.clone(),
-                Effect::WorkspaceFileAccess,
-                access,
-            )
-            .with_id(role_capability_id(&id, &member))
-            .lasting(refresh_at.map_or(Lifetime::UntilRevoked, Lifetime::Until));
-            push_with_device(&mut capabilities, &capability, acting.as_ref(), device);
-        }
+    let listed = tilo_workspace_service::files::access::list(&tree.workspaces, person, device);
+    if let Some(at) = listed.refresh_at {
+        tilo_identity::policy_change::wake_at(at.saturating_mul(1_000_000));
     }
-    FsAuthority { capabilities }
-}
-
-fn person_key(person: &str) -> Option<Ed25519PublicKey> {
-    let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
-    Some(Ed25519PublicKey::from_bytes(bytes))
-}
-
-/// Where a workspace's files appear in the mount (see `fs::WORKSPACE_FILES_PATH` ): the path a
-/// role's access ranges over.
-const WORKSPACE_FILES: &str = "/var/workspace";
-
-/// The id of the capability a workspace's role gives a member, so the same member's grant is
-/// recognisable across revisions and in the daemon's log.
-fn role_capability_id(workspace: &str, member: &str) -> String {
-    format!("role:{workspace}:{member}")
-}
-
-/// Publish `capability` as it stands, and again bound to this device's key when it is the key of
-/// the person sitting here: the mount acts as the device, so the person's grants must reach it
-/// without widening anything.
-fn push_with_device(
-    capabilities: &mut Vec<CapOverride>,
-    capability: &CapOverride,
-    acting: Option<&Acting>,
-    device: Option<[u8; 32]>,
-) {
-    capabilities.push(capability.clone());
-    let (Some(device), Some(acting)) = (device, acting) else {
-        return;
-    };
-    if !capability.reaches(acting) {
-        return;
-    }
-    let mut bound = capability.clone();
-    bound.grantee = Grantee::Member(MemberId::person(hex::encode(device)));
-    capabilities.push(bound);
+    listed.authority
 }
 
 /// This device's key, which is the identity the Files mount acts as.
@@ -152,9 +45,10 @@ pub(crate) fn device_key() -> Option<[u8; 32]> {
 )]
 mod tests {
     use super::*;
-    use collab_types::caps::{Access, CapOverride};
-    use tilo_action_policy::{Answer, Role};
+    use collab_types::caps::{Access, CapOverride, Effect, Scope};
+    use tilo_action_policy::{Acting, Answer, Grantee, Lifetime, Role};
     use tilo_desktop_model::Workspace;
+    use tilo_workspace_service::files::access::WORKSPACE_FILES;
 
     const PERSON: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const FOLDER: &str = "/var/workspace/brief";

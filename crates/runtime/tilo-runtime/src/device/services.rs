@@ -88,6 +88,9 @@ pub struct Daemon {
     /// workspace's Files record mirrored at a folder. Before the media host, whose content store
     /// they use.
     replicas: Option<Arc<take_work::files::Replicas>>,
+    /// The workspaces' trees, served to the files daemon that mounts them. Before the media
+    /// host, whose content store its mounts' bytes are read from.
+    _files_tree: Option<super::files_tree::FilesTree>,
     _media: profile::MediaHost,
     /// The endpoint's router, held so the workspace host, the device actions, the work this
     /// device takes and a ticket's certify call answer for as long as this runtime runs.
@@ -469,6 +472,9 @@ impl Daemon {
         )?;
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &sockets.join(BLOB_SOCKET))?;
+        // The files daemons that mount this device's workspaces: their stores keep the files'
+        // bytes, which the broker's record content reads and keeps through them.
+        let files_daemons = Arc::new(tilo_workspace_service::files::socket::Daemons::default());
         stage("starting the collaboration broker");
         let (policy_origin, broker) = start_broker(
             BrokerParts {
@@ -479,6 +485,7 @@ impl Daemon {
                 keys: &workspaces.keys(),
                 creation: Arc::clone(&creation),
                 person: actor.clone(),
+                files: Arc::clone(&files_daemons),
             },
             brokers,
             fanout,
@@ -527,7 +534,16 @@ impl Daemon {
                 .provide(super::control::PROVIDER, control),
             Err(why) => tracing::info!(%why, "this device offers no device control"),
         }
+        stage("serving the workspaces' trees to the files daemon");
+        let files_tree = super::files_tree::serve(
+            &tilo_device_identity::login::files_tree_socket().map_err(io::Error::other)?,
+            &workspaces,
+            files_daemons,
+            identity_socket.clone(),
+            (actor.clone(), identity.key.verifying_key().to_bytes()),
+        );
         Ok(Self {
+            _files_tree: files_tree,
             policy_origin,
             broker,
             other_devices: other_devices(&workspaces),
@@ -692,6 +708,8 @@ struct BrokerParts<'a> {
     creation: Arc<RecordCreation>,
     /// The person this device acts for.
     person: String,
+    /// The files daemons mounting this device's workspaces, whose stores keep their files' bytes.
+    files: Arc<tilo_workspace_service::files::socket::Daemons>,
 }
 
 /// Start the collaboration broker over this profile's services.
@@ -727,8 +745,11 @@ fn broker_services(
     parts: BrokerParts<'_>,
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
 ) -> io::Result<ProcessServices> {
-    let document_content =
-        super::content::document_content(parts.workspaces, &parts.sockets.join(BLOB_SOCKET));
+    let document_content = super::content::document_content(
+        parts.workspaces,
+        &parts.sockets.join(BLOB_SOCKET),
+        Arc::clone(&parts.files),
+    );
     // Where this workspace's offloadable actions may run instead of here: the
     // other devices of the invoking workspace are asked to take the turn over
     // the endpoint this profile syncs on, and the content an offloaded run

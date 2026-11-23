@@ -28,6 +28,7 @@ mod confirm;
 mod content;
 #[cfg(target_os = "linux")]
 pub mod control;
+mod files_tree;
 pub(crate) mod home;
 mod host_runs;
 #[cfg(target_os = "linux")]

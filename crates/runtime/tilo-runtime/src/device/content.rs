@@ -17,6 +17,10 @@ use tilo_lock::MutexRecover as _;
 
 use neighbour_wire::content::PIECE_PATIENCE_MS;
 use tilo_workspace_service::content::{ContentScope, ContentShelf, RouteContent, routes_content};
+use tilo_workspace_service::files::socket::Daemons;
+
+/// The app a workspace's files are the records of.
+const FILES_APP: &str = fs_protocol::tree::FILES_APP;
 
 use super::workspaces::ServiceWorkspaces;
 
@@ -30,6 +34,9 @@ use super::workspaces::ServiceWorkspaces;
 struct ProfileShelf {
     socket: std::path::PathBuf,
     connection: Mutex<Option<Connection>>,
+    /// The files daemons mounting this device's workspaces: the store a mount's file bytes are
+    /// kept in, asked before the profile's own.
+    files: Arc<Daemons>,
 }
 
 /// One connection to the profile's content store, and the scopes opened on it.
@@ -42,10 +49,11 @@ struct Connection {
 const OPEN_SCOPES: usize = 64;
 
 impl ProfileShelf {
-    fn new(socket: &Path) -> Self {
+    fn new(socket: &Path, files: Arc<Daemons>) -> Self {
         Self {
             socket: socket.to_path_buf(),
             connection: Mutex::new(None),
+            files,
         }
     }
 
@@ -88,6 +96,11 @@ impl ProfileShelf {
 
 impl ContentShelf for ProfileShelf {
     fn read(&self, scope: &ContentScope, hash: &str) -> Option<Vec<u8>> {
+        if scope.app == FILES_APP
+            && let Some(bytes) = self.files.read(&scope.workspace, hash)
+        {
+            return Some(bytes);
+        }
         let outcome = self
             .on(scope, |scoped| {
                 if !scoped.has(hash)? {
@@ -103,6 +116,9 @@ impl ContentShelf for ProfileShelf {
     }
 
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String> {
+        if scope.app == FILES_APP && self.files.serves(&scope.workspace) {
+            return self.files.keep(&scope.workspace, hash, bytes);
+        }
         let kept = self
             .on(scope, |scoped| {
                 scoped.put(bytes, "application/octet-stream")
@@ -117,12 +133,14 @@ impl ContentShelf for ProfileShelf {
 }
 
 /// The profile's record-content service: its content store, served on
-/// `blob_socket`, and the workspaces the workspace service holds.
+/// `blob_socket`, the stores of the files daemons in `files`, and the workspaces the workspace
+/// service holds.
 pub(super) fn document_content(
     workspaces: &Arc<ServiceWorkspaces>,
     blob_socket: &Path,
+    files: Arc<Daemons>,
 ) -> Arc<RouteContent> {
-    let shelf: Arc<dyn ContentShelf> = Arc::new(ProfileShelf::new(blob_socket));
+    let shelf: Arc<dyn ContentShelf> = Arc::new(ProfileShelf::new(blob_socket, files));
     record_content_on(workspaces, shelf)
 }
 

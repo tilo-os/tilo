@@ -96,11 +96,7 @@ pub fn mount_on(device: &crate::common::people::Device, workspace: &str) -> Moun
     .into_parts()
     .1;
     let kept = tempfile::tempdir().expect("a directory for the mount's tree");
-    let socket = device
-        .directory()
-        .join("runtime")
-        .join("tilo/services")
-        .join(format!("{}.sock", fs::tree_sync::remote::SOCKET));
+    let socket = device.directory().join("runtime/tilo/files-tree.sock");
     let (tree, service, store) = tokio::runtime::Handle::current().block_on(async {
         let content = Arc::new(
             fs::ContentStore::open(kept.path().join("content"))

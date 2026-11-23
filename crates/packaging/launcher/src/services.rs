@@ -662,17 +662,12 @@ fn write_blob_handoff(
     stream.flush()
 }
 
-/// Create `$XDG_RUNTIME_DIR/tilo/services/` if it does not exist.
+/// Create `$XDG_RUNTIME_DIR/tilo/services/` if it does not exist: it and every directory made
+/// for it, `tilo` included, this account's alone from the start, as each service of the account
+/// that binds there makes it.
 pub fn ensure_services_root() -> std::io::Result<PathBuf> {
     let root = services_root();
-    std::fs::create_dir_all(&root)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Best-effort tighten: an inherited 0755 from an earlier umask would widen who can reach the
-        // session's services.
-        let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700));
-    }
+    tilo_files::native::private::directory(&root)?;
     Ok(root)
 }
 

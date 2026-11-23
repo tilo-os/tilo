@@ -26,7 +26,7 @@ device-keys = ["dep:tilo-workspace-keys"]
 # for its workspaces' records, with or without apps on top.
 content = ["dep:tilo-broker-core"]
 # A workspace's file tree held in the device's own service, its bytes on the records' route.
-files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:wire-frame", "dep:rustix"]
+files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:tilo-paths", "dep:iroh-blobs", "dep:bytes", "dep:wire-frame", "dep:rustix"]
 # A session client's pages, read through the document core over the replica its engine admits
 # into: what a session's tests read their workspace through.
 session-pages = ["device-keys", "dep:tilo-session-client"]
@@ -59,6 +59,8 @@ tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 automerge.workspace = true
 tilo-automerge.workspace = true
+# Where a workspace's files appear in the Files mount, which its access list names.
+tilo-paths = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }

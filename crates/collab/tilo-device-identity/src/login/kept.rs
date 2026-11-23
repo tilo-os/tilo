@@ -236,6 +236,40 @@ pub fn served_device_key(keys: &IdentityPaths) -> Option<[u8; 32]> {
     served_cert(keys).map(|cert| cert.device_public_key)
 }
 
+/// Where the device daemon of this account serves the workspaces' trees to the files daemon
+/// that mounts them, and the files daemon dials: in this account's runtime directory.
+///
+/// # Errors
+/// The directory cannot be made, or is not this account's own.
+#[cfg(unix)]
+pub fn files_tree_socket() -> Result<PathBuf, String> {
+    Ok(sockets_dir(rustix::process::geteuid().as_raw())?.join("files-tree.sock"))
+}
+
+/// This account's own private directory for its sockets, made when there is none.
+#[cfg(unix)]
+fn sockets_dir(owner: u32) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
+        .map_or_else(
+            || std::env::temp_dir().join(format!("tilo-{owner}")),
+            |runtime| runtime.join("tilo"),
+        );
+    tilo_files::native::private::directory(&dir)
+        .map_err(|error| format!("{} could not be made: {error}", dir.display()))?;
+    let made = std::fs::symlink_metadata(&dir)
+        .map_err(|error| format!("{} is not readable: {error}", dir.display()))?;
+    if !made.is_dir() || made.uid() != owner || made.mode() & 0o077 != 0 {
+        return Err(format!(
+            "{} is not this account's own private directory",
+            dir.display()
+        ));
+    }
+    Ok(dir)
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
