@@ -193,7 +193,8 @@ enum Cmd {
                       tilo -w jane-doe do pdf-viewer/application.pdf#read-form-fields\n\n\
                       `tilo action list` shows what this desktop can do; in a hosted workspace,\n\
                       `tilo ls -w <workspace>` lists what it holds. Options are written name=value; a\n\
-                      single value goes to the one the action needs. With -w, the path is\n\
+                      single value goes to the one the action needs; name=@- reads that value from\n\
+                      standard input, for a secret that should stand in no command line. With -w, the path is\n\
                       app/resource#action in that hosted workspace, over Tilo's API (key:\n\
                       TILO_API_KEY, or this computer's own when it logged in).\n\n\
                       On a computer that holds the person's identity, --in-person does it as the\n\

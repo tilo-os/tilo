@@ -387,6 +387,20 @@ fn loose_options_are_json_where_they_parse() {
 }
 
 #[test]
+fn a_value_written_at_dash_is_read_from_standard_input_as_text() {
+    let mut input = &b"sk-secret-123\n"[..];
+    let args =
+        arguments_reading(&["key=@-".into(), "provider=p1".into()], &mut input).expect("args");
+    assert_eq!(args["key"], "sk-secret-123");
+    assert_eq!(args["provider"], "p1");
+    let mut input = &b"1"[..];
+    assert_eq!(
+        arguments_reading(&["a=@-".into(), "b=@-".into()], &mut input).unwrap_err(),
+        "Only one value is read from standard input; “b” is a second."
+    );
+}
+
+#[test]
 fn files_become_absolute_and_links_stay_as_they_are() {
     let cwd = Path::new("/home/me/work");
     assert_eq!(open_item("plan.md", cwd), "/home/me/work/plan.md");

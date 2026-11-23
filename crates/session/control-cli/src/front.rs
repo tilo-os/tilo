@@ -522,20 +522,53 @@ fn read_value(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
 }
 
+/// The value of an option written `name=@-`: read from standard input, as text, so a secret
+/// (an API key) never stands in a command line, where every process on the machine can read
+/// it.
+pub const FROM_INPUT: &str = "@-";
+
 /// Arguments for an action whose parameters this side has not seen: each
 /// `name=value` (or `--name=value`), its value as the JSON it reads as, else
-/// as text (`count=3` is a number, `title=Groceries` text). Whoever carries out
+/// as text (`count=3` is a number, `title=Groceries` text); `name=@-` reads
+/// that one value from standard input ([`FROM_INPUT`]). Whoever carries out
 /// the action checks them against what it takes.
 ///
 /// # Errors
-/// The sentence that names a word that is no `name=value`.
+/// The sentence that names a word that is no `name=value`, or a value that
+/// could not be read from standard input.
 pub fn arguments(words: &[String]) -> Result<Map<String, Value>, String> {
+    arguments_reading(words, &mut std::io::stdin().lock())
+}
+
+/// [`arguments`], a `name=@-` value read from `input`.
+///
+/// # Errors
+/// As [`arguments`]; more than one value named to be read from `input`.
+pub fn arguments_reading(
+    words: &[String],
+    input: &mut dyn std::io::Read,
+) -> Result<Map<String, Value>, String> {
     let mut args = Map::new();
+    let mut read = false;
     for word in words {
         let Some((key, value)) = word.trim_start_matches("--").split_once('=') else {
             return Err(format!("Write “{word}” as name=value."));
         };
-        args.insert(key.to_string(), read_value(value));
+        let value = if value == FROM_INPUT {
+            if std::mem::replace(&mut read, true) {
+                return Err(format!(
+                    "Only one value is read from standard input; “{key}” is a second."
+                ));
+            }
+            let mut text = String::new();
+            input.read_to_string(&mut text).map_err(|error| {
+                format!("“{key}” could not be read from standard input: {error}")
+            })?;
+            Value::String(text.trim_end_matches(['\n', '\r']).to_owned())
+        } else {
+            read_value(value)
+        };
+        args.insert(key.to_string(), value);
     }
     Ok(args)
 }
