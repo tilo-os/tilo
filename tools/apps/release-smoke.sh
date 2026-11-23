@@ -225,8 +225,6 @@ engines() (
                "file-explorer libtilo_pdf_engine.so" \
                "file-explorer libtilo_archive_engine.so" \
                "print-centre libtilo_pdf_engine.so" \
-               "imager libtilo_fuse_engine.so" \
-               "imager libtilo_accounts_engine.so" \
                "browser libtilo_browser_import_engine.so" \
                "browser libtilo_accounts_engine.so via:libtilo_browser_import_engine.so" \
                "store libtilo_app_process_engine.so" \
