@@ -25,6 +25,18 @@ pub fn blocks_of_markdown(markdown: &str) -> Result<Vec<BlockView>, CodecError> 
     Ok(editor_blocks(&document.as_ref().materialize().blocks))
 }
 
+/// An HTML document as the blocks a rich-text field holds, read by the one HTML importer
+/// ([`crate::html`]): a book's chapter, a saved page and pasted markup all read the same way.
+///
+/// # Errors
+///
+/// Why the text is not a document: more than [`crate::convert::MAX_DOCUMENT_BYTES`].
+#[cfg(feature = "html")]
+pub fn blocks_of_html(html: &str) -> Result<Vec<BlockView>, CodecError> {
+    let (document, _) = crate::convert::import("html", html.as_bytes())?;
+    Ok(editor_blocks(&document.as_ref().materialize().blocks))
+}
+
 #[must_use]
 pub fn markdown_of_blocks(blocks: &[BlockView]) -> String {
     String::from_utf8_lossy(&crate::markdown::export_views(

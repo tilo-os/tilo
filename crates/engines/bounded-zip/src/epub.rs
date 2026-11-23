@@ -226,6 +226,104 @@ impl OpfPackage {
     }
 }
 
+/// The table of contents a package declares, as the ZIP entry each label names (its fragment
+/// stripped) → the label: the EPUB3 nav document first, then the NCX. An empty map is a book
+/// whose contents the caller finds another way (its first headings).
+///
+/// Both documents are bounded to [`MAX_NAV_BYTES`]; one that cannot be read or parsed
+/// contributes nothing rather than failing the book.
+pub fn read_toc<R: Read + Seek>(
+    archive: &mut BoundedArchive<R>,
+    pkg: &OpfPackage,
+) -> HashMap<String, String> {
+    if let Some(nav) = &pkg.nav_href
+        && let Ok(src) = archive.read_text(nav, MAX_NAV_BYTES)
+    {
+        let map = parse_nav_doc(&src, &parent_dir(nav));
+        if !map.is_empty() {
+            return map;
+        }
+    }
+    if let Some(ncx) = &pkg.ncx_href
+        && let Ok(src) = archive.read_text(ncx, MAX_NAV_BYTES)
+    {
+        let map = parse_ncx(&src, &parent_dir(ncx));
+        if !map.is_empty() {
+            return map;
+        }
+    }
+    HashMap::new()
+}
+
+/// The largest nav document or NCX read for its labels.
+pub const MAX_NAV_BYTES: u64 = 2 * 1024 * 1024;
+
+/// EPUB3 nav: `<nav epub:type="toc"><ol><li><a href="..">Label</a>`.
+fn parse_nav_doc(src: &str, base: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    // `&nbsp;` is not an XML entity outside a DTD; readers meet it anyway.
+    let sanitized = src.replace("&nbsp;", "&#160;");
+    let Ok(doc) = Document::parse(&sanitized) else {
+        return out;
+    };
+    // The `<nav epub:type="toc">`, or any `<nav>` as a fallback.
+    let nav = doc
+        .descendants()
+        .filter(|n| n.has_tag_name("nav"))
+        .min_by_key(|n| {
+            let is_toc = n
+                .attributes()
+                .any(|a| a.name() == "type" && a.value().contains("toc"));
+            i32::from(!is_toc)
+        });
+    let scope = nav.unwrap_or_else(|| doc.root_element());
+    for a in scope.descendants().filter(|n| n.has_tag_name("a")) {
+        if let Some(href) = a.attribute("href") {
+            let label = node_text(a);
+            if !label.is_empty() {
+                out.insert(strip_fragment(&join(base, href)).to_string(), label);
+            }
+        }
+    }
+    out
+}
+
+/// NCX: `<navPoint><navLabel><text>Label</text></navLabel><content src=".."/>`.
+fn parse_ncx(src: &str, base: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Ok(doc) = Document::parse(src) else {
+        return out;
+    };
+    for np in doc.descendants().filter(|n| n.has_tag_name("navPoint")) {
+        let label = np
+            .descendants()
+            .find(|n| n.has_tag_name("text"))
+            .and_then(|n| n.text())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let src_attr = np
+            .descendants()
+            .find(|n| n.has_tag_name("content"))
+            .and_then(|n| n.attribute("src"));
+        if let (false, Some(src_attr)) = (label.is_empty(), src_attr) {
+            out.insert(strip_fragment(&join(base, src_attr)).to_string(), label);
+        }
+    }
+    out
+}
+
+fn node_text(node: roxmltree::Node<'_, '_>) -> String {
+    let mut s = String::new();
+    for d in node.descendants() {
+        if d.is_text()
+            && let Some(t) = d.text()
+        {
+            s.push_str(t);
+        }
+    }
+    s.trim().to_string()
+}
+
 #[must_use]
 pub fn strip_fragment(href: &str) -> &str {
     href.split('#').next().unwrap_or(href)

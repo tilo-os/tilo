@@ -15,7 +15,10 @@ homepage.workspace = true
 # this crate with `default-features = false` and names them, so it compiles no zip, XML or
 # Markdown machinery it does not use.
 default = ["all"]
-all = ["markdown", "html", "rtf", "epub", "docx", "odt", "xlsx", "ods"]
+all = ["markdown", "html", "rtf", "epub", "book", "docx", "odt", "xlsx", "ods"]
+# Reading a reflowable book from an EPUB container: its metadata, cover and chapters' XHTML,
+# through the shared bounded ZIP reader.
+book = ["html", "dep:bounded-zip"]
 markdown = ["dep:pulldown-cmark"]
 # HTML import (`HtmlCodec`) and export (`export_html`); images travel as `data:` URIs.
 html = ["dep:base64"]
@@ -37,7 +40,7 @@ automerge.workspace = true
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 thiserror.workspace = true
 base64 = { workspace = true, optional = true }
-bounded-zip = { version = "0.1.0", path = "../bounded-zip", optional = true }
+bounded-zip = { version = "0.1.0", path = "../bounded-zip", optional = true, features = ["epub"] }
 pulldown-cmark = { version = "0.12", default-features = false, optional = true }
 quick-xml = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }

@@ -378,6 +378,10 @@ imports! {
     FileSize = "file_size" ([H] -> [I64]);
     FileText = "file_text" ([H] -> [H]);
     FileFiles = "file_files" ([H] -> [H]);
+    // A book the file is: its chapters, each beginning with its title as a heading; and what its
+    // package says about it (title, author, language, subject).
+    FileBook = "file_book" ([H] -> [H]);
+    FileBookInfo = "file_book_info" ([H] -> [H]);
     // A file an action makes of what it holds: the text, the bytes, or the content an address names, as a
     // file called by its name; and an archive of the files it holds, each under its own name.
     FileOfText = "file_of_text" ([H, H] -> [H]);
