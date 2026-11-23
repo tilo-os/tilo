@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 """Unprivileged checks for the USB-free VM round trip (design spec §9).
 
-The round trip itself needs KVM, OVMF and a Fedora guest (the
-internal-install-cycle job of .forgejo/workflows/release-imager.yml). This
+The round trip itself needs KVM, OVMF and a Fedora guest (t's
+installer-internal-cycle-x86_64 check). This
 proves the parts that decide its verdict: efivarfs load-option decoding, and
 that every evidence comparison accepts exactly the contract and rejects each
 violation. It also runs the harness far enough to show it fails, rather than

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# CI entry point for the USB-free installation VM round trip, run by the
-# installer job of .forgejo/workflows/release-imager.yml.
+# Entry point for the USB-free installation VM round trip, run by t's
+# installer-internal-cycle-x86_64 check.
 #
 #   ./os/dev/ci-internal-install-cycle.sh INSTALLER_DISK OUT_DIR
 #
@@ -11,15 +11,16 @@
 #   TILO_INTERNAL_CYCLE_STORAGE_ROOT VM storage root (default /var/tmp/...)
 #   TILO_INTERNAL_CYCLE_RUN_ID       unique per run (default: $$)
 #
-# Steps: export the bundle from INSTALLER_DISK, build the test imager whose
-# compiled-in catalog names it (os/dev/build-internal-cycle-imager.sh), then
-# run each scenario of os/dev/test-internal-install-cycle.sh into
-# OUT_DIR/<scenario>. Every scenario runs; any failure fails the job.
+# Steps: install what the VM and its guest need that the job's image lacks, export
+# the bundle from INSTALLER_DISK, build the test imager whose compiled-in catalog
+# names it (os/dev/build-internal-cycle-imager.sh), then run each scenario of
+# os/dev/test-internal-install-cycle.sh into OUT_DIR/<scenario>. Every scenario
+# runs; any failure fails the job.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 die() { printf 'ci-internal-install-cycle: %s\n' "$*" >&2; exit 1; }
-[ "$#" -eq 2 ] || { sed -n '2,19p' "$0" >&2; exit 2; }
+[ "$#" -eq 2 ] || { sed -n '2,18p' "$0" >&2; exit 2; }
 disk="$1" out="$2"
 [ -f "$disk" ] || die "installer disk not found: $disk"
 [[ "${FEDORA_URL:-}" == https://* ]] || die "FEDORA_URL must pin the Fedora Cloud Base image (https)"
@@ -33,6 +34,12 @@ case "$scenario" in
   round-trip|interrupt-resume|remove|boot-next-busy) scenarios=("$scenario") ;;
   *) die "unknown scenario: $scenario" ;;
 esac
+
+# QEMU, its firmware and the tools the guest is driven with, where the job's image
+# lacks them: the same lists the other VM checks install from.
+bash "$repo/tools/ci/install-packages.sh" \
+  "$repo/tools/ci/packages/os-vm.txt" "$repo/tools/ci/packages/qemu-x86_64.txt" \
+  "$repo/tools/ci/packages/installer-cycle.txt" >/dev/null
 
 mkdir -p "$out" "$storage_root"
 export_dir="$out/export"

@@ -1,5 +1,7 @@
 # What the live installer's framebuffer-driven cycle reads beside the OS VM tools
 # (tools/ci/packages/os-vm.txt, qemu-<arch>.txt): the installer publishes no state a test may
 # read, so its screens are verified by their text, recognised from the framebuffer
-# (os/dev/test-installer-cycle.sh).
+# (os/dev/test-installer-cycle.sh). The alongside modes also build a foreign Windows filesystem
+# on the target disk before the installer runs.
 tesseract
+ntfs-3g

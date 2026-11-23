@@ -475,9 +475,9 @@ release and monitor workflows do not read them:
 Full Tilo without a USB stick (design spec
 `docs/architecture/usb-free-install.md` §3) downloads a
 schema-2 internal installer bundle: a manifest plus two raw component images
-the Imager writes to staging partitions on the internal disk. Each native
-`medium` job derives it from the live disk that has just passed the
-installation cycles:
+the Imager writes to staging partitions on the internal disk. Each architecture's
+`installer-release-medium-{arch}` t check derives it from the live disk that has
+just been built and checksummed:
 
 1. **Test** (`export` or `publish`): installs `btrfs-progs`/`dosfstools`/
    `qemu-img`, runs `os/tests/internal_bundle_test.py`,
@@ -512,8 +512,9 @@ installation cycles:
    `tilo-target-policy-<ARCH>.tar` it names. The archive contains only
    `tilo-target.efi` and one `predictions/generation-<N>.json` with its
    `.uki.sig`, all signed by the release authority whose public key is embedded
-   in the shipped Imager. The tag `target_policy` job resolves the exact child
-   of the verified `TILO_INSTALLER_OS_IMAGE`, requires that child's
+   in the shipped Imager. t's `installer-target-policy-{arch}` check, dispatched
+   with `published_os_image` naming the verified multi-architecture release
+   index, resolves the exact child of that index, requires that child's
    `org.opencontainers.image.revision` label to equal the release's source
    commit, verifies its release signature and SLSA provenance, and reads only
    `/boot/tilo-target` from it. `apps/imager/packaging/export-target-policy.py`
