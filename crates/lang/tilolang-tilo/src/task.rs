@@ -48,11 +48,11 @@ use tilolang_runtime::store::{
     Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewResource, OutboxEntry,
     Store, StoreError, SubId, Txn, Version, field_json, field_of,
 };
-use tilolang_runtime::value::{ResourceRef, Value};
+use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{ActionInfo, Actor, Authority, Decision, ModuleHash, Runtime};
 
 use crate::bundle::Bundle;
-use crate::call::Callees;
+use crate::call::{Callees, arguments_of_action, made_from};
 use crate::host::Host;
 use crate::meta::MetaExt as _;
 use crate::native::Native;
@@ -734,7 +734,7 @@ fn native_call(
             let resource = target
                 .as_ref()
                 .map_or_else(|| record.to_owned(), ResourceRef::id_string);
-            let mut arguments = arguments_of(apps, meta, action, args, target.is_some())?;
+            let mut arguments = arguments_of_action(apps, meta, action, args, target.is_some())?;
             if let Json::Object(arguments) = &mut arguments {
                 made_from(from.as_ref(), arguments, ResourceRef::id_string);
             }
@@ -821,7 +821,7 @@ fn call_of(
                 Some((_, Value::Ref(r))) => resource_id(app, &r.target.id_string()),
                 _ => package_resource_id(app),
             };
-            let mut arguments = arguments_of(apps, meta, action, args, target.is_some())?;
+            let mut arguments = arguments_of_action(apps, meta, action, args, target.is_some())?;
             if let Json::Object(arguments) = &mut arguments {
                 made_from(from.as_ref(), arguments, ResourceRef::id_string);
             }

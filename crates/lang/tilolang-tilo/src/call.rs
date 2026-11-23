@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use serde_json::{Value as Json, json};
 use tilolang_runtime::delegate::{Invocation, Invoked};
+use tilolang_runtime::ids::ActionId;
 use tilolang_runtime::meta::{Meta, parse_ty};
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 
@@ -307,7 +308,7 @@ fn edited(value: &Value) -> Result<Json, String> {
 /// api takes: the key [`tilo_actions::params::FROM_ARGUMENT`], as the reference a caller names
 /// its source with, and the kind the store keeps it as, which names the app a caller must be
 /// able to read it in.
-fn made_from(
+pub(crate) fn made_from(
     from: Option<&ResourceRef>,
     arguments: &mut serde_json::Map<String, Json>,
     published: impl Fn(&ResourceRef) -> String,
@@ -339,6 +340,32 @@ fn arguments_of(
     else {
         return Ok(json!({}));
     };
+    let mut arguments = arguments_json(apps, meta, action, args, target)?;
+    made_from(from.as_ref(), &mut arguments, ResourceRef::id_string);
+    Ok(Json::Object(arguments))
+}
+
+/// The arguments of the action `action` of `meta` a program gives as `args`: each by its
+/// parameter's name, past the first when it is the resource the action is on, as the API takes
+/// it ([`argument_json`]).
+pub(crate) fn arguments_of_action(
+    apps: &HashMap<String, Meta>,
+    meta: &Meta,
+    action: &ActionId,
+    args: &[(String, Value)],
+    target: bool,
+) -> Result<Json, String> {
+    let arguments = arguments_json(apps, meta, action, args, target)?;
+    Ok(Json::Object(arguments))
+}
+
+fn arguments_json(
+    apps: &HashMap<String, Meta>,
+    meta: &Meta,
+    action: &ActionId,
+    args: &[(String, Value)],
+    target: bool,
+) -> Result<serde_json::Map<String, Json>, String> {
     let declared = meta
         .actions
         .iter()
@@ -359,8 +386,7 @@ fn arguments_of(
         };
         arguments.insert(name.clone(), argument_json(&owner, meta, value, &ty)?);
     }
-    made_from(from.as_ref(), &mut arguments, ResourceRef::id_string);
-    Ok(Json::Object(arguments))
+    Ok(arguments)
 }
 
 /// The API's call for `invocation` of the native app `meta`: its declared verb, as the app's

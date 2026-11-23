@@ -5,8 +5,8 @@
 //! action.
 
 use tilolang_runtime::meta::{
-    ActionMeta, EffectClass, FieldKind, FieldMeta, Meta, Ty, TypeMeta, element_record, field_kind,
-    parse_ty,
+    ActionMeta, EffectClass, FieldKind, FieldMeta, Meta, ReaderRule, Ty, TypeMeta, element_record,
+    field_kind, parse_ty,
 };
 
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup_in};
@@ -200,11 +200,13 @@ impl MetaExt for Meta {
                 schema.untitled.clone_from(&ty.untitled);
                 schema.search_kind = ty.search.kind;
                 schema.people.clone_from(&ty.search.people);
-                schema.readers = ty.readers.as_ref().and_then(|name| {
-                    ty.fields
+                schema.readers = ty.readers.as_ref().and_then(|rule| match rule {
+                    ReaderRule::Field { field } => ty
+                        .fields
                         .iter()
-                        .find(|field| &field.name == name)
-                        .map(|field| field.id.clone())
+                        .find(|candidate| &candidate.name == field)
+                        .map(|candidate| candidate.id.clone()),
+                    ReaderRule::Author { .. } => None,
                 });
                 for field in &ty.fields {
                     schema.fields.push(field_schema(self, field));
