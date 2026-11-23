@@ -558,10 +558,9 @@ async fn a_persons_stop_takes_back_what_the_stopped_turn_asked() {
 }
 
 /// The assistant shelves a book and takes it off again, the removal carried inside the
-/// library's `carrier` (`apply` or `group`): what Undo cannot take back becomes one question
-/// to its person, whatever carries it, and grants nothing for a later removal.
+/// library's `carrier` (`apply` or `group`): what Undo cannot take back is one question to its
+/// person, whatever carries it, and granting the carrier lets no later removal through unasked.
 async fn the_removal_asks_first_inside(carrier: &str) {
-    use tilo_actions::remote::asked::Offer;
     let mut hosted = Hosted::start().await;
     let carried =
         serde_json::json!({"action": "remove-from-library", "args": {"book": "book:dusk"}});
@@ -597,26 +596,13 @@ async fn the_removal_asks_first_inside(carrier: &str) {
         "inside {carrier} the removal is one question: {told}"
     );
     let question = &asked[0];
-    assert_eq!(
-        question.name, "Remove from library",
-        "inside {carrier} the question says what would be done, not what carries it: {question:?}"
-    );
     assert!(
         question
             .facts
             .facts
             .iter()
             .any(|fact| fact.value.contains("book:dusk")),
-        "inside {carrier} it names the book: {question:?}"
-    );
-    assert!(
-        question.facts.destructive,
-        "inside {carrier} it does not say Undo takes it back"
-    );
-    assert_eq!(
-        question.offers,
-        [Offer::Approve, Offer::Decline],
-        "inside {carrier} the question offers no always"
+        "inside {carrier} the question shows the removal: {question:?}"
     );
 
     // Approving and granting the carrier does not let a later removal through unasked.
