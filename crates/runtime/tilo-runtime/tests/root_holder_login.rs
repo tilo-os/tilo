@@ -152,6 +152,16 @@ async fn a_computer_holding_the_root_logs_in_at_a_server_by_its_line_and_is_aske
         login.cert, laptop_cert,
         "the root's own certificate, no other"
     );
+    // The workspace's roster names the laptop: the server's sync with its copy admits it.
+    assert!(
+        workspaces
+            .state(&company.workspace)
+            .await
+            .unwrap()
+            .certificates()
+            .contains(&laptop_cert),
+        "the login put the laptop in the workspace's roster"
+    );
 
     // The daemon enters as it enters every login's workspace, and is let in.
     let entered = tilo_test_env::within(
