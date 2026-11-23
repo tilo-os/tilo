@@ -1,12 +1,12 @@
-//! The person's clipboard, served to the tilolang apps that hold no display of their own: a copy
-//! goes onto the selection as the person's own copy, and a paste answers what is on it.
+//! The person's clipboard, served to the apps that hold no display of their own: a copy goes
+//! onto the selection as the person's own copy, and a paste answers what is on it.
 //!
-//! An app's instance runs in a process with no way to the display, so the selection is not there
-//! to offer or read. The session opens a connection for each instance it starts
-//! ([`crate::apps`]), and answers it here on its own loop: what an app copies is put on the
-//! clipboard as any app's copy is ([`Clipboard::copy_bytes`]), so the person finds it in their
+//! An app runs in a process with no way to the display, so the selection is not there to offer or
+//! read. The session opens a connection for each app it starts ([`crate::apps`], and the launcher
+//! for a Rust app it launches), and answers it here on its own loop: what an app copies is put on
+//! the clipboard as any app's copy is ([`Clipboard::copy_offer`]), so the person finds it in their
 //! history and on their other devices, and what it pastes is read off the selection, bounded as
-//! the clipboard bounds an image taken in.
+//! the clipboard bounds an image taken in. One service answers both languages.
 
 use std::os::unix::net::UnixListener;
 use std::path::Path;
@@ -117,29 +117,46 @@ fn accept(listener: &UnixListener, sides: &Sides, wake: &tilo_service::Wake) {
 /// the read of the selection in flight for it.
 pub(crate) struct Side {
     wake: tilo_service::Wake,
-    copies: Mutex<Vec<(String, Vec<u8>)>>,
+    copies: Mutex<Vec<Copy>>,
     asks: Mutex<Vec<Ask>>,
     pending: Mutex<Option<Pending>>,
 }
 
-/// What a paste answers: the media type the selection held and its bytes, or nothing.
-type Answer = Option<(String, Vec<u8>)>;
+/// One copy an app asked for: the selection it is for, whether histories and device sync must
+/// keep it out, and the formats it offers with their bytes.
+struct Copy {
+    selection: Selection,
+    secret: bool,
+    formats: Vec<(String, Vec<u8>)>,
+}
+
+/// What a paste answers: each requested media type the selection held and its bytes, or nothing.
+type Answer = Vec<(String, Vec<u8>)>;
 
 /// Where a paste's answer goes, and the end the connection thread waits on.
 type Reply = Sender<Answer>;
 type Answered = Receiver<Answer>;
 
-/// A paste an app asked for: the types it wants, foremost first, and where the answer goes.
+/// A paste an app asked for: the selection, the types it wants, and where the answer goes.
 struct Ask {
+    selection: Selection,
     types: Vec<String>,
     reply: Reply,
 }
 
-/// The selection read in flight for one ask.
+/// The selection reads in flight for one ask.
 struct Pending {
-    mime: String,
-    pull: Pull,
+    reads: Vec<(String, Pull)>,
+    done: Vec<(String, Vec<u8>)>,
     ask: Ask,
+}
+
+/// The selection a service target names.
+fn selection_of(target: tilo_clipboard::service::Target) -> Selection {
+    match target {
+        tilo_clipboard::service::Target::Clipboard => Selection::Clipboard,
+        tilo_clipboard::service::Target::Primary => Selection::Primary,
+    }
 }
 
 impl Side {
@@ -147,30 +164,45 @@ impl Side {
     /// of the selection is drained each pass until it is all here, one ask at a time.
     fn follow(&self, clipboard: &Clipboard, compositor: &mut Compositor) {
         let copies = std::mem::take(&mut *self.copies.lock_recover());
-        for (mime, bytes) in copies {
-            clipboard.copy_bytes(compositor, &mime, bytes);
+        for copy in copies {
+            let mut offer = copy.formats;
+            if copy.secret {
+                // A secret pastes as plain text everywhere, while histories and device sync are
+                // told not to keep it.
+                offer.push((
+                    tilo_clipboard::SECRET_MIME.to_owned(),
+                    tilo_clipboard::SECRET_MARKER.to_vec(),
+                ));
+                offer.push((
+                    tilo_clipboard::PASSWORD_MANAGER_HINT_MIME.to_owned(),
+                    tilo_clipboard::SECRET_MARKER.to_vec(),
+                ));
+            }
+            clipboard.copy_offer(compositor, copy.selection, offer);
         }
         // The read in flight, if there is one, finishes first.
         let reading = {
             let mut pending = self.pending.lock_recover();
-            let outcome = pending.as_mut().map(|read| read.pull.drain());
-            let reading = match outcome {
-                None | Some(Pulled::Pending) => pending.is_some(),
-                Some(Pulled::Ready(bytes)) => {
-                    if let Some(done) = pending.take() {
-                        let _ = done.ask.reply.send(Some((done.mime, bytes)));
+            if let Some(read) = pending.as_mut() {
+                let mut remaining = Vec::new();
+                for (mime, mut pull) in read.reads.drain(..) {
+                    match pull.drain() {
+                        Pulled::Pending => remaining.push((mime, pull)),
+                        Pulled::Ready(bytes) => read.done.push((mime, bytes)),
+                        Pulled::Lost => {}
                     }
-                    false
                 }
-                Some(Pulled::Lost) => {
-                    if let Some(done) = pending.take() {
-                        let _ = done.ask.reply.send(None);
-                    }
-                    false
-                }
-            };
-            drop(pending);
-            reading
+                read.reads = remaining;
+            }
+            let done = pending
+                .as_ref()
+                .is_some_and(|read| read.reads.is_empty())
+                .then(|| pending.take())
+                .flatten();
+            if let Some(done) = done {
+                let _ = done.ask.reply.send(done.done);
+            }
+            pending.is_some()
         };
         if reading {
             return;
@@ -180,47 +212,63 @@ impl Side {
             let Some(ask) = asking else {
                 return;
             };
-            let offered = compositor.selection_formats(Selection::Clipboard);
-            let Some(mime) = ask
+            let offered = compositor.selection_formats(ask.selection);
+            let wanted: Vec<String> = ask
                 .types
                 .iter()
-                .find(|wanted| offered.iter().any(|held| &held == wanted))
+                .filter(|ty| offered.iter().any(|held| held == *ty))
                 .cloned()
-            else {
-                let _ = ask.reply.send(None);
-                continue;
-            };
-            let limit = tilo_clipboard::service::most_of(&mime);
-            match compositor.pull_selection_up_to(Selection::Clipboard, &mime, limit) {
-                Ok(pull) => {
-                    *self.pending.lock_recover() = Some(Pending { mime, pull, ask });
-                    return;
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "an app's paste could not be read");
-                    let _ = ask.reply.send(None);
+                .collect();
+            let mut reads = Vec::new();
+            for mime in wanted {
+                let limit = tilo_clipboard::service::most_of(&mime);
+                match compositor.pull_selection_up_to(ask.selection, &mime, limit) {
+                    Ok(pull) => reads.push((mime, pull)),
+                    Err(error) => tracing::warn!(%error, "an app's paste could not be read"),
                 }
             }
+            if reads.is_empty() {
+                let _ = ask.reply.send(Vec::new());
+                continue;
+            }
+            *self.pending.lock_recover() = Some(Pending {
+                reads,
+                done: Vec::new(),
+                ask,
+            });
+            return;
         }
     }
 }
 
 impl tilo_clipboard::service::ClipboardSide for Side {
-    fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-        self.copies
-            .lock_recover()
-            .push((mime.to_owned(), bytes.to_vec()));
+    fn copy(
+        &self,
+        target: tilo_clipboard::service::Target,
+        secret: bool,
+        formats: &[(String, Vec<u8>)],
+    ) -> bool {
+        self.copies.lock_recover().push(Copy {
+            selection: selection_of(target),
+            secret,
+            formats: formats.to_vec(),
+        });
         (self.wake)();
         true
     }
 
-    fn paste(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
+    fn paste(
+        &self,
+        target: tilo_clipboard::service::Target,
+        types: &[&str],
+    ) -> Vec<(String, Vec<u8>)> {
         let (reply, answer): (Reply, Answered) = std::sync::mpsc::channel();
         self.asks.lock_recover().push(Ask {
+            selection: selection_of(target),
             types: types.iter().map(|mime| (*mime).to_owned()).collect(),
             reply,
         });
         (self.wake)();
-        answer.recv_timeout(WAIT).ok().flatten()
+        answer.recv_timeout(WAIT).unwrap_or_default()
     }
 }

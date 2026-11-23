@@ -153,11 +153,10 @@ impl ProcessServices {
         }
     }
 
-    /// This target's services for the app `app_id`: each platform crate's
-    /// system backend (clipboard, file choosers and URI opening,
+    /// This target's services for the app `app_id`: the clipboard over the connection its
+    /// session serves it, each platform crate's system backend (file choosers and URI opening,
     /// notifications, location, secrets) and, with the `native` feature, speech, media
-    /// controls and screen capture. Without an app id notifications are
-    /// unavailable.
+    /// controls and screen capture. Without an app id notifications are unavailable.
     pub fn system(app_id: Option<&str>) -> Self {
         let services = Self {
             clipboard: tilo_clipboard::system(),

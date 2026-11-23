@@ -28,9 +28,6 @@ native = ["tilo-process/native", "dep:tokio", "dep:jni", "dep:ndk-context", "dep
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
 # `tilo-location`), selected per target without a feature.
 portal = ["native", "dep:ashpd"]
-# The X11 clipboard, for development builds on an X11 host (see the
-# toolkit's `x11`).
-x11 = ["tilo-clipboard/x11"]
 # Desktop media integration: the system's now-playing controls on macOS,
 # MPRIS (`org.mpris.MediaPlayer2`) on the Unix session bus elsewhere. zbus
 # runs on the workspace's tokio backend; the server lives on its own thread
@@ -59,7 +56,6 @@ tilo-tts = { version = "0.1.0", path = "../../system/tts" }
 # The process inputs (`process::environment`): who the process is and where its
 # files live, kept with the current process.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
-winit.workspace = true
 # The clipboard vocabulary and each target's clipboard.
 tilo-clipboard.workspace = true
 # File choosers and URI opening, with each target's backend.
@@ -88,8 +84,6 @@ workspace = true
 # `ndk-context` holds for the process (android-activity installs it).
 jni = { version = "0.21.1", optional = true }
 ndk-context = { version = "0.1.1", optional = true }
-# winit's Android backend refuses to compile without an activity flavour.
-winit = { workspace = true, features = ["android-native-activity"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

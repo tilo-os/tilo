@@ -13,48 +13,28 @@
 //!
 //! | Target | Backend |
 //! |---|---|
-//! | Linux | the app's own Wayland connection once the runner attaches it ([`attach_wayland_display`]), `arboard` on X11 with the `x11` feature |
-//! | macOS | `NSPasteboard` through `arboard` |
+//! | Linux, macOS | the connection the app's session opened for it ([`service::Connected`]) |
 //! | Web | the trusted clipboard event being dispatched ([`events`]), else a synchronous copy inside the user's click |
 //!
-//! Each falls back to an [`InProcessClipboard`] when there is no system
-//! clipboard, and logs that once. `arboard` is kept only for X11: its Wayland path
-//! needs `zwlr_data_control_manager_v1`, a clipboard-manager protocol Tilo
-//! withholds from sandboxed apps because it exposes every selection on the seat
-//! with no focus check. The Wayland backend's `wl_data_device` is focus-guarded.
+//! An app runs in a process of its own, so it holds no selection to offer or read: the session
+//! holds the person's selection, and an app's copies and pastes cross to it over the one service
+//! ([`service`]) whether the app is written in Rust or in tilolang. A process handed no connection
+//! (no session serves one, or the launch runs without services) copies nothing and pastes nothing,
+//! rather than keeping a copy that reaches no one.
 
 use std::sync::{Mutex, OnceLock};
 
 mod caps;
-#[cfg(target_os = "linux")]
-mod lifecycle;
-#[cfg(target_os = "linux")]
-pub use lifecycle::ClipboardAttachment;
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 
-/// Runner-owned native clipboard attachment (Wayland only).
-#[cfg(not(target_os = "linux"))]
-pub struct ClipboardAttachment {
-    _private: (),
-}
-pub mod conformance;
 pub mod events;
 /// The clipboard over a connection an app's session opened for it: `serve` answers on the
-/// session's end, [`service::Connected`] is the app's.
+/// session's end, [`service::Connected`] and [`service::ServiceClipboard`] are the app's.
 #[cfg(unix)]
 pub mod service;
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-mod native;
-#[cfg(target_os = "linux")]
-mod wayland;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
-
-pub use caps::{Availability, Feature, Unsupported, availability, available};
-
-#[cfg(target_os = "linux")]
-#[doc(hidden)]
-pub use wayland::WaylandClipboard;
 
 pub const MAX_CLIPBOARD_HTML_BYTES: usize = 1024 * 1024;
 
@@ -470,14 +450,18 @@ impl std::fmt::Debug for ReservedCopy {
     }
 }
 
+/// This process's clipboard: over the connection its session opened for it on Linux and macOS
+/// ([`service::ServiceClipboard`]), and the browser's clipboard on the web.
 pub fn system() -> std::sync::Arc<dyn ClipboardBackend> {
     static SYSTEM: OnceLock<std::sync::Arc<dyn ClipboardBackend>> = OnceLock::new();
     SYSTEM.get_or_init(backend).clone()
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(all(unix, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 fn backend() -> std::sync::Arc<dyn ClipboardBackend> {
-    std::sync::Arc::new(native::NativeClipboard::default())
+    service::ServiceClipboard::from_env().map_or_else(unavailable, |clipboard| {
+        std::sync::Arc::new(clipboard) as std::sync::Arc<dyn ClipboardBackend>
+    })
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -485,47 +469,38 @@ fn backend() -> std::sync::Arc<dyn ClipboardBackend> {
     std::sync::Arc::new(web::BrowserClipboard)
 }
 
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "macos",
-    windows,
-    all(target_arch = "wasm32", target_os = "unknown")
-)))]
+#[cfg(not(any(unix, all(target_arch = "wasm32", target_os = "unknown"),)))]
 fn backend() -> std::sync::Arc<dyn ClipboardBackend> {
-    std::sync::Arc::new(InProcessClipboard::default())
+    unavailable()
 }
 
-/// Route [`system`] through the app's own Wayland connection, so copies go
-/// through the connection that owns the focused surface — the compositor only
-/// accepts `set_selection` from that one.
+/// A clipboard that holds nothing and takes nothing: a process its session handed no clipboard
+/// connection, which must refuse rather than keep a copy that reaches no one.
+pub fn unavailable() -> std::sync::Arc<dyn ClipboardBackend> {
+    std::sync::Arc::new(Nowhere)
+}
+
+struct Nowhere;
+
+impl ClipboardBackend for Nowhere {
+    fn set_text(&self, _target: ClipboardTarget, _text: &str) -> bool {
+        false
+    }
+
+    fn text(&self, _target: ClipboardTarget) -> Option<String> {
+        None
+    }
+
+    fn name(&self) -> &'static str {
+        "unavailable"
+    }
+}
+
+/// A clipboard private to this process, for a host that performs nothing outside it: the inert
+/// services a test runs an app with, the session shell's primary selection, and Android's
+/// select-to-copy.
 ///
-/// Pass the runner's owned display handle, not a borrow of the event loop.
-/// Keep the returned guard until runner close. Dropping it refuses new calls
-/// and schedules teardown without waiting on protocol workers.
-pub fn attach_wayland_display(
-    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
-) -> Option<ClipboardAttachment> {
-    attach(handle)
-}
-
-#[cfg(target_os = "linux")]
-fn attach(
-    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
-) -> Option<ClipboardAttachment> {
-    native::attach_wayland(handle)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn attach(
-    _handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
-) -> Option<ClipboardAttachment> {
-    None
-}
-
-/// A clipboard private to this process, for hosts that offer no shared one.
-///
-/// Keeps copy → paste round-tripping inside the process so editors stay usable
-/// and the caret/clipboard core stays testable headlessly. It refuses
+/// Keeps copy → paste round-tripping inside the process. It refuses
 /// [`ClipboardBackend::set_shared_text`], secrets and images.
 #[derive(Debug, Default)]
 pub struct InProcessClipboard {
@@ -587,30 +562,9 @@ impl ClipboardBackend for InProcessClipboard {
     }
 }
 
-/// Emit the "this clipboard does not leave the process" warning exactly once.
-///
-/// Once per process, not once per call: a text editor pastes often, and a log
-/// line per keystroke would bury the fact instead of reporting it.
-pub fn warn_fallback_once(op: &str) {
-    static WARNED: OnceLock<()> = OnceLock::new();
-    WARNED.get_or_init(|| {
-        tracing::warn!(
-            target: "tilo_ui::clipboard",
-            operation = op,
-            "no system clipboard: falling back to an in-process buffer. Copy and paste \
-             will work inside this process and silently do nothing between processes. \
-             On Wayland this means the compositor advertises neither \
-             wl_data_device_manager nor zwp_primary_selection_device_manager_v1, or the \
-             window has no keyboard focus yet."
-        );
-    });
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-
-    pub(crate) static SYSTEM: Mutex<()> = Mutex::new(());
 
     #[test]
     fn a_copy_settles_once_and_runs_what_waits_on_it() {
@@ -637,23 +591,50 @@ pub(crate) mod tests {
         assert_eq!(copy.outcome(), Some(false), "an abandoned copy failed");
     }
 
-    tilo_test_env::scenario! {
-        fn the_in_process_and_system_clipboards_conform;
+    #[test]
+    fn the_in_process_clipboard_keeps_text_inside_the_process() {
+        let clipboard = InProcessClipboard::default();
+        assert!(clipboard.set_text(ClipboardTarget::Clipboard, "local"));
+        assert_eq!(
+            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("local")
+        );
+        assert!(clipboard.set_rich_text("<b>bold</b>", "bold"));
+        assert_eq!(
+            clipboard.rich_text().map(|offer| offer.plain),
+            Some(Some("bold".to_owned()))
+        );
+        assert!(
+            !clipboard.set_shared_text(ClipboardTarget::Clipboard, "shared"),
+            "an in-process buffer does not claim a shared copy"
+        );
+        assert!(
+            !clipboard.set_secret_text("secret"),
+            "an in-process buffer does not claim a secret copy"
+        );
+        assert!(!clipboard.set_image(1, 1, &[0, 0, 0, 0]));
+        assert!(clipboard.image().is_none());
+    }
 
-        phase the_in_process_clipboard_conforms;
-        {
-            conformance::check_local(&InProcessClipboard::default());
-        }
+    #[test]
+    fn a_process_handed_no_connection_holds_and_takes_nothing() {
+        let nowhere = unavailable();
+        assert!(!nowhere.set_text(ClipboardTarget::Clipboard, "lost"));
+        assert_eq!(nowhere.text(ClipboardTarget::Clipboard), None);
+        assert!(!nowhere.set_shared_text(ClipboardTarget::Clipboard, "lost"));
+        assert!(!nowhere.set_secret_text("lost"));
+        assert!(!nowhere.set_image(1, 1, &[0, 0, 0, 0]));
+        assert!(nowhere.image().is_none());
+        assert_eq!(nowhere.name(), "unavailable");
+    }
 
-        phase the_system_clipboard_conforms_with_or_without_a_system_clipboard;
-        {
-            let _system = SYSTEM.lock();
-            let system = system();
-            conformance::check_system(&*system);
-            assert!(std::ptr::addr_eq(
-                std::sync::Arc::as_ptr(&system),
-                std::sync::Arc::as_ptr(&self::system())
-            ));
-        }
+    #[test]
+    fn the_process_clipboard_is_one_across_calls() {
+        let first = system();
+        let second = system();
+        assert!(std::ptr::addr_eq(
+            std::sync::Arc::as_ptr(&first),
+            std::sync::Arc::as_ptr(&second)
+        ));
     }
 }

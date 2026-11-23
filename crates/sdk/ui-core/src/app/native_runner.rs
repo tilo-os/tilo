@@ -775,30 +775,6 @@ thread_local! {
     static HANDED_INPUT: std::cell::RefCell<
         std::collections::VecDeque<(WindowEvent, winit::event::Modifiers)>,
     > = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
-    /// The clipboard on the loop's Wayland connection. It is the connection's, not a window's:
-    /// it outlives the window that attached it, through a window that gives its place to the
-    /// next and the process's other windows, until the loop is done. The compositor accepts a
-    /// copy only from the connection that owns the focused surface, and the clipboard attaches
-    /// once per process, so a window that dropped it would leave every later copy unheard.
-    static LOOP_CLIPBOARD: std::cell::RefCell<Option<crate::clipboard::ClipboardAttachment>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Attach the clipboard to the loop's connection, once.
-fn attach_loop_clipboard(event_loop: &ActiveEventLoop) {
-    LOOP_CLIPBOARD.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if slot.is_none() {
-            *slot = crate::process::native::attach_display(event_loop.owned_display_handle());
-        }
-    });
-}
-
-/// Close the loop's clipboard: the loop is done and hands its connection to no window after it.
-/// Its workers are torn down off this thread, retaining the display.
-fn close_loop_clipboard() {
-    // Taking the guard lets it go here; a target that attaches no clipboard holds none to take.
-    let _ = LOOP_CLIPBOARD.with(|slot| slot.borrow_mut().take());
 }
 
 fn take_early_event_loop() -> Option<EventLoop<UserEvent>> {
@@ -3701,7 +3677,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if self.windowless {
             return;
         }
-        attach_loop_clipboard(event_loop);
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
@@ -5159,8 +5134,6 @@ impl App {
         let handing_over = handler.as_ref().is_some_and(|handler| handler.handing_over);
         if handing_over && let Some(handler) = handler.as_mut() {
             hand_over(handler, event_loop);
-        } else {
-            close_loop_clipboard();
         }
         // The app and its state are dropped (and saved) before the process
         // reports how its window ended, and so are the settings it changed.

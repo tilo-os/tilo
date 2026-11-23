@@ -28,13 +28,13 @@ default = ["native", "broker-transport"]
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::process::ProcessServices`.
 native = ["local-daemons", "collaboration/audio", "tilo-process-services/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
-# X11 windows (winit's X11 backend) and the X11 clipboard, for development
-# builds on an X11 host: `cargo run -p <app> --features ui/x11` (through
-# `tilo-app`'s `x11`). Every Tilo app runs as a Wayland client in its
-# sandbox, so the shared runtime leaves X11 (x11rb, x11-dl and the X11
-# clipboard) out. winit's X11 backend comes through tilo-winit-x11, which the
-# workspace hack's analysis skips (.config/hakari.toml).
-x11 = ["dep:tilo-winit-x11", "tilo-process-services/x11"]
+# X11 windows (winit's X11 backend), for development builds on an X11 host:
+# `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
+# Tilo app runs as a Wayland client in its sandbox, so the shared runtime
+# leaves X11 (x11rb, x11-dl) out. winit's X11 backend comes through
+# tilo-winit-x11, which the workspace hack's analysis skips
+# (.config/hakari.toml).
+x11 = ["dep:tilo-winit-x11"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.

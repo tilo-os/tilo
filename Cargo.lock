@@ -703,26 +703,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
-name = "arboard"
-version = "3.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf"
-dependencies = [
- "clipboard-win",
- "image",
- "log",
- "objc2 0.6.3",
- "objc2-app-kit 0.3.2",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-foundation 0.3.2",
- "parking_lot",
- "percent-encoding",
- "windows-sys 0.60.2",
- "x11rb",
-]
-
-[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2460,15 +2440,6 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "workspace-hack",
-]
-
-[[package]]
-name = "clipboard-win"
-version = "5.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
-dependencies = [
- "error-code",
 ]
 
 [[package]]
@@ -4834,12 +4805,6 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "error-code"
-version = "3.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
 name = "euclid"
@@ -11108,7 +11073,6 @@ dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
  "objc2 0.6.3",
- "objc2-core-graphics",
  "objc2-foundation 0.3.2",
 ]
 
@@ -18453,21 +18417,12 @@ dependencies = [
 name = "tilo-clipboard"
 version = "0.1.0"
 dependencies = [
- "arboard",
  "image",
  "js-sys",
- "libc",
- "raw-window-handle",
- "smithay-client-toolkit",
- "tilo-clock",
- "tilo-mime",
  "tilo-platform-caps",
  "tilo-rt",
  "tilo-test-env",
- "tracing",
  "wasm-bindgen",
- "wayland-backend",
- "wayland-server",
  "wire-frame",
  "workspace-hack",
 ]
@@ -21177,7 +21132,6 @@ dependencies = [
  "tilo-rt",
  "tilo-secrets",
  "tilo-tts",
- "tilo-winit",
  "tokio",
  "tracing",
  "workspace-hack",
@@ -27799,7 +27753,6 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rand_chacha 0.9.0",
  "rand_core 0.6.4",
- "raw-window-handle",
  "rcgen",
  "read-fonts 0.39.2",
  "read-fonts 0.41.0",

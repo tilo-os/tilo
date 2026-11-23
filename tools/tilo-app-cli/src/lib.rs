@@ -6663,6 +6663,7 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) -> Optio
         let mut kept: Vec<std::os::fd::OwnedFd> =
             attach_model_gateway(command, app_dir).into_iter().collect();
         kept.extend(attach_session_chooser(command, app_dir));
+        kept.extend(attach_session_clipboard(command, app_dir));
         Some(kept)
     }
     #[cfg(not(target_os = "linux"))]
@@ -6783,6 +6784,30 @@ fn attach_session_chooser(
     }
     command.env(
         launcher::sandbox::svc_env_var(&chooser.name),
+        fd.as_raw_fd().to_string(),
+    );
+    Some(fd)
+}
+
+/// Hand the app the person's clipboard the way the launcher does in a login: the one service both
+/// languages copy and paste through. Nothing is attached when the session serves none.
+#[cfg(target_os = "linux")]
+fn attach_session_clipboard(
+    command: &mut ProcessCommand,
+    _app_dir: &Path,
+) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::AsRawFd as _;
+    let clipboard = launcher::services::resolve_clipboard_bind(false)?;
+    let fd = clipboard.host;
+    let inheritable = unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) == 0
+    };
+    if !inheritable {
+        return None;
+    }
+    command.env(
+        launcher::sandbox::svc_env_var(&clipboard.name),
         fd.as_raw_fd().to_string(),
     );
     Some(fd)

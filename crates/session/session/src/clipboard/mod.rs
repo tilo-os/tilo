@@ -576,30 +576,34 @@ impl Clipboard {
     /// Put `text` on the clipboard as a copy of the person's own: what they asked to copy, here or
     /// in an app of theirs, so the history keeps it as it keeps what they copied.
     fn copy_text(&self, compositor: &mut Compositor, text: String) -> bool {
-        self.copy_bytes(
+        self.copy_offer(
             compositor,
-            tilo_compositor::clipboard_history::TEXT_MIME,
-            text.into_bytes(),
+            Selection::Clipboard,
+            vec![(
+                tilo_compositor::clipboard_history::TEXT_MIME.to_owned(),
+                text.into_bytes(),
+            )],
         )
     }
 
-    /// Put `mime` and `bytes` on the clipboard as a copy of the person's own: what a tilolang
-    /// app's `clipboard.copy` offers, and what an image pasted anywhere offers, so the history
-    /// keeps it as it keeps what the person copied in an app.
-    pub(crate) fn copy_bytes(
+    /// Put `offer` — one copy's formats and their bytes — on `selection` as a copy of the
+    /// person's own: what an app's `clipboard.copy` offers, and what an image pasted anywhere
+    /// offers, so the history keeps it as it keeps what the person copied in an app.
+    pub(crate) fn copy_offer(
         &self,
         compositor: &mut Compositor,
-        mime: &str,
-        bytes: Vec<u8>,
+        selection: Selection,
+        offer: Vec<(String, Vec<u8>)>,
     ) -> bool {
-        if let Err(error) =
-            compositor.set_selection(Selection::Clipboard, vec![(mime.to_owned(), bytes)])
-        {
+        if let Err(error) = compositor.set_selection(selection, offer) {
             tracing::warn!(%error, "the copy could not be put on the clipboard");
             return false;
         }
-        // The history reads it back on its next pass, as it reads a copy of any app's.
-        self.kept_until.set(None);
+        // The history reads a Ctrl+C copy back on its next pass, as it reads one of any app's;
+        // the primary selection is not a copy of the person's, and the history does not keep it.
+        if selection == Selection::Clipboard {
+            self.kept_until.set(None);
+        }
         true
     }
 
