@@ -1,4 +1,5 @@
 # YouTube auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
+
 d-so-tilo-tube = YouTube
 
 d-so-tilo-tube-keywords = youtube, video, videos, streaming, watch, channel, channels, subscriptions, creators, trending, filme, videos ansehen, kanäle, kanaele, kanal, schauen, mediathek, anschauen, abos, videoportal
@@ -62,24 +63,6 @@ d-l25oorez = Vorschaubild
 d-pkbzjs7l = Stream
     .doc = Die Adresse, von der seine Daten abgespielt werden, wie der Dienst sie geantwortet hat: leer, bis sie gefragt wird.
 
-d-2ookzgmr = Streamqualitäten
-    .doc = Die angebotenen Ganzdatei-Qualitäten, beste zuerst; leer bei einem Live-Stream, der nur eine hat.
-
-d-egfxgk6w = Streams
-    .doc = Wo die jeweilige Qualität abspielt, nach dem Label, das das Menü zeigt.
-
-d-bjq7oz3r = Untertitelspuren
-    .doc = Die angebotenen Untertitelspuren, nach Sprachcode: das Label, das jede zeigt.
-
-d-qobap6wc = Untertitelsprache
-    .doc = Die Sprache der eingeschalteten Untertitel, leer für aus.
-
-d-ktznpp6s = Untertitel
-    .doc = Die Wörter der gewählten Untertitelspur, wie der Dienst sie geholt hat.
-
-d-dk57dzsn = Qualität
-    .doc = Die Qualität, in der es läuft, leer für die beste.
-
 d-jfam7tjf = Live
     .doc = Ob es ein Live-Stream statt einer Aufnahme ist.
 
@@ -115,9 +98,6 @@ d-6cllrl7x = Anzahl Videos
 
 d-4xvzshd7 = Vorschaubild
 
-d-dge65utd = Videos
-    .doc = Die Schlüssel der Videos, in der Reihenfolge ihrer Erstellerin: keine, bis der Dienst geantwortet hat, was sie enthält.
-
 d-p3yw6p2h = Gefunden über
     .doc = Die Suche, die sie fand.
 
@@ -133,45 +113,6 @@ d-slhmwv67 = Schlüssel
 
 d-ynf67l6e = Name
 
-d-r6snpxjs = Vorgemerktes Video
-    .doc = Ein Video, das jemand auf die Warteschlange des Workspace gesetzt hat. Eine Sammlung behält die Reihenfolge, in der ihre Einträge hinzugefügt wurden, sodass die Warteschlange in der Reihenfolge abgespielt wird, in der Videos hinzugefügt wurden.
-    .noun = { $count ->
-        [one] Vorgemerktes Video
-       *[other] Vorgemerkte Videos
-    }
-
-d-o3xolmld = Schlüssel
-    .doc = Der Schlüssel des Videos, wie der Dienst ihn nennt.
-
-d-qynvz25p = Wiedergabeeinstellungen
-    .doc = Wie eine Person gerne sieht. Der eigene Eintrag jeder Person: er folgt ihr auf jedes Gerät, und eine Ansicht liest den Eintrag der Person, die sie ansieht.
-    .noun = { $count ->
-        [one] Wiedergabeeinstellung
-       *[other] Wiedergabeeinstellungen
-    }
-
-d-5twttwwn = Person
-
-d-vze2yftu = Automatisch weiterspielen
-    .doc = Spielt das nächste Video ab, wenn dieses endet.
-
-d-5bpxm33f = Geschwindigkeit
-    .doc = Wie schnell es läuft: 0,25×, 0,5×, 1×, 1,5×, 2× oder 3×.
-
-d-lesyml4z = Bevorzugte Qualität
-    .doc = Das höchste Bild, das sie möchte, wie YouTube es nennt (1080p, 720p, 480p), oder auto für das beste, das passt.
-
-d-u3fgpv6e = Untertitel
-    .doc = Untertitel zeigen, wenn das Video welche hat.
-
-d-qynvz25p-filter-member = Person
-
-d-qynvz25p-filter-autoplay = Automatisch weiterspielen
-
-d-qynvz25p-filter-speed = Geschwindigkeit
-
-d-qynvz25p-filter-captions = Untertitel
-
 d-kgojom6f = Verlaufseintrag
     .doc = Ein Video, das die Person gesehen hat: wann und wo sie aufgehört hat. Jeder Eintrag nennt die Person, die es gesehen hat, sodass jede Person nur den eigenen Verlauf liest.
     .noun = { $count ->
@@ -186,14 +127,18 @@ d-stuii7l7 = Titel
 
 d-j37y2bbw = Name des Kanals
 
-d-7mtvj3xd = Gesehen von
-    .doc = Wer es gesehen hat. Leer für einen Eintrag aus dem Verlauf des früheren Tube, bevor dieses Programm festhielt, wer was gesehen hat: er bleibt der des Workspace, und wer das Video erneut sieht, macht ihn zu seinem.
-
 d-dmm6f63t = Gesehen
 
 d-omff5ciz = Fortschritt
     .doc = Wie weit sie waren, als Anteil seiner Länge; null, wenn sie es bis zum Ende gesehen haben.
 
+# verfeinert
+d-thwdswkk = YouTube
+    .doc = Was der Client hält: die Kanäle, Videos und Wiedergabelisten, die der Dienst geantwortet hat, die Abonnements der Person, ihr Verlauf und wie die letzte Suche steht.
+    .noun = { $count ->
+        [one] Kanal
+       *[other] Kanäle
+    }
 
 d-olrung72 = Titel
     .doc = Wie der Client heißt.
@@ -206,13 +151,7 @@ d-v5sh2bpr = Wiedergabelisten
 
 d-iputtmua = Abonnements
 
-d-jgjqgesf = Warteschlange
-    .doc = Die Warteschlange des Workspace, älteste zuerst.
-
 d-hv25j74h = Verlauf
-
-d-epgpppzy = Wiedergabeeinstellungen aller
-    .doc = Die Wiedergabeeinstellungen jeder Person.
 
 d-bqesicxq = Suchtext
     .doc = Wonach die letzte Suche fragt, wie es getippt wurde.
@@ -232,12 +171,7 @@ d-r3ksw6bn = Störung
 d-qv7t2mza = Online
     .doc = Ob YouTube geantwortet hat, als es zuletzt gefragt wurde.
 
-d-vcsec6gm = Geschwindigkeit
-    .doc = Die Geschwindigkeit, mit der Videos laufen: 1.0 ist normal.
-
 d-thwdswkk-filter-online = Online
-
-d-thwdswkk-filter-rate = Geschwindigkeit
 
 d-tmam46un = Abonnieren
     .doc = Abonniert den Kanal oder kündigt das Abonnement: der Knopf sagt, was er tun wird.
@@ -263,9 +197,6 @@ d-yw4tuoq4 = Später ansehen
 
 d-yw4tuoq4-saved = Auf der Warteschlange
 
-d-4bg5hmr2 = Alle abspielen
-    .doc = Spielt die Warteschlange ab ihrem ältesten Video ab: was zuerst hinzugefügt wurde, läuft zuerst.
-
 d-6ux63onw = Abspielen
     .doc = Spielt das Video ab, ob es schon abgespielt wurde oder nicht.
 
@@ -277,55 +208,11 @@ d-jxokfijg = Fortschritt
 
 d-jxokfijg-at = Bei
 
-d-lbt75ctk = Wiedergabegeschwindigkeit
-    .doc = Spielt Videos mit `speed` ab: langsamer für einen dichten Vortrag, schneller für einen langen Bericht.
-
-d-lbt75ctk-speed = Geschwindigkeit
-
-d-kiyjmdyz = Qualität
-    .doc = Spielt das Video in einer anderen seiner Qualitäten ab, von der Stelle aus, an der es stand: die Ansicht spielt die Adresse ab, die diese Qualität hat.
-
-d-kiyjmdyz-chosen = Gewählt
-
-d-r7mx23eb = Untertitel
-    .doc = Zeigt die Wörter des Videos in `language`, oder schaltet sie aus, wenn es leer ist: der Dienst holt die Wörter der Spur, die der Player zeichnet, während das Video sie erreicht.
-
-d-r7mx23eb-language = Sprache
-
 d-oqumfxkj = Aus dem Verlauf löschen
     .doc = Nimmt ein Video aus dem eigenen Verlauf.
 
 d-wzt3qvyb = Verlauf löschen
     .doc = Löscht den eigenen Verlauf, und den niemandes sonst.
-
-d-4hpmg3yw = Erneut versuchen
-    .doc = Fragt den Dienst erneut, wo die Daten des Videos abgespielt werden, nachdem der Player sie nicht zeigen konnte: die Adresse, die der Client hält, schreibt allein der Dienst, und seine neue Antwort ist die, die der Player öffnet.
-
-d-edbp7ej2 = Aktualisieren
-    .doc = Fragt den Dienst, was die Wiedergabeliste enthält, in der Reihenfolge ihrer Erstellerin.
-
-d-7lfzugkh = Alle abspielen
-    .doc = Spielt die Wiedergabeliste ab ihrem ersten Video ab.
-
-d-lcvxshh4 = Automatisch weiterspielen
-    .doc = Jede dieser Aktionen hält eine der Wiedergabeeinstellungen der Person fest: der Eintrag gehört ihr, entsteht beim ersten Setzen, und jede andere Person liest ihre eigenen.
-
-d-lcvxshh4-on = Ein
-
-d-3r5wepfg = Wiedergabegeschwindigkeit
-    .doc = Wie schnell Videos für die Person laufen: 0,25 bis 3, 1 für die übliche Geschwindigkeit.
-
-d-3r5wepfg-speed = Geschwindigkeit
-
-d-lzop6dva = Bevorzugte Qualität
-    .doc = Das höchste Bild, das die Person möchte, wie YouTube es nennt; auto nimmt das beste, das passt.
-
-d-lzop6dva-quality = Qualität
-
-d-fmurpek2 = Untertitel
-    .doc = Ob Videos ihre Untertitel für die Person zeigen.
-
-d-fmurpek2-on = Ein
 
 d-6lgqby4s = Suchen
     .doc = Durchsucht YouTube: der Dienst antwortet mit Kanälen, Wiedergabelisten und Videos, geschrieben, wo die Suchansicht sie auflistet.
@@ -345,9 +232,6 @@ d-wx26izlg = Aktualisieren
 
 d-khblapap = Trends aktualisieren
     .doc = Fragt den Dienst nach den Videos, die er als im Trend führt.
-
-d-t3cwabaw = Früheres Tube übernehmen
-    .doc = Was das frühere Tube vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: die abonnierten Kanäle, die mit Gefällt mir markierten Videos, die Warteschlange und der Verlauf mit der Zeit, zu der jedes Video angesehen wurde. Der übernommene Verlauf entstand, bevor dieses Programm festhielt, wer was gesehen hat; seine Einträge nennen daher niemanden und bleiben die des Workspace, bis jemand eines der Videos erneut sieht.
 
 d-yc4rjoeg = Erneut abspielen
     .doc = Spielt das Video ab, das ein Verlaufseintrag nennt, ab der Stelle, an der die Person aufgehört hat.
@@ -447,3 +331,88 @@ d-uiu73od5 = Kanalzeile
 
 d-pgyjhoe2 = Verlaufszeile
 
+d-t3cwabaw = Früheres Tube übernehmen
+    .doc = Was das frühere Tube vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: die abonnierten Kanäle, die mit Gefällt mir markierten Videos, die Warteschlange und der Verlauf mit der Zeit, zu der jedes Video angesehen wurde. Der übernommene Verlauf entstand, bevor dieses Programm festhielt, wer was gesehen hat; seine Einträge nennen daher niemanden und bleiben die des Workspace, bis jemand eines der Videos erneut sieht.
+
+d-r6snpxjs = Vorgemerktes Video
+    .doc = Ein Video, das jemand auf die Warteschlange des Workspace gesetzt hat. Eine Sammlung behält die Reihenfolge, in der ihre Einträge hinzugefügt wurden, sodass die Warteschlange in der Reihenfolge abgespielt wird, in der Videos hinzugefügt wurden.
+    .noun = { $count ->
+        [one] Vorgemerktes Video
+       *[other] Vorgemerkte Videos
+    }
+
+d-o3xolmld = Schlüssel
+    .doc = Der Schlüssel des Videos, wie der Dienst ihn nennt.
+
+d-qynvz25p = Wiedergabeeinstellungen
+    .doc = Wie eine Person gerne sieht. Der eigene Eintrag jeder Person: er folgt ihr auf jedes Gerät, und eine Ansicht liest den Eintrag der Person, die sie ansieht.
+    .noun = { $count ->
+        [one] Wiedergabeeinstellung
+       *[other] Wiedergabeeinstellungen
+    }
+
+d-qynvz25p-filter-autoplay = Automatisch weiterspielen
+
+d-qynvz25p-filter-captions = Untertitel
+
+d-qynvz25p-filter-member = Person
+
+d-qynvz25p-filter-speed = Geschwindigkeit
+
+d-5twttwwn = Person
+
+d-vze2yftu = Automatisch weiterspielen
+    .doc = Spielt das nächste Video ab, wenn dieses endet.
+
+d-5bpxm33f = Geschwindigkeit
+    .doc = Wie schnell es läuft: 0,25×, 0,5×, 1×, 1,5×, 2× oder 3×.
+
+d-lesyml4z = Bevorzugte Qualität
+    .doc = Das höchste Bild, das sie möchte, wie YouTube es nennt (1080p, 720p, 480p), oder auto für das beste, das passt.
+
+d-u3fgpv6e = Untertitel
+    .doc = Untertitel zeigen, wenn das Video welche hat.
+
+d-7mtvj3xd = Gesehen von
+    .doc = Wer es gesehen hat. Leer für einen Eintrag aus dem Verlauf des früheren Tube, bevor dieses Programm festhielt, wer was gesehen hat: er bleibt der des Workspace, und wer das Video erneut sieht, macht ihn zu seinem.
+
+d-dge65utd = Videos
+    .doc = Die Schlüssel der Videos, in der Reihenfolge ihrer Erstellerin: keine, bis der Dienst geantwortet hat, was sie enthält.
+
+d-jgjqgesf = Warteschlange
+    .doc = Die Warteschlange des Workspace, älteste zuerst.
+
+d-epgpppzy = Wiedergabeeinstellungen aller
+    .doc = Die Wiedergabeeinstellungen jeder Person.
+
+d-4bg5hmr2 = Alle abspielen
+    .doc = Spielt die Warteschlange ab ihrem ältesten Video ab: was zuerst hinzugefügt wurde, läuft zuerst.
+
+d-7lfzugkh = Alle abspielen
+    .doc = Spielt die Wiedergabeliste ab ihrem ersten Video ab.
+
+d-edbp7ej2 = Aktualisieren
+    .doc = Fragt den Dienst, was die Wiedergabeliste enthält, in der Reihenfolge ihrer Erstellerin.
+
+d-4hpmg3yw = Erneut versuchen
+    .doc = Fragt den Dienst erneut, wo die Daten des Videos abgespielt werden, nachdem der Player sie nicht zeigen konnte: die Adresse, die der Client hält, schreibt allein der Dienst, und seine neue Antwort ist die, die der Player öffnet.
+
+d-lcvxshh4 = Automatisch weiterspielen
+    .doc = Jede dieser Aktionen hält eine der Wiedergabeeinstellungen der Person fest: der Eintrag gehört ihr, entsteht beim ersten Setzen, und jede andere Person liest ihre eigenen.
+
+d-3r5wepfg = Wiedergabegeschwindigkeit
+    .doc = Wie schnell Videos für die Person laufen: 0,25 bis 3, 1 für die übliche Geschwindigkeit.
+
+d-lzop6dva = Bevorzugte Qualität
+    .doc = Das höchste Bild, das die Person möchte, wie YouTube es nennt; auto nimmt das beste, das passt.
+
+d-fmurpek2 = Untertitel
+    .doc = Ob Videos ihre Untertitel für die Person zeigen.
+
+d-lcvxshh4-on = Ein
+
+d-3r5wepfg-speed = Geschwindigkeit
+
+d-lzop6dva-quality = Qualität
+
+d-fmurpek2-on = Ein
