@@ -4406,6 +4406,73 @@ id_token = ["sts.amazonaws.com"]
 arch = ["x86_64", "aarch64"]
 
 [[check]]
+name = "build/macos-{arch}"
+# Installs packages (rustup targets) from hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/macos/build-imager.sh {arch} /target/macos/{arch}/build"
+# Both architectures build on the one Mac node: Apple silicon builds its own,
+# and cross-builds x86_64, which the install check starts through Rosetta.
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/build/*"]
+default = false
+timeout_secs = 7200
+on = ["dispatch", "idle"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+[[check]]
+name = "package/macos-{arch}"
+run = '''set -eu
+case "${T_REF:-}" in tag:imager-v*) export TILO_VERSION="${T_REF#tag:imager-v}" ;; esac
+bash apps/imager/packaging/package-macos.sh {arch} /target/macos/{arch}/build/imager /target/macos/{arch}/package
+'''
+needs = ["build/macos-{arch}"]
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/package/*"]
+default = false
+timeout_secs = 1800
+on = ["dispatch", "idle"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+# The DMG as a person receives it: mounted read-only, the app inside it
+# started offscreen from the mount, and the capture kept as the check's output.
+[[check]]
+name = "install/macos-{arch}"
+run = '''set -eu
+case "${T_REF:-}" in tag:imager-v*) export TILO_VERSION="${T_REF#tag:imager-v}" ;; esac
+bash apps/imager/packaging/macos/verify-dmg.sh {arch} \
+  "/target/macos/{arch}/package/tilo-imager-macos-{arch}.dmg" /target/macos/{arch}/install
+'''
+needs = ["package/macos-{arch}"]
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/install/*"]
+default = false
+timeout_secs = 1800
+on = ["dispatch", "idle"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+# A release repackages the exact executable the build check made, with the
+# Developer ID identity the stored secret holds, notarizes it and staples the
+# ticket; the signed DMG is then mounted, started and checked as a person
+# receives it, Gatekeeper included. Only a tag run holds any of this.
+[[check]]
+name = "sign/macos-{arch}"
+# Takes the Developer ID certificate and Apple notarization credentials from t's secrets, and reaches Apple's notary service.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/macos/sign-imager.sh {arch} /target/macos/{arch}/build /target/macos/{arch}/package /target/macos/{arch}/signed"
+needs = ["build/macos-{arch}", "package/macos-{arch}"]
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/signed/*"]
+cache = false
+timeout_secs = 7200
+on = ["tag:imager-v*"]
+secrets = ["TILO_MAC_SIGNING_P12", "TILO_MAC_SIGNING_P12_PASSWORD", "TILO_APPLE_ID", "TILO_APPLE_TEAM_ID", "TILO_APPLE_APP_PASSWORD", "TILO_MAC_EXPECTED_TEAM_ID", "TILO_MAC_EXPECTED_CERT_SHA256"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+[[check]]
 name = "wine/windows-x86_64-tests"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
