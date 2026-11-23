@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Resume a paired CI/WHPX Windows direct install without rebuilding OS media.
+"""Resume a paired t/WHPX Windows direct install without rebuilding OS media.
 
-`prepare` downloads the exact imager run artifacts, verifies their signed
-identities and the OS releases t published that they install (signature and
-SLSA provenance), runs the generic full-boot and Lenovo install-only WHPX
-cycles, then creates the source receipt. Physical writes require separate `copy` and
-`bootnext` invocations.
+`prepare` takes the two media t's `medium/whpx-aarch64` check wrote
+(`t outputs medium/whpx-aarch64 --to DIR`), verifies their signed identities and
+the OS releases they install (signature and SLSA provenance), runs the generic
+full-boot and Lenovo install-only WHPX cycles, then creates the source receipt.
+Physical writes require separate `copy` and `bootnext` invocations.
 """
 
 import argparse
@@ -18,8 +18,6 @@ import re
 import shutil
 import subprocess
 import sys
-import urllib.request
-import zipfile
 
 
 HERE = Path(__file__).resolve().parent
@@ -81,7 +79,7 @@ def command(argv, *, stdin=None, capture=False):
 
 def pinned_config(path):
     data = read_json(path)
-    required = {"schema", "source_revision", "imager_run", "generic_image",
+    required = {"schema", "source_revision", "medium_outputs", "generic_image",
                 "lenovo_image", "realized_plan",
                 "source_raw", "generic_index_manifest", "generic_child_manifest",
                 "lenovo_child_manifest", "verify_key", "cosign_command_json",
@@ -91,7 +89,8 @@ def pinned_config(path):
     require(data["schema"] == "tilo.windows-direct-install.v2", "unknown input schema")
     require(type(data["source_revision"]) is str and REV.fullmatch(data["source_revision"]),
             "source_revision must be a full lowercase commit")
-    require(type(data["imager_run"]) is int and data["imager_run"] > 0, "imager_run must be a run number")
+    require(type(data["medium_outputs"]) is str and Path(data["medium_outputs"]).is_absolute(),
+            "medium_outputs must be an absolute path to t's WHPX check outputs")
     for key, prefix in (("generic_image", PUBLIC), ("lenovo_image", BOARD)):
         require(type(data[key]) is str and data[key].startswith(prefix)
                 and SHA.fullmatch(data[key][len(prefix):]), f"invalid pinned {key}")
@@ -158,112 +157,45 @@ def atomic_json_replace(path, value):
     temporary.replace(path)
 
 
-def fgj_run(run):
-    details = json.loads(command(["fgj", "--hostname", "code.tilo.so", "run", "view",
-                                 str(run), "-R", "tilo/tilo", "--json"],
-                                 capture=True))
-    record = details.get("run", {})
-    require(record.get("index_in_repo") == run and record.get("status") == "success",
-            f"Forgejo run {run} has not completed successfully")
-    return record
-
-
-class ArtifactRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, response, code, message, headers, url):
-        redirected = super().redirect_request(request, response, code, message, headers, url)
-        if redirected is not None:
-            require(url.startswith("https://"), "artifact redirect must use HTTPS")
-            # Object storage receives its own signed URL, never our Forgejo token.
-            redirected.remove_header("Authorization")
-        return redirected
-
-
-def download_artifact(run, name, destination):
+def copy_output(source, destination):
+    require(source.is_file() and not source.is_symlink(), f"missing t check output: {source}")
     if destination.exists():
         regular(destination)
-        require(zipfile.is_zipfile(destination), f"invalid retained artifact: {destination}")
+        require(digest(destination) == digest(source), f"retained copy differs from t's output: {source}")
         return
-    partial = destination.with_suffix(destination.suffix + ".part")
+    partial = destination.with_name(destination.name + ".part")
     if partial.exists():
-        regular(partial).unlink()  # run-scoped download scratch; never a VM source
-    record = fgj_run(run)
-    artifacts = json.loads(command([
-        "fgj", "--hostname", "code.tilo.so", "api",
-        f"repos/tilo/tilo/actions/runs/{record['id']}/artifacts"], capture=True))
-    matches = [item for item in artifacts if item.get("name") == name
-               and item.get("expired") is False]
-    require(len(matches) == 1, f"expected exactly one live artifact: {name}")
-    artifact_id = matches[0].get("id")
-    require(type(artifact_id) is int and artifact_id > 0, "invalid artifact ID")
-    url = f"https://code.tilo.so/api/v1/repos/tilo/tilo/actions/artifacts/{artifact_id}/zip"
-    # Capture credentials directly into memory; never put them in argv or logs.
-    token = command(["fgj", "--hostname", "code.tilo.so", "auth", "token"],
-                    capture=True).decode().strip()
-    require(token and "\n" not in token and "\r" not in token, "missing Forgejo token")
-    request = urllib.request.Request(url, headers={"Authorization": f"token {token}"})
-    opener = urllib.request.build_opener(ArtifactRedirect())
-    with opener.open(request, timeout=120) as source, partial.open("xb") as sink:
-        shutil.copyfileobj(source, sink, 1024 * 1024)
-        sink.flush()
-        os.fsync(sink.fileno())
-    require(zipfile.is_zipfile(partial), f"Forgejo returned invalid artifact: {name}")
+        regular(partial).unlink()
+    with source.open("rb") as stream, partial.open("xb") as sink:
+        shutil.copyfileobj(stream, sink, 4 * 1024 * 1024)
     partial.replace(destination)
 
 
-def extract_named(archive, names, target):
-    target.mkdir(exist_ok=True)
-    with zipfile.ZipFile(archive) as bundle:
-        for name in names:
-            matches = [entry for entry in bundle.infolist()
-                       if Path(entry.filename.replace("\\", "/")).name == name
-                       and not entry.is_dir()]
-            require(len(matches) == 1, f"artifact must contain exactly one {name}")
-            require(matches[0].file_size <= 2 * 1024 * 1024,
-                    f"artifact metadata member is oversized: {name}")
-            output = target / name
-            if output.exists():
-                regular(output)
-                continue
-            partial = output.with_name(output.name + ".part")
-            if partial.exists():
-                regular(partial).unlink()
-            with bundle.open(matches[0]) as source, partial.open("xb") as sink:
-                shutil.copyfileobj(source, sink, 4 * 1024 * 1024)
-            partial.replace(output)
-
-
-def decompress_zip_member(archive, member_name, output, archive_sha, image_sha):
-    """Use only ZIP plus qcow2 space; never materialize a second .zst copy."""
+def decompress_zst(source, output, archive_sha, image_sha):
+    """Use only the qcow2 space; never materialize a second uncompressed copy."""
     require(SHA.fullmatch(archive_sha) and SHA.fullmatch(image_sha), "invalid medium hashes")
+    regular(source)
     partial = output.with_name(output.name + ".part")
     require(not output.exists(), f"uncheckpointed medium already exists: {output}")
     if partial.exists():
         regular(partial).unlink()
-    with zipfile.ZipFile(archive) as bundle:
-        matches = [entry for entry in bundle.infolist()
-                   if Path(entry.filename.replace("\\", "/")).name == member_name
-                   and not entry.is_dir()]
-        require(len(matches) == 1, f"artifact must contain exactly one {member_name}")
-        # The medium expands on the same volume as the ZIP. Keep room for the
-        # installed sparse VM while this verified qcow2 is materialized.
-        free_space(output.parent, max(MIN_FREE, matches[0].file_size * 4))
-        compressed_sha = hashlib.sha256()
-        with bundle.open(matches[0]) as compressed, partial.open("xb") as sink:
-            process = subprocess.Popen(["zstd", "--decompress", "--stdout"],
-                                       stdin=subprocess.PIPE, stdout=sink)
-            try:
-                for block in iter(lambda: compressed.read(4 * 1024 * 1024), b""):
-                    compressed_sha.update(block)
-                    process.stdin.write(block)
-                process.stdin.close()
-                require(process.wait() == 0, "zstd decompression failed")
-            except BaseException:
-                process.kill()
-                process.wait()
-                raise
-        require(compressed_sha.hexdigest() == archive_sha
-                and digest(partial) == image_sha,
-                "CI medium archive or decompressed qcow2 hash differs")
+    free_space(output.parent, max(MIN_FREE, source.stat().st_size * 4))
+    compressed_sha = hashlib.sha256()
+    with source.open("rb") as compressed, partial.open("xb") as sink:
+        process = subprocess.Popen(["zstd", "--decompress", "--stdout"],
+                                   stdin=subprocess.PIPE, stdout=sink)
+        try:
+            for block in iter(lambda: compressed.read(4 * 1024 * 1024), b""):
+                compressed_sha.update(block)
+                process.stdin.write(block)
+            process.stdin.close()
+            require(process.wait() == 0, "zstd decompression failed")
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+    require(compressed_sha.hexdigest() == archive_sha and digest(partial) == image_sha,
+            "WHPX medium archive or decompressed qcow2 hash differs")
     partial.replace(output)
 
 
@@ -279,7 +211,7 @@ def medium_path(work, profile):
     return work / profile / f"tilo-installer-{profile}-aarch64.qcow2"
 
 
-def verify_identity(data, work, profile, imager_id, imager_revision):
+def verify_identity(data, work, profile):
     spec = importlib.util.spec_from_file_location("windows_direct_provenance",
                                                   HERE / "windows-direct-provenance.py")
     provenance = importlib.util.module_from_spec(spec)
@@ -288,13 +220,12 @@ def verify_identity(data, work, profile, imager_id, imager_revision):
         identity_path(work, profile), proof_path(work, profile), data["verify_key"],
         data["cosign_command_json"], data["cosign_key_arg"])
     expected = data["lenovo_image"] if profile == "lenovo-83ed" else None
-    require(identity["run_id"] == str(imager_id)
-            and identity["build_revision"] == imager_revision
+    require(identity["build_revision"] == data["source_revision"]
             and identity.get("os_source_revision", identity["build_revision"])
             == data["source_revision"]
             and identity["live_base_image"] == data["generic_image"]
             and (expected is None or identity["target_image"] == expected),
-            f"signed {profile} medium differs from pinned CI runs or images")
+            f"signed {profile} medium differs from the pinned source or images")
     return identity
 
 
@@ -329,49 +260,38 @@ def verify_ci_images(data, identities):
 
 
 def fetch(data, work, progress):
-    record = fgj_run(data["imager_run"])
-    require(record.get("workflow_id") == "release-imager.yml", "wrong imager workflow")
-    imager_id = record.get("id")
-    require(type(imager_id) is int and imager_id > 0, "imager internal run ID is invalid")
-    imager_revision = record.get("commit_sha")
-    require(type(imager_revision) is str and REV.fullmatch(imager_revision),
-            "imager checkout revision is invalid")
+    outputs = Path(data["medium_outputs"])
+    require(outputs.is_absolute() and outputs.is_dir(), "medium_outputs is not a directory")
+    whpx = outputs / "whpx"
+    cycle = outputs / "cycle" / "guest-install-proof.json"
+    require(whpx.is_dir(), "medium_outputs holds no whpx/ directory")
     for profile in PROFILES:
         directory = work / profile
         ci = directory / "ci"
         ci.mkdir(parents=True, exist_ok=True)
         medium = medium_path(work, profile)
+        stem = f"tilo-installer-{profile}-aarch64"
         if progress.done("medium-" + profile, [medium]):
-            identity = verify_identity(data, work, profile, imager_id, imager_revision)
+            identity = verify_identity(data, work, profile)
             require(progress.data["steps"]["medium-" + profile][str(medium)]
                     == identity["qcow2_sha256"],
-                    "retained medium checkpoint differs from signed CI identity")
+                    "retained medium checkpoint differs from the signed identity")
             continue
         free_space(directory)
-        name = f"tilo-{profile}-whpx-installer-{data['source_revision']}"
-        archive = directory / "medium.zip"
-        download_artifact(data["imager_run"], name, archive)
-        stem = f"tilo-installer-{profile}-aarch64"
-        extract_named(archive, [stem + ".qcow2.zst.sha256", stem + ".qcow2.sha256",
-                                stem + ".whpx-source.json",
-                                stem + ".whpx-source.json.sig", stem + ".whpx-source.json.bundle"], ci)
-        cycle = directory / "cycle.zip"
-        download_artifact(data["imager_run"], f"tilo-installer-full-cycle-aarch64-{profile}", cycle)
-        extract_named(cycle, ["guest-install-proof.json"], ci)
-        identity = verify_identity(data, work, profile, imager_id, imager_revision)
+        for name in (stem + ".qcow2.zst", stem + ".qcow2.zst.sha256", stem + ".qcow2.sha256",
+                     stem + ".whpx-source.json", stem + ".whpx-source.json.sig",
+                     stem + ".whpx-source.json.bundle"):
+            copy_output(whpx / name, ci / name)
+        copy_output(cycle, ci / "guest-install-proof.json")
+        identity = verify_identity(data, work, profile)
         require((ci / (stem + ".qcow2.zst.sha256")).read_text().split()[0]
                 == identity["archive_sha256"]
                 and (ci / (stem + ".qcow2.sha256")).read_text().split()[0]
                 == identity["qcow2_sha256"], f"{profile} medium archive hash differs")
-        decompress_zip_member(archive, stem + ".qcow2.zst", medium,
-                              identity["archive_sha256"], identity["qcow2_sha256"])
+        decompress_zst(ci / (stem + ".qcow2.zst"), medium,
+                       identity["archive_sha256"], identity["qcow2_sha256"])
         progress.mark("medium-" + profile, [medium])
-        # The signed identity, sidecars and native CI proof remain. The two
-        # ZIPs are redundant once the exact qcow2 has a durable checkpoint.
-        archive.unlink()
-        cycle.unlink()
-    return {profile: verify_identity(data, work, profile, imager_id, imager_revision)
-            for profile in PROFILES}
+    return {profile: verify_identity(data, work, profile) for profile in PROFILES}
 
 
 def backend(data, script, *args):
@@ -478,9 +398,10 @@ def common_evidence(data, work):
 
 def prepare(data, work, progress):
     identities = fetch(data, work, progress)
-    require(identities["generic"]["run_attempt"] == identities["lenovo-83ed"]["run_attempt"]
+    require(identities["generic"]["build_revision"]
+            == identities["lenovo-83ed"]["build_revision"]
             and identities["generic"]["target_image"].startswith(PUBLIC),
-            "signed media are not one paired imager attempt")
+            "signed media are not one paired build")
     verify_ci_images(data, identities)
     generic_source = work / "generic" / "generic-source.raw"
     require(data["source_raw"] != generic_source,
@@ -617,8 +538,7 @@ def main(argv=None):
         else:
             bootnext(work, progress, args.imager)
         return 0
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError,
-            zipfile.BadZipFile) as error:
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
