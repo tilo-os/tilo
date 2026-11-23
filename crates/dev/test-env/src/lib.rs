@@ -21,6 +21,8 @@ mod desktop;
 #[cfg(target_os = "linux")]
 pub mod disk_sync;
 pub mod environment;
+#[cfg(target_os = "linux")]
+pub mod file_mode;
 mod fixture;
 pub mod hang;
 pub mod held;
