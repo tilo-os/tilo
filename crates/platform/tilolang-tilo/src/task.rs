@@ -41,18 +41,19 @@ use serde_json::{Value as Json, json};
 use tilolang_runtime::catalogue::SignatureKind;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::ids::{DocId, RunId, TypeId};
-use tilolang_runtime::meta::{Meta, PackageMeta, parse_ty};
+use tilolang_runtime::meta::{Meta, PackageMeta};
 use tilolang_runtime::program::{ProgramOutcome, Session};
 use tilolang_runtime::run::Journal;
 use tilolang_runtime::store::{
     Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewResource, OutboxEntry,
     Store, StoreError, SubId, Txn, Version, field_json, field_of,
 };
-use tilolang_runtime::value::{ResourceRef, Value, from_json};
+use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{ActionInfo, Actor, Authority, Decision, ModuleHash, Runtime};
 
 use crate::bundle::Bundle;
-use crate::host::{Host, argument_json};
+use crate::call::Callees;
+use crate::host::Host;
 use crate::meta::MetaExt as _;
 use crate::native::Native;
 use crate::publish::{package_resource_id, resource_id};
@@ -266,11 +267,13 @@ impl TaskSession {
         let steps = Rc::new(RefCell::new(Steps::default()));
         runtime.set_invoker(ApiInvoker {
             api: Rc::clone(api),
-            apps,
-            published,
-            addresses: crate::platform_apps::session_addresses()?,
+            callees: Callees {
+                apps,
+                native,
+                published,
+                addresses: crate::platform_apps::session_addresses()?,
+            },
             steps: Rc::clone(&steps),
-            native,
         });
         let asked = Rc::clone(api);
         runtime.set_reader(move |request| {
@@ -549,58 +552,21 @@ fn first_param_type(text: &str) -> Option<&str> {
 /// Sends a program's invocations through the API, or in a provisional run lists them.
 struct ApiInvoker {
     api: Rc<dyn TaskApi>,
-    apps: HashMap<String, Meta>,
-    /// The native apps among them, which a program invokes on their own documents.
-    native: Rc<Native>,
-    /// The platform's apps, whose resources the session publishes under their own ids.
-    published: std::collections::HashSet<String>,
-    /// The resource each of the session's loose actions is published on, by the action's id.
-    addresses: std::collections::BTreeMap<String, String>,
+    callees: Callees,
     steps: Rc<RefCell<Steps>>,
-}
-
-impl ApiInvoker {
-    /// The id the session publishes the resource `r` under, as a published action takes it: a
-    /// resource of one of the platform's apps (a window) by its own id, a tilolang app's by its
-    /// app and its id in its document (`tl:so.tilo.notes:<id>`). `r`'s type names the app:
-    /// a type of a package this task holds by its id, any other as `<app>#<Type>`.
-    fn published_id(&self, r: &ResourceRef) -> String {
-        let id = r.id_string();
-        let app = match r.ty.as_str().split_once('#') {
-            Some((app, _)) => Some(app.to_owned()),
-            None => self
-                .apps
-                .values()
-                .find(|meta| meta.types.iter().any(|ty| ty.id == r.ty.as_str()))
-                .map(|meta| meta.app.clone()),
-        };
-        match app {
-            Some(app) if !self.published.contains(&app) => resource_id(&app, &id),
-            _ => id,
-        }
-    }
 }
 
 impl Invoker for ApiInvoker {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         let app = invocation.app();
-        let Some(meta) = self.apps.get(app) else {
-            return Invoked::Refused(format!("this task may use no app {app}"));
-        };
-        let published = self.published.contains(app);
+        let published = self.callees.published.contains(app);
+        let native = self.callees.native.is(app);
         // The document a native app publishes: where its steps are taken back, and what a
         // program names to invoke it.
-        let record = self.native.record(app);
-        let call = if published {
-            published_call(meta, invocation, &self.addresses, |r| self.published_id(r))
-        } else if self.native.is(app) {
-            native_call(&self.apps, meta, record, invocation)
-        } else {
-            call_of(&self.apps, meta, invocation)
-        };
-        let call = match call {
+        let record = self.callees.native.record(app);
+        let mut call = match self.callees.call(invocation) {
             Ok(call) => call,
-            Err(why) => return Invoked::Failed(why),
+            Err(answer) => return self.callees.answered(invocation, answer),
         };
         // A native app's resources are the ids its own document holds; a tilolang app's are its
         // document's, under the app.
@@ -608,7 +574,7 @@ impl Invoker for ApiInvoker {
             .resources()
             .iter()
             .map(|r| {
-                if published || self.native.is(app) {
+                if published || native {
                     r.id_string()
                 } else {
                     resource_id(app, &r.id_string())
@@ -629,9 +595,8 @@ impl Invoker for ApiInvoker {
             return Invoked::Done(Value::Unit);
         }
         // A native app's resource beside its document is invoked by the id its directory lists.
-        let mut call = call;
         if !published
-            && self.native.is(app)
+            && native
             && let Some(named) = call.get("resource").and_then(Json::as_str)
         {
             match self.api.resource_id(app, named) {
@@ -643,40 +608,26 @@ impl Invoker for ApiInvoker {
                 Err(why) => return Invoked::Failed(why),
             }
         }
-        match self.api.invoke(&call) {
-            // An action that only reads or shows (`overview`, `search`) changes nothing of the
-            // workspace: it is no step, and nothing of it is taken back. What it showed is
-            // closed as it was opened, never undone.
-            Answered::Done(output) if reads_only(invocation) => {
-                match result_of(meta, invocation, &output) {
-                    Ok(result) => Invoked::Done(result),
-                    Err(why) => Invoked::Failed(why),
-                }
+        let answer = self.api.invoke(&call);
+        // An action that only reads or shows (`overview`, `search`) changes nothing of the
+        // workspace: it is no step, and nothing of it is taken back. What it showed is closed as
+        // it was opened, never undone.
+        if let Answered::Done(output) = &answer
+            && !reads_only(invocation)
+        {
+            let mut steps = self.steps.borrow_mut();
+            steps.done = steps.done.saturating_add(1);
+            if !steps.apps.iter().any(|known| known == app) {
+                steps.apps.push(app.to_owned());
             }
-            Answered::Done(output) => {
-                let mut steps = self.steps.borrow_mut();
-                steps.done = steps.done.saturating_add(1);
-                if !steps.apps.iter().any(|known| known == app) {
-                    steps.apps.push(app.to_owned());
-                }
-                let at = self.history_at(app, &call, published, record, &output);
-                // One app's change may have gone to more than one of its documents: each is a
-                // place its step is taken back on.
-                if !steps.history.iter().any(|held| held == &at) {
-                    steps.history.push(at);
-                }
-                drop(steps);
-                match result_of(meta, invocation, &output) {
-                    Ok(result) => Invoked::Done(result),
-                    // It ran, and the program cannot go on with what it answered: said so,
-                    // rather than going on with nothing in its place.
-                    Err(why) => Invoked::Failed(why),
-                }
+            let at = self.history_at(app, &call, published, record, output);
+            // One app's change may have gone to more than one of its documents: each is a
+            // place its step is taken back on.
+            if !steps.history.iter().any(|held| held == &at) {
+                steps.history.push(at);
             }
-            Answered::Failed(why) => Invoked::Failed(why),
-            Answered::Refused(why) => Invoked::Refused(why),
-            Answered::Asks(why) => Invoked::Asks(why),
         }
+        self.callees.answered(invocation, answer)
     }
 }
 
@@ -699,7 +650,7 @@ impl ApiInvoker {
             call.get("resource")
                 .and_then(Json::as_str)
                 .map_or_else(|| package_resource_id(app), str::to_owned)
-        } else if self.native.is(app) {
+        } else if self.callees.native.is(app) {
             let named = call
                 .get("resource")
                 .and_then(Json::as_str)
@@ -728,28 +679,6 @@ impl ApiInvoker {
     }
 }
 
-/// Whether the parameter `name` of the action `action` of `meta` is a flag (`Bool`, or an
-/// optional one).
-fn declared_flag(meta: &Meta, action: &str, name: &str) -> bool {
-    meta.actions
-        .iter()
-        .find(|declared| declared.id == action)
-        .and_then(|declared| declared.params.iter().find(|param| param.name == name))
-        .and_then(|param| {
-            tilo_failure::ignored!(
-                "a type this cannot read is no flag; the action still checks the value",
-                parse_ty(&param.ty, &meta.app).ok()
-            )
-        })
-        .is_some_and(|ty| match ty {
-            tilolang_runtime::meta::Ty::Bool => true,
-            tilolang_runtime::meta::Ty::Option(inner) => {
-                matches!(*inner, tilolang_runtime::meta::Ty::Bool)
-            }
-            _ => false,
-        })
-}
-
 /// Whether `invocation` only reads or shows: an action declared `read` (a surface opened or
 /// closed, a search run), which changes no resource.
 fn reads_only(invocation: &Invocation) -> bool {
@@ -760,121 +689,6 @@ fn reads_only(invocation: &Invocation) -> bool {
             ..
         }
     )
-}
-
-/// The API's call for `invocation` of the platform's package `meta`: its declared verb on the
-/// resource the session publishes it as (`shell:layout`), with every other argument as the
-/// published action takes it, by name, a resource by the id `published_id` gives it. The call
-/// says it is the session's (`published`), which the API sends to the session's own provider. A
-/// loose action (the session's `place`) goes to the resource `addresses` says it is published on.
-fn published_call(
-    meta: &Meta,
-    invocation: &Invocation,
-    addresses: &std::collections::BTreeMap<String, String>,
-    published_id: impl Fn(&ResourceRef) -> String,
-) -> Result<Json, String> {
-    let Invocation::Action {
-        app,
-        action,
-        args,
-        target,
-        from,
-        ..
-    } = invocation
-    else {
-        return Err(format!(
-            "{} publishes its resources' fields read-only; change them through its actions",
-            meta.title
-        ));
-    };
-    // A platform package's action is its published verb, by the same id (`show-surface`).
-    let resource = match target {
-        Some(target) => target.id_string(),
-        None => addresses
-            .get(action)
-            .cloned()
-            .filter(|_| app == crate::platform_apps::SESSION_APP)
-            .ok_or_else(|| format!("`{action}` of {app} names no resource it is published on"))?,
-    };
-    let mut arguments = serde_json::Map::new();
-    for (name, value) in args {
-        if matches!(value, Value::Ref(r) if r.target.id_string() == resource) {
-            continue;
-        }
-        // An optional argument given as `.none` is not sent: the published action's own default
-        // holds. One given as `.some(x)` is sent as `x`, as the published action takes it.
-        let value = match value {
-            Value::Opt(None) => continue,
-            Value::Opt(Some(inner)) => inner.as_ref(),
-            other => other,
-        };
-        let json = match value {
-            Value::Ref(r) => json!(published_id(&r.target)),
-            // A flag travels as the integer the guest boxed it as; the published action takes
-            // it as the flag its parameter declares.
-            Value::Int(n) if declared_flag(meta, action, name) => json!(*n != 0),
-            other => tilolang_runtime::value::to_argument(other)
-                .map_err(|error| format!("`{name}` does not send: {error}"))?,
-        };
-        arguments.insert(name.clone(), json);
-    }
-    made_from(from.as_ref(), &mut arguments, &published_id);
-    Ok(json!({
-        "app": app,
-        "resource": resource,
-        "action": action,
-        "arguments": arguments,
-        "published": true,
-    }))
-}
-
-/// What the invocation is made from, when it is made from something, among the arguments the
-/// api takes: the key [`tilo_actions::params::FROM_ARGUMENT`], as the reference a caller names
-/// its source with.
-fn made_from(
-    from: Option<&ResourceRef>,
-    arguments: &mut serde_json::Map<String, Json>,
-    published: impl Fn(&ResourceRef) -> String,
-) {
-    if let Some(from) = from {
-        arguments.insert(
-            tilo_actions::params::FROM_ARGUMENT.to_owned(),
-            json!({"ref": published(from), "ty": from.ty}),
-        );
-    }
-}
-
-/// The `arguments` of the action `action` declared by `meta`: each of `args` (past the first
-/// one, when it is the resource the action is on) by its parameter's name, as the API takes it
-/// ([`argument_json`]). `apps` holds every package an argument's type may name.
-fn arguments_of(
-    apps: &HashMap<String, Meta>,
-    meta: &Meta,
-    action: &str,
-    args: &[(String, Value)],
-    target: bool,
-) -> Result<Json, String> {
-    let declared = meta
-        .actions
-        .iter()
-        .find(|declared| declared.id == action)
-        .ok_or_else(|| format!("{} declares no action {action}", meta.app))?;
-    let mut arguments = serde_json::Map::new();
-    for (name, value) in args.iter().skip(usize::from(target)) {
-        let param = declared
-            .params
-            .iter()
-            .find(|param| param.name == *name)
-            .ok_or_else(|| format!("{action} takes no argument `{name}`"))?;
-        let ty = parse_ty(&param.ty, &meta.app)?;
-        let owner = |other: &str| {
-            apps.get(other)
-                .cloned()
-                .ok_or_else(|| format!("this task may use no app {other}"))
-        };
-        arguments.insert(name.clone(), argument_json(&owner, meta, value, &ty)?);
-    }
-    Ok(Json::Object(arguments))
 }
 
 /// The collection whose part keeps the item `resource` names (`notes.pages/pages/<id>` is
@@ -888,198 +702,6 @@ fn collection_of(resource: &str) -> Option<String> {
         }
         let (head, _) = at.rsplit_once('/')?;
         at = head;
-    }
-}
-
-/// The API's call for `invocation` of the native app `meta`: its declared verb, as the app's
-/// own api names it, on the resource the program named (the action's own document, or an item of
-/// it), with the arguments the app takes. A field assignment is the app's own `field-edit` of
-/// its document. Either is the task's invocation of the app, decided and undone as every other
-/// call of its actions: the app keeps the step.
-fn native_call(
-    apps: &HashMap<String, Meta>,
-    meta: &Meta,
-    record: Option<&str>,
-    invocation: &Invocation,
-) -> Result<Json, String> {
-    let app = meta.app.as_str();
-    match invocation {
-        Invocation::Action {
-            action,
-            args,
-            target,
-            from,
-            ..
-        } => {
-            let Some(record) = record else {
-                return Err(format!(
-                    "{app} publishes no document a program names its actions on"
-                ));
-            };
-            // The resource the app's own api takes: the one the program named the action on,
-            // else the document the app publishes.
-            let resource = target
-                .as_ref()
-                .map_or_else(|| record.to_owned(), ResourceRef::id_string);
-            let mut arguments = arguments_of(apps, meta, action, args, target.is_some())?;
-            if let Json::Object(arguments) = &mut arguments {
-                made_from(from.as_ref(), arguments, ResourceRef::id_string);
-            }
-            Ok(json!({
-                "app": app,
-                "resource": resource,
-                "action": crate::catalogue::published_verb(app, action),
-                "arguments": arguments,
-            }))
-        }
-        Invocation::Edit {
-            field,
-            field_id,
-            value,
-            target,
-            ..
-        } => {
-            let Some(record) = record else {
-                return Err(format!(
-                    "{app} publishes no document a program sets the fields of"
-                ));
-            };
-            if target.item.is_some() {
-                return Err(format!(
-                    "a program sets {app}'s own document fields; what its items hold changes through its actions"
-                ));
-            }
-            let key = field_id
-                .split_once('.')
-                .map_or(field_id.as_str(), |(_, key)| key);
-            // A text field takes the smallest splice of the text it holds; a flag is set whole.
-            let op = match value {
-                Value::Text(text) => json!({"op": "replace", "text": text}),
-                Value::Bool(flag) => json!({"op": "set", "value": flag}),
-                _ => {
-                    return Err(format!(
-                        "a program sets text and flag fields; `{field}` changes through {app}'s actions"
-                    ));
-                }
-            };
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(
-                tilo_resource::EDIT_PARAM.to_owned(),
-                json!({"path": [{"field": key}], "op": op}),
-            );
-            Ok(json!({
-                "app": app,
-                "resource": record,
-                "action": tilo_resource::FIELD_EDIT,
-                "arguments": arguments,
-            }))
-        }
-    }
-}
-
-/// The API's call for `invocation` of the package `meta`: a declared action on its target
-/// (its first parameter, when it is one of the package's types) or on the package, its other
-/// arguments by name; a field edit on its resource.
-fn call_of(
-    apps: &HashMap<String, Meta>,
-    meta: &Meta,
-    invocation: &Invocation,
-) -> Result<Json, String> {
-    match invocation {
-        Invocation::Action {
-            app,
-            action,
-            args,
-            from,
-            ..
-        } => {
-            let declared = meta
-                .actions
-                .iter()
-                .find(|declared| declared.id == *action)
-                .ok_or_else(|| format!("{app} declares no action {action}"))?;
-            let target = meta.target_of(&declared.params);
-            let target = target.and_then(|_| args.first());
-            let resource = match target {
-                Some((_, Value::Ref(r))) => resource_id(app, &r.target.id_string()),
-                _ => package_resource_id(app),
-            };
-            let mut arguments = arguments_of(apps, meta, action, args, target.is_some())?;
-            if let Json::Object(arguments) = &mut arguments {
-                made_from(from.as_ref(), arguments, ResourceRef::id_string);
-            }
-            Ok(json!({
-                "app": app,
-                "resource": resource,
-                // As the app's api publishes it: by its name.
-                "action": declared.name,
-                "arguments": arguments,
-            }))
-        }
-        Invocation::Edit {
-            app,
-            target,
-            field,
-            value,
-            ..
-        } => {
-            let (action, value) = match value {
-                Value::Text(text) => (crate::action::EDIT_TEXT_ACTION, json!(text)),
-                Value::Bool(flag) => (crate::action::EDIT_FLAG_ACTION, json!(flag)),
-                _ => {
-                    return Err(format!(
-                        "a program sets text and flag fields; `{field}` changes through {}'s actions",
-                        app.rsplit('.').next().unwrap_or(app)
-                    ));
-                }
-            };
-            // The edit verbs take a field by its name, as the surface offers it; the binding
-            // refuses an id the verb does not offer, and the program named the field by name.
-            Ok(json!({
-                "app": app,
-                "resource": resource_id(app, &target.id_string()),
-                "action": action,
-                // The field as its type names it, which the API's edit takes.
-                "arguments": {"field": field, "value": value},
-            }))
-        }
-    }
-}
-
-/// What an invocation of `meta`'s action answered (`{value, resources}`), as the program gets
-/// it: a document result as the resource the app says it returned, any other as its value.
-fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Result<Value, String> {
-    let Invocation::Action { action, .. } = invocation else {
-        return Ok(Value::Unit);
-    };
-    let Some(result) = meta
-        .actions
-        .iter()
-        .find(|declared| declared.id == *action)
-        .and_then(|declared| declared.result.clone())
-    else {
-        return Ok(Value::Unit);
-    };
-    if let Some(declared) = meta.type_named(&result) {
-        let prefix = resource_id(&meta.app, "");
-        return output["resources"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Json::as_str)
-            .find_map(|id| ResourceRef::parse_id(id.strip_prefix(&prefix)?, declared.id.clone()))
-            .map(|at| Value::resource(&at))
-            .ok_or_else(|| {
-                format!(
-                    "the action ran but did not answer the {} it returns: {output}",
-                    declared.name
-                )
-            });
-    }
-    match output.get("value") {
-        None | Some(Json::Null) => Ok(Value::Unit),
-        Some(value) => from_json(value)
-            .map_err(|error| format!("the action ran but its answer does not decode: {error}")),
     }
 }
 
@@ -1617,11 +1239,12 @@ mod tests {
         (
             ApiInvoker {
                 api,
-                apps: HashMap::from([(meta.app.clone(), meta)]),
-                published: std::collections::HashSet::new(),
-                addresses: std::collections::BTreeMap::new(),
+                callees: Callees {
+                    apps: HashMap::from([(meta.app.clone(), meta)]),
+                    native,
+                    ..Callees::default()
+                },
                 steps: Rc::clone(&steps),
-                native,
             },
             steps,
         )

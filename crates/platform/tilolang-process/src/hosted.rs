@@ -1974,24 +1974,35 @@ impl Hosted {
     /// apis, each as that app's action on its resource: a change comes back as its next reading.
     fn send_asks(&self) {
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
+        if asks.is_empty() {
+            return;
+        }
+        let metas = self.bundle.imports.iter().map(|import| &import.meta);
+        let callees = tilolang_tilo::call::Callees {
+            apps: metas
+                .chain([&self.bundle.meta])
+                .map(|meta| (meta.app.clone(), meta.clone()))
+                .collect(),
+            ..Default::default()
+        };
         for invocation in asks {
-            let Some((app, resource, action, argument)) = api_ask(&invocation) else {
-                tracing::warn!(
-                    app = self.spec.app,
-                    ?invocation,
-                    "a change of another app names no resource of it"
-                );
+            let Ok(call) = callees.call(&invocation).inspect_err(|why| {
+                tracing::warn!(app = self.spec.app, ?why, "no app takes this change");
+            }) else {
                 continue;
             };
+            let field = |key: &str| call.get(key).cloned().unwrap_or_default();
+            let text = |key: &str| field(key).as_str().unwrap_or_default().to_owned();
+            let (app, argument) = (text("app"), field("arguments").as_object().cloned());
             let request = tilo_actions::remote::InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::application_action_target(
                     &self.spec.workspace,
                     &app,
-                    resource,
-                    action,
+                    text("resource"),
+                    text("action"),
                 ),
-                argument,
+                argument: tilo_actions::remote::InvokeArgument::Json(argument.unwrap_or_default()),
                 context: None,
                 confirmation: None,
                 revision: None,
@@ -2647,69 +2658,6 @@ impl tilolang_tilo::runtime::delegate::Invoker for Apis {
     ) -> tilolang_tilo::runtime::delegate::Invoked {
         self.0.borrow_mut().push(invocation.clone());
         tilolang_tilo::runtime::delegate::Invoked::Sent
-    }
-}
-
-/// `invocation` as its app's api takes it: the app, the resource, the action and its
-/// arguments. An action is invoked on its target, which its arguments leave out; an edit of a
-/// field is the resource's own field edit. `None` for an action that names no resource.
-fn api_ask(
-    invocation: &tilolang_tilo::runtime::delegate::Invocation,
-) -> Option<(String, String, String, tilo_actions::remote::InvokeArgument)> {
-    use tilolang_tilo::runtime::Value;
-    use tilolang_tilo::runtime::delegate::Invocation;
-    match invocation {
-        Invocation::Action {
-            app,
-            name,
-            target: Some(target),
-            from,
-            ..
-        } => {
-            let mut arguments = invocation.api_arguments();
-            if let Some(from) = from {
-                arguments.insert(
-                    tilo_actions::params::FROM_ARGUMENT.to_owned(),
-                    tilo_actions::params::MadeFrom {
-                        resource: from.id_string(),
-                        kind: from.ty.clone(),
-                    }
-                    .to_json(),
-                );
-            }
-            // The app's api takes it by the name it publishes it under.
-            Some((
-                app.to_string(),
-                target.id_string(),
-                name.clone(),
-                tilo_actions::remote::InvokeArgument::Json(arguments),
-            ))
-        }
-        Invocation::Action { .. } => None,
-        Invocation::Edit {
-            app,
-            target,
-            field,
-            value,
-            ..
-        } => {
-            let action = match value {
-                Value::Bool(_) => tilolang_tilo::action::EDIT_FLAG_ACTION,
-                _ => tilolang_tilo::action::EDIT_TEXT_ACTION,
-            };
-            let value = tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default();
-            let arguments = serde_json::Map::from_iter([
-                // The field as its type names it, which the API's edit takes.
-                ("field".to_owned(), field.clone().into()),
-                ("value".to_owned(), value),
-            ]);
-            Some((
-                app.to_string(),
-                target.id_string(),
-                action.to_owned(),
-                tilo_actions::remote::InvokeArgument::Json(arguments),
-            ))
-        }
     }
 }
 

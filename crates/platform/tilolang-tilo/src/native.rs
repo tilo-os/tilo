@@ -46,6 +46,7 @@ use tilolang_runtime::store::field_json;
 /// ([`crate::catalogue::described`] reads what such an app publishes, not how it runs), with the
 /// record it publishes. A program names that document, invokes the app's verbs on it and assigns
 /// its fields; what the document holds it reads through the app ([`NativeReads`]).
+#[derive(Default)]
 pub struct Native {
     /// The app's package, by app id: what its surface declares.
     apps: BTreeMap<String, PackageMeta>,
