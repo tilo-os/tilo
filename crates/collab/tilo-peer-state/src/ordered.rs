@@ -60,6 +60,13 @@ impl<K: Ord, V: Eq> Eq for Ordered<K, V> {}
 /// What one key holds in two copies of a map, where they differ.
 pub(crate) struct Change<'a, K, V> {
     pub(crate) key: &'a K,
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            dead_code,
+            reason = "the journal that reads it is the host's own file record"
+        )
+    )]
     pub(crate) before: Option<&'a V>,
     pub(crate) after: Option<&'a V>,
 }

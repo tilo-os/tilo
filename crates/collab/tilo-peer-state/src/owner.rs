@@ -16,7 +16,9 @@ pub(crate) mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 mod history_content;
 mod history_keys;
+#[cfg(not(target_arch = "wasm32"))]
 mod journal;
+#[cfg(not(target_arch = "wasm32"))]
 mod journaled;
 pub(crate) mod limits;
 mod publication;
@@ -656,6 +658,7 @@ impl NativeWorkspaceOwner {
     /// entry carries what that write changed. `false` when the workspace is
     /// not held here or its replica encodes other bytes: the store writes a
     /// snapshot first then.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn resume_journal(
         &self,
         workspace: WorkspaceId,
