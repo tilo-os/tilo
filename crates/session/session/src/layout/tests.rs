@@ -591,7 +591,6 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
             ),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );
@@ -768,7 +767,6 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
             tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );
@@ -929,7 +927,6 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
             tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );
@@ -1070,7 +1067,6 @@ fn a_step_kept_for_the_workspace_leaves_a_window_that_came_since_as_it_shows() {
             tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );
@@ -1179,7 +1175,6 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
             ),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );
@@ -1298,7 +1293,6 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
             ),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );
@@ -1457,7 +1451,6 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
             tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );
@@ -1707,7 +1700,6 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
                 tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key.clone()),
                 Some(state.path()),
                 std::iter::empty(),
-                crate::platform::membership_check::of_this_session(),
             )
             .expect("this device's engine opens"),
         )
@@ -1863,7 +1855,6 @@ fn a_view_write_that_waits_is_no_refusal_and_waits_for_the_record_to_move() {
             ),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );
@@ -1990,7 +1981,6 @@ fn a_layout_that_cannot_be_read_settles_the_looks_until_the_workspaces_move() {
             tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );

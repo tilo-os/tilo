@@ -54,7 +54,6 @@ fn engine_of(
         tilo_network_actor::DeviceIdentity::kept(cert.clone(), key.clone()),
         Some(state),
         listed,
-        crate::platform::membership_check::of_this_session(),
     )
     .expect("the device's engine opens")
 }

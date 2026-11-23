@@ -370,11 +370,7 @@ pub(crate) fn open_engine(
             .map(tilo_desktop_model::Workspace::id)
             .collect()
     });
-    match engine::Engine::for_this_device(
-        options.state.as_deref(),
-        workspaces,
-        crate::platform::membership_check::of_this_session(),
-    ) {
+    match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
         Ok(engine) => Some(std::sync::Arc::new(engine)),
         Err(error) => {
             tracing::warn!(%error, "this session holds no workspaces");

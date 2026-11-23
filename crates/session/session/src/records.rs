@@ -433,7 +433,6 @@ pub(crate) mod testing {
                     tilo_identity::identity_store::DeviceIdentity::kept(cert, key),
                     Some(state.path()),
                     std::iter::empty(),
-                    crate::platform::membership_check::of_this_session(),
                 )
                 .expect("this device's engine opens"),
             );

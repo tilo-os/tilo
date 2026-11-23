@@ -1905,13 +1905,8 @@ mod tests {
         identity: &tilo_identity::identity_store::DeviceIdentity,
     ) -> Device {
         let engine = Arc::new(
-            Engine::open(
-                identity.clone(),
-                Some(state.path()),
-                Vec::new(),
-                crate::platform::membership_check::of_this_session(),
-            )
-            .expect("this device's engine opens"),
+            Engine::open(identity.clone(), Some(state.path()), Vec::new())
+                .expect("this device's engine opens"),
         );
         let service = crate::founding_fixture::serve(&engine);
         Device { engine, service }

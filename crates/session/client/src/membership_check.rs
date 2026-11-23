@@ -1,9 +1,4 @@
-//! Whether this device still owns a workspace, as its host checks it.
-//!
-//! The owner of a workspace commits only what this device still owns: a device the
-//! workspace removed, or whose certificate ran out, finds out before it commits. Each host keeps
-//! its own proof of that — this desktop's signed ownership over the peer network, a page's
-//! over its own transport.
+//! What a session's peer keeps of a device's workspace between sessions.
 //!
 //! A session's [`PeerStore`] is what a peer keeps between sessions. The device key itself never passes through here: it lives behind a
 //! [`DeviceSigner`](tilo_server_client::DeviceSigner) (a non-extractable
@@ -17,25 +12,10 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity::identity_store::DeviceIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 use tilo_user_identity::DeviceCert;
-
-/// The check a host makes before this device commits to a workspace it holds.
-pub trait MembershipCheck: collab_types::signer::MaybeSendSync {
-    /// Whether this device still owns `workspace` in `owner`.
-    ///
-    /// # Errors
-    /// Why this device may not commit to `workspace` now.
-    fn check(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        workspace: WorkspaceId,
-        identity: &DeviceIdentity,
-    ) -> Result<(), String>;
-}
 
 /// The durable part of a device's session.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,28 +386,6 @@ impl key_group::PeerStates for StoredKeys {
             saved.scopes.remove(&workspace);
         });
         Ok(())
-    }
-}
-
-/// A page's or agent's proof that it still owns a workspace: its host session
-/// authenticated this device's certificate, and its host refuses a commit under any other. The
-/// replica commits only while the workspace is held under that certificate.
-pub(crate) struct SessionMembership;
-
-impl MembershipCheck for SessionMembership {
-    fn check(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        workspace: WorkspaceId,
-        identity: &DeviceIdentity,
-    ) -> Result<(), String> {
-        owner.with_current(workspace, |view| {
-            if view.device() == &identity.device_cert {
-                Ok(())
-            } else {
-                Err("the workspace is held under another certificate of this device".to_owned())
-            }
-        })
     }
 }
 

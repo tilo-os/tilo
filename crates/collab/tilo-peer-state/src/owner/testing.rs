@@ -26,6 +26,21 @@ pub(crate) fn document_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBu
     crate::owner::file_store::document_files(path).unwrap()
 }
 
+/// The invoker a change `device` signs is made as: the person whose certificate
+/// certified `device`, as every claimed change names who made it.
+///
+/// # Panics
+/// `device` is not in `peer`'s roster.
+#[must_use]
+pub fn invoker_of(peer: &StatePeer, device: [u8; 32]) -> tilo_actions::ActionInvoker {
+    let cert = peer
+        .certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("a device of this workspace signs the change");
+    tilo_actions::ActionInvoker::person(hex::encode(cert.user_public_key))
+}
+
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub use tilo_app_id::apps::CHAT as APP;
 

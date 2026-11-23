@@ -109,13 +109,8 @@ fn workspace_signed_through(
         ),
         None => identity(&cert, &person_key),
     };
-    let engine = Engine::open(
-        identity,
-        Some(directory.path()),
-        std::iter::empty(),
-        crate::platform::membership_check::of_this_session(),
-    )
-    .expect("this device's engine opens");
+    let engine = Engine::open(identity, Some(directory.path()), std::iter::empty())
+        .expect("this device's engine opens");
     let governor = TestWorkspace::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
         .expect("this device governs its workspace");
     let mut governor = testing::enroll_into(governor, engine.owner(), &person_key, &cert)
@@ -232,7 +227,6 @@ fn the_owner_admitted_ada() -> TwoSessions {
         identity(&a_cert, &a_key),
         Some(a_state.path()),
         std::iter::empty(),
-        crate::platform::membership_check::of_this_session(),
     )
     .expect("the owner's engine opens");
     let mut governor = testing::enroll_into(governor, a_engine.owner(), &a_key, &a_cert)
@@ -246,7 +240,6 @@ fn the_owner_admitted_ada() -> TwoSessions {
         identity(&b_cert, &b_key),
         Some(b_state.path()),
         [workspace_id],
-        crate::platform::membership_check::of_this_session(),
     )
     .expect("this session's engine opens");
     governor = testing::enroll_into(governor, b_engine.owner(), &b_key, &b_cert)
@@ -1056,13 +1049,8 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
     let her_key = SigningKey::from_bytes(&[0x64; 32]);
     let her = testing::certificate(&her_root, &her_key, "ada");
     {
-        let engine = Engine::open(
-            identity(&cert, &key),
-            Some(state.path()),
-            [workspace_id],
-            crate::platform::membership_check::of_this_session(),
-        )
-        .expect("this computer's engine opens");
+        let engine = Engine::open(identity(&cert, &key), Some(state.path()), [workspace_id])
+            .expect("this computer's engine opens");
         the_fixture_governs(&engine, workspace_id);
         let governor =
             TestWorkspace::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
@@ -1242,21 +1230,11 @@ fn a_second_device(
 ) -> (Engine, tilo_user_identity::DeviceCert, SigningKey, String) {
     let her_key = SigningKey::from_bytes(&[0x72; 32]);
     let her = testing::certificate(&SigningKey::from_bytes(&[0x71; 32]), &her_key, "ada");
-    let hers = Engine::open(
-        identity(&her, &her_key),
-        Some(her_state),
-        [workspace_id],
-        crate::platform::membership_check::of_this_session(),
-    )
-    .expect("her engine opens");
+    let hers = Engine::open(identity(&her, &her_key), Some(her_state), [workspace_id])
+        .expect("her engine opens");
     // This computer's device governs the workspace, and admits her.
-    let mine = Engine::open(
-        identity(cert, key),
-        Some(state),
-        [workspace_id],
-        crate::platform::membership_check::of_this_session(),
-    )
-    .expect("this computer's engine opens");
+    let mine = Engine::open(identity(cert, key), Some(state), [workspace_id])
+        .expect("this computer's engine opens");
     // The workspace the session made is this computer's own already: a fixture host governs it
     // from here, and admits her device into it.
     the_fixture_governs(&mine, workspace_id);
@@ -1359,13 +1337,8 @@ fn her_device_takes(
     person: &str,
     now: tilo_clock::time::SystemTime,
 ) -> Option<Role> {
-    let mine = Engine::open(
-        identity(cert, key),
-        Some(state),
-        [workspace_id],
-        crate::platform::membership_check::of_this_session(),
-    )
-    .expect("this computer's engine opens");
+    let mine = Engine::open(identity(cert, key), Some(state), [workspace_id])
+        .expect("this computer's engine opens");
     let written = mine
         .owner()
         .frames(workspace_id)
@@ -1552,7 +1525,6 @@ fn an_agent_cannot_change_a_workspaces_people() {
         crate::sync::device_identity().expect("this computer is a device"),
         Some(state.path()),
         [workspace_id],
-        crate::platform::membership_check::of_this_session(),
     )
     .expect("this computer's engine opens");
     assert!(

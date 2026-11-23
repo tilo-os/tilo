@@ -420,7 +420,7 @@ fn session_task(
 }
 
 /// The engine a session writes its workspaces through: this device's identity, kept beside
-/// the signer, with the membership check and founders a workspace's session runs.
+/// the signer, with the founders a workspace's session runs.
 fn session_engine(
     config: &PeerConfig,
     signer: &Arc<dyn DeviceSigner>,
@@ -433,7 +433,6 @@ fn session_engine(
             config.cert.clone(),
             Arc::clone(signer),
         ),
-        Arc::new(crate::membership_check::SessionMembership),
         Arc::new(crate::engine::Founders::default()),
     ))
 }

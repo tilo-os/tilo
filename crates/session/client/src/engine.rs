@@ -41,7 +41,6 @@ use tilo_workspace_keys::{KeyAccess, KeyProvider};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::identity;
-use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
 pub use tilo_peer_state::workspace_view::{Holder, Hosting, NotDeletable};
 
@@ -401,7 +400,6 @@ impl Engine {
         owner: NativeWorkspaceOwner,
         shown: Arc<Shown>,
         identity: DeviceIdentity,
-        _ownership: Arc<dyn MembershipCheck>,
         founders: Arc<Founders>,
     ) -> Self {
         let keys = KeyProvider::default();
@@ -440,7 +438,6 @@ impl Engine {
         identity: DeviceIdentity,
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let state = state.ok_or("this session keeps no state, so it holds no workspace")?;
         let path = owner_path(state)?;
@@ -448,13 +445,7 @@ impl Engine {
             workspaces.into_iter().collect(),
         )));
         let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
-        let mut engine = Self::holding(
-            owner,
-            shown,
-            identity,
-            ownership,
-            Arc::new(Founders::default()),
-        );
+        let mut engine = Self::holding(owner, shown, identity, Arc::new(Founders::default()));
         engine.service_root = Some(state.join("tilo").join("workspace-service"));
         Ok(engine)
     }
@@ -465,11 +456,10 @@ impl Engine {
     pub fn for_this_device(
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let identity = identity::device_identity()
             .ok_or("this computer has no identity yet, so it holds no workspace")?;
-        Self::open(identity, state, workspaces, ownership)
+        Self::open(identity, state, workspaces)
     }
 
     /// Where this device's own workspace service keeps its workspaces; `None` for an engine that
@@ -1641,24 +1631,9 @@ mod tests {
         (identity, root)
     }
 
-    /// A host whose own proof of ownership this device's engine asks: these tests read what it asks
-    /// with, not the proof a desktop makes over the peer network.
-    struct Kept;
-
-    impl MembershipCheck for Kept {
-        fn check(
-            &self,
-            _owner: &NativeWorkspaceOwner,
-            _workspace: WorkspaceId,
-            _identity: &DeviceIdentity,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
     /// This device's engine, kept in `state` .
     fn engine(state: &Path, identity: DeviceIdentity) -> Engine {
-        Engine::open(identity, Some(state), Vec::new(), Arc::new(Kept)).expect("an engine")
+        Engine::open(identity, Some(state), Vec::new()).expect("an engine")
     }
 
     /// A workspace held on `engine` as a member, the device's person its owner: what founding it on

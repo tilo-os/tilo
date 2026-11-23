@@ -42,13 +42,8 @@ impl Device {
         let cert = test_server::certified(root, &key, label, DeviceCapabilities::member());
         let identity = tilo_network_actor::DeviceIdentity::kept(cert, key);
         let engine = std::sync::Arc::new(
-            Engine::open(
-                identity.clone(),
-                Some(state.path()),
-                std::iter::empty(),
-                crate::platform::membership_check::of_this_session(),
-            )
-            .expect("the session's engine opens"),
+            Engine::open(identity.clone(), Some(state.path()), std::iter::empty())
+                .expect("the session's engine opens"),
         );
         engine.attach_link(KeyLink::new());
         let questions = tilo_service::Questions::new();

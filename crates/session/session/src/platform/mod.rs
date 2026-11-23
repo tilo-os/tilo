@@ -37,9 +37,6 @@ pub mod invite;
 #[cfg(target_os = "linux")]
 pub mod directory;
 
-/// Whether this device still owns a workspace, as this desktop checks it.
-pub mod membership_check;
-
 /// The person's certified devices, as a role reaches them.
 #[cfg(target_os = "linux")]
 pub mod fabric;
