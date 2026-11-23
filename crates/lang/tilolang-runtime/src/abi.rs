@@ -91,7 +91,6 @@ imports! {
     (ListAvg, "list_avg", "i", "f"),
 
     (ListNew, "list_new", "", "i"),
-    (ListConcat, "list_concat", "ii", "i"),
     (ListPushI, "list_push_i", "il", ""),
     (ListPushF, "list_push_f", "if", ""),
     (ListPushH, "list_push_h", "ii", ""),

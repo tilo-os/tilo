@@ -195,10 +195,6 @@ impl<'a> Validator<'a> {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one arm per message a window takes, read side by side as the protocol lists them"
-    )]
     fn message(&self, message: &ToUi) -> Result<(), Refused> {
         match message {
             ToUi::Loading

@@ -101,9 +101,7 @@ impl Workspaces {
             .agent
             .is_none_or(|scope| scope.reaches(&workspace));
         if !reaches || own.owner_of(&workspace) != Some(person) {
-            return Err(ActionCallError::refused(
-                AdminRefusal::NotYourOwn.to_reason(),
-            ));
+            return Err(ActionCallError::refused(AdminRefusal::NotYourOwn.to_reason()));
         }
         let answer = |on: bool| json!({"workspace": workspace, "unattended": on});
         if !on || self.runs_unattended(&workspace) {
@@ -129,3 +127,4 @@ impl Workspaces {
         Ok(answer(true))
     }
 }
+

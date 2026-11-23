@@ -20,7 +20,6 @@
 //! its id for its original caller, checking that caller's grants as they stand then.
 
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
 
 use super::{ActionAddress, RemoteActionTarget};
 
@@ -94,38 +93,6 @@ impl Fact {
     }
 }
 
-/// One argument an action shows the person before they answer its ask, as
-/// its declaration names it: the parameter, optionally one field of it, and
-/// how its value reads. Admission fills the ask's [`Fact`]s from the call's
-/// arguments with these, so the card shows what the call would do without
-/// asking the app.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Shown {
-    /// The parameter, by its declared name; it is also the fact's label.
-    pub param: String,
-    /// One field of the parameter's value, when only that field is shown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub field: Option<String>,
-    #[serde(default)]
-    pub render: ShownAs,
-}
-
-/// How a shown value reads on the card.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ShownAs {
-    /// Plain text, cut when long.
-    #[default]
-    Text,
-    /// A list of addresses (mail recipients, members), each its own line.
-    Addresses,
-    /// A long value (a message body) shown folded, opened on request.
-    Long,
-    /// A value the person must not read on the card: shown withheld.
-    Secret,
-}
-
 /// Who a member is, by id and by the name the person knows them under.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -149,13 +116,6 @@ pub enum AskedBy {
     },
     /// A device of the person's, or the server that keeps their workspaces.
     Device(Named),
-    /// A program outside Tilo on the device (a Linux program reaching the session through the
-    /// desktop portal, polkit or `NetworkManager`), by its name and the app id it gives, if any.
-    Program {
-        name: String,
-        #[serde(default)]
-        app_id: Option<String>,
-    },
 }
 
 impl Default for AskedBy {
@@ -200,27 +160,12 @@ pub struct AskedFacts {
     /// The conversation a turn's question belongs to, by its address.
     #[serde(default)]
     pub conversation: Option<String>,
-    /// What the person types or records with their answer, in order: the approve carries one
-    /// entry per take ([`Resolve::typed`]).
+    /// The action whose own call by the person answers this, where what is asked is
+    /// something only they type (a password, a key): `<provider>/<resource>#<action>`. The
+    /// asking view opens its form, filled from [`Self::facts`], and their call of it is their
+    /// answer; nothing they type passes through the record.
     #[serde(default)]
-    pub takes: Vec<Take>,
-    /// The action whose own call by the person answers this, `<provider>/<resource>#<action>`,
-    /// where what they type is kept by that action (a password the vault keeps): the asking
-    /// view opens its form, filled from [`Self::facts`], and nothing they type passes through
-    /// the record.
-    #[serde(default)]
-    pub answered_by: Option<String>,
-    /// Why the answer before this one did not do (a password that did not open it), shown at
-    /// the takes. Each attempt is a record of its own.
-    #[serde(default)]
-    pub retry: Option<String>,
-    /// The files or folder the person picks with their answer, where the asker wants some.
-    #[serde(default)]
-    pub files: Option<FilesAsked>,
-    /// Whether the person picks any number of [`Self::choices`] ([`Resolve::chosen`]) rather
-    /// than one ([`Resolve::choice`]).
-    #[serde(default)]
-    pub many: bool,
+    pub takes: Option<String>,
     /// The resource type the action is on, by its id (`clocks.alarm`): what a grant given
     /// with the answer is scoped to. Empty where the call is on no resource type.
     #[serde(default)]
@@ -232,71 +177,7 @@ pub struct AskedFacts {
     pub effect: Option<crate::ActionKind>,
 }
 
-/// One thing the person types, or records, with their answer.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Take {
-    pub label: String,
-    /// Whether what is typed is a secret (a password, a passphrase): never written to the
-    /// record, its history or a log, handed only to the asker on the device that asked, and
-    /// never filled in beforehand. It may be answered empty.
-    #[serde(default)]
-    pub secret: bool,
-    /// Whether a secret is shown while it is typed.
-    #[serde(default)]
-    pub shown: bool,
-    /// What the field holds before the person types; never for a secret.
-    #[serde(default)]
-    pub initial: Option<String>,
-    /// Whether the person presses a key chord rather than typing (a shortcut).
-    #[serde(default)]
-    pub chord: bool,
-}
-
-/// The files or folder an ask has the person pick, in the system's file picker.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FilesAsked {
-    pub mode: FilesMode,
-    /// Whether more than one may be picked.
-    #[serde(default)]
-    pub many: bool,
-    /// The types offered to pick among, each by its label and file name patterns.
-    #[serde(default)]
-    pub types: Vec<FileType>,
-    /// The name a file being saved is suggested under.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// The folder the picker opens in.
-    #[serde(default)]
-    pub folder: Option<String>,
-}
-
-/// Whether the person picks files to open, a place to save one, or a folder.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FilesMode {
-    Open,
-    Save,
-    Folder,
-}
-
-/// A type of file offered in the picker.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileType {
-    pub label: String,
-    pub patterns: Vec<String>,
-}
-
 impl AskedFacts {
-    /// Whether this ask is answered only on the device that asked it: it takes a secret, or
-    /// files, which only that device's own picker and its asker may see.
-    #[must_use]
-    pub fn answered_where_asked(&self) -> bool {
-        self.files.is_some() || self.takes.iter().any(|take| take.secret)
-    }
-
     /// Facts about a call by `by` that show nothing beyond its action.
     #[must_use]
     pub fn by(by: AskedBy) -> Self {
@@ -341,32 +222,10 @@ impl AskedFacts {
 }
 
 /// A `tilo.invocations` record, by the workspace it is in and its address there.
-///
-/// Which record it is is its workspace and address alone; [`Self::device`] says where it was
-/// asked, and plays no part in naming it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RecordRef {
     pub workspace: String,
     pub record: String,
-    /// The device that asked, by its id, for an ask answered only there
-    /// ([`AskedFacts::answered_where_asked`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device: Option<String>,
-}
-
-impl PartialEq for RecordRef {
-    fn eq(&self, other: &Self) -> bool {
-        self.workspace == other.workspace && self.record == other.record
-    }
-}
-
-impl Eq for RecordRef {}
-
-impl std::hash::Hash for RecordRef {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.workspace.hash(state);
-        self.record.hash(state);
-    }
 }
 
 impl RecordRef {
@@ -422,38 +281,12 @@ pub struct Approval {
     /// The choice they picked, by its place among [`AskedFacts::choices`],
     /// for a question that offers choices.
     pub choice: Option<usize>,
-    /// The choices they picked, for a question that offers many ([`AskedFacts::many`]).
-    #[serde(default)]
-    pub chosen: Vec<usize>,
-    /// What they typed, one entry per take ([`AskedFacts::takes`]). Kept in memory only and
-    /// wiped when dropped: it never travels in a frame, so it reaches the asker only on the
-    /// device that asked.
-    #[serde(skip)]
-    pub typed: Vec<Zeroizing<String>>,
-    /// The files they picked, as URIs ([`AskedFacts::files`]).
-    #[serde(default)]
-    pub files: Vec<String>,
-}
-
-impl Approval {
-    /// The approve of `record`, picking `choice` where it offers choices, and nothing more.
-    #[must_use]
-    pub fn new(record: RecordRef, choice: Option<usize>) -> Self {
-        Self {
-            record,
-            choice,
-            chosen: Vec::new(),
-            typed: Vec::new(),
-            files: Vec::new(),
-        }
-    }
 }
 
 /// An answer a person may give an asked record.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Offer {
-    #[default]
     Approve,
     Decline,
     /// Approve, and grant the asker the action on every resource of its type.
@@ -469,7 +302,7 @@ impl Offer {
         let mut offers = vec![Self::Approve];
         if facts.plural.is_some()
             && facts.choices.is_empty()
-            && !matches!(facts.by, AskedBy::Device(_) | AskedBy::Program { .. })
+            && !matches!(facts.by, AskedBy::Device(_))
         {
             offers.push(Self::ApproveAndGrant);
         }
@@ -480,59 +313,12 @@ impl Offer {
 
 /// The arguments of [`RESOLVE`]: the person's answer, and for a question that offers choices
 /// the one they picked, by its place among [`AskedFacts::choices`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Resolve {
     pub resolution: Offer,
     #[serde(default)]
     pub choice: Option<usize>,
-    /// The choices picked, for a question that offers many ([`AskedFacts::many`]).
-    #[serde(default)]
-    pub chosen: Vec<usize>,
-    /// What the person typed, one entry per take, in order ([`AskedFacts::takes`]). A secret
-    /// one is never written anywhere: the record and its history keep the answer without it.
-    #[serde(default)]
-    pub typed: Vec<String>,
-    /// The files picked, as URIs ([`AskedFacts::files`]).
-    #[serde(default)]
-    pub files: Vec<String>,
-}
-
-impl Resolve {
-    /// This answer as the record and its history may keep it: what was typed for a secret
-    /// take of `facts` left out.
-    #[must_use]
-    pub fn kept(&self, facts: &AskedFacts) -> Self {
-        let typed = self
-            .typed
-            .iter()
-            .enumerate()
-            .filter(|(at, _)| facts.takes.get(*at).is_none_or(|take| !take.secret))
-            .map(|(_, typed)| typed.clone())
-            .collect();
-        Self {
-            typed,
-            ..self.clone()
-        }
-    }
-}
-
-/// Go on where the person approved `request`; else refuse it until they do, showing them
-/// `facts`: what a provider whose action needs their yes does, and all it does. The dispatch
-/// that carried the call keeps it as its asked record, and an approve brings it back once,
-/// the same call, carrying [`super::InvokeRequest::approval`].
-///
-/// # Errors
-/// [`super::ActionCallError::ConfirmationRequired`] with `facts`, for a call nobody approved.
-pub fn approved_or_asks(
-    request: &super::InvokeRequest,
-    facts: impl FnOnce() -> AskedFacts,
-) -> Result<(), super::ActionCallError> {
-    if request.approval().is_some() {
-        Ok(())
-    } else {
-        Err(super::ActionCallError::asks(facts()))
-    }
 }
 
 /// Whether `target` answers an asked record ([`RESOLVE`]).
@@ -606,12 +392,6 @@ pub trait AskedDispatch: Send + Sync {
         caller: &super::Caller,
         invocation: super::InvocationId,
     ) -> Result<(), super::ActionCallError>;
-
-    /// End `invocation`, which `caller` asked for, withdrawn by whoever asked it before its
-    /// person answered ([`AskedStore::withdraw`]): it ends cancelled, saying `message`.
-    fn withdrawn(&self, caller: &super::Caller, invocation: super::InvocationId, message: &str) {
-        let _ = (caller, invocation, message);
-    }
 }
 
 /// An asked record as the host keeps it in its own state: the call that waits, who asked it,
@@ -719,7 +499,6 @@ mod tests {
             record: RecordRef {
                 workspace: "acme".into(),
                 record: "invocations/7".into(),
-                device: None,
             },
             workspace: "acme".into(),
             workspace_name: "Acme".into(),

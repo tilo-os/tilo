@@ -91,6 +91,27 @@ where
     run_with(&[], body);
 }
 
+/// Run `body` in a process of its own, with a home, identity and profile of its own and its
+/// person founded, but no daemon started: `body` starts the device's daemon itself, at the
+/// profile it is handed.
+///
+/// # Panics
+///
+/// When the person cannot be founded, or `body` fails.
+pub fn in_own_process(body: impl FnOnce(&Path)) {
+    let test = std::thread::current()
+        .name()
+        .expect("libtest names a test's thread after the test")
+        .to_owned();
+    if std::env::var(OWN).ok().as_deref() != Some(test.as_str()) {
+        own_process(&test, &[]);
+        return;
+    }
+    let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
+    tilo_runtime::device::services::found_a_person(&tilo_identity::provisioning::collaboration_identity_paths()).unwrap();
+    body(&profile);
+}
+
 /// [`run`], on a device that has the tilolang apps `apps` (directories under `apps/tl`)
 /// installed, with the runtimes they run on ([`apps::install`]).
 ///
@@ -191,7 +212,7 @@ pub struct Host {
 
 impl Host {
     fn start(profile: &Path) -> Self {
-        tilo_runtime::device::services::found_a_person().unwrap();
+        tilo_runtime::device::services::found_a_person(&tilo_identity::provisioning::collaboration_identity_paths()).unwrap();
         let daemon = Arc::new(Daemon::start_reporting(profile, &mut |_| {}).unwrap());
         let identities = tilo_identity::store::identity_dir_from_env().unwrap();
         let active = tilo_identity::store::resolve_active_identity(&identities)

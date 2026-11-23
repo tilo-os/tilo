@@ -36,18 +36,6 @@ use crate::device_actions::DeviceActions;
 /// The application whose window adds a device here.
 const APP_ID: &str = "so.tilo.settings";
 
-/// Settings' page of the person's devices, whose "Add a device" prints the ticket a new device
-/// joins with.
-const ADD_DEVICE_PAGE: &str = "settings://devices_sync";
-
-impl crate::Shared {
-    /// Add a device, wherever it was asked for (the person's own card, Settings' Devices and
-    /// access, an app's own offer): Settings at its devices page, where the ticket is printed.
-    pub(crate) fn open_add_device(&self) {
-        crate::quick_settings::open_settings(self, ADD_DEVICE_PAGE);
-    }
-}
-
 /// This device's `tilo.device` provider: a ticket for a new computer, served on the endpoint and
 /// action service the session already runs.
 #[derive(Clone)]
@@ -73,7 +61,7 @@ impl DeviceTickets {
     }
 
     /// Serve a ticket for a computer to join this device's, as the one string the person hands
-    /// on: what Settings' "Add a device" shows.
+    /// on: what Settings' "Add a device" sheet shows where no web host keeps the workspace.
     pub(crate) async fn issue(&self) -> Result<String, String> {
         self.tickets.issue(None).await.map(|ticket| ticket.encode())
     }

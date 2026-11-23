@@ -5,8 +5,6 @@ app so.tilo.migrate "Migrations" (
     keywords: ["migrate", "import", "move", "bring in", "thunderbird", "browsers", "cloud storage"],
 )
 
-use so.tilo.migrate.engine as engine
-
 /// Where a migration's run stands: reviewed, with what the source holds waiting to be chosen;
 /// running, while the device that holds the data brings in what was chosen; stopped by a person,
 /// keeping what it brought until then; failed, its failure saying why; or complete. The device
@@ -261,18 +259,6 @@ action forgot_run(g: Migration, run: Text) {
     }
 }
 
-/// Bring in what is chosen of `g`'s source: the device that holds the data runs it as one run,
-/// and the migration follows it there, as `begun`, `landed` and `ended`. The action lasts as long
-/// as the run, and stopping it stops the run.
-action start(g: Migration) (icon: .play, did: "started bringing in") {
-    engine.start(source: g.source)
-}
-
-/// Stop `g`'s run after the item it is on: what it brought stays, and starting again resumes it.
-action stop(g: Migration) (icon: .square, did: "stopped bringing in") {
-    engine.stop(source: g.source)
-}
-
 /// What the last run brought in, as a person reads it: "120 contacts, 3 accounts".
 fn brought_said(g: Migration) -> Text {
     g.brought.map(c -> "{c.count} {c.kind}").join(", ")
@@ -375,13 +361,6 @@ view run_status(g: Migration) {
         }
         if g.state == .running {
             ui.ProgressBar(label: "Bringing in")
-            ui.Button("Stop", icon: .square) {
-                on press: stop(g)
-            }
-        } else if g.state != .complete and g.items.any(x -> x.chosen) {
-            ui.Button(if g.state == .stopped { "Resume" } else { "Bring in" }, icon: .play) {
-                on press: start(g)
-            }
         }
         if g.state == .failed and g.failure != "" {
             ui.Banner("The run stopped on an error", message: g.failure, kind: .error)

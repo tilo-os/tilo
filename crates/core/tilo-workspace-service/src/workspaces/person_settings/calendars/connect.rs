@@ -313,7 +313,7 @@ impl Workspaces {
                 Fact::new("username", username.clone()),
             ],
             verb: "connect".to_owned(),
-            answered_by: Some(format!(
+            takes: Some(format!(
                 "{}/{}#{}",
                 person_vault::PROVIDER,
                 person_vault::RESOURCE,

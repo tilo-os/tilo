@@ -478,8 +478,7 @@ pub struct Hosted {
     pub tools: Option<crate::tools::Handle>,
     /// The programs the agents working this session's tasks write, which this
     /// session's links runs as steps of their runs.
-    pub task_programs:
-        Option<std::sync::Arc<tilo_workspace_service::workspaces::task_programs::TaskPrograms>>,
+    pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
     /// The session's own actions — the layout, its undo, the windows and the
     /// notices — offered to a turn's agent as the broker's steps, so it arranges the
     /// screen as the REPL does.
@@ -1034,7 +1033,7 @@ impl tilo_workspace_service::apps::services::WorkspaceGrants for SessionGrants {
 /// The steps an agent session takes here, registered: the programs its task writes, and the
 /// workspace's tools an agent in a process of its own calls.
 fn agent_session_steps(
-    programs: std::sync::Arc<tilo_workspace_service::workspaces::task_programs::TaskPrograms>,
+    programs: std::sync::Arc<crate::task_programs::TaskPrograms>,
     providers: &Providers,
 ) {
     programs.register(providers);
@@ -1243,6 +1242,11 @@ fn broker_services(
         std::sync::Arc::new(initiative.clone()).register(&providers);
     }
     if let Some(actions) = session_actions {
+        // The device's dispatch reaches them over the shell's link too: what the daemon's own
+        // endpoint and its agents ask of the layout, the windows and the notices.
+        if let Ok(link) = &daemon {
+            actions.serve_on(link.clone());
+        }
         actions.register(&providers);
     }
     if let Some(settings) = settings_steps {

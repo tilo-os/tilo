@@ -47,19 +47,6 @@ impl AppBrokerState {
             Ok(shortcut) => shortcut,
             Err(refused) => return Err(abandon(refused)),
         };
-        // A step that would need the person's yes is asked about before anything runs: the
-        // call waits in its asked record, and their approve brings it back to run.
-        let asking = tilo_automation::asks_before_running(
-            &shortcut,
-            &tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0),
-            Some(workspace),
-        );
-        if !asking.is_empty() {
-            crate::workspaces::asking::approved_or_asks(request, || {
-                run_asks(caller, &shortcut, &asking)
-            })
-            .map_err(abandon)?;
-        }
         let inputs = match &request.argument {
             tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
             tilo_actions::remote::InvokeArgument::Json(inputs) => inputs.clone(),
@@ -77,7 +64,7 @@ impl AppBrokerState {
                 automation::InvocationStart {
                     invocation: tilo_automation::AutomationInvocationId(request.invocation.0),
                     trigger: tilo_automation::InvocationTrigger::Manual,
-                    mode: automation::run_mode(request.approval()),
+                    mode: automation::run_mode(request.confirmation.as_ref()),
                     inputs,
                     // A task that invoked this run is its parent: the caller's
                     // context names that task's group, so the run's steps are
@@ -87,10 +74,10 @@ impl AppBrokerState {
                         .as_ref()
                         .and_then(|context| context.group.clone())
                         .filter(|group| group.kind != "shortcut"),
-                    approval: request.approval().cloned(),
                 },
                 |runtime, run| {
                     automation::ApiHooks::new(
+                        request.confirmation.clone(),
                         runtime,
                         self.ended_invocations.open.running.clone(),
                         run,
@@ -107,9 +94,9 @@ impl AppBrokerState {
     }
 
     /// Run saved shortcut `shortcut_id` in `workspace` for `caller`, who is at
-    /// the screen. Nothing asks them on the way: a step that needs their yes
-    /// stops the run, as it does in a run nobody approved; a run that asks
-    /// before it starts is one invoked through the dispatch, as its asked record.
+    /// the screen: every step that needs confirmation and every question
+    /// waits in [`Self::take_step_prompt`] until the compositor's sheet
+    /// answers it.
     ///
     /// # Errors
     ///
@@ -152,8 +139,11 @@ impl AppBrokerState {
                 report,
                 from: asked.from,
             });
+        let prompts = self.ended_invocations.open.prompts.clone();
+        let name = shortcut.name.clone();
         let runs = self.ended_invocations.open.running.clone();
-        let hooks = move |runtime, run| automation::ApiHooks::new(runtime, runs, run);
+        let hooks =
+            move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
         self.start_shortcut_run(
             caller,
             workspace,
@@ -164,7 +154,6 @@ impl AppBrokerState {
                 mode: tilo_automation::InvocationMode::Interactive,
                 inputs,
                 parent: None,
-                approval: None,
             },
             hooks,
             None,
@@ -192,11 +181,17 @@ impl AppBrokerState {
             })
     }
 
+    /// The oldest step of an interactive run waiting for its person.
+    pub(crate) fn take_step_prompt(&self) -> Option<automation::PromptedStep> {
+        self.ended_invocations.open.prompts.take_next()
+    }
+
     /// Start one of saved shortcut `shortcut_id`'s triggers, `trigger`, in
     /// `workspace` on behalf of `caller`, who must be the person who saved it.
     ///
-    /// A keyboard trigger means the person is at the screen, like a palette
-    /// run. Nobody is present at a scheduled invocation: a step asking for confirmation proceeds
+    /// A keyboard trigger means the person is at the screen: its run asks
+    /// them through the compositor's sheet, like a palette run. Nobody is
+    /// present at a scheduled invocation: a step asking for confirmation proceeds
     /// only when its saver consented to exactly that action in advance, and
     /// a question stops the run. Before anything runs the
     /// shortcut is checked again against what `caller` is offered now, so a
@@ -261,8 +256,11 @@ impl AppBrokerState {
             }
         })?;
         if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
+            let prompts = self.ended_invocations.open.prompts.clone();
+            let name = shortcut.name.clone();
             let runs = self.ended_invocations.open.running.clone();
-            let hooks = move |runtime, run| automation::ApiHooks::new(runtime, runs, run);
+            let hooks =
+                move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
             return self.start_shortcut_run(
                 caller,
                 workspace,
@@ -273,7 +271,6 @@ impl AppBrokerState {
                     mode: tilo_automation::InvocationMode::Interactive,
                     inputs: serde_json::Map::new(),
                     parent: None,
-                    approval: None,
                 },
                 hooks,
                 None,
@@ -290,10 +287,14 @@ impl AppBrokerState {
                 mode: tilo_automation::InvocationMode::Unattended,
                 inputs,
                 parent: None,
-                approval: None,
             },
             |runtime, run| {
-                automation::ApiHooks::new(runtime, self.ended_invocations.open.running.clone(), run)
+                automation::ApiHooks::new(
+                    None,
+                    runtime,
+                    self.ended_invocations.open.running.clone(),
+                    run,
+                )
             },
             None,
             None,
@@ -371,7 +372,6 @@ impl AppBrokerState {
         let caller = caller.clone().running_shortcut(shortcut.id.clone());
         let workspace = workspace.to_string();
         let parent = start.parent.clone();
-        let approval = start.approval.clone();
         // Registered before the first step, so a stop can find it; it leaves
         // as it ends, whether or not it was stopped.
         let running = automation::RunningInvocation {
@@ -414,7 +414,6 @@ impl AppBrokerState {
                     from: carried.as_ref().map(|carried| carried.from.clone()),
                     parent,
                     chain,
-                    approval,
                 },
             )
             .await;
@@ -557,46 +556,4 @@ impl AppBrokerState {
             .running
             .stop(workspace, request, reason)
     }
-}
-
-/// What the person is shown about a run of `shortcut` by `caller` before it starts: the
-/// shortcut, and each of its steps that needs their yes, with what it acts on and the arguments
-/// the shortcut gives it.
-fn run_asks(
-    caller: &Caller,
-    shortcut: &tilo_automation::Shortcut,
-    asking: &[tilo_automation::AskingStep],
-) -> tilo_actions::remote::asked::AskedFacts {
-    use std::fmt::Write as _;
-    use tilo_actions::remote::asked::{AskedBy, AskedFacts};
-    let by = match caller.acting().agent_id() {
-        Some(_) => crate::workspaces::asking::asked_by(caller),
-        None => AskedBy::App {
-            app: SHORTCUTS_APP_ID.to_owned(),
-            title: shortcut.name.clone(),
-            author: None,
-        },
-    };
-    let mut facts = AskedFacts {
-        on: Some(shortcut.name.clone()),
-        verb: automation::run_descriptor(shortcut).action_label,
-        destructive: asking
-            .iter()
-            .any(|step| step.descriptor.contract.risk == tilo_actions::RiskLevel::Destructive),
-        ..AskedFacts::by(by)
-    };
-    for step in asking {
-        let mut said = step.resource.clone();
-        for (name, value) in &step.arguments {
-            if !said.is_empty() {
-                said.push_str(", ");
-            }
-            let value = value
-                .as_str()
-                .map_or_else(|| value.to_string(), str::to_owned);
-            let _ = write!(said, "{name}: {value}");
-        }
-        facts = facts.with_fact(step.descriptor.action_label.clone(), said);
-    }
-    facts
 }

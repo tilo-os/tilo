@@ -6334,6 +6334,7 @@ fn directory_answerer(
                         .map(Answer::Resolution)
                         .map_err(|error| error.to_string())
                 }
+                Ask::Action { .. } => Err("an app's directory serves no provider".to_owned()),
             }
         })
     })

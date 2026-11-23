@@ -437,21 +437,21 @@ action new_tag(nb: Notebook, name: Text = "") -> Tag (icon: .tag, label: "New ta
     nb.tags.find(t -> t.name == name.trim()) ?? nb.tags.insert(Tag(name: name.trim()))
 }
 
-/// Gives a note the tag `tag`, and lists the tag in the notebook when it lists none of that
-/// name yet: a name is how a person, an agent and a script know a tag.
-action tag(n: Note, tag: Text) (icon: .tag, group: "Tags") {
-    require tag.trim() != "" "A tag needs a name"
+/// Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of
+/// that name yet: a name is how a person, an agent and a script know a tag.
+action tag(n: Note, name: Text) (icon: .tag, group: "Tags") {
+    require name.trim() != "" "A tag needs a name"
     let nb = root Notebook
-    let known = nb.tags.find(t -> t.name.lower() == tag.trim().lower())
-    let listed = known?.name ?? tag.trim()
+    let known = nb.tags.find(t -> t.name.lower() == name.trim().lower())
+    let listed = known?.name ?? name.trim()
     if known == .none { nb.tags.insert(Tag(name: listed)) }
     n.tags.add(listed)
 }
 
-/// Takes the tag `tag` off a note. The notebook keeps listing it, so a person finds it again
-/// for another note; deleting it from the notebook takes it off every note.
-action untag(n: Note, tag: Text) (label: "Untag", group: "Tags") {
-    n.tags.remove(tag.trim())
+/// Takes the tag named `name` off a note. The notebook keeps listing it, so a person finds it
+/// again for another note; deleting it from the notebook takes it off every note.
+action untag(n: Note, name: Text) (label: "Untag", group: "Tags") {
+    n.tags.remove(name.trim())
 }
 
 /// Names a tag of the notebook: every note that carries the old name carries the new one.

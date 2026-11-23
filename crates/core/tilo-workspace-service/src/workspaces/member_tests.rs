@@ -1577,11 +1577,11 @@ struct NoActions;
 
 #[cfg(feature = "apps")]
 impl crate::apps::shell::ShellActions for NoActions {
-    fn invoke(
+    fn dispatch(
         &self,
         _: &crate::apps::shell::ShellCaller,
-        _: tilo_actions::remote::InvokeRequest,
-    ) -> crate::apps::shell::ShellInvoked {
+        _: Option<String>,
+    ) -> crate::apps::shell::ShellDispatch {
         Box::pin(std::future::ready(Err("no actions here".to_owned())))
     }
 }

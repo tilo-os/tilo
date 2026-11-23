@@ -34,15 +34,15 @@ use tilo_actions::outcome::{
     ActionFailure, ActionOutput, InvocationId as ActionInvocationId, InvocationUpdate,
 };
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
-use tilo_actions::remote::asked::Approval;
 use tilo_actions::remote::workspace_provider;
-use tilo_actions::remote::{Pending, pending};
+use tilo_actions::remote::{Confirmation, Pending, pending};
 use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
-    ActionCatalog, AskRequest, AutomationInvocationId, Binding, FOCUS_DO_NOT_DISTURB,
-    FOCUS_SCHEDULE, InvocationHooks, InvocationMode, InvocationOutcome, InvocationReport,
-    InvocationTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule,
-    Shortcut, StepPath, StopWatch, TriggerSpec, shortcut_id_of, shortcut_resource_id,
+    ActionCatalog, AskRequest, AutomationInvocationId, Binding, ConfirmationRequest,
+    FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, InvocationHooks, InvocationMode, InvocationOutcome,
+    InvocationReport, InvocationTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION,
+    SHORTCUTS_APP_ID, Schedule, Shortcut, StepPath, StopWatch, TriggerSpec, shortcut_id_of,
+    shortcut_resource_id,
 };
 use tilo_desktop_model::Workspace;
 
@@ -834,10 +834,11 @@ pub fn library_context(descriptor: &ActionDescriptor) -> ActionContext {
         )))
 }
 
-/// A broker's shortcut runs that are not over: the runs going, so one can be stopped between
-/// two steps.
+/// A broker's shortcut runs that are not over: the steps waiting on their
+/// person, and the runs going so one can be stopped between two steps.
 #[derive(Clone, Default)]
 pub struct OpenInvocations {
+    pub prompts: StepPrompts,
     pub running: RunningInvocations,
 }
 
@@ -1011,14 +1012,14 @@ pub fn stopped_output(stopped: &[RunningInvocation]) -> ActionOutput {
 
 /// How a run started through the API treats a person-shaped question.
 ///
-/// A run the person approved ([`Approval`], its call's asked record answered) is interactive:
-/// their approve is carried to each step that needs their yes, having been shown each one
-/// before anything ran ([`tilo_automation::asks_before_running`]). Without it the run is
-/// unattended, so a step that needs a yes nobody consented to in advance, or that asks a
-/// question, stops the run with a failure that says so rather than guessing.
+/// Whoever invokes `run` answers for its confirmations up front: evidence
+/// supplied with the invocation is offered to each step that asks for
+/// confirmation, and makes the run interactive. Without it the run is
+/// unattended, so a step that needs confirmation or asks a question stops
+/// the run with a failure that says so rather than guessing.
 #[must_use]
-pub fn run_mode(approval: Option<&Approval>) -> InvocationMode {
-    if approval.is_some() {
+pub fn run_mode(confirmation: Option<&Confirmation>) -> InvocationMode {
+    if confirmation.is_some() {
         InvocationMode::Interactive
     } else {
         InvocationMode::Unattended
@@ -1038,12 +1039,11 @@ pub struct InvocationStart {
     /// steps are stamped with it, so the run shows up inside that task rather
     /// than beside it, and undoing the task undoes what it asked for.
     pub parent: Option<tilo_actions::context::WorkGroup>,
-    /// The person's approve of the asked record the run's call was kept as.
-    pub approval: Option<Approval>,
 }
 
 /// [`InvocationHooks`] for a run started through the API.
 pub struct ApiHooks {
+    confirmation: Option<Confirmation>,
     /// The runtime the run's poll fallback waits on.
     runtime: tokio::runtime::Handle,
     /// The runs going, so one of them can be stopped from elsewhere.
@@ -1054,11 +1054,13 @@ pub struct ApiHooks {
 impl ApiHooks {
     #[must_use]
     pub fn new(
+        confirmation: Option<Confirmation>,
         runtime: tokio::runtime::Handle,
         invocations: RunningInvocations,
         invocation: AutomationInvocationId,
     ) -> Self {
         Self {
+            confirmation,
             runtime,
             invocations,
             invocation,
@@ -1067,6 +1069,10 @@ impl ApiHooks {
 }
 
 impl InvocationHooks for ApiHooks {
+    fn confirm(&self, _request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
+        Pending::ready(self.confirmation.clone())
+    }
+
     fn ask(&self, _request: AskRequest) -> Pending<Option<Value>> {
         // Nobody on the API can be asked mid-run; declining stops the run
         // at the question instead of inventing an answer.
@@ -1095,6 +1101,137 @@ fn settle_later(runtime: &tokio::runtime::Handle) -> Pending<()> {
         completer.complete(());
     });
     answer
+}
+
+/// A step of an interactive run waiting for the person who started it.
+pub enum StepPrompt {
+    /// An action that needs confirmation before it runs.
+    Confirm(Box<ConfirmationRequest>),
+    /// An [`Ask`](tilo_automation::StepKind::Ask) step's question.
+    Ask(AskRequest),
+}
+
+/// The person's answer to a [`StepPrompt`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum StepAnswer {
+    Confirmed(Confirmation),
+    Answered(Value),
+    /// Cancelled: the run stops at this step and nothing after it runs.
+    Declined,
+}
+
+/// One prompt, with the run's shortcut and the way back into the run.
+pub struct PromptedStep {
+    /// The name of the shortcut asking.
+    pub shortcut: String,
+    pub prompt: StepPrompt,
+    answer: tilo_actions::remote::Completer<StepAnswer>,
+}
+
+impl PromptedStep {
+    /// Answer the prompt; the run continues (or stops, when declined).
+    pub fn answer(self, answer: StepAnswer) {
+        self.answer.complete(answer);
+    }
+}
+
+impl std::fmt::Debug for PromptedStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PromptedStep")
+            .field("shortcut", &self.shortcut)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Prompts interactive runs are waiting on, in the order they asked, until
+/// the compositor shows them.
+#[derive(Clone, Default)]
+pub struct StepPrompts {
+    waiting: std::sync::Arc<Mutex<VecDeque<PromptedStep>>>,
+}
+
+impl StepPrompts {
+    fn push(&self, prompt: PromptedStep) {
+        if let Ok(mut waiting) = self.waiting.lock() {
+            waiting.push_back(prompt);
+        }
+    }
+
+    /// The oldest prompt nobody has taken yet.
+    pub fn take_next(&self) -> Option<PromptedStep> {
+        self.waiting.lock().ok()?.pop_front()
+    }
+}
+
+/// [`InvocationHooks`] for a run the person is present at: every confirmation and
+/// question waits in [`StepPrompts`] until the compositor's sheet answers.
+pub struct SheetHooks {
+    prompts: StepPrompts,
+    shortcut: String,
+    /// The runtime the run's poll fallback waits on.
+    runtime: tokio::runtime::Handle,
+    /// The runs going, so one of them can be stopped from elsewhere.
+    invocations: RunningInvocations,
+    invocation: AutomationInvocationId,
+}
+
+impl SheetHooks {
+    #[must_use]
+    pub fn new(
+        prompts: StepPrompts,
+        shortcut: impl Into<String>,
+        runtime: tokio::runtime::Handle,
+        invocations: RunningInvocations,
+        invocation: AutomationInvocationId,
+    ) -> Self {
+        Self {
+            prompts,
+            shortcut: shortcut.into(),
+            runtime,
+            invocations,
+            invocation,
+        }
+    }
+
+    fn ask_person(&self, prompt: StepPrompt) -> Pending<StepAnswer> {
+        let (answer, pending) = pending();
+        self.prompts.push(PromptedStep {
+            shortcut: self.shortcut.clone(),
+            prompt,
+            answer,
+        });
+        pending
+    }
+}
+
+impl InvocationHooks for SheetHooks {
+    fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
+        self.ask_person(StepPrompt::Confirm(Box::new(request)))
+            .map(|answer| match answer {
+                StepAnswer::Confirmed(confirmation) => Some(confirmation),
+                StepAnswer::Answered(_) | StepAnswer::Declined => None,
+            })
+    }
+
+    fn ask(&self, request: AskRequest) -> Pending<Option<Value>> {
+        self.ask_person(StepPrompt::Ask(request))
+            .map(|answer| match answer {
+                StepAnswer::Answered(value) => Some(value),
+                StepAnswer::Confirmed(_) | StepAnswer::Declined => None,
+            })
+    }
+
+    fn stopped(&self, what: StopWatch<'_>) -> Pending<Result<(), String>> {
+        self.invocations.moved(self.invocation, what.path.as_str());
+        Pending::ready(match self.invocations.stopped(self.invocation) {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        })
+    }
+
+    fn settle(&self, _invocation: ActionInvocationId) -> Pending<()> {
+        settle_later(&self.runtime)
+    }
 }
 
 /// The terminal update the API reports for a finished run.

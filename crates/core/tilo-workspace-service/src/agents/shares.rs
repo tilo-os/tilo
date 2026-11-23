@@ -18,9 +18,9 @@
 //!   with what they hold: one the workspace lets read the document sees it, anyone else reads
 //!   only that something is there, never what it is called.
 
+use tilo_reference::Embed as Reference;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
-use tilo_reference::Embed as Reference;
 
 use super::{Reply, ToolDefinition, Turn, WorkspaceActionProvider};
 

@@ -4,16 +4,17 @@
 //! link the daemon made ([`ShellLinks`]) is the shell that link was made for; a connection with
 //! no such secret is refused before its first call, whatever account it runs as. An admitted
 //! connection is answered from [`ShellServices`]: the device's own documents, read for the device
-//! and written as it (the daemon signs and seals them with the device's key), the workspaces' key
-//! access and membership and the host's own operations as typed actions, and the workspaces'
-//! standing as published resources ([`tilo_peer_state::workspace_view`]).
+//! and written as it (the daemon signs and seals them with the device's key), every action through
+//! the device's one dispatch as its person ([`ShellActions`]), and the workspaces' standing as
+//! published resources ([`tilo_peer_state::workspace_view`]). The providers the shell serves are
+//! registered with that dispatch for as long as its link lasts.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use runtime_collab::wire::shell::Vouch;
-use tilo_actions::remote::InvokeRequest;
+use tilo_actions::remote::{ActionProvider, Caller};
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
 
 use super::services::PublishedResources;
@@ -74,16 +75,21 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// An action a shell invoked, once it settled: the value it answered, or why it failed.
-pub type ShellInvoked = Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>>;
+/// The dispatch a shell's calls reach, and the caller they are made as there.
+pub type ShellDispatch = Pin<
+    Box<
+        dyn Future<Output = Result<(Arc<dyn ActionProvider + Send + Sync>, Caller), String>> + Send,
+    >,
+>;
 
-/// The actions a shell invokes as its person on this device.
+/// The device's one dispatch, as a shell's person reaches it.
 pub trait ShellActions: Send + Sync {
-    /// Invoke `request` as `caller`: a workspace's key access and membership action
-    /// (`RemoteActionTarget::workspace_governance`), answered by the workspace the device keeps
-    /// or forwarded to its keeping device over tilo-actions/1, or one of the host's own
-    /// operations, answered by the device's workspace service.
-    fn invoke(&self, caller: &ShellCaller, request: InvokeRequest) -> ShellInvoked;
+    /// The dispatch `caller`'s calls in `workspace` reach, as their person on this device, and
+    /// the caller they are made as: what answers every frame a shell sends
+    /// ([`runtime_collab::wire::shell::ShellCall::Action`]). In no workspace, the person's
+    /// workspace list, a workspace's key access and membership
+    /// (`RemoteActionTarget::workspace_governance`) and the host's own operations.
+    fn dispatch(&self, caller: &ShellCaller, workspace: Option<String>) -> ShellDispatch;
 }
 
 /// The writes a device takes to its workspaces' documents, as they come.
@@ -103,7 +109,7 @@ pub struct ShellServices {
     /// Each write the device takes to a document of its workspaces
     /// ([`crate::workspaces::Workspaces::document_writes`]): what a shell reads again by.
     pub document_writes: Arc<dyn Fn() -> DocumentWrites + Send + Sync>,
-    /// The workspaces' key access and membership, and the host's own operations.
+    /// The device's one dispatch, as the shell's person reaches it.
     pub actions: Arc<dyn ShellActions>,
     /// The workspaces' standing ([`tilo_peer_state::workspace_view`]), watched as published resources.
     pub standing: Arc<dyn PublishedResources>,

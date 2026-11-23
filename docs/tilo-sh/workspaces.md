@@ -201,21 +201,21 @@ everyone else in, always through an action of the workspace: an administrator ma
 owner makes owners.
 
 ```sh
-tilo do workspace/members#admit person=KEY role=editor name="Ada Lovelace" -w Lounge   # in at once, no link to hand over
+tilo do workspace/members#add person=KEY role=editor name="Ada Lovelace" -w Lounge   # in at once, no link to hand over
 tilo do workspace/invitations#invite role=editor -w Lounge                         # a link; whoever opens it joins
 tilo do workspace/waiting#list -w Lounge                                           # who left an address at an entry
 tilo do workspace/invitations#invite wait_list_entry=ENTRY role=editor -w Lounge   # invite one of them
 tilo do workspace/waiting#unlist entry=ENTRY -w Lounge                             # take the address off again
 ```
 
-`tilo do workspace/members#admit` takes a person's user public key (`tilo login --new-identity --json` names it), so it
+`tilo do workspace/members#add` takes a person's user public key (`tilo login --new-identity --json` names it), so it
 lets someone in before any device of theirs joins. `role=administrator` makes another administrator.
 A workspace has one owner, and `role=owner` hands it on, which only that owner does, from a device of
 their own. `tilo do workspace/invitations#invite` answers a link instead: `invitee_name=` names the address it is
 for, and `wait_list_entry=` invites an address already on the wait list.
 
 The same actions are the workspace's own resources, which an agent reaches over MCP (`tilo_do {"path":
-"workspace/members#admit", "args": {"person": KEY, "role": "editor"}}`, `workspace/invitations#invite`,
+"workspace/members#add", "args": {"person": KEY, "role": "editor"}}`, `workspace/invitations#invite`,
 `workspace/waiting#list` and `#unlist`) and REST reaches as any action
 (`POST /v1/workspaces/{workspace}/resources/workspace/members/actions/add`).
 

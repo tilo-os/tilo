@@ -143,11 +143,6 @@ d-d4zwmel2 = Wiedergabe setzen
 
 d-d4zwmel2-on = An
 
-d-pnt3r5fh = Quelle setzen
-    .doc = Woher kommt, was läuft, wenn die App, die es weiß, erneut geantwortet hat: eine andere Qualität eines Videos oder die erneut angefragte Adresse.
-
-d-pnt3r5fh-source = Quelle
-
 d-pk7bfu5k = Länge setzen
     .doc = Was der Player über seine Länge meldet, sobald der Decoder sie kennt.
 

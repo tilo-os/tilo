@@ -530,11 +530,10 @@ impl Session {
     /// them, in this session.
     fn agent_surface(&self, actions: Provider, workspace: &str) -> McpServer<Provider> {
         let actions = Joined::provider(workspace, Some(actions), self.account.clone());
-        // Its programs run on the device its calls go to, as a step of this session there: only
-        // a device starts tilolang processes, in their sandbox, and this server is none.
+        // A forwarded session starts no task host: only a device starts tilolang processes, in
+        // their sandbox, and this server is none. Its agent works with single and batched calls.
         McpServer::for_agent(actions, workspace.to_owned(), &self.agent, &self.person)
             .with_agent_session(&self.id)
-            .with_programs_on_device()
     }
 
     /// Answer `request` in `workspace`'s session, showing the person what a

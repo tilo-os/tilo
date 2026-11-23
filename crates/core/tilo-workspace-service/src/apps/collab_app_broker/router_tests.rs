@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
-use crate::apps::shell::{ShellActions, ShellCaller, ShellInvoked, ShellLinks, ShellServices};
+use crate::apps::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
 use ed25519_dalek::SigningKey;
 use runtime_collab::wire::{
     Call, Changes, Event, FRAMING, Handle, HostFrame, Join, Operation, Receipt, Reply, Service,
@@ -123,7 +123,7 @@ impl DeviceWrites for NoDocuments {
 }
 
 impl ShellActions for NoDocuments {
-    fn invoke(&self, _: &ShellCaller, _: tilo_actions::remote::InvokeRequest) -> ShellInvoked {
+    fn dispatch(&self, _: &ShellCaller, _: Option<String>) -> ShellDispatch {
         Box::pin(std::future::ready(Err("no actions here".to_owned())))
     }
 }

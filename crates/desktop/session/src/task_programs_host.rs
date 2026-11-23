@@ -14,10 +14,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tilo_actions::remote::task_programs as wire;
 use tilo_actions::remote::{ActionProvider, Outcome, Pending};
 use tilo_lock::MutexRecover as _;
 
-use tilo_workspace_service::workspaces::task_programs::{ProgramCaller, ProgramRequest, Programs};
+use crate::platform::programs::{ProgramCaller, ProgramRequest, Programs};
 
 type Provider = Arc<dyn ActionProvider + Send + Sync>;
 
@@ -36,7 +37,6 @@ enum Key {
     Person {
         workspace: String,
         person: String,
-        session: Option<String>,
     },
 }
 
@@ -103,11 +103,10 @@ impl TaskProgramHost {
                 Some(agent),
                 Some(session),
             ),
-            ProgramCaller::Person { person, session } => (
+            ProgramCaller::Person { person } => (
                 Key::Person {
                     workspace: request.workspace.to_owned(),
                     person: person.to_owned(),
-                    session: session.map(str::to_owned),
                 },
                 request.workspace.to_owned(),
                 Some(person.to_owned()),
@@ -500,15 +499,102 @@ impl ActionProvider for Current {
     }
 }
 
+/// The session's program could not start or run at all.
+fn unavailable(message: String) -> Outcome {
+    Err(Box::new(tilo_actions::ActionFailure {
+        code: "task_program_unavailable".into(),
+        message,
+        details: None,
+        retryable: true,
+    }))
+}
+
+/// The person stopped the line before it ended.
+fn stopped() -> Outcome {
+    Err(Box::new(tilo_actions::ActionFailure {
+        code: "stopped".into(),
+        message: "the person stopped this line".into(),
+        details: None,
+        retryable: false,
+    }))
+}
+
+fn outcome(ran: tilo_mcp::TaskProgram) -> tilo_actions::ActionOutput {
+    let answer = wire::ProgramAnswer {
+        text: ran.text,
+        person_text: ran.person_text,
+        failed: ran.failed,
+        answer: ran.answer,
+        refs: ran.refs,
+    };
+    tilo_actions::ActionOutput {
+        value: Some(serde_json::to_value(answer).unwrap_or_default()),
+        resources: Vec::new(),
+    }
+}
+
 impl Programs for TaskProgramHost {
     fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<Outcome>, String> {
         let api = self.session_of(&request)?;
-        tilo_mcp::task_runs::run(
-            api,
-            request.program,
-            request.confirm,
-            request.this,
-            request.stop,
-        )
+        let (program, confirm, this) = (request.program, request.confirm, request.this);
+        let stop = request.stop;
+        let (complete, answered) = tilo_actions::remote::pending();
+        // The program waits on the session's host and on every call it makes: never on the
+        // broker's thread. A stop is answered where it is asked, so the person hears at once
+        // that the line ended, and its further calls are refused.
+        std::thread::Builder::new()
+            .name("task-program".into())
+            .spawn(move || {
+                let (ended, answer) = std::sync::mpsc::channel();
+                let running = std::thread::Builder::new()
+                    .name("task-program-run".into())
+                    .spawn(move || {
+                        let answered = match tilo_rt::try_app() {
+                            Ok(runtime) => {
+                                match runtime.block_on(api.task_program(
+                                    &program,
+                                    confirm,
+                                    this.as_deref(),
+                                )) {
+                                    Ok(ran) => Ok(outcome(ran)),
+                                    Err(error) => unavailable(error.to_string()),
+                                }
+                            }
+                            Err(error) => unavailable(error.to_string()),
+                        };
+                        // Nobody left to hear it is a run the person stopped: let go.
+                        let _ = ended.send(answered);
+                    });
+                if let Err(error) = running {
+                    complete.complete(unavailable(error.to_string()));
+                    return;
+                }
+                // Wait for the program, or for the person's Stop, whichever comes first.
+                loop {
+                    match answer.recv_timeout(std::time::Duration::from_millis(50)) {
+                        Ok(outcome) => {
+                            complete.complete(outcome);
+                            return;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            complete.complete(unavailable(
+                                "the line's host ended without an answer".to_owned(),
+                            ));
+                            return;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if stop
+                                .as_ref()
+                                .is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Acquire))
+                            {
+                                complete.complete(stopped());
+                                return;
+                            }
+                        }
+                    }
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(answered)
     }
 }

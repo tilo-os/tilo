@@ -124,7 +124,7 @@ pub enum ToolIntent {
         drive: String,
     },
     /// The apps that open a file here, the one it opens with today first: the file at `path`, or
-    /// the kind name the one decision every caller asks by (`file.md`, `document_app_for_with`),
+    /// the kind name the one decision every caller asks by (`file.md`, `[`document_app_for_with`]`),
     /// which the shell routes by its extension and reads no file for.
     DocumentApps {
         path: String,

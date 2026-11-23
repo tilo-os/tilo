@@ -29,18 +29,6 @@ use tilo_resource_store::{Admit, Received, Refusal, Store};
 
 use super::{GovernedWorkspace, Workspaces};
 
-/// Why a command of this device's own roles on an app's record did not carry out
-/// ([`Workspaces::record_command`]).
-#[cfg(feature = "agents")]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecordFailure {
-    /// The store or the workspace refused a write, saying why: what was written before it
-    /// stands.
-    Refused(String),
-    /// The command could not be carried out at all.
-    Failed(String),
-}
-
 /// Where a workspace's store keeps its documents, under the workspace's directory.
 const STORE: &str = "store";
 const DOCS: &str = "docs";
@@ -1139,41 +1127,6 @@ impl Workspaces {
         }
         self.write_resources(governed, device, context.app_id(), command)
             .await
-    }
-
-    /// Carry out `command` on `app`'s record of `workspace` for this device's own roles (the agent
-    /// engine writing a reply, a record served where no window of its app is open), as the
-    /// device this service signs its own writes as: a read answers what its person may read,
-    /// and each write is stamped with the invoker the command names before it reaches the
-    /// workspace ([`crate::tl_records`]).
-    ///
-    /// # Errors
-    /// [`RecordFailure::Refused`] when the store or the workspace refused a write, with why;
-    /// [`RecordFailure::Failed`] when the workspace is not held here or this service serves no
-    /// device's member copies.
-    #[cfg(feature = "agents")]
-    pub async fn record_command(
-        &self,
-        workspace: &str,
-        app: &str,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, RecordFailure> {
-        let device = self.member_identity().map_err(RecordFailure::Failed)?;
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| RecordFailure::Failed(error.to_string()))?;
-        if !command.writes() {
-            let reader = hex::encode(device.cert.user_public_key);
-            return self
-                .resource_read(&state, &reader, &command)
-                .await
-                .map_err(RecordFailure::Failed);
-        }
-        let governed = state.lock_owned().await;
-        self.write_resources(governed, device, app, command)
-            .await
-            .map_err(RecordFailure::Refused)
     }
 
     /// This device's changes of `app`'s `record` in `workspace` that no other device keeping the

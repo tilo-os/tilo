@@ -1623,10 +1623,19 @@ pub(super) struct WireConnection {
     asks: RefCell<HashMap<u64, tokio::sync::oneshot::Sender<Result<Answered, String>>>>,
     next_ask: Cell<u64>,
     frames: mpsc::UnboundedSender<HostFrame>,
+    /// The providers the shell this connection is serves on the device's dispatch, by the handle
+    /// their calls arrive on.
+    served: RefCell<HashMap<Handle, super::shell_served::Served>>,
+    /// Where those providers' asks of the shell go, once it serves one.
+    serving: RefCell<Option<mpsc::UnboundedSender<super::shell_served::Asking>>>,
 }
 
 impl Drop for WireConnection {
     fn drop(&mut self) {
+        // The shell's link closed: its providers go, and a call of one under way fails.
+        for (_, served) in self.served.get_mut().drain() {
+            served.close();
+        }
         for (_, (_, task)) in self.subscriptions.get_mut().drain() {
             task.abort();
         }
@@ -1682,8 +1691,48 @@ impl WireConnection {
             asks: RefCell::default(),
             next_ask: Cell::new(1),
             frames,
+            served: RefCell::default(),
+            serving: RefCell::default(),
         });
         (connection, outgoing)
+    }
+
+    /// Serve `provider` on the device's dispatch for the shell this connection is, offering
+    /// `catalogue`: answered with the handle its calls arrive on.
+    fn provide(self: &Rc<Self>, provider: String, catalogue: &str) -> Result<Handle, String> {
+        let shell = self
+            .shell
+            .as_ref()
+            .ok_or("this connection is not the person's shell")?;
+        // A provider this shell serves already offers what it lists now.
+        if let Some((handle, served)) = self
+            .served
+            .borrow()
+            .iter()
+            .find(|(_, served)| served.provider() == provider)
+        {
+            served.publish(catalogue)?;
+            return Ok(*handle);
+        }
+        let providers = shell.services.workspaces.providers();
+        let asks = self
+            .serving
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                let (asks, asked) = mpsc::unbounded_channel();
+                let connection = Rc::downgrade(self);
+                tokio::task::spawn_local(super::shell_served::carry(asked, move |ask| {
+                    connection.upgrade().map(|connection| connection.ask(ask))
+                }));
+                asks
+            })
+            .clone();
+        let handle = Handle(self.next_handle.get());
+        let served =
+            super::shell_served::Served::register(&providers, (provider, catalogue), handle, asks)?;
+        self.next_handle.set(handle.0.wrapping_add(1));
+        self.served.borrow_mut().insert(handle, served);
+        Ok(handle)
     }
 
     /// Ask the endpoint `ask`; its answer arrives as a
@@ -1955,6 +2004,12 @@ impl WireConnection {
                         )
                     }),
             )),
+            Operation::Shell(runtime_collab::wire::shell::ShellCall::Provide {
+                provider,
+                catalogue,
+            }) => Box::pin(std::future::ready(self.provide(provider, &catalogue).map(
+                |handle| Reply::Shell(runtime_collab::wire::shell::ShellReply::Providing(handle)),
+            ))),
             Operation::Shell(call) => Box::pin(super::shell::answer(self.shell.clone(), call)),
             request => {
                 let result = self.dispatch(id, request);
@@ -2285,6 +2340,10 @@ impl WireConnection {
             Operation::Close { handle } => {
                 if self.published.get() == Some(handle) {
                     self.close_published();
+                    return Ok(Reply::Done);
+                }
+                if let Some(served) = self.served.borrow_mut().remove(&handle) {
+                    served.close();
                     return Ok(Reply::Done);
                 }
                 self.channels

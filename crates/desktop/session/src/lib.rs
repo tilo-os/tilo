@@ -46,6 +46,8 @@ pub(crate) use assembly::Shared;
 mod activity_provider;
 mod continuations;
 mod daemon_fixture;
+#[cfg(all(feature = "test-support", target_os = "linux"))]
+pub mod shell_session;
 pub mod host_actions;
 pub mod records;
 pub mod search;
@@ -138,6 +140,8 @@ mod capture_studio;
 mod cards;
 #[cfg(target_os = "linux")]
 mod carets;
+#[cfg(target_os = "linux")]
+mod certification;
 #[cfg(target_os = "linux")]
 mod change_feed;
 #[cfg(target_os = "linux")]
@@ -313,6 +317,11 @@ mod owner_session;
 #[cfg(target_os = "linux")]
 mod page_track;
 #[cfg(target_os = "linux")]
+mod pair_device;
+#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+mod pairing_link;
+#[cfg(target_os = "linux")]
 mod panels;
 #[cfg(target_os = "linux")]
 mod part_binding;
@@ -411,6 +420,7 @@ pub mod switcher;
 pub mod sync;
 #[cfg(target_os = "linux")]
 mod system_sounds;
+mod task_programs;
 #[cfg(target_os = "linux")]
 mod task_programs_host;
 #[cfg(target_os = "linux")]

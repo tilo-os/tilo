@@ -89,7 +89,3 @@ airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before
 airdrop-error-declined = AirDrop transfer was cancelled before sending.
 
 device-agents-not-accepted = This device doesn’t accept agents from your other devices. Turn on “Accept agents from my other devices” in its Settings, under Devices.
-
-task-programs-resource = Task programs
-task-programs-run = Run a program
-task-programs-run-detail = Runs a program as a step of the task, and answers what it read or changed.

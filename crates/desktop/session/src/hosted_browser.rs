@@ -1264,7 +1264,7 @@ fn take_identity(material: &Material) -> Result<(), String> {
 /// Ask its server to enter the session's device into the workspace, the way a member
 /// device asks to enter a workspace its server hosts, and answer the invitation text it redeems.
 async fn invitation(material: &Material) -> Result<String, String> {
-    use tilo_actions::remote::{InvocationUpdate, InvokeArgument, InvokeRequest};
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, InvocationUpdate};
     use tilo_server_protocol::workspaces::{
         ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     };
@@ -1314,9 +1314,10 @@ async fn invitation(material: &Material) -> Result<String, String> {
             .await
         {
             Some(Ok(InvocationUpdate::Succeeded { output, .. })) => {
-                let entered: EnteredWorkspace =
-                    serde_json::from_value(output.value.unwrap_or_default())
-                        .map_err(|error| format!("the server answered no invitation: {error}"))?;
+                let entered: EnteredWorkspace = serde_json::from_value(
+                    output.value.unwrap_or_default(),
+                )
+                .map_err(|error| format!("the server answered no invitation: {error}"))?;
                 let signed = entered
                     .invitation
                     .decode()

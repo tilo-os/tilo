@@ -423,7 +423,7 @@ impl MergedDocuments {
 
 /// `resource` of `app` as `peer` holds it, its sealed history opened with `keys` where it has
 /// them; a write of the history that does not merge is left out and named in the log.
-pub(super) fn opened_readable(
+fn opened_readable(
     peer: &StatePeer,
     keys: Option<&DocumentKeys>,
     workspace: &str,

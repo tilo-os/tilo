@@ -325,13 +325,13 @@ impl Served {
 }
 
 /// One section's change: its name, and the leaves to merge into it.
-pub(crate) type SectionChange = (String, serde_json::Map<String, serde_json::Value>);
+type SectionChange = (String, serde_json::Map<String, serde_json::Value>);
 /// The providers as they are stored: this device's and the person's hosted ones.
 type StoredProviders = (ProviderConfig, agent_provider_config::HostedProfiles);
 
 /// The sections of the two provider sections that differ between `before` and
 /// `after`, as the leaves each carries, so a write lands only what changed.
-pub(crate) fn changed_sections(
+fn changed_sections(
     before: &StoredProviders,
     after: &StoredProviders,
 ) -> Result<Vec<SectionChange>, ApiError> {

@@ -840,15 +840,6 @@ impl TilolangProcess {
         Ok(Stage::Joining {
             spec: Spec {
                 installed: request.installed,
-                // The daemon made this JSON from its registry: one that does not read is a
-                // daemon and a process of different builds, which never run together.
-                provided: if request.provided.is_empty() {
-                    Vec::new()
-                } else {
-                    serde_json::from_str(&request.provided).map_err(|error| {
-                        AdmitError::Module(format!("the provided packages: {error}"))
-                    })?
-                },
                 language: request.language,
                 access: request.access,
                 shows: request.shows,

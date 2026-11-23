@@ -70,10 +70,10 @@ pub use check::{
 };
 pub use grant::{StepGrant, action_rule, edit_reach, grant_answer, step_node, step_node_at};
 pub use invocation::{
-    AskRequest, AskingStep, AutomationInvocationId, Continuation, DEFAULT_BACKOFF_MS,
+    AskRequest, AutomationInvocationId, ConfirmationRequest, Continuation, DEFAULT_BACKOFF_MS,
     DEFAULT_STEP_TIMEOUT, InvocationHooks, InvocationMode, InvocationOutcome, InvocationReport,
     InvocationRequest, InvocationTrigger, MAX_BACKOFF_MS, Recovered, STEP_FACET, StepEntry,
-    StepFailure, StepOutcome, StepStatus, StopWatch, asks_before_running, run, step_invocation_id,
+    StepFailure, StepOutcome, StepStatus, StopWatch, run, step_invocation_id,
 };
 pub use path::StepPath;
 pub use saved::{SavedShortcut, decode_saved};

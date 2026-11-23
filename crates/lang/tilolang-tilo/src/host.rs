@@ -573,33 +573,6 @@ pub fn argument_json(
                 )),
             }
         }
-        // A record value — one built in the code rather than held in a collection — is data, as
-        // `json.encode` writes it: its fields under their names, each as the value it holds.
-        (Ty::Record(key), Value::Rec(rec)) => {
-            let declared = if key.app == meta.app {
-                meta.type_named(&key.name).cloned()
-            } else {
-                owner(&key.app)?.type_named(&key.name).cloned()
-            };
-            let declared = declared.ok_or_else(|| format!("unknown type `{}`", key.name))?;
-            let fields_of = if key.app == meta.app {
-                meta.clone()
-            } else {
-                owner(&key.app)?
-            };
-            let mut out = serde_json::Map::new();
-            for field in &declared.fields {
-                let Some(value) = rec.fields.get(&field.id) else {
-                    continue;
-                };
-                let ty = parse_ty(&field.ty, &key.app)?;
-                out.insert(
-                    field.name.clone(),
-                    argument_json(owner, &fields_of, value, &ty)?,
-                );
-            }
-            Ok(Json::Object(out))
-        }
         (Ty::Record(_) | Ty::Union(_), other) => Err(format!(
             "a resource is given by a reference to it, not {}",
             to_json(other).unwrap_or(Json::Null)

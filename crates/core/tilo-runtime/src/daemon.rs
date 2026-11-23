@@ -20,7 +20,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tilo_api::daemon::admission::{Admitted, ROOT};
+use tilo_api::daemon::admission::ROOT;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader};
@@ -162,6 +162,45 @@ pub struct Running {
     listener: UnixListener,
     accepting: Option<std::thread::JoinHandle<()>>,
     serving: Option<std::thread::JoinHandle<io::Result<()>>>,
+    /// The person's services while they run: what starts their shell.
+    person: Arc<Person>,
+}
+
+/// The person's services, while they run, for whoever waits for them to.
+#[derive(Default)]
+struct Person {
+    services: Mutex<std::sync::Weak<Daemon>>,
+    started: Condvar,
+}
+
+impl Person {
+    /// `services` run from now on, or (`None`) no longer.
+    fn set(&self, services: Option<&Arc<Daemon>>) {
+        *self.services.lock_recover() = services.map_or_else(std::sync::Weak::new, Arc::downgrade);
+        self.started.notify_all();
+    }
+
+    /// The person's services once they run, waiting up to `within` for them to start.
+    fn within(&self, within: Duration) -> io::Result<Arc<Daemon>> {
+        let deadline = Instant::now() + within;
+        let mut services = self.services.lock_recover();
+        loop {
+            if let Some(services) = services.upgrade() {
+                return Ok(services);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the person's services did not start",
+                ));
+            }
+            services = self
+                .started
+                .wait_timeout(services, left)
+                .map_or_else(|poisoned| poisoned.into_inner().0, |(services, _)| services);
+        }
+    }
 }
 
 impl Running {
@@ -214,11 +253,12 @@ impl Running {
         };
         tracing::info!("answering this device's actions on its native endpoint");
         let stop = crate::device::serve::Stop::default();
+        let person = Arc::new(Person::default());
         let serving = {
-            let (profile, stop) = (profile.to_owned(), stop.clone());
+            let (profile, stop, person) = (profile.to_owned(), stop.clone(), Arc::clone(&person));
             std::thread::Builder::new()
                 .name("tilo-daemon".into())
-                .spawn(move || serve_device(&profile, dev, device, &native, &stop))?
+                .spawn(move || serve_device(&profile, dev, device, &native, &stop, &person))?
         };
         Ok(Self {
             native: path,
@@ -226,7 +266,31 @@ impl Running {
             listener,
             accepting: Some(accepting),
             serving: Some(serving),
+            person,
         })
+    }
+
+    /// Start `command` as the person's shell, handed the link the daemon made for it, once the
+    /// person's services run, waiting up to `within` for them to start
+    /// ([`Daemon::start_shell`]).
+    ///
+    /// # Errors
+    /// The person's services did not start in time, or the shell did not.
+    #[cfg(target_os = "linux")]
+    pub fn start_shell(&self, command: Command, within: Duration) -> io::Result<std::process::Child> {
+        self.person.within(within)?.start_shell(command)
+    }
+
+    /// The shell's end of a link the daemon made, once the person's services run (within
+    /// `within`): made and admitted exactly as [`Self::start_shell`] hands one to the shell it
+    /// starts, for a test's session that runs in this process to take instead
+    /// (`tilo_session::Options::shell_link`).
+    ///
+    /// # Errors
+    /// The person's services did not start in time, or the link could not be made.
+    #[cfg(feature = "test-support")]
+    pub fn link_shell(&self, within: Duration) -> io::Result<std::os::fd::OwnedFd> {
+        Ok(self.person.within(within)?.shell_link()?.into())
     }
 
     /// Where the daemon's native endpoint listens.
@@ -277,6 +341,77 @@ impl Drop for Running {
     }
 }
 
+/// This computer's daemon with the person's shell started over its link, as a sign-in starts
+/// them: the one way a test starts a session that is the daemon's shell. The daemon runs in this
+/// process ([`Running`]); the shell is the program `shell` starts, handed the link
+/// ([`Daemon::start_shell`]). Dropping it stops both.
+#[cfg(target_os = "linux")]
+pub struct ShellSession {
+    shell: Option<std::process::Child>,
+    running: Option<Running>,
+}
+
+#[cfg(target_os = "linux")]
+impl ShellSession {
+    /// Start the daemon over `profile` and, once the person's services run (within `within`),
+    /// `shell` as their shell. The profile's person is founded already, as a device a person
+    /// signed in on is.
+    ///
+    /// # Errors
+    /// The daemon did not start, its person's services did not within `within`, or the shell did
+    /// not start.
+    pub fn start(profile: &Path, shell: Command, within: Duration) -> io::Result<Self> {
+        let running = Running::start(profile)?;
+        let shell = running.start_shell(shell, within)?;
+        Ok(Self {
+            shell: Some(shell),
+            running: Some(running),
+        })
+    }
+
+    /// Where the daemon's native endpoint listens: what the person's programs, the CLI and the
+    /// SDKs reach the session's actions at.
+    #[must_use]
+    pub fn native_socket(&self) -> &Path {
+        self.running
+            .as_ref()
+            .map_or_else(|| Path::new(""), Running::native_socket)
+    }
+
+    /// The shell's process.
+    pub fn shell(&mut self) -> &mut std::process::Child {
+        self.shell.as_mut().expect("the shell runs until the session stops")
+    }
+
+    /// Stop the shell, then the daemon, and return once both ended.
+    ///
+    /// # Errors
+    /// The daemon could not serve.
+    pub fn stop(mut self) -> io::Result<()> {
+        self.end_shell();
+        self.running.take().map_or(Ok(()), Running::stop)
+    }
+
+    /// Ask the shell to end, as a sign-out does, and wait for it.
+    fn end_shell(&mut self) {
+        if let Some(mut shell) = self.shell.take() {
+            if let Ok(pid) = i32::try_from(shell.id())
+                && let Some(pid) = rustix::process::Pid::from_raw(pid)
+            {
+                let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+            }
+            let _ = shell.wait();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ShellSession {
+    fn drop(&mut self) {
+        self.end_shell();
+    }
+}
+
 /// Serve `device` over `profile` with `native` as its endpoint until `stop` is told: its person
 /// found or awaited, their services started, and the device held.
 fn serve_device(
@@ -285,6 +420,7 @@ fn serve_device(
     device: crate::device::unclaimed::ThisDevice,
     native: &Native,
     stop: &crate::device::serve::Stop,
+    person: &Person,
 ) -> io::Result<()> {
     // Before a person's certificate names this computer's key, it is served with the key alone:
     // a ticket it was handed is spent on the way, and the person's services start once a
@@ -311,9 +447,6 @@ fn serve_device(
         // nothing is admitted to the workspace before then. The endpoint admits each connection as
         // it comes, and host search starts once the workspace is here, rather than the daemon
         // ending before it could take the workspace in.
-        // The person's and their agents' task programs run here, in this daemon's processes.
-        #[cfg(target_os = "linux")]
-        session.serve_task_programs();
         let search = Arc::new(OnceLock::new());
         search_once_held(&session, &search)?;
         // A person who signs in from now on has their workspace here (the one their desktop
@@ -322,11 +455,12 @@ fn serve_device(
             .seats
             .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
         native.serve_the_person(the_persons(&session, search));
-        native.serve_keys(key_endpoint(&session, native.answers.clone()));
+        person.set(Some(&session));
         // The device is served until the daemon is told to stop, another takes the device over,
         // or this computer logs in with a ticket: its person's part starts again as that device,
         // the device's own part (the native endpoint, the device's lock) staying up meanwhile.
         let held = crate::device::hold(&session, stop);
+        person.set(None);
         native.forget_the_person();
         drop(session);
         match held.map_err(|error| io::Error::other(format!("{error:#}")))? {
@@ -481,20 +615,6 @@ pub(crate) fn serve_for_test(
 /// A connection the native endpoint takes, with the slot it counts against and who it is.
 type Take = Box<dyn Fn(UnixStream, ConnectionSlot, Seated) -> io::Result<()> + Send + Sync>;
 
-/// A connection of an account signed in as another person than the device's, taken as the key
-/// of theirs it acts as, with that key's certificate.
-type KeyTake = Box<
-    dyn Fn(
-            UnixStream,
-            ConnectionSlot,
-            Seated,
-            ed25519_dalek::SigningKey,
-            tilo_user_identity::DeviceCert,
-        ) -> io::Result<()>
-        + Send
-        + Sync,
->;
-
 /// The native endpoint over the daemon's whole life: the device's own actions from boot, and the
 /// person's endpoint once their services run. A connection on a device no certificate names yet
 /// is answered with the device's own actions at once; one on a set-up device while its person's
@@ -506,9 +626,6 @@ struct Native {
     seats: Arc<Seats>,
     /// The person's endpoint, while their services run.
     person: Mutex<Option<Arc<Take>>>,
-    /// The endpoint of the other people signed in on the computer, each as their own key, while
-    /// the person's services run.
-    keys: Mutex<Option<Arc<KeyTake>>>,
     /// Told when [`Self::person`] is set.
     started: (Mutex<()>, Condvar),
 }
@@ -527,7 +644,6 @@ impl Native {
             seats,
             started: (Mutex::new(()), Condvar::new()),
             person: Mutex::new(None),
-            keys: Mutex::new(None),
         }
     }
 
@@ -577,17 +693,10 @@ impl Native {
         self.started.1.notify_all();
     }
 
-    /// Serve the connections of the other people signed in on the computer with `take`, each
-    /// as their own key, from now on.
-    fn serve_keys(&self, take: KeyTake) {
-        *self.keys.lock_recover() = Some(Arc::new(take));
-    }
-
     /// Serve no connection the person's from now on, while their services start again: one that
-    /// comes meanwhile waits for them, and another person's is answered the device's own actions.
+    /// comes meanwhile waits for them.
     fn forget_the_person(&self) {
         self.person.lock_recover().take();
-        self.keys.lock_recover().take();
     }
 
     /// The person's endpoint, while their services run.
@@ -614,15 +723,6 @@ impl Native {
         // held while the person's services start.
         if !seated.seat.admitted.served() || seated.seat.uid == ROOT {
             return self.device_only(stream, slot, seated);
-        }
-        // Another person than the device's acts as their own key, and is never served the
-        // person's endpoint: until it runs, the device's own actions answer them.
-        if matches!(seated.seat.admitted, Admitted::Key { .. }) {
-            let take = self.keys.lock_recover().clone();
-            return match (take, self.seats.key(seated.seat)) {
-                (Some(take), Some((key, cert))) => take(stream, slot, seated, key, cert),
-                _ => self.device_only(stream, slot, seated),
-            };
         }
         match self.person() {
             Some(person) => person(stream, slot, seated),
@@ -718,29 +818,6 @@ pub(crate) fn agents_endpoint(
         frames: Frames::of_the_person(daemon),
         to_agents: None,
     }
-}
-
-/// How the native endpoint serves a connection of another person than the device's: each as a
-/// run of the key of theirs it acts as, in `session`'s workspace. Its action frames reach the
-/// device's own actions (`answers`) alone, never the person's tree.
-fn key_endpoint(session: &Arc<Daemon>, answers: crate::device::unclaimed::DeviceOnly) -> KeyTake {
-    let session = Arc::downgrade(session);
-    Box::new(move |stream, slot, seated, key, cert| {
-        let daemon = session
-            .upgrade()
-            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-        Endpoint {
-            session_factory: daemon.key_sessions(key, cert),
-            status: status_of(&daemon),
-            search: Arc::new(OnceLock::new()),
-            media: None,
-            other_devices: None,
-            agents: None,
-            frames: Frames::of_the_device(answers.seated(seated.clone())),
-            to_agents: None,
-        }
-        .take(stream, slot, Some(seated))
-    })
 }
 
 /// The sessions of the native endpoint, each admitted to `session`'s workspace when its

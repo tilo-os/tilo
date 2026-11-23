@@ -209,15 +209,15 @@ d-j33acdci = New tag
 d-j33acdci-name = Name
 
 d-7ow26bju = Tag
-    .doc = Gives a note the tag `tag`, and lists the tag in the notebook when it lists none of that name yet: a name is how a person, an agent and a script know a tag.
+    .doc = Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of that name yet: a name is how a person, an agent and a script know a tag.
     .w-a-tag-needs-a-name = A tag needs a name
 
-d-7ow26bju-tag = Tag
+d-7ow26bju-name = Name
 
 d-3u3bevec = Untag
-    .doc = Takes the tag `tag` off a note.
+    .doc = Takes the tag named `name` off a note.
 
-d-3u3bevec-tag = Tag
+d-3u3bevec-name = Name
 
 d-ja7xx6nf = Rename
     .doc = Names a tag of the notebook: every note that carries the old name carries the new one.

@@ -342,25 +342,6 @@ impl Core {
     pub(crate) fn aggregate_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ListNew => self.ret_h(Value::List(Vec::new())),
-            // `xs + ys`: one list of both, the first list's items in front.
-            Imp::ListConcat => {
-                let right = self.val_whole(a.h(1)?)?;
-                let right = match right {
-                    Value::List(items) => items,
-                    other => {
-                        return trap(format!("expected a list, got {}", other.kind_name()));
-                    }
-                };
-                let joined = self.val_whole(a.h(0)?)?;
-                let mut joined = match joined {
-                    Value::List(items) => items,
-                    other => {
-                        return trap(format!("expected a list, got {}", other.kind_name()));
-                    }
-                };
-                joined.extend(right);
-                self.ret_h(Value::List(joined))
-            }
             Imp::ListPushI => self.list_push(a.h(0)?, Value::Int(a.long(1)?)),
             Imp::ListPushF => self.list_push(a.h(0)?, Value::Float(a.float(1)?)),
             Imp::ListPushH => {

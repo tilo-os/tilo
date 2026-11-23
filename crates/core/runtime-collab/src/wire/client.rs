@@ -364,7 +364,9 @@ fn route(shared: &Arc<Shared>, frame: HostFrame) {
         }
         HostFrame::Ask { id, ask } => {
             let channel = match &ask {
-                Ask::Query { channel, .. } | Ask::Resolve { channel, .. } => *channel,
+                Ask::Query { channel, .. }
+                | Ask::Resolve { channel, .. }
+                | Ask::Action { channel, .. } => *channel,
             };
             let answerer = routes.answerers.get(&channel).cloned();
             drop(routes);

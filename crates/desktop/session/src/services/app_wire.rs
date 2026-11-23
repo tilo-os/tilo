@@ -150,8 +150,7 @@ pub(crate) struct Collaboration<'a> {
     /// The records' content in search's index, read from the records.
     pub records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
     /// The programs agents write in this session's tasks, run by it.
-    pub task_programs:
-        Option<std::sync::Arc<tilo_workspace_service::workspaces::task_programs::TaskPrograms>>,
+    pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
     /// The session's own actions, offered to a turn's agent as the broker's steps.
     pub session_actions: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
     /// The person's settings, offered where Settings' window invokes them: the provider its

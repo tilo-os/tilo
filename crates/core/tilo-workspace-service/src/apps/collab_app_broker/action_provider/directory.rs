@@ -439,7 +439,6 @@ fn directory_page(
                 .collect::<Result<_, _>>()?,
             revision: page.revision,
             providers: Vec::new(),
-            packages: Vec::new(),
             next_cursor: page.next_cursor,
             exhausted: page.exhausted,
             stale_cursor: page.stale_cursor,

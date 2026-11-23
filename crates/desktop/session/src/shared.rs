@@ -495,6 +495,7 @@ impl Shared {
         );
         self.follow_invite();
         self.follow_nearby_shares();
+        self.follow_pair_device();
         self.follow_delete_workspace();
         self.follow_owner_deletions();
         self.follow_boot_join();

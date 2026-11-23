@@ -38,14 +38,6 @@ pub enum AnswerScope {
         kind: String,
         action: String,
     },
-    /// One action, on one resource of its kind: what "always" on one site gives, leaving
-    /// every other site to ask.
-    Resource {
-        app: String,
-        kind: String,
-        resource: String,
-        action: String,
-    },
 }
 
 impl AnswerScope {
@@ -75,21 +67,6 @@ impl AnswerScope {
         }
     }
 
-    #[must_use]
-    pub fn resource(
-        app: impl Into<String>,
-        kind: impl Into<String>,
-        resource: impl Into<String>,
-        action: impl Into<String>,
-    ) -> Self {
-        Self::Resource {
-            app: app.into(),
-            kind: kind.into(),
-            resource: resource.into(),
-            action: action.into(),
-        }
-    }
-
     /// The node this scope stands for in `workspace`. An action's node may pass
     /// through the resource's fields, so one action is matched at any depth
     /// below its kind.
@@ -102,17 +79,6 @@ impl AnswerScope {
             Self::Action { app, kind, action } => {
                 workspace.app(app).kind(kind).rest().action(action)
             }
-            Self::Resource {
-                app,
-                kind,
-                resource,
-                action,
-            } => workspace
-                .app(app)
-                .kind(kind)
-                .resource(resource)
-                .rest()
-                .action(action),
         }
     }
 
@@ -137,14 +103,6 @@ impl AnswerScope {
                 Segment::Rest,
                 Segment::Name(Level::Action, action),
             ] => Some(Self::action(app, kind, action)),
-            [
-                Segment::Name(Level::Workspace, _),
-                Segment::Name(Level::App, app),
-                Segment::Name(Level::Kind, kind),
-                Segment::Name(Level::Resource, resource),
-                Segment::Rest,
-                Segment::Name(Level::Action, action),
-            ] => Some(Self::resource(app, kind, resource, action)),
             _ => None,
         }
     }
@@ -157,29 +115,12 @@ impl AnswerScope {
             Self::App { app } => format!("app:{app}"),
             Self::Kind { app, kind } => format!("kind:{app}:{kind}"),
             Self::Action { app, kind, action } => format!("action:{app}:{kind}:{action}"),
-            Self::Resource {
-                app,
-                kind,
-                resource,
-                action,
-            } => format!("resource:{app}:{kind}:{resource}:{action}"),
         }
     }
 
     /// The scope a [`Self::key`] names, if it names one.
     #[must_use]
     pub fn parse(key: &str) -> Option<Self> {
-        // A resource's id may hold `:` itself (a site's address): it is all between the kind
-        // and the action, which is last.
-        if let Some(rest) = key.strip_prefix("resource:") {
-            let mut parts = rest.splitn(3, ':');
-            let (app, kind, rest) = (parts.next()?, parts.next()?, parts.next()?);
-            let (resource, action) = rest.rsplit_once(':')?;
-            return [app, kind, resource, action]
-                .iter()
-                .all(|part| !part.is_empty())
-                .then(|| Self::resource(app, kind, resource, action));
-        }
         let mut parts = key.split(':');
         match (
             parts.next()?,
@@ -306,9 +247,7 @@ pub fn may_give(scope: Option<&AnswerScope>, kind: ActionKind, answer: Answer) -
     kind != ActionKind::Outside
         || answer != Answer::Allow
         || scope.is_some_and(|scope| match scope {
-            // One action, or one action on one resource: an answer the person gave for what
-            // they looked at.
-            AnswerScope::Action { .. } | AnswerScope::Resource { .. } => true,
+            AnswerScope::Action { .. } => true,
             AnswerScope::App { app } | AnswerScope::Kind { app, .. } => {
                 [ACCOUNT_APP, WORKSPACE_APP].contains(&app.as_str())
             }
@@ -329,43 +268,11 @@ pub fn held_to_contract(decision: &Decision<'_>, consequential: bool) -> Answer 
             if is_answer(grant)
                 && matches!(
                     AnswerScope::of_node(&grant.node),
-                    Some(AnswerScope::Action { .. } | AnswerScope::Resource { .. })
+                    Some(AnswerScope::Action { .. })
                 ) =>
         {
             Answer::Allow
         }
         _ => Answer::Ask,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// An answer given on one resource leaves every other resource of its kind asking, and
-    /// reads back from its key and its node, a resource id with `:` in it included.
-    #[test]
-    fn an_answer_on_one_resource_leaves_another_asking() {
-        let scope = AnswerScope::resource("browser", "site", "https://a.example", "download");
-        let node = scope.node("w");
-        let path = |site: &str| {
-            TreePath::workspace("w")
-                .app("browser")
-                .kind("site")
-                .resource(site)
-                .action("download")
-        };
-        assert!(node.covers(&path("https://a.example")));
-        assert!(!node.covers(&path("https://b.example")));
-        assert_eq!(AnswerScope::parse(&scope.key()), Some(scope.clone()));
-        assert_eq!(AnswerScope::of_node(&node), Some(scope.clone()));
-        // An outside action allowed on one resource is an answer for what its person looked
-        // at, as one allowed for one action is; a whole app's is not.
-        assert!(may_give(Some(&scope), ActionKind::Outside, Answer::Allow));
-        assert!(!may_give(
-            Some(&AnswerScope::app("browser")),
-            ActionKind::Outside,
-            Answer::Allow
-        ));
     }
 }

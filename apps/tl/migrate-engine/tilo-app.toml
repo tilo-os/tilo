@@ -1,6 +1,0 @@
-# A device's migration engine, read as a package: the actions of `so.tilo.migrate` on
-# `devices/<device>/migrate`, described in surface.toml. The device registers them with its
-# provider; a test holds this description to what it registers.
-[package]
-id = "so.tilo.migrate.engine"
-name = "Migrations"

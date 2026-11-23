@@ -803,7 +803,6 @@ inputs = [
   "apps/contacts/surface.toml",
   "apps/settings/surface.toml",
   "crates/session/settings-service/agent-models-surface.json",
-  "crates/session/settings-service/agent-providers-surface.json",
   "crates/services/vision/surface.json",
 ]
 readers = [

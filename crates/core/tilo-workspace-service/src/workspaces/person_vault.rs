@@ -471,7 +471,7 @@ pub fn secret_asked(caller: &Caller, by: &str, asked: &AskForItem) -> AskedFacts
         words: asked.words(by),
         facts,
         verb: "keep".to_owned(),
-        answered_by: Some(format!(
+        takes: Some(format!(
             "{}/{}#{}",
             person_vault::PROVIDER,
             person_vault::RESOURCE,

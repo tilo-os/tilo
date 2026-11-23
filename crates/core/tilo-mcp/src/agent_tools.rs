@@ -203,10 +203,10 @@ impl AgentTools {
         );
         let mut sessions = self.sessions.lock_recover();
         if let Some((latest, server)) = sessions.get(&key) {
-            latest.set(Arc::clone(&step.provider));
+            *latest.0.lock_recover() = Arc::clone(&step.provider);
             return Arc::clone(server);
         }
-        let latest = Arc::new(Latest::new(Arc::clone(&step.provider)));
+        let latest = Arc::new(Latest(Mutex::new(Arc::clone(&step.provider))));
         let server = Arc::new(McpServer::for_agent(
             Arc::clone(&latest),
             step.workspace.to_owned(),
@@ -272,17 +272,6 @@ fn unavailable(message: String) -> ActionFailure {
 pub struct Latest(Mutex<Provider>);
 
 impl Latest {
-    /// Calls through `provider` until [`Self::set`] names another.
-    #[must_use]
-    pub fn new(provider: Provider) -> Self {
-        Self(Mutex::new(provider))
-    }
-
-    /// Calls through `provider` from now on: the API the session's latest step is served on.
-    pub fn set(&self, provider: Provider) {
-        *self.0.lock_recover() = provider;
-    }
-
     fn provider(&self) -> Provider {
         Arc::clone(&self.0.lock_recover())
     }

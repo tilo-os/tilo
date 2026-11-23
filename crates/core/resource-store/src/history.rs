@@ -305,17 +305,6 @@ pub(crate) fn stamped(
     versions
 }
 
-/// What `change` of the document `doc_id` (applied to `doc`) did to each resource it touched;
-/// `None` for a change that writes where the store keeps nothing.
-#[must_use]
-pub fn touched_by(
-    doc: &Automerge,
-    doc_id: &str,
-    change: &automerge::Change,
-) -> Option<crate::admit::Touched> {
-    crate::admit::touched(doc, doc_id, change).map(|(touched, _)| touched)
-}
-
 /// The version `change` is of a resource it touched as `touch` says.
 fn version(change: &automerge::Change, touch: &crate::admit::Touch) -> Version {
     let kind = if touch.made {

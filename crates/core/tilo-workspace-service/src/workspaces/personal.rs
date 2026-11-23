@@ -765,7 +765,7 @@ pub fn presence_changed() {
 }
 
 /// Wake `wake` on the next [`presence_changed`].
-pub fn on_presence_change(wake: &tilo_actions::remote::ResourceWake) {
+pub(crate) fn on_presence_change(wake: &tilo_actions::remote::ResourceWake) {
     let mut waiting = PRESENCE_WAITING.lock_recover();
     waiting.retain(tilo_actions::remote::ResourceWake::waiting);
     waiting.push(wake.clone());
@@ -789,116 +789,10 @@ pub fn present_on(here: &mut Vec<tilo_actions::remote::Here>, person: &str, devi
     }
 }
 
-/// The prefix of an agent session's entry in who is here: what tells a live session of an agent
-/// from a person and from a member, whose ids are their own keys.
-const SESSION_WHO: &str = "agent-session:";
-
-/// The agent sessions this device serves, by the run each connection was admitted in: each is
-/// present on this device from the moment its connection opens until its session ends.
-#[derive(Default)]
-pub(super) struct AgentSessions(std::sync::Mutex<BTreeMap<String, AgentSession>>);
-
-/// One agent session this device serves: one MCP connection, while it lasts.
-struct AgentSession {
-    /// The workspace it works in.
-    workspace: String,
-    /// What the workspace calls it: the client's own name once it said one.
-    name: String,
-    /// The person stopped this session: it stays ended, however long its connection is held.
-    stopped: bool,
-}
-
-impl Workspaces {
-    /// A connection in `workspace` opened, admitted in the run `execution`: its agent is present
-    /// on this device from now on, called `name` until its client says what it is.
-    pub fn agent_opened(&self, execution: &str, workspace: &str, name: &str) {
-        self.inner.agent_sessions.0.lock_recover().insert(
-            execution.to_owned(),
-            AgentSession {
-                workspace: workspace.to_owned(),
-                name: name.to_owned(),
-                stopped: false,
-            },
-        );
-        presence_changed();
-    }
-
-    /// The client of `execution`'s connection named itself: who is here calls its session
-    /// `client` from now on.
-    pub fn agent_named(&self, execution: &str, client: &str) {
-        {
-            let mut sessions = self.inner.agent_sessions.0.lock_recover();
-            let Some(session) = sessions
-                .get_mut(execution)
-                .filter(|session| session.name != client)
-            else {
-                return;
-            };
-            session.name = client.to_owned();
-        }
-        presence_changed();
-    }
-
-    /// The connection of `execution` ended: its agent leaves who is here.
-    pub fn agent_closed(&self, execution: &str) {
-        let removed = self
-            .inner
-            .agent_sessions
-            .0
-            .lock_recover()
-            .remove(execution)
-            .is_some();
-        if removed {
-            presence_changed();
-        }
-    }
-
-    /// The person stopped the agent session called `name` in `workspace`: it leaves who is here
-    /// and stays ended. Whether a session that name was here.
-    pub fn stop_agent(&self, workspace: &str, name: &str) -> bool {
-        {
-            let mut sessions = self.inner.agent_sessions.0.lock_recover();
-            let Some(session) = sessions.values_mut().find(|session| {
-                session.workspace == workspace && session.name == name && !session.stopped
-            }) else {
-                return false;
-            };
-            session.stopped = true;
-        }
-        presence_changed();
-        true
-    }
-
-    /// Whether the person stopped the session of the run `execution`, so its calls end nothing.
-    pub fn agent_stopped(&self, execution: &str) -> bool {
-        self.inner
-            .agent_sessions
-            .0
-            .lock_recover()
-            .get(execution)
-            .is_some_and(|session| session.stopped)
-    }
-}
-
 impl PresentDevices for Workspaces {
-    /// The agent sessions this device serves in `workspace`, each its own entry present on this
-    /// device, so a run after another is a newcomer rather than the run before it moved on; and
-    /// the devices holding a link of this host's into `workspace` that has not ended, each under
+    /// The devices holding a link of this host's into `workspace` that has not ended, each under
     /// the person its certificate names there.
     fn attach(&self, workspace: &str, here: &mut Vec<tilo_actions::remote::Here>) {
-        let device = hex::encode(self.device_cert().device_public_key);
-        for (execution, session) in &*self.inner.agent_sessions.0.lock_recover() {
-            if session.workspace != workspace || session.stopped {
-                continue;
-            }
-            here.push(tilo_actions::remote::Here {
-                who: format!("{SESSION_WHO}{execution}"),
-                name: session.name.clone(),
-                kind: "agent".to_owned(),
-                works_in: None,
-                devices: vec![device.clone()],
-            });
-        }
         let Some(workspace_id) = tilo_server_protocol::WorkspaceId::parse(workspace) else {
             return;
         };

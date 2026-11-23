@@ -36,7 +36,6 @@ mod flow_laptop_phone_server;
 pub(crate) mod home;
 mod host_runs;
 mod keep;
-mod layout;
 pub(crate) mod local;
 #[cfg(target_os = "linux")]
 pub mod package_runs;
@@ -54,8 +53,6 @@ pub mod services;
 mod shell;
 pub mod shortcuts;
 pub mod take_work;
-#[cfg(target_os = "linux")]
-mod task_programs;
 #[cfg(target_os = "linux")]
 pub mod tasks;
 #[cfg(target_os = "linux")]

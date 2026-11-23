@@ -182,6 +182,9 @@ impl Session {
         ));
         let watched = std::sync::Arc::clone(&notification_policy);
         let woken = options.wake.handle();
+        // A device's answer to another's ask about the person is worked out
+        // off the loop; when it lands here, the loop wakes to put it to them.
+        crate::certification::attach(options.wake.handle());
         // The pictures the shell shows are this device's: a change of the person's reaches them too.
         let wallpapers = std::sync::Arc::new(crate::wallpapers::Wallpapers::new(
             options.state.as_deref(),
@@ -400,7 +403,10 @@ impl Session {
         // session's own reads and writes go there, the workspace resources it shows itself are
         // followed there, and its apps are vouched for on it.
         let daemon_link =
-            tilo_session_client::daemon_documents::inherited_link(tilo_rt::app().handle());
+            tilo_session_client::daemon_documents::inherited_link(
+                options.shell_link.take(),
+                tilo_rt::app().handle(),
+            );
         if let Err(reason) = &daemon_link {
             tracing::error!(%reason, "this session reads and writes no workspace");
         }
@@ -977,13 +983,8 @@ impl Session {
                 std::sync::Arc::clone(&session_services),
             ));
         let task_programs = Some(std::sync::Arc::new(
-            tilo_workspace_service::workspaces::task_programs::TaskPrograms::new(
-                std::sync::Arc::clone(&task_program_host)
-                    as std::sync::Arc<
-                        dyn tilo_workspace_service::workspaces::task_programs::Programs,
-                    >,
-                ui::i18n::preferred_language,
-            ),
+            crate::task_programs::TaskPrograms::new(std::sync::Arc::clone(&task_program_host)
+                as std::sync::Arc<dyn crate::platform::programs::Programs>),
         ));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // layout, its undo, the windows and the notices, which the REPL already calls.
@@ -995,9 +996,7 @@ impl Session {
         let session_actions = std::sync::Arc::new(crate::session_actions::SessionActions::new(
             std::sync::Arc::clone(&steps),
             Some(std::sync::Arc::clone(&task_program_host)
-                as std::sync::Arc<
-                    dyn tilo_workspace_service::workspaces::task_programs::Programs,
-                >),
+                as std::sync::Arc<dyn crate::platform::programs::Programs>),
         ));
         session_services.keep_actions(std::sync::Arc::clone(&session_actions));
         if engine.is_some() {
@@ -1122,6 +1121,7 @@ impl Session {
             file_picker,
             directory,
             invite,
+            pair_device,
             delete_workspace,
             display_confirm,
             displays: displays_sheet,
@@ -1727,6 +1727,18 @@ impl Session {
                 wake: Some(options.wake.handle()),
             })
         });
+        // Where the sheet's ticket comes from, for a workspace no host on the web keeps: the ticket
+        // service Settings' Add a device asks too, on this session's endpoint and device actions.
+        let adding = crate::pair_device::Adding::new(
+            Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
+            sync.as_deref().map(|sync| {
+                crate::device_tickets::DeviceTickets::new(
+                    Some(sync.endpoint_handle()),
+                    Some(sync.actions_handle()),
+                    workspace_service.clone(),
+                )
+            }),
+        );
         let landings = Rc::new(crate::landing::Landings::new(options.wake.handle()));
         // A share's write into a workspace's governance answers through the same landings.
         window_shares
@@ -1809,6 +1821,8 @@ impl Session {
             directory,
             invite,
             inviting,
+            pair_device,
+            adding,
             delete_workspace,
             delete_workspace_ask: RefCell::default(),
             directory_store,

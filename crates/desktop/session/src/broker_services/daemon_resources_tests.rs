@@ -20,7 +20,7 @@ use tilo_workspace_service::apps::services::{
     ResourceWatch,
 };
 use tilo_workspace_service::apps::shell::{
-    ShellActions, ShellCaller, ShellInvoked, ShellLinks, ShellServices,
+    ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
 };
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, governor_with, test_host_holding,
@@ -34,7 +34,7 @@ const KIND: &str = "tasks.issue";
 struct NoActions;
 
 impl ShellActions for NoActions {
-    fn invoke(&self, _: &ShellCaller, _: tilo_actions::remote::InvokeRequest) -> ShellInvoked {
+    fn dispatch(&self, _: &ShellCaller, _: Option<String>) -> ShellDispatch {
         Box::pin(std::future::ready(Err("no actions here".to_owned())))
     }
 }

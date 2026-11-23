@@ -128,62 +128,18 @@ impl NativeSurface {
     /// resource it keeps beside that document ([`part_roots`]).
     pub fn package(&self) -> Result<PackageMeta, String> {
         let (surfaces, instances) = read_surfaces(&self.surface)?;
-        Ok(native_package(
-            &self.app,
-            &self.title,
-            &surfaces,
-            &instances,
-        ))
+        let mut meta = package_with(&self.app, &self.title, &surfaces, &instances, Ids::Record);
+        for action in &mut meta.actions {
+            action.id = action_id(&meta.app, &action.id);
+        }
+        let kinds = kind_names(&surfaces, &instances);
+        if let Some(root) = document_root(&self.app, &surfaces, &kinds, Ids::Record) {
+            let beside = part_roots(&self.app, &surfaces, &instances, &kinds, &root);
+            meta.named_roots.push(root);
+            meta.named_roots.extend(beside);
+        }
+        Ok(meta)
     }
-}
-
-/// [`NativeSurface::package`] of surfaces already read.
-fn native_package(
-    app: &str,
-    title: &str,
-    surfaces: &[Surface],
-    instances: &[String],
-) -> PackageMeta {
-    let mut meta = package_with(app, title, surfaces, instances, Ids::Record);
-    for action in &mut meta.actions {
-        action.id = action_id(&meta.app, &action.id);
-    }
-    let kinds = kind_names(surfaces, instances);
-    if let Some(root) = document_root(app, surfaces, &kinds, Ids::Record) {
-        let beside = part_roots(app, surfaces, instances, &kinds, &root);
-        meta.named_roots.push(root);
-        meta.named_roots.extend(beside);
-    }
-    meta
-}
-
-/// The package a provider the device registered publishes, as code that uses it calls it, and
-/// the address each of its actions is called at, by the action's id. The same package
-/// `tilolang check` reads from the provider's committed description ([`NativeSurface`]): code
-/// compiled against that is called here with the addresses this device's provider registered.
-#[must_use]
-pub fn provided(
-    package: &tilo_actions::remote::ProvidedPackage,
-) -> (PackageMeta, BTreeMap<String, String>) {
-    let surfaces: Vec<Surface> = package
-        .resources
-        .iter()
-        .map(|resource| resource.surface.clone())
-        .collect();
-    let meta = native_package(&package.app, &package.title, &surfaces, &[]);
-    let addresses = package
-        .resources
-        .iter()
-        .flat_map(|resource| {
-            resource
-                .surface
-                .verbs
-                .iter()
-                .filter(|verb| !platform_verb(verb))
-                .map(|verb| (action_id(&package.app, &verb.id), resource.address.clone()))
-        })
-        .collect();
-    (meta, addresses)
 }
 
 /// The id a catalogue gives the action `verb` of the app `app`: `so.tilo.chat#share-window`.

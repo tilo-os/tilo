@@ -335,10 +335,6 @@ pub struct InstanceRequest {
     ///
     /// Always written, as every field of a packet is.
     pub link_home: Option<String>,
-    /// What the providers this device registered publish at fixed addresses, as packages
-    /// (`tilo_actions::remote::ProvidedPackage`, as a JSON list; empty for none): a package the
-    /// app uses that is one of them is called at the addresses its provider registered.
-    pub provided: String,
 }
 
 /// Declares the connections a packet of one shape carries, once: its fields, which the packet
@@ -840,7 +836,6 @@ mod tests {
             })),
             installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
             link_home: None,
-            provided: String::new(),
             access: Some(MemberAccess::person(
                 tilo_action_policy::WorkspacePolicy::new(
                     "7a110d00-0000-4000-8000-000000000001",

@@ -495,7 +495,11 @@ pub fn event_shortcut(kept: &Kept) -> Result<Shortcut, String> {
     let mut steps = vec![Step::new(
         "tell",
         StepKind::Invoke {
-            action: ActionKey::new(super::triggered::CHAT, CONVERSATIONS_KIND, WRITE_TO),
+            action: ActionKey::new(
+                super::triggered::CHAT,
+                CONVERSATIONS_KIND,
+                WRITE_TO,
+            ),
             resource: Selector::Fixed(super::triggered::published(
                 super::triggered::CHAT,
                 CONVERSATIONS,

@@ -157,45 +157,48 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
         | ShellCall::KeepsReceipts { .. }
         | ShellCall::Authorizes { .. }) => kept(&services.workspaces, call).await,
         ShellCall::Vouch(vouch) => vouch_for(&services, vouch)?,
-        ShellCall::Invoke { workspace, message } => {
-            let message = serde_json::from_str(&message)
-                .map_err(|error| format!("the call does not read: {error}"))?;
-            ShellReply::Invoked(dispatched(&shell, workspace, message).await)
+        ShellCall::Action { workspace, frame } => {
+            ShellReply::Action(dispatch(&services, &shell.caller, workspace, &frame).await?)
+        }
+        // The connection registers what its shell serves itself (`WireConnection::provide`).
+        ShellCall::Provide { .. } => {
+            return Err("a provider is served on the shell's own connection".to_owned());
         }
     };
     Ok(Reply::Shell(reply))
 }
 
-/// A call of the device's one dispatch, as the shell's person on this device: a read of
-/// resources, answered by the device's one resource reader as every device of theirs reads; a
-/// typed action of a resource, by the provider that applies it; any other action as the shell's
-/// own asks are answered.
-async fn dispatched(
-    shell: &Shell,
+/// `frame`, a `tilo_actions::remote::RemoteActionFrame` request the shell made in `workspace`,
+/// answered as the person the shell's link was made for: the frame answering it. A read of
+/// resources is answered by the device's one resource reader, as every device of theirs reads; a
+/// typed action of a resource by the provider that applies it; any other request by the device's
+/// one dispatch.
+async fn dispatch(
+    services: &ShellServices,
+    caller: &ShellCaller,
     workspace: Option<String>,
-    message: RemoteActionMessage,
-) -> Result<String, String> {
-    let workspaces = &shell.services.workspaces;
+    frame: &[u8],
+) -> Result<Vec<u8>, String> {
+    use tilo_actions::remote::RemoteActionFrame;
+    let message = RemoteActionFrame::decode(frame)
+        .map_err(|error| error.to_string())?
+        .message;
+    let workspaces = &services.workspaces;
     let device = workspaces.device_cert();
-    if shell.caller.person != device.user_public_key {
+    if caller.person != device.user_public_key {
         return Err("this device acts for its own person only".to_owned());
     }
     let person = Caller::authenticated(device.user_public_key, device.device_public_key);
-    match message {
+    let answer = match message {
         RemoteActionMessage::ResourceRead {
             correlation, read, ..
         } => {
             let caller = person.in_workspace(read.workspace.clone());
-            let answered = workspaces
+            workspaces
                 .resource_reads()
                 .answer_read(&caller, correlation, read)
-                .await;
-            match answered {
-                Some(RemoteActionMessage::ResourceReading { result, .. }) => {
-                    result.map_err(|error| error.to_string())
-                }
-                _ => Err("the read stopped before it answered".to_owned()),
-            }
+                .await
+                .ok_or("the read stopped before it answered")?
         }
         RemoteActionMessage::Invoke(request)
             if tilo_actions::remote::is_resource_provider(&request.target.provider) =>
@@ -203,29 +206,30 @@ async fn dispatched(
             let workspace =
                 workspace.ok_or("a resource's action is asked in the workspace that keeps it")?;
             let caller = person.in_workspace(workspace);
+            let invocation = request.invocation;
             let receipt = workspaces
                 .providers()
                 .invoke(&caller, request)
                 .ok_or("this device applies no action of that resource")?
                 .await
                 .ok_or("the action stopped before it answered")?
-                .map_err(|error| error.to_string())?;
-            match receipt.status {
-                ReceiptStatus::Completed { output } => serde_json::to_string(&output)
-                    .map_err(|error| format!("the answer does not encode: {error}")),
-                ReceiptStatus::Rejected { error } => Err(error.to_string()),
-                ReceiptStatus::Failed { error } => Err(error.message),
-                status => Err(format!("the action did not settle: {status:?}")),
-            }
+                .unwrap_or_else(|error| tilo_actions::remote::InvocationReceipt {
+                    invocation,
+                    status: ReceiptStatus::Rejected { error },
+                });
+            RemoteActionMessage::Receipt(receipt)
         }
-        RemoteActionMessage::Invoke(request) => shell
-            .services
-            .actions
-            .invoke(&shell.caller, request)
-            .await
-            .map(|value| value.to_string()),
-        _ => Err("the shell asks reads and actions of the dispatch, and nothing else".to_owned()),
-    }
+        message => {
+            let (dispatch, caller) = services.actions.dispatch(caller, workspace).await?;
+            tilo_actions::remote::serve(&dispatch, &caller, message)
+                .ok_or("the dispatch answers requests, and that frame is none")?
+                .await
+                .ok_or("the dispatch dropped the request")?
+        }
+    };
+    RemoteActionFrame::new(answer)
+        .encode()
+        .map_err(|error| error.to_string())
 }
 
 /// A [`ShellCall::Write`], written as the device.

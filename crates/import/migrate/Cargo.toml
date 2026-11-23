@@ -90,8 +90,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
-# Reads the committed package of the engine's actions, which a test holds to what it registers.
-toml.workspace = true
 # Fake cloud drives for the cloud sources.
 cloud-source-dav = { path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }

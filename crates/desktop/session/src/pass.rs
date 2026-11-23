@@ -532,6 +532,8 @@ impl Session {
             // nothing draws before it.
             self.shared.overlays.deadline(now),
             self.shared.restore.borrow().next_deadline(),
+            // The add-a-device sheet counts its minutes down, and renews its link once it ran out.
+            self.shared.pair_device_deadline(),
             // A branch being copied off the loop is looked at again soon, so it goes on the shell
             // once it is there.
             self.shared.branches.next_deadline(now),
@@ -835,6 +837,9 @@ impl Session {
             tilo_speaker_service::remote_audio::pump(fabric.as_ref(), media_enabled, None);
             tilo_speaker_service::groups::pump(fabric.as_ref(), media_enabled);
             tilo_speaker_service::settings::observe(fabric.as_ref());
+            // A new device that opened this device's pairing link asks here to be the person: it
+            // is put to them from their own top bar, where they decide it.
+            self.shared.follow_device_asks();
             // A Bluetooth accessory the person moved to another of their devices, and what came of
             // the moves under way.
             self.shared.bluetooth.pump(&self.shared, fabric);

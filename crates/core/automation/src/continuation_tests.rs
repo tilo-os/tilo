@@ -38,7 +38,6 @@ fn continue_from(
             caused_by: None,
             parent: None,
             chain: Vec::new(),
-            approval: None,
             resume: Some(origin),
             from: Some(StepPath::parse(from)),
         },

@@ -27,6 +27,11 @@ use crate::{
 /// How far a popover stands clear of the caret it was opened from, logical pixels.
 const CARET_GAP: f64 = 6.0;
 
+/// The tag the ask about the device `digest` names is taken back under.
+fn pairing_tag(digest: [u8; 32]) -> String {
+    format!("pairing:{}", hex::encode(digest))
+}
+
 impl Shared {
     /// Carry out what the desktop asked since the last frame.
     pub(crate) fn follow_asks(&self, look: &mut tilo_session_core::surfaces::Look<'_>) {
@@ -58,6 +63,7 @@ impl Shared {
                 people::PeopleAsk::Settings(link) => {
                     crate::quick_settings::open_settings(self, &link);
                 }
+                people::PeopleAsk::PairDevice => self.open_pair_device(),
                 // The person's own card offers what the ask on their avatar asks: choosing it there
                 // answers that ask, which goes as it does when they answer it on the avatar.
                 people::PeopleAsk::HostAction(id) => {
@@ -227,9 +233,9 @@ impl Shared {
             // wherever it was asked for — the bar's invite button, the roster's footer, workspace
             // settings or the launchpad's own verb.
             ChromeIntent::Invite => self.open_invite(),
-            // Another of the person's devices: the ticket it joins with, from Settings' devices
-            // page, wherever it was asked for — their own card or Settings' Devices and access.
-            ChromeIntent::PairDevice => self.open_add_device(),
+            // Another of the person's devices: the code its camera reads, in the session's own
+            // sheet, wherever it was asked for — their own card or Settings' Devices.
+            ChromeIntent::PairDevice => self.open_pair_device(),
             // A secondary press on the shell asks the chrome for the menu of the
             // place it pressed: the same menu the bar's workspace name opens,
             // and the chrome is where it is drawn.
@@ -533,7 +539,16 @@ impl Shared {
             tilo_actions::remote::session_actions::CONNECT_AGENT => {
                 self.invoke_app_action(LaunchpadAppAction::connect_agent());
             }
-            choice => identity::answered(choice),
+            choice => {
+                // A device another of the person's devices found asks here to act as them: the
+                // banner's own buttons are its answer.
+                if let Some(fabric) = &self.fabric
+                    && crate::certification::host_action(fabric, choice)
+                {
+                    return;
+                }
+                identity::answered(choice);
+            }
         }
     }
 
@@ -543,6 +558,75 @@ impl Shared {
     /// so in that box, which still sends to an agent or a person.
     fn report_problem(&self) {
         self.box_ask.set(Some(BoxAsk::Report));
+    }
+
+    /// The device another of the person's devices found asks here to act as them. Each ask is put
+    /// to the person once, on a banner whose two answers are its host actions
+    /// ([`crate::certification::host_action`]); an ask that went — answered elsewhere, or expired —
+    /// is taken back from them.
+    pub(crate) fn follow_device_asks(&self) {
+        use tilo_session_core::desktop::notifications::NotificationIconKind;
+
+        use crate::platform::notice::Notice;
+
+        let Some(fabric) = self.fabric.as_ref() else {
+            return;
+        };
+        let (fresh, gone) = crate::certification::newly_asking(fabric.as_ref());
+        let answer = |digest: [u8; 32], approve: bool| {
+            tilo_desktop_surface::host_action_key(&crate::certification::answer_key(
+                digest, approve,
+            ))
+        };
+        for digest in gone {
+            self.telling().withdraw(&pairing_tag(digest));
+        }
+        for asking in fresh {
+            let found = if asking.via.is_empty() {
+                String::new()
+            } else {
+                tilo_session_core::desktop::i18n::t_args(
+                    "pairing-asks-via",
+                    &[("device", asking.via.clone().into())],
+                )
+            };
+            let secs_ago = tilo_clock::unix_now_ms().saturating_sub(asking.asked_at_ms) / 1000;
+            let when = ui::format::relative(i64::try_from(secs_ago).unwrap_or(i64::MAX));
+            let body = tilo_session_core::desktop::i18n::t_args(
+                "pairing-asks-body",
+                &[
+                    ("device", asking.label.clone().into()),
+                    ("from", found.into()),
+                    ("when", when.into()),
+                    ("code", asking.code.clone().into()),
+                ],
+            );
+            self.telling().show(
+                &Notice::new(
+                    tilo_session_core::desktop::i18n::t("host-action-source-devices"),
+                    1,
+                    tilo_session_core::desktop::i18n::t("pairing-asks-title"),
+                    body,
+                )
+                .choosing(vec![
+                    (
+                        answer(asking.digest, true),
+                        tilo_session_core::desktop::i18n::t_args(
+                            "pairing-approve",
+                            &[("code", asking.code.clone().into())],
+                        ),
+                    ),
+                    (
+                        answer(asking.digest, false),
+                        tilo_session_core::desktop::i18n::t("pairing-decline"),
+                    ),
+                ])
+                .about(NotificationIconKind::Permission)
+                // It stays until the person answers it: waiting decides nothing.
+                .staying(Some(std::time::Duration::ZERO))
+                .tagged(pairing_tag(asking.digest)),
+            );
+        }
     }
 
     /// Carry out a power effect the person chose: the power menu's rows and a

@@ -27,7 +27,8 @@ required-features = ["destination"]
 # setup (`--setup`) that downloads Tilo, stages it next to the running system
 # or writes it to a drive, and hands the reviewed choices to the installer.
 # The person's data comes over later, through the migration app on Tilo.
-# The host downloads build it; the default build is the image writer alone.
+# The host downloads build it. The Tilo app (`.tapp`, the release collection)
+# does not: on Tilo it is the image writer, and the default build is that app.
 # tools/ci/package_features.py tests and lints with it.
 installation = []
 # The destination side of the guided setup, on the live installer medium:
@@ -35,8 +36,9 @@ installation = []
 # profile and staged handoff the host side produced. It does not need the
 # host side (`installation`). Linux only, like the live medium it runs on.
 destination = ["imager-backend/destination", "dep:url"]
-# Host downloads opt into the narrowly elevated raw-media writer. A host
-# download is the guided installer, so it brings `installation`.
+# Host downloads opt into the narrowly elevated raw-media writer. The tapp
+# deliberately omits this feature because its sandbox has no raw-device portal.
+# A host download is the guided installer, so it brings `installation`.
 host-media-writer = ["installation"]
 # Flatpak cannot safely elevate a binary from inside its mutable mount
 # namespace.  This backend asks the host's root-owned UDisks2 service for one

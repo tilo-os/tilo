@@ -58,6 +58,8 @@ pub enum PeopleAsk {
     Colour(String),
     /// Open the Settings page the person chose.
     Settings(String),
+    /// Add another of their own devices: the session's sheet with the link its camera reads.
+    PairDevice,
     /// Do the host action this person's own card offers, as the palette and a banner hand theirs
     /// back: the choice the ask on their avatar waits for is answered here too.
     HostAction(String),
@@ -804,20 +806,11 @@ impl Panel {
 
     /// Draw the card in the roster's place. Answers whether one stands there.
     fn draw_card(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) -> bool {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.profile.is_open() {
-            self.profile.draw_overlay(&mut tilo_ui::DrawCtx::new(
-                scene,
-                transform,
-                text,
-                theme,
-                env.clone(),
-            ));
+            self.profile
+                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
         self.profile.is_open()
     }
@@ -965,8 +958,6 @@ impl Panel {
         match id {
             OPEN_SETTINGS => Some("settings://"),
             DEVICES_ACCESS => Some("settings://devices_access"),
-            // Another of their devices: Settings' devices page prints the ticket it joins with.
-            "pair-device" => Some("settings://devices_sync"),
             _ => None,
         }
     }
@@ -1056,7 +1047,11 @@ impl Panel {
                     self.asks.borrow_mut().push(PeopleAsk::Colour(id));
                 }
                 ProfileChoice::Action(id) => {
-                    if let Some(link) = Self::own_settings_link(&id) {
+                    // Another of their devices: the code its camera reads is the session's own
+                    // sheet, beside the card they pressed.
+                    if id == "pair-device" {
+                        self.asks.borrow_mut().push(PeopleAsk::PairDevice);
+                    } else if let Some(link) = Self::own_settings_link(&id) {
                         self.asks
                             .borrow_mut()
                             .push(PeopleAsk::Settings(link.to_owned()));
@@ -1287,11 +1282,7 @@ impl Panel {
     /// tile of the tab it is on, in the colour and under the name the workspace knows them by,
     /// with what they say beside it. What each tab is called names where they are.
     fn draw_pointers(&self, ctx: &mut tilo_ui::DrawCtx<'_>, shown: &mut Shown) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let open = self.open.get();
         let tiles: Vec<tilo_live::presence::Tile> = self
@@ -1324,8 +1315,7 @@ impl Panel {
                     &members,
                     &sync.here().borrow().faces(),
                     &tiles,
-                    &mut self.chats.borrow_mut(),
-                    &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                    &mut self.chats.borrow_mut(),&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
                     ui::time::now(),
                     Self::presence_ms(),
                     theme.motion(),
@@ -1434,11 +1424,7 @@ impl Panel {
     /// The roster, drawn where it stands: under the bar as the faces open it, or kept on screen at
     /// an edge with a mirror of each person's screen. One painting for both.
     fn draw_roster(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, shown: &mut Shown) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = ui::motion::frame_now();
         let motion = theme.motion();
@@ -1449,11 +1435,7 @@ impl Panel {
         }
         // The bar's faces open the roster where they stand, kept on screen or not.
         if self.open.get() {
-            self.draw_one_roster(
-                &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
-                shown,
-                None,
-            );
+            self.draw_one_roster(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), shown, None);
             return;
         }
         if let Some(pin) = shown.pinned.as_mut() {
@@ -1521,11 +1503,7 @@ impl Panel {
             placed,
             &slot.inflate(32.0, 32.0),
         );
-        self.draw_one_roster(
-            &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
-            shown,
-            Some(slot),
-        );
+        self.draw_one_roster(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), shown, Some(slot));
         scene.pop_layer();
         // What the roster made of its slot is where it now stands: the next placement centres it
         // by that, and a press on its header drags the panel the person sees.
@@ -1540,25 +1518,10 @@ impl Panel {
     }
 
     /// The roster's one painting, with the model this session builds of who is here.
-    fn draw_one_roster(
-        &mut self,
-        ctx: &mut tilo_ui::DrawCtx<'_>,
-        shown: &mut Shown,
-        panel: Option<Rect>,
-    ) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
+    fn draw_one_roster(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, shown: &mut Shown, panel: Option<Rect>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        let card_stands = self.draw_card(&mut tilo_ui::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        let card_stands = self.draw_card(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         if card_stands {
             return;
         }
@@ -1928,11 +1891,7 @@ impl Widget for Panel {
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let revision = self.presence_revision();
         // The card is this panel's own, in the roster's place: what it shows is read here, while
@@ -1943,14 +1902,8 @@ impl Widget for Panel {
             // The card stood in the panel: closed with it, never left for the next opening to find.
             self.profile.close();
         }
-        self.draw_pointers(
-            &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
-            &mut shown,
-        );
-        self.draw_roster(
-            &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
-            &mut shown,
-        );
+        self.draw_pointers(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), &mut shown);
+        self.draw_roster(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), &mut shown);
         self.draw_follow(scene, transform, text, theme, &shown);
         self.drawn.set(revision);
     }

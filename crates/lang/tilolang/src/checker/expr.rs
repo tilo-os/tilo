@@ -964,11 +964,6 @@ impl Checker<'_> {
             (Ty::Text, Ty::Text) if op == BinOp::Add => {
                 Ex::host(Imp::StrConcat, vec![l, r], Ty::Text)
             }
-            // Two lists of one kind joined, the first list's items in front (`path + [step]`).
-            (Ty::List(one), Ty::List(other)) if op == BinOp::Add && one == other => {
-                let item = (**one).clone();
-                Ex::host(Imp::ListConcat, vec![l, r], Ty::List(Box::new(item)))
-            }
             // A moment moved by a length of time (`now + 2h`): the moment is a handle, the seconds an `i64`,
             // and `back` an `i32`.
             (Ty::Time, Ty::Duration) if matches!(op, BinOp::Add | BinOp::Sub) => {
@@ -1003,7 +998,7 @@ impl Checker<'_> {
                     }
                     _ => "",
                 };
-                self.err("E024", span, format!("`{}` needs two Int or two Float operands (or two Text or two Lists for `+`, two Durations, or a Date or a Time moved by a Duration or by another of its kind, subtracted); found {a} and {b}{hint}", op.text()));
+                self.err("E024", span, format!("`{}` needs two Int or two Float operands (or two Text for `+`, two Durations, or a Date or a Time moved by a Duration or by another of its kind, subtracted); found {a} and {b}{hint}", op.text()));
                 Ex::error()
             }
         }

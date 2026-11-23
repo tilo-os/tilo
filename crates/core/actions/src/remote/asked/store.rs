@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use tilo_lock::MutexRecover as _;
-use zeroize::Zeroizing;
 
 use super::super::{ActionCallError, Caller, Completer, InvokeRequest, Pending, pending};
 use super::{
@@ -45,7 +44,6 @@ enum Status {
     Asked,
     Running,
     Declined,
-    Withdrawn,
 }
 
 struct Record {
@@ -243,7 +241,6 @@ impl AskedStore {
             workspace: workspace.to_owned(),
             // The invocation's own id: what the workspace's invocations publish it under.
             record: request.invocation.0.to_string(),
-            device: None,
         };
         let mut kept = self.kept.lock_recover();
         if let Some(record) = kept.find(&at) {
@@ -388,7 +385,6 @@ impl AskedStore {
         if !Offer::of(&record.facts).contains(&answer.resolution) {
             return Err(refused("This question does not offer that answer"));
         }
-        admits_what_it_takes(&record.facts, answer)?;
         let choices = record.facts.choices.len();
         match (answer.resolution, answer.choice) {
             (Offer::Decline, None) => {}
@@ -398,7 +394,7 @@ impl AskedStore {
                     "This question offers {choices} choices; there is none at {choice}"
                 )));
             }
-            (_, None) if choices > 0 && !record.facts.many => {
+            (_, None) if choices > 0 => {
                 return Err(refused("This question is answered with one of its choices"));
             }
             _ => {}
@@ -417,10 +413,8 @@ impl AskedStore {
             record.status = Status::Running;
             let mut request = record.request.clone();
             request.confirmation = Some(super::super::Confirmation::Asked(Approval {
-                chosen: answer.chosen.clone(),
-                typed: answer.typed.iter().cloned().map(Zeroizing::new).collect(),
-                files: answer.files.clone(),
-                ..Approval::new(at.clone(), answer.choice)
+                record: at.clone(),
+                choice: answer.choice,
             }));
             match grant {
                 Some(grant) => Admitted::Granting(
@@ -436,33 +430,6 @@ impl AskedStore {
         kept.moved();
         drop(kept);
         Ok(admitted)
-    }
-
-    /// Withdraw the record `at` while it is asked, as whoever asked it does when what asked
-    /// goes away (the app instance or the page it depended on closed, the program that asked
-    /// ended): it waits no more, every card of it reads `message`, and the call ends cancelled
-    /// at its dispatch. The one way an ask ends without its person's answer. A record already
-    /// answered, or not kept here, is left as it is.
-    pub fn withdraw(&self, at: &RecordRef, message: &str) {
-        let mut kept = self.kept.lock_recover();
-        let Some(record) = kept
-            .find(at)
-            .filter(|record| record.status == Status::Asked)
-        else {
-            return;
-        };
-        record.status = Status::Withdrawn;
-        let (caller, invocation, dispatch) = (
-            record.caller.clone(),
-            record.invocation,
-            record.dispatch.clone(),
-        );
-        kept.moved();
-        drop(kept);
-        self.forget(at);
-        if let Some(dispatch) = self.dispatch(&dispatch).upgrade() {
-            dispatch.withdrawn(&caller, invocation, message);
-        }
     }
 
     /// Put the record `at` back to asked where its answer could not go on (its grant was not
@@ -519,45 +486,6 @@ impl AskedDispatch for Gone {
     }
 }
 
-/// Refused where `answer` carries what `facts` does not ask for: typed entries other than one
-/// per take, picked files where none are asked, several choices where one is, or any of them
-/// with a decline.
-fn admits_what_it_takes(facts: &AskedFacts, answer: &Resolve) -> Result<(), ActionCallError> {
-    if answer.resolution == Offer::Decline {
-        return if answer.typed.is_empty() && answer.files.is_empty() && answer.chosen.is_empty() {
-            Ok(())
-        } else {
-            Err(refused("A decline carries nothing typed, picked or chosen"))
-        };
-    }
-    if answer.typed.len() != facts.takes.len() {
-        return Err(refused(&format!(
-            "This question takes {} typed answers; {} came",
-            facts.takes.len(),
-            answer.typed.len()
-        )));
-    }
-    if !answer.files.is_empty() && facts.files.is_none() {
-        return Err(refused("This question asks for no files"));
-    }
-    if !answer.chosen.is_empty() {
-        if !facts.many {
-            return Err(refused("This question is answered with one choice"));
-        }
-        if let Some(beyond) = answer
-            .chosen
-            .iter()
-            .find(|chosen| **chosen >= facts.choices.len())
-        {
-            return Err(refused(&format!(
-                "This question offers {} choices; there is none at {beyond}",
-                facts.choices.len()
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn refused(reason: &str) -> ActionCallError {
     ActionCallError::Refused {
         reason: reason.to_owned(),
@@ -600,9 +528,7 @@ fn grant_of(record: &Record) -> Result<tilo_action_policy::Grant, ActionCallErro
     let delegate = match &record.facts.by {
         AskedBy::Agent(agent) => tilo_action_policy::Grantee::agent(agent.id.clone()),
         AskedBy::App { app, .. } => tilo_action_policy::Grantee::app(app.clone()),
-        AskedBy::Device(_) | AskedBy::Program { .. } => {
-            return Err(refused("A device's or a program's question grants nothing"));
-        }
+        AskedBy::Device(_) => return Err(refused("A device's question grants nothing")),
     };
     let effect = record
         .facts
@@ -611,19 +537,11 @@ fn grant_of(record: &Record) -> Result<tilo_action_policy::Grant, ActionCallErro
     if record.facts.kind.is_empty() {
         return Err(refused("This action is on no resource type to grant"));
     }
-    let (app, kind, action) = (
+    let scope = AnswerScope::action(
         app_of(&record.request.target.provider),
         record.facts.kind.clone(),
         record.request.target.address.action.clone(),
     );
-    // The resource the call is on, where it names one: one site's "always" is not every
-    // site's.
-    let resource = &record.request.target.address.resource;
-    let scope = if resource.is_empty() {
-        AnswerScope::action(app, kind, action)
-    } else {
-        AnswerScope::resource(app, kind, resource.clone(), action)
-    };
     Ok(answer_grant(
         &record.at.workspace,
         delegate,

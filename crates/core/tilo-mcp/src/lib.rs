@@ -9,7 +9,6 @@ mod images;
 pub mod lines;
 mod session;
 pub mod session_api;
-pub mod task_runs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
 pub mod tool;
@@ -151,11 +150,6 @@ pub struct McpServer<H> {
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
     #[cfg(windows)]
     task_hosts: Option<std::convert::Infallible>,
-    /// Whether the `tilo` tool's programs run on the device this server's calls go to, as its
-    /// session's step there ([`tilo_actions::remote::task_programs::RUN`]), where this server
-    /// starts no task host itself: a session Tilo's API forwards to a person's device, and the
-    /// person's command line, whose programs run in the daemon.
-    programs_on_device: bool,
     /// The program connection to the task's host, once its first program started it.
     #[cfg(unix)]
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
@@ -662,7 +656,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             uploads: std::sync::Mutex::default(),
             programs: std::sync::Mutex::default(),
             task_hosts: None,
-            programs_on_device: false,
             task: tokio::sync::Mutex::new(None),
             forms: std::sync::Mutex::default(),
             task_answer_wait: QUERY_ANSWER_WAIT,
@@ -691,14 +684,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn with_task_hosts(mut self, hosts: Option<std::sync::Arc<dyn TaskHosts>>) -> Self {
         self.task_hosts = hosts;
-        self
-    }
-
-    /// Run the `tilo` tool's programs on the device this server's calls go to, in a task host
-    /// that device starts: for a server that forwards a session's calls and starts none itself.
-    #[must_use]
-    pub const fn with_programs_on_device(mut self) -> Self {
-        self.programs_on_device = true;
         self
     }
 
@@ -1284,7 +1269,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // a server takes a person's turn through) `tilo`, the tool for them, is not listed: a
         // model offered it calls it and is refused. A caller that names it all the same is
         // still told what does the work here.
-        if !self.starts_programs() && !self.programs_on_device {
+        if !self.starts_programs() {
             tools.retain(|tool| tool["name"].as_str() != Some("tilo"));
         }
         tools

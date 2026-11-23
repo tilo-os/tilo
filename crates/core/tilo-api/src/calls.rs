@@ -1120,9 +1120,9 @@ async fn founded(provider: &Provider) -> Result<Value> {
 }
 
 /// The agent surface over `provider` in `workspace`, as `person`. It starts no task's host of
-/// its own: its programs run in the daemon, as the person, in this server's program session there.
+/// its own: the daemon is where this device runs programs, and this is one of its clients.
 fn served(provider: Provider, workspace: &str, person: &str) -> McpServer<Provider> {
-    McpServer::for_person(provider, workspace.to_owned(), person).with_programs_on_device()
+    McpServer::for_person(provider, workspace.to_owned(), person)
 }
 
 /// A group of its own for one call, titled `title`: History names it so.

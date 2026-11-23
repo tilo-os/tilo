@@ -253,6 +253,11 @@ pub(crate) struct Shared {
     /// from, and what it made in this opening.
     pub(crate) invite: Option<tilo_sheets::invite::InviteState>,
     pub(crate) inviting: crate::invite::Invite,
+    /// Adding a device: the sheet the link a new device becomes one of the person's is shown in,
+    /// and the link it shows, renewed as it runs out.
+    pub(crate) pair_device: Option<tilo_sheets::pair_device::AddDeviceState>,
+    #[cfg(target_os = "linux")]
+    pub(crate) adding: crate::pair_device::Adding,
     /// The question deleting a workspace asks, and the workspace it is about.
     #[cfg(target_os = "linux")]
     pub(crate) delete_workspace: Option<tilo_sheets::delete_workspace::DeleteWorkspaceState>,

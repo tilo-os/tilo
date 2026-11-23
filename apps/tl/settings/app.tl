@@ -55,9 +55,6 @@ view settings_window(s: Settings) {
                     ui.NavItem("drives", "Drives", icon: .hard_drive) {
                         on select: set(pane, "drives")
                     }
-                    ui.NavItem("server", "This device's server", icon: .server) {
-                        on select: set(pane, "server")
-                    }
                     ui.NavItem("input", "Keyboard and pointing", icon: .keyboard) {
                         on select: set(pane, "input")
                     }
@@ -148,8 +145,6 @@ view settings_window(s: Settings) {
                         printers_pane()
                     } else if pane == "drives" {
                         drives_pane()
-                    } else if pane == "server" {
-                        device_server_pane()
                     } else if pane == "input" {
                         input_pane()
                     } else if pane == "accessibility" {
@@ -216,8 +211,6 @@ fn pane_title(pane: Text) -> Text {
         "Printers"
     } else if pane == "drives" {
         "Drives"
-    } else if pane == "server" {
-        "This device's server"
     } else if pane == "input" {
         "Keyboard and pointing"
     } else if pane == "accessibility" {

@@ -678,7 +678,9 @@ impl AppActionBroker {
     }
 
     /// Run saved shortcut `shortcut` in `workspace` for `caller`, who is at the
-    /// screen. Answers with the broker job the run reports on.
+    /// screen; its confirmations and questions wait for the compositor's
+    /// sheet ([`Self::take_step_prompt`]). Answers with the broker job the
+    /// run reports on.
     ///
     /// # Errors
     ///
@@ -692,6 +694,13 @@ impl AppActionBroker {
     ) -> Result<u64, tilo_actions::remote::ActionCallError> {
         self.state
             .start_interactive_shortcut_run(caller, workspace, shortcut, inputs)
+    }
+
+    /// The oldest step of an interactive shortcut run waiting for its
+    /// person.
+    #[must_use]
+    pub fn take_step_prompt(&self) -> Option<crate::apps::automation::PromptedStep> {
+        self.state.take_step_prompt()
     }
 
     /// Start saved shortcut `shortcut` in `workspace` because its `trigger`

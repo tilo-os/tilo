@@ -57,7 +57,6 @@ impl From<&Asked> for AskedReading {
                 author.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
             ),
             AskedBy::Device(device) => ("device", device.name.clone(), String::new()),
-            AskedBy::Program { name, .. } => ("program", name.clone(), String::new()),
         };
         let plural = row.facts.plural.clone().unwrap_or_default();
         let (pressed_device, pressed_window) = row

@@ -104,7 +104,6 @@ imports! {
     ListAvg = "list_avg" ([H] -> [F64]);
 
     ListNew = "list_new" ([] -> [H]);
-    ListConcat = "list_concat" ([H, H] -> [H]);
     ListPushI = "list_push_i" ([H, I64] -> []);
     ListPushF = "list_push_f" ([H, F64] -> []);
     ListPushH = "list_push_h" ([H, H] -> []);

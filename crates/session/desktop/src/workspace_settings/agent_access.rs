@@ -158,8 +158,7 @@ pub fn agent_access_rows(
             .filter_map(|grant| match AnswerScope::of_node(&grant.node)? {
                 AnswerScope::App { app }
                 | AnswerScope::Kind { app, .. }
-                | AnswerScope::Action { app, .. }
-                | AnswerScope::Resource { app, .. } => Some(app),
+                | AnswerScope::Action { app, .. } => Some(app),
             }),
     );
     ids.compact_sort();

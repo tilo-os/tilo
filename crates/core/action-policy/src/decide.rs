@@ -577,10 +577,7 @@ impl Authority<'_> {
                 && self.person.grantees.contains(&grant.granted_by)
                 && matches!(
                     crate::agent_answers::AnswerScope::of_node(&grant.node),
-                    Some(
-                        crate::agent_answers::AnswerScope::Action { .. }
-                            | crate::agent_answers::AnswerScope::Resource { .. }
-                    )
+                    Some(crate::agent_answers::AnswerScope::Action { .. })
                 ))
     }
 }

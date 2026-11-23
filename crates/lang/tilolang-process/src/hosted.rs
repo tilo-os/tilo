@@ -117,10 +117,6 @@ pub struct Spec {
     /// (`InstanceRequest::link_home`): what `share-link` mints under, and nothing where the
     /// workspace's host serves no page.
     pub link_home: Option<tilolang_tilo::share::LinkHome>,
-    /// What the providers the device registered publish at fixed addresses
-    /// (`InstanceRequest::provided`): a package the app uses that is one of them is called at
-    /// the addresses its provider registered, through the dispatch as any app's call is.
-    pub provided: Vec<tilo_actions::remote::ProvidedPackage>,
 }
 
 impl Spec {
@@ -143,7 +139,6 @@ impl Spec {
             access: None,
             shows: Shows::View,
             link_home: None,
-            provided: Vec::new(),
         }
     }
 
@@ -1259,7 +1254,7 @@ impl Hosted {
         let invocations = Invocations::new(&spec.workspace);
         // The apps this one may call, each by its package: what a call of another app's action
         // is built from.
-        let callees = Rc::new(callees_of(&bundle, &spec.workspace, &spec.provided));
+        let callees = Rc::new(callees_of(&bundle, &spec.workspace));
         // A run an earlier host over this store left waiting on a child call cannot be answered:
         // the invocation the call went out as died with that host, and the change the run held
         // went with it. It is ended here with the failure that is true of it, rather than left
@@ -2534,13 +2529,10 @@ impl Hosted {
                 return self.answered(&message);
             }
             CollabEvent::InvocationCancellation { id } => {
-                // A run that waits on a call stops that call, by the call's own cancel through
-                // the dispatch: its answer ends the run, and the run answers the invocation.
-                // Any other invocation ran to its end in the frame it arrived in and was answered
-                // there: a cancellation that was not in that frame stops nothing.
-                if !self.stop_calls_of(id) {
-                    tracing::debug!(id, "a cancellation of an invocation already answered");
-                }
+                // An invocation runs to its end in the frame it arrives in and is answered
+                // there: a cancellation that was not in the frame its invocation was stops
+                // nothing.
+                tracing::debug!(id, "a cancellation of an invocation already answered");
                 return false;
             }
             CollabEvent::WorkspaceControl { .. } => {
@@ -2679,58 +2671,6 @@ impl Hosted {
         );
     }
 
-    /// Ask the dispatch how the call `invocation`, which a run waits on, stands once it has moved
-    /// on: the answer waits until it ends, or for a while, and then asked again. A call the
-    /// dispatch runs in the background is answered this way, never on its own.
-    fn follow(&self, invocation: tilo_actions::InvocationId) {
-        if !self
-            .children
-            .borrow()
-            .contains_key(&invocation.0.to_string())
-        {
-            return;
-        }
-        let message = tilo_actions::remote::RemoteActionMessage::Observe {
-            correlation: 0,
-            invocation,
-            wait_ms: Some(FOLLOW_MS),
-            seen: None,
-        };
-        if let Err(error) = self
-            .connection
-            .manager()
-            .try_send(CollabRequest::RemoteAction { message })
-        {
-            tracing::warn!(app = self.spec.app, %error, "a call a run waits on is not followed");
-        }
-    }
-
-    /// Stop each call a run serving the invocation the dispatch delivered as `served` waits on.
-    /// Whether any waits.
-    fn stop_calls_of(&self, served: u64) -> bool {
-        let calls: Vec<String> = self
-            .children
-            .borrow()
-            .iter()
-            .filter(|(_, child)| child.served.is_some_and(|(id, _)| id == served))
-            .map(|(call, _)| call.clone())
-            .collect();
-        for call in &calls {
-            let Ok(invocation) = call.parse::<tilo_actions::InvocationId>() else {
-                continue;
-            };
-            let message = tilo_actions::remote::RemoteActionMessage::Cancel { invocation };
-            if let Err(error) = self
-                .connection
-                .manager()
-                .try_send(CollabRequest::RemoteAction { message })
-            {
-                tracing::warn!(app = self.spec.app, %error, "a stopped run's call was not stopped");
-            }
-        }
-        !calls.is_empty()
-    }
-
     /// Say that a task or workspace request reached an app's instance, which does not run them.
     fn not_ours(&self) {
         tracing::warn!(
@@ -2750,27 +2690,10 @@ impl Hosted {
             RemoteActionMessage::Update {
                 state: Some(state), ..
             } => state.receipt(),
-            // The dispatch no longer knows a call a run waits on: the run cannot hear from it.
-            RemoteActionMessage::Update {
-                invocation,
-                state: None,
-                ..
-            } => tilo_actions::remote::InvocationReceipt {
-                invocation: *invocation,
-                status: ReceiptStatus::Failed {
-                    error: tilo_actions::ActionFailure {
-                        code: "unknown_invocation".into(),
-                        message: "the call is no longer known where it ran".into(),
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            },
             _ => return false,
         };
-        // The dispatch admitted it and runs it: it is followed until it ends.
+        // The dispatch admitted it and runs it: its answer comes when it ends.
         if matches!(receipt.status, ReceiptStatus::Accepted) {
-            self.follow(receipt.invocation);
             return false;
         }
         // A person is being asked about it: the dispatch keeps it open and answers once they
@@ -3561,10 +3484,6 @@ impl Hosted {
     }
 }
 
-/// How long one ask of how a call stands waits while the call has not moved: as long as the
-/// dispatch holds one ([`tilo_actions::remote::MAX_REMOTE_WAIT`]).
-const FOLLOW_MS: u32 = 10_000;
-
 /// Where the runtime sends the calls an app makes of another app's action, or of its own action
 /// the authority asks a person about first: each goes through the dispatch at once, as a child of
 /// the invocation being served, and the run that made it waits on the answer
@@ -3653,14 +3572,9 @@ impl Invoker for Apis {
 }
 
 /// Every package this app may call, by app, in the workspace it calls them in: what a child call
-/// is built from. A package a registered provider publishes is called at the addresses it
-/// registered (`provided`).
-fn callees_of(
-    bundle: &Bundle,
-    workspace: &str,
-    provided: &[tilo_actions::remote::ProvidedPackage],
-) -> Callees {
-    let mut callees = Callees {
+/// is built from.
+fn callees_of(bundle: &Bundle, workspace: &str) -> Callees {
+    Callees {
         apps: bundle
             .imports
             .iter()
@@ -3670,9 +3584,7 @@ fn callees_of(
             .collect(),
         workspace: Some(workspace.to_owned()),
         ..Default::default()
-    };
-    callees.provide(provided);
-    callees
+    }
 }
 
 /// What the action whose run `value` returned answers: the resource it made, if any, as the
