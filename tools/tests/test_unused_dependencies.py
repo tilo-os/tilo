@@ -163,7 +163,7 @@ class UnusedDependencyTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 args = output.read_text().splitlines()
                 self.assertEqual(args[:2], ["machete", "--with-metadata"])
-                self.assertCountEqual(args[2:], ["Cargo.toml", "apps", "crates/sdk", "crates/system"])
+                self.assertCountEqual(args[2:], ["Cargo.toml", "apps", "crates/sdk", "crates/core"])
 
             with self.subTest(phase="a change inside the generated crate scans nothing"):
                 base = git("rev-parse", "HEAD")
