@@ -9,6 +9,56 @@ use ui::framework::testing::TestApp;
 use ui::tilo_resource::Effect as _;
 
 #[test]
+fn open_pane_is_one_published_action_naming_the_pane_it_opens() {
+    let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
+    app.settle();
+    let surface = app.agent_surface();
+    let rows = surface
+        .as_array()
+        .expect("the agent surface is a list")
+        .iter()
+        .filter(|row| row["resource"] == "settings.root" && row["action"] == "open-pane")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        1,
+        "Settings publishes one open-pane action on its resource: {surface}"
+    );
+    let params = rows[0]["params"]
+        .as_array()
+        .expect("open-pane takes params");
+    assert!(
+        params.iter().any(|param| param["name"] == "pane"),
+        "open-pane names the pane it opens: {params:?}"
+    );
+
+    app.call_on(
+        "settings.root",
+        "open-pane",
+        serde_json::json!({ "pane": "external_accounts" }),
+    )
+    .expect("the published action opens the pane");
+    app.settle();
+    let category = Category::ExternalAccounts.label();
+    assert!(
+        app.harness().a11y_nodes().iter().any(|(_, node)| {
+            node.label() == Some(category.as_str()) && node.is_selected() == Some(true)
+        }),
+        "the Accounts pane is shown after the action runs"
+    );
+
+    let refused = app.call_on(
+        "settings.root",
+        "open-pane",
+        serde_json::json!({ "pane": "no-such-pane" }),
+    );
+    assert!(
+        format!("{refused:?}").contains("no-such-pane"),
+        "an unknown pane is refused by name: {refused:?}"
+    );
+}
+
+#[test]
 fn every_pane_publishes_a_surface_that_passes_contract_validation() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
     app.settle();

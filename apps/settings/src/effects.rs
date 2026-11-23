@@ -564,6 +564,9 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
                     pane_row_id(*category),
                     category.label(),
                 )
+                .effect(&NavigationEffect::OpenPane {
+                    pane: category.slug().to_owned(),
+                })
             })
             .collect();
         *built = Some((language, rows.clone()));
@@ -574,20 +577,18 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
 pub const SETTING_ANCHOR: &str = "settings.setting:";
 
 /// A pane of Settings, as the window publishes it: a row of the
-/// `settings.section` type whose effect opens the pane it names.
+/// `settings.section` type offering the effect that opens the pane it names.
 #[derive(tilo_resource::Row)]
-#[row(
-    kind = "settings.section",
-    label = "Settings pane",
-    effects = NavigationEffect
-)]
+#[row(kind = "settings.section", label = "Settings pane")]
 pub(crate) struct SectionPane;
 
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum NavigationEffect {
-    /// Open a pane of Settings.
-    #[effect(view, on = SectionPane)]
+    /// Open a pane of Settings: the sidebar's row and the pane's own row
+    /// offer it bound to the pane they name, and a caller anywhere offers the
+    /// pane itself.
+    #[effect(view)]
     OpenPane {
         #[param("The pane's row, or its id such as `appearance` or `network`")]
         pane: String,
