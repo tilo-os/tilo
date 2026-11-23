@@ -15,6 +15,11 @@ uniform float tint;
 #endif
 uniform sampler2D lut;
 uniform float use_lut;
+// Grid points a side of the calibration table, and the atlas's size in texels
+// (`LutAtlas` in color.rs): `lut_points²`-texel blue slices, eight to a row,
+// and a last row of grid positions for each input code.
+uniform float lut_points;
+uniform vec2 lut_extent;
 uniform float pq;
 uniform float sdr_white;
 uniform vec3 filter_row_r;
@@ -40,16 +45,69 @@ uniform float layer_transfer[3];
 uniform vec3 layer_row_r[3];
 uniform vec3 layer_row_g[3];
 uniform vec3 layer_row_b[3];
-const float N = 33.0;
+const float SLICES_ACROSS = 8.0;
 
+// The atlas texel at `xy`, read at its centre.
+vec3 lut_load(vec2 xy) {
+    return texture2D(lut, (xy + 0.5) / lut_extent).rgb;
+}
+
+// The calibrated colour at grid point `p` (whole numbers, red, green, blue).
+vec3 lut_point(vec3 p) {
+    float row = floor(p.b / SLICES_ACROSS);
+    float column = p.b - row * SLICES_ACROSS;
+    return lut_load(vec2(column * lut_points + p.r, row * lut_points + p.g));
+}
+
+// Where an 8-bit channel value falls on the grid: its cell, plus how far
+// across that cell, from the atlas's last row.
+float lut_position(float channel) {
+    float code = floor(clamp(channel, 0.0, 1.0) * 255.0 + 0.5);
+    vec3 bytes = floor(lut_load(vec2(code, lut_extent.y - 1.0)) * 255.0 + 0.5);
+    return bytes.r + (bytes.g * 256.0 + bytes.b) / 65535.0;
+}
+
+// The panel's colour for the sRGB colour `c`, as qcms maps it: the grid's
+// samples interpolated over the tetrahedron of the cell that holds `c`.
 vec3 calibrate(vec3 c) {
-    float b = clamp(c.b, 0.0, 1.0) * (N - 1.0);
-    float b0 = floor(b);
-    float b1 = min(b0 + 1.0, N - 1.0);
-    vec2 rg = (clamp(c.rg, 0.0, 1.0) * (N - 1.0) + 0.5) / vec2(N * N, N);
-    vec3 lo = texture2D(lut, rg + vec2(b0 / N, 0.0)).rgb;
-    vec3 hi = texture2D(lut, rg + vec2(b1 / N, 0.0)).rgb;
-    return mix(lo, hi, b - b0);
+    vec3 position = vec3(lut_position(c.r), lut_position(c.g), lut_position(c.b));
+    vec3 cell = clamp(floor(position), vec3(0.0), vec3(lut_points - 2.0));
+    vec3 f = position - cell;
+    // The tetrahedron's corners run from the cell's origin to its far corner
+    // one axis at a time, largest fraction first, and each corner weighs the
+    // difference between consecutive fractions.
+    vec3 first = vec3(1.0, 0.0, 0.0);
+    vec3 second = vec3(1.0, 1.0, 0.0);
+    vec4 w = vec4(1.0 - f.x, f.x - f.y, f.y - f.z, f.z);
+    if (f.x >= f.y) {
+        if (f.y >= f.z) {
+            // x >= y >= z: the defaults.
+        } else if (f.x >= f.z) {
+            second = vec3(1.0, 0.0, 1.0);
+            w = vec4(1.0 - f.x, f.x - f.z, f.z - f.y, f.y);
+        } else {
+            first = vec3(0.0, 0.0, 1.0);
+            second = vec3(1.0, 0.0, 1.0);
+            w = vec4(1.0 - f.z, f.z - f.x, f.x - f.y, f.y);
+        }
+    } else if (f.z >= f.y) {
+        first = vec3(0.0, 0.0, 1.0);
+        second = vec3(0.0, 1.0, 1.0);
+        w = vec4(1.0 - f.z, f.z - f.y, f.y - f.x, f.x);
+    } else if (f.z >= f.x) {
+        first = vec3(0.0, 1.0, 0.0);
+        second = vec3(0.0, 1.0, 1.0);
+        w = vec4(1.0 - f.y, f.y - f.z, f.z - f.x, f.x);
+    } else {
+        first = vec3(0.0, 1.0, 0.0);
+        second = vec3(1.0, 1.0, 0.0);
+        w = vec4(1.0 - f.y, f.y - f.x, f.x - f.z, f.z);
+    }
+    vec3 colour = w.x * lut_point(cell)
+        + w.y * lut_point(cell + first)
+        + w.z * lut_point(cell + second)
+        + w.w * lut_point(cell + vec3(1.0));
+    return clamp(colour, 0.0, 1.0);
 }
 
 float srgb_eotf(float v) {
