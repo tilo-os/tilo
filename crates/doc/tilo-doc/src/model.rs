@@ -1942,15 +1942,6 @@ pub fn all_styles(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, BTreeMap
     out
 }
 
-#[cfg(test)]
-fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView {
-    let fields = match block_obj(doc, container, id) {
-        Some(obj) => block_fields(doc, &obj),
-        None => BlockFields::default(),
-    };
-    block_view(doc, id.to_string(), fields)
-}
-
 /// Build a block's view from its already-read fields.
 fn block_view(doc: &AutoCommit, id: String, fields: BlockFields) -> BlockView {
     let (text, marks) = match &fields.text {
@@ -3548,157 +3539,125 @@ mod snapshot_anchor_tests {
 }
 
 #[cfg(test)]
-mod style_tests {
+mod style_and_props_flows {
     use super::*;
+    use crate::Document;
     use crate::schema::*;
-    use automerge::{AutoCommit, ROOT};
 
     fn props(name: &str, size: f64, bold: bool) -> BTreeMap<String, AttrVal> {
-        let mut m = BTreeMap::new();
-        m.insert(STYLE_NAME.to_string(), AttrVal::Str(name.into()));
-        m.insert(STYLE_SIZE.to_string(), AttrVal::Float(size));
-        m.insert(STYLE_BOLD.to_string(), AttrVal::Bool(bold));
-        m.insert(STYLE_COLOR.to_string(), AttrVal::Str("#112233".into()));
-        m
+        let mut map = BTreeMap::new();
+        map.insert(STYLE_NAME.to_string(), AttrVal::Str(name.into()));
+        map.insert(STYLE_SIZE.to_string(), AttrVal::Float(size));
+        map.insert(STYLE_BOLD.to_string(), AttrVal::Bool(bold));
+        map.insert(STYLE_COLOR.to_string(), AttrVal::Str("#112233".into()));
+        map
     }
 
+    /// Named styles upsert by field: a document writes two, updates one property of one,
+    /// and reads them back from its snapshot; removing one leaves the other.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn styles_and_doc_props_upsert_snapshot_and_open_old_documents() {
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.set_style("body", &props("Body", 16.5, false));
-                dm.set_style("h1", &props("Heading 1", 30.0, true));
-            }
+    fn styles_upsert_by_field_and_read_back() {
+        let mut document = Document::new();
+        document
+            .as_mut()
+            .set_style("body", &props("Body", 16.5, false));
+        document
+            .as_mut()
+            .set_style("h1", &props("Heading 1", 30.0, true));
+        let snapshot = document.materialize();
+        assert_eq!(
+            snapshot.styles.keys().cloned().collect::<Vec<_>>(),
+            vec!["body".to_string(), "h1".to_string()]
+        );
+        let body = &snapshot.styles["body"];
+        assert_eq!(
+            body.get(STYLE_SIZE),
+            Some(&AttrVal::Float(16.5)),
+            "fractional size stored as F64"
+        );
+        assert_eq!(body.get(STYLE_NAME), Some(&AttrVal::Str("Body".into())));
+        assert_eq!(body.get(STYLE_BOLD), Some(&AttrVal::Bool(false)));
+        assert_eq!(
+            snapshot.styles["h1"].get(STYLE_BOLD),
+            Some(&AttrVal::Bool(true))
+        );
 
-            let mut got = style_ids(&doc, &c);
-            got.compact_sort();
-            assert_eq!(got, vec!["body".to_string(), "h1".to_string()]);
+        let mut one = BTreeMap::new();
+        one.insert(STYLE_SIZE.to_string(), AttrVal::Float(40.0));
+        document.as_mut().set_style("h1", &one);
+        let snapshot = document.materialize();
+        let heading = &snapshot.styles["h1"];
+        assert_eq!(
+            heading.get(STYLE_SIZE),
+            Some(&AttrVal::Float(40.0)),
+            "updated property"
+        );
+        assert_eq!(
+            heading.get(STYLE_BOLD),
+            Some(&AttrVal::Bool(true)),
+            "untouched property preserved"
+        );
+        assert_eq!(
+            heading.get(STYLE_NAME),
+            Some(&AttrVal::Str("Heading 1".into()))
+        );
 
-            let bp = style_props(&doc, &c, "body");
-            assert_eq!(
-                bp.get(STYLE_SIZE),
-                Some(&AttrVal::Float(16.5)),
-                "fractional size stored as F64"
-            );
-            assert_eq!(bp.get(STYLE_NAME), Some(&AttrVal::Str("Body".into())));
-            assert_eq!(bp.get(STYLE_BOLD), Some(&AttrVal::Bool(false)));
+        document.as_mut().remove_style("h1");
+        assert_eq!(
+            document
+                .materialize()
+                .styles
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["body".to_string()],
+            "style removed"
+        );
+    }
 
-            let snap = materialize(&doc, &c);
-            assert_eq!(snap.styles.len(), 2);
-            assert_eq!(
-                snap.styles["h1"].get(STYLE_BOLD),
-                Some(&AttrVal::Bool(true))
-            );
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            // No props map yet → empty reads, no panic, open still works.
-            assert!(doc_props(&doc, &c).is_empty());
-            assert_eq!(doc_prop(&doc, &c, PROP_TITLE), None);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.set_doc_prop(PROP_TITLE, "Hello");
-                dm.set_doc_prop(PROP_AUTHOR, "Ada");
-            }
-            assert_eq!(doc_prop(&doc, &c, PROP_TITLE).as_deref(), Some("Hello"));
-            assert_eq!(doc_prop(&doc, &c, PROP_AUTHOR).as_deref(), Some("Ada"));
-            let all = doc_props(&doc, &c);
-            assert_eq!(all.get("title").map(String::as_str), Some("Hello"));
-            assert_eq!(all.get("author").map(String::as_str), Some("Ada"));
-            let snap = materialize(&doc, &c);
-            assert_eq!(
-                snap.properties.get("title").map(String::as_str),
-                Some("Hello")
-            );
-            // Field-level upsert: setting one property leaves the other intact.
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.set_doc_prop(PROP_TITLE, "Changed");
-            }
-            assert_eq!(doc_prop(&doc, &c, PROP_TITLE).as_deref(), Some("Changed"));
-            assert_eq!(
-                doc_prop(&doc, &c, PROP_AUTHOR).as_deref(),
-                Some("Ada"),
-                "untouched prop preserved"
-            );
-        }
-        {
-            // A document whose meta map predates the props sub-map must open + read as having no
-            // properties.
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            // `init` does not create meta.props; confirm reads degrade gracefully.
-            assert!(doc_props(&doc, &c).is_empty(), "no props map → empty");
-            assert_eq!(doc_prop(&doc, &c, PROP_GENERATOR), None);
-            let bytes = doc.save();
-            let reloaded = AutoCommit::load(&bytes).unwrap();
-            let c2 = open(&reloaded, &ROOT).unwrap();
-            assert!(
-                doc_props(&reloaded, &c2).is_empty(),
-                "reload still opens with no props"
-            );
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.set_style("h1", &props("Heading 1", 30.0, true));
-                // Touch only one property; the others must survive (field-level merge).
-                let mut one = BTreeMap::new();
-                one.insert(STYLE_SIZE.to_string(), AttrVal::Float(40.0));
-                dm.set_style("h1", &one);
-            }
-            let h1 = style_props(&doc, &c, "h1");
-            assert_eq!(
-                h1.get(STYLE_SIZE),
-                Some(&AttrVal::Float(40.0)),
-                "updated property"
-            );
-            assert_eq!(
-                h1.get(STYLE_BOLD),
-                Some(&AttrVal::Bool(true)),
-                "untouched property preserved"
-            );
-            assert_eq!(h1.get(STYLE_NAME), Some(&AttrVal::Str("Heading 1".into())));
+    /// Document properties read as none before any is set, upsert by field, and survive a
+    /// reload; a document saved before it had any loads with none.
+    #[test]
+    fn document_properties_upsert_and_open_documents_without_them() {
+        let mut document = Document::new();
+        assert!(document.doc_props().is_empty(), "no props map → empty");
+        assert_eq!(document.doc_prop(PROP_TITLE), None);
+        document.set_doc_prop(PROP_TITLE, "Hello");
+        document.set_doc_prop(PROP_AUTHOR, "Ada");
+        assert_eq!(document.doc_prop(PROP_TITLE).as_deref(), Some("Hello"));
+        assert_eq!(document.doc_prop(PROP_AUTHOR).as_deref(), Some("Ada"));
+        let all = document.doc_props();
+        assert_eq!(all.get("title").map(String::as_str), Some("Hello"));
+        assert_eq!(all.get("author").map(String::as_str), Some("Ada"));
+        let snapshot = document.materialize();
+        assert_eq!(
+            snapshot.properties.get("title").map(String::as_str),
+            Some("Hello")
+        );
+        document.set_doc_prop(PROP_TITLE, "Changed");
+        assert_eq!(document.doc_prop(PROP_TITLE).as_deref(), Some("Changed"));
+        assert_eq!(
+            document.doc_prop(PROP_AUTHOR).as_deref(),
+            Some("Ada"),
+            "untouched prop preserved"
+        );
+        let bytes = document.save();
+        let reloaded = Document::load(&bytes).unwrap();
+        assert_eq!(reloaded.doc_prop(PROP_TITLE).as_deref(), Some("Changed"));
+        assert_eq!(reloaded.doc_prop(PROP_AUTHOR).as_deref(), Some("Ada"));
 
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.remove_style("h1");
-            }
-            assert!(style_ids(&doc, &c).is_empty(), "style removed");
-        }
+        // A document whose meta map predates the props sub-map opens with none.
+        let mut old = AutoCommit::new();
+        let c = init(&mut old, &ROOT);
+        assert!(doc_props(&old, &c).is_empty(), "no props map → empty");
+        assert_eq!(doc_prop(&old, &c, PROP_GENERATOR), None);
+        let bytes = old.save();
+        let reloaded = AutoCommit::load(&bytes).unwrap();
+        let opened = open(&reloaded, &ROOT).unwrap();
+        assert!(
+            doc_props(&reloaded, &opened).is_empty(),
+            "reload still opens with no props"
+        );
     }
 }
 
@@ -3775,812 +3734,678 @@ mod genesis_detection_tests {
 }
 
 #[cfg(test)]
-mod region_tests {
+mod fresh_and_minted_ids {
     use super::*;
-
     use automerge::{AutoCommit, ROOT};
 
+    /// A fresh document carries its regions already: adding a page header, a note or a
+    /// comment on two replicas therefore converges on one shared place, and a document
+    /// with none of them still reads as having none after a reload.
     #[test]
-    fn headers_and_footers_are_shared_and_hold_fields() {
+    fn a_fresh_document_carries_empty_regions() {
+        let mut document = crate::Document::new();
+        assert!(document.header().is_empty());
+        assert!(document.footer().is_empty());
+        assert!(document.note_ids().is_empty());
+        assert!(document.comment_ids().is_empty());
+        assert!(document.change_ids().is_empty());
+        assert!(document.materialize().notes.is_empty());
+        assert!(document.materialize().comments.is_empty());
+        assert!(document.materialize().changes.is_empty());
+        let bytes = document.save();
+        let reloaded = crate::Document::load(&bytes).unwrap();
+        assert!(reloaded.header().is_empty());
+        assert!(reloaded.footer().is_empty());
+        assert!(reloaded.note_ids().is_empty());
+        assert!(reloaded.comment_ids().is_empty());
+        assert!(reloaded.change_ids().is_empty());
+
+        // A page header is not body content.
+        let mut paged = crate::Document::new();
+        let header = paged.insert_header_block(None, "paragraph");
+        paged.splice_header_text(&header, 0, 0, "Title");
+        assert!(paged.blocks_in_order().is_empty());
+        assert_eq!(paged.header().len(), 1);
+    }
+
+    /// A document loaded from its own bytes mints ids past the ones it already holds:
+    /// a second note, comment or change never takes the first one's id.
+    #[test]
+    fn a_reloaded_document_mints_new_note_comment_and_change_ids() {
+        let mut document = crate::Document::new();
+        let paragraph = document.insert_block(None, "paragraph");
+        document.splice_text(&paragraph, 0, 0, "abcdef");
+
+        let first_note = document.insert_footnote(&paragraph, 1);
+        let note_block = document
+            .insert_note_block(&first_note, None, "paragraph")
+            .unwrap();
+        document.splice_note_text(&first_note, &note_block, 0, 0, "note");
+        let first_comment = document.add_comment(&paragraph, 0, 3, "A", "first");
+        let first_change = document.track_delete(&paragraph, 3, 6, "A", "");
+        let bytes = document.save();
+
+        let mut reloaded = crate::Document::load(&bytes).unwrap();
+        let second_note = reloaded.insert_footnote(&paragraph, 0);
+        let second_block = reloaded
+            .insert_note_block(&second_note, None, "paragraph")
+            .unwrap();
+        reloaded.splice_note_text(&second_note, &second_block, 0, 0, "second");
+        let second_comment = reloaded.add_comment(&paragraph, 3, 6, "B", "second");
+        let second_change = reloaded.track_delete(&paragraph, 0, 3, "B", "");
+        assert_ne!(first_note, second_note, "second note id must not collide");
+        assert_ne!(
+            first_comment, second_comment,
+            "second comment id must not collide"
+        );
+        assert_ne!(
+            first_change, second_change,
+            "second change id must not collide"
+        );
+        assert_eq!(
+            reloaded.note_ids().len(),
+            2,
+            "both notes survive (no overwrite)"
+        );
+        assert_eq!(
+            reloaded.comment_ids().len(),
+            2,
+            "both comments survive (no overwrite)"
+        );
+        assert_eq!(
+            reloaded.change_ids().len(),
+            2,
+            "both changes survive (no overwrite)"
+        );
+    }
+
+    /// The generator a loaded document seeds counts replies too, so a reply added after
+    /// a reload cannot take an id the document already holds.
+    #[test]
+    fn the_minted_id_counter_runs_past_replies_and_ids_at_their_limit() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            // The regions come with the schema rather than being minted on first
-            // write, so two people who each add a page header cannot end up with two
-            // `root.header` maps and lose one — see `GENESIS_ACTOR`.
-            assert!(region_blocks_in_order(&doc, &c, Region::Header).is_empty());
-            assert!(materialize_region(&doc, &c, Region::Footer).is_empty());
-            let bytes = doc.save();
-            let reloaded = AutoCommit::load(&bytes).unwrap();
-            let c2 = open(&reloaded, &ROOT).unwrap();
-            assert!(region_blocks_in_order(&reloaded, &c2, Region::Header).is_empty());
-            assert!(materialize_region(&reloaded, &c2, Region::Footer).is_empty());
-        }
-        // Phase `concurrent_headers_on_two_replicas_both_survive`.
-        // The reason the regions are not lazily created: two replicas each adding a
-        // page header must end up with both, not with whichever one won a
-        // comparison of their actor ids.
-        {
-            for _ in 0..32 {
-                let mut a = AutoCommit::new();
-                let ca = init(&mut a, &ROOT);
-                let mut ids_a = IdGen::new(a.get_actor().to_hex_string());
-                let mut b = AutoCommit::new();
-                let cb = init(&mut b, &ROOT);
-                let mut ids_b = IdGen::new(b.get_actor().to_hex_string());
-                {
-                    let mut dm = DocMut {
-                        doc: &mut a,
-                        c: &ca,
-                        ids: &mut ids_a,
-                    };
-                    let x = dm.insert_block_in(Region::Header, None, "paragraph");
-                    dm.splice_text_in(Region::Header, &x, 0, 0, "left");
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            let paragraph = dm.insert_block(None, "paragraph");
+            dm.splice_text(&paragraph, 0, 0, "one two three four five");
+            for (index, start) in [0usize, 4, 8, 14].into_iter().enumerate() {
+                let comment = dm.add_comment(&paragraph, start, start + 3, "Ada", "note");
+                for n in 0..(3 - index.min(3)) {
+                    dm.add_comment_reply(&comment, "Bea", "2026-09-07", &format!("reply {n}"))
+                        .expect("parent comment exists");
                 }
-                {
-                    let mut dm = DocMut {
-                        doc: &mut b,
-                        c: &cb,
-                        ids: &mut ids_b,
-                    };
-                    let y = dm.insert_block_in(Region::Header, None, "paragraph");
-                    dm.splice_text_in(Region::Header, &y, 0, 0, "right");
-                }
-                a.merge_incoming(&mut b).unwrap();
-                let merged = open(&a, &ROOT).unwrap();
-                let texts: Vec<String> = materialize_region(&a, &merged, Region::Header)
-                    .into_iter()
-                    .map(|b| b.text)
-                    .collect();
-                assert!(
-                    texts.iter().any(|t| t == "left") && texts.iter().any(|t| t == "right"),
-                    "both replicas' headers survive the merge; got {texts:?}"
-                );
             }
         }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (hid, fid);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                hid = dm.insert_block_in(Region::Header, None, "paragraph");
-                dm.splice_text_in(Region::Header, &hid, 0, 0, "Title");
-                fid = dm.insert_block_in(Region::Footer, None, "paragraph");
-                dm.splice_text_in(Region::Footer, &fid, 0, 0, "Page ");
-                dm.insert_page_number_field(Region::Footer, &fid, 5);
-            }
-            let header = materialize_region(&doc, &c, Region::Header);
-            assert_eq!(header.len(), 1);
-            assert_eq!(header[0].text, "Title");
-            assert!(blocks_in_order(&doc, &c).is_empty(), "body stays empty");
+        let seeded = try_seeded_id_gen(&doc, &c).expect("seeds");
+        assert_eq!(seeded.next, ids.next, "reply ids are counted too");
 
-            let footer = materialize_region(&doc, &c, Region::Footer);
-            assert_eq!(footer.len(), 1);
-            assert_eq!(footer[0].text, format!("Page {FIELD_PLACEHOLDER}"));
-            let field = footer[0]
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_FIELD)
-                .expect("page-number field mark present");
-            assert_eq!(
-                (field.start, field.end),
-                (5, 6),
-                "field covers exactly the placeholder"
-            );
-            assert_eq!(
-                field.value,
-                crate::document::MarkValue::Str(FIELD_PAGE_NUMBER.into())
-            );
-
-            let snap = materialize(&doc, &c);
-            assert_eq!(snap.header[0].text, "Title");
-            assert_eq!(snap.footer.len(), 1);
-        }
+        let mut spent = IdGen::with_counter("actor".into(), u64::MAX);
+        assert_eq!(spent.try_mint(), Ok("actor.18446744073709551615".into()));
+        assert_eq!(
+            spent.try_mint(),
+            Err(IdGenError::Exhausted {
+                actor_hex: "actor".into()
+            }),
+            "a generator at its limit stops instead of wrapping"
+        );
+        let mut full = AutoCommit::new();
+        let full_c = init(&mut full, &ROOT);
+        let actor = full.get_actor().to_hex_string();
+        let id = format!("{actor}.{max}", max = u64::MAX);
+        let block = full
+            .put_object(&full_c.blocks, id, automerge::ObjType::Map)
+            .unwrap();
+        full.put(&block, BLOCK_ORDER, ScalarValue::Bytes(vec![0x80]))
+            .unwrap();
+        assert_eq!(
+            next_counter_for(&full, &full_c, &actor),
+            Err(IdGenError::Exhausted { actor_hex: actor }),
+            "a document holding the last id seeds a spent generator"
+        );
     }
 
+    /// Asked for blocks by id, the model reads those blocks and not the body: a view of
+    /// a place costs its own blocks, however long the document is.
     #[test]
-    fn notes_anchor_their_content_and_never_remint_ids() {
+    fn requested_blocks_materialize_without_a_body_scan() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (first, middle, last);
         {
-            // A fresh doc has an (empty) notes container — created eagerly so concurrent
-            // footnote inserts converge on one shared object.
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            assert!(note_ids(&doc, &c).is_empty(), "but empty");
-            assert!(materialize_notes(&doc, &c).is_empty());
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            first = dm.insert_block(None, "paragraph");
+            dm.splice_text(&first, 0, 0, "first");
+            middle = dm.insert_block(Some(&first), "paragraph");
+            dm.splice_text(&middle, 0, 0, "middle");
+            last = dm.insert_block(Some(&middle), "heading");
+            dm.splice_text(&last, 0, 0, "last");
+            dm.set_attr(&last, "level", 2_i64);
+            dm.add_mark(&last, 0, 4, "strong", true);
         }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (pid, nid, nb);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                pid = dm.insert_block(None, "paragraph");
-                dm.splice_text(&pid, 0, 0, "see ref");
-                nid = dm.insert_footnote(&pid, 4);
-                nb = dm.insert_note_block(&nid, None, "paragraph").unwrap();
-                dm.splice_note_text(&nid, &nb, 0, 0, "the note");
-            }
-            let p = materialize_block(&doc, &c.blocks, &pid);
-            assert_eq!(
-                p.text,
-                format!("see {FIELD_PLACEHOLDER}ref"),
-                "placeholder spliced inline"
-            );
-            let nref = p
+
+        let requested = vec![last.clone(), first.clone(), "deleted-remotely".into()];
+        let scans_before = ordered_keys_scan_count();
+        let views = materialize_blocks(&doc, &c, &requested);
+
+        assert_eq!(ordered_keys_scan_count(), scans_before, "no body scan");
+        assert_eq!(
+            views.iter().map(|b| &b.id).collect::<Vec<_>>(),
+            vec![&last, &first]
+        );
+        assert_eq!(views[0].kind, "heading");
+        assert_eq!(views[0].text, "last");
+        assert_eq!(views[0].attrs.get("level"), Some(&AttrVal::Int(2)));
+        assert!(
+            views[0]
                 .marks
                 .iter()
-                .find(|m| m.name == MARK_NOTE_REF)
-                .expect("note-ref mark present");
-            assert_eq!((nref.start, nref.end), (4, 5));
-            assert_eq!(nref.value, crate::document::MarkValue::Str(nid.clone()));
-            assert_eq!(note_kind(&doc, &c, &nid), Some(NoteKind::Footnote));
-            let blocks = materialize_note_blocks(&doc, &c, &nid);
-            assert_eq!(blocks.len(), 1);
-            assert_eq!(blocks[0].text, "the note");
-            let snap = materialize(&doc, &c);
-            assert_eq!(snap.notes.len(), 1);
-            assert_eq!(snap.notes[0].kind, "footnote");
-            assert_eq!(snap.notes[0].blocks[0].text, "the note");
-        }
-        {
-            // A generator seeded over a reloaded doc must skip past note + note-block ids,
-            // otherwise it would re-mint an existing note.
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (pid, nid);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                pid = dm.insert_block(None, "paragraph");
-                dm.splice_text(&pid, 0, 0, "x");
-                nid = dm.insert_footnote(&pid, 1);
-                let nb = dm.insert_note_block(&nid, None, "paragraph").unwrap();
-                dm.splice_note_text(&nid, &nb, 0, 0, "note");
-            }
-            // Re-seed over the same doc (as load() does) and add another note.
-            let mut ids2 = seeded_id_gen(&doc, &c);
-            let nid2;
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids2,
-                };
-                nid2 = dm.insert_footnote(&pid, 0);
-                let nb2 = dm.insert_note_block(&nid2, None, "paragraph").unwrap();
-                dm.splice_note_text(&nid2, &nb2, 0, 0, "second");
-            }
-            assert_ne!(nid, nid2, "second note id must not collide with the first");
-            let snap = materialize(&doc, &c);
-            assert_eq!(
-                snap.notes.len(),
-                2,
-                "both notes survive (no overwrite): {:?}",
-                snap.notes
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn comments_anchor_their_content_and_threads_and_never_remint_ids() {
-        {
-            // A fresh doc has an (empty) comments container — eager, so concurrent comment adds
-            // converge on one shared object.
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            assert!(comment_ids(&doc, &c).is_empty(), "but empty");
-            assert!(materialize_comments(&doc, &c).is_empty());
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (pid, cid);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                pid = dm.insert_block(None, "paragraph");
-                dm.splice_text(&pid, 0, 0, "please fix this word");
-                cid = dm.add_comment(&pid, 11, 20, "Ada", "note: fix");
-            }
-            let p = materialize_block(&doc, &c.blocks, &pid);
-            let cm = p
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_COMMENT)
-                .expect("comment mark present");
-            assert_eq!((cm.start, cm.end), (11, 20));
-            assert_eq!(cm.value, crate::document::MarkValue::Str(cid.clone()));
-            assert_eq!(comment_author(&doc, &c, &cid).as_deref(), Some("Ada"));
-            let blocks = materialize_comment_blocks(&doc, &c, &cid);
-            assert_eq!(blocks.len(), 1);
-            assert_eq!(blocks[0].text, "note: fix");
-            let snap = materialize(&doc, &c);
-            assert_eq!(snap.comments.len(), 1);
-            assert_eq!(snap.comments[0].author, "Ada");
-            assert_eq!(snap.comments[0].blocks[0].text, "note: fix");
-            assert_eq!(snap.comments[0].range, Some((pid, 11, 20)));
-        }
-        {
-            // A generator seeded over a reloaded doc must skip past comment ids, otherwise it would
-            // re-mint an existing comment.
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (pid, cid);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                pid = dm.insert_block(None, "paragraph");
-                dm.splice_text(&pid, 0, 0, "abcdef");
-                cid = dm.add_comment(&pid, 0, 3, "A", "first");
-            }
-            let mut ids2 = seeded_id_gen(&doc, &c);
-            let cid2;
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids2,
-                };
-                cid2 = dm.add_comment(&pid, 3, 6, "B", "second");
-            }
-            assert_ne!(
-                cid, cid2,
-                "second comment id must not collide with the first"
-            );
-            let snap = materialize(&doc, &c);
-            assert_eq!(
-                snap.comments.len(),
-                2,
-                "both comments survive (no overwrite): {:?}",
-                snap.comments
-            );
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let mut comments = Vec::new();
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                let paragraph = dm.insert_block(None, "paragraph");
-                dm.splice_text(&paragraph, 0, 0, "one two three four five");
-                for (i, start) in [0usize, 4, 8, 14].into_iter().enumerate() {
-                    let comment = dm.add_comment(&paragraph, start, start + 3, "Ada", "note");
-                    // Interleave replies across threads, and leave the last thread without any.
-                    for n in 0..(3 - i.min(3)) {
-                        dm.add_comment_reply(&comment, "Bea", "2026-09-07", &format!("reply {n}"))
-                            .expect("parent comment exists");
-                    }
-                    comments.push(comment);
-                }
-                let first = comments[0].clone();
-                dm.add_comment_reply(&first, "Cy", "2026-09-08", "late reply")
-                    .expect("parent comment exists");
-            }
-            let by_parent = comment_replies_by_parent(&doc, &c);
-            let all = materialize_comments(&doc, &c);
-            assert_eq!(all.len(), comments.len());
-            for view in &all {
-                assert_eq!(
-                    comment_reply_ids(&doc, &c, &view.id),
-                    by_parent.get(&view.id).cloned().unwrap_or_default()
-                );
-                assert_eq!(
-                    view.replies,
-                    materialize_comment_replies(&doc, &c, &view.id),
-                    "a comment's replies read the same alone and in the full list"
-                );
-            }
-            let counts: Vec<usize> = comments
-                .iter()
-                .map(|id| {
-                    all.iter()
-                        .find(|v| &v.id == id)
-                        .map_or(0, |v| v.replies.len())
-                })
-                .collect();
-            assert_eq!(counts, vec![4, 2, 1, 0]);
-
-            let seeded = try_seeded_id_gen(&doc, &c).expect("seeds");
-            assert_eq!(seeded.next, ids.next);
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (paragraph, comment, reply_a, reply_b);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                paragraph = dm.insert_block(None, "paragraph");
-                dm.splice_text(&paragraph, 0, 0, "review this");
-                comment = dm.add_comment(&paragraph, 0, 6, "Ada", "Initial note");
-                // A legacy-shaped comment has no `replies` map until the first
-                // reply; materializing it must not create one.
-                assert!(comment_reply_ids(dm.doc, dm.c, &comment).is_empty());
-                reply_a = dm
-                    .add_comment_reply(&comment, "Bea", "2026-09-07", "First reply")
-                    .expect("parent comment exists");
-                reply_b = dm
-                    .add_comment_reply(&comment, "Cy", "2026-09-08", "Second reply")
-                    .expect("parent comment exists");
-            }
-            let replies = materialize_comment_replies(&doc, &c, &comment);
-            assert_eq!(replies.len(), 2);
-            assert_eq!(
-                replies
-                    .iter()
-                    .map(|reply| reply.id.clone())
-                    .collect::<Vec<_>>(),
-                vec![reply_a, reply_b],
-                "reply ids are sorted canonically rather than by merge arrival"
-            );
-            assert_eq!(replies[0].blocks[0].text, "First reply");
-            assert_eq!(replies[1].blocks[0].text, "Second reply");
-
-            let saved = doc.save();
-            let reloaded = AutoCommit::load(&saved).expect("reload threaded comments");
-            let c2 = open(&reloaded, &ROOT).expect("open reloaded schema");
-            assert_eq!(
-                materialize_comments(&reloaded, &c2)[0].replies,
-                replies,
-                "thread survives reload unchanged"
-            );
-
-            // A legacy comment is simply a root comment without any reply records;
-            // materializing it is empty and performs no migration write.
-            let mut old = AutoCommit::new();
-            let old_c = init(&mut old, &ROOT);
-            let mut old_ids = IdGen::new(old.get_actor().to_hex_string());
-            let legacy;
-            {
-                let mut dm = DocMut {
-                    doc: &mut old,
-                    c: &old_c,
-                    ids: &mut old_ids,
-                };
-                let p = dm.insert_block(None, "paragraph");
-                dm.splice_text(&p, 0, 0, "legacy");
-                legacy = dm.add_comment(&p, 0, 6, "D", "old comment");
-            }
-            assert!(
-                materialize_comments(&old, &old_c)
-                    .into_iter()
-                    .find(|entry| entry.id == legacy)
-                    .is_some_and(|entry| entry.replies.is_empty())
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn tracked_changes_anchor_accept_reject_and_never_remint_ids() {
-        {
-            // A fresh doc has an (empty) changes container — eager, for the same convergence reason
-            // as comments/notes.
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            assert!(change_ids(&doc, &c).is_empty(), "but empty");
-            assert!(materialize_changes(&doc, &c).is_empty());
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (pid, ins_id, del_id);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                pid = dm.insert_block(None, "paragraph");
-                dm.splice_text(&pid, 0, 0, "hello world");
-                ins_id = dm.track_insert(&pid, 5, " there", "Ada", "2021-01-02");
-                del_id = dm.track_delete(&pid, 12, 17, "Bob", "2021-03-04");
-            }
-            let p = materialize_block(&doc, &c.blocks, &pid);
-            assert_eq!(
-                p.text, "hello there world",
-                "inserted text is real content, deletion retained"
-            );
-            let im = p
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_INS)
-                .expect("ins mark present");
-            assert_eq!((im.start, im.end), (5, 11), "ins covers ' there'");
-            assert_eq!(im.value, crate::document::MarkValue::Str(ins_id.clone()));
-            let dmrk = p
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_DEL)
-                .expect("del mark present");
-            assert_eq!((dmrk.start, dmrk.end), (12, 17), "del covers 'world'");
-            assert_eq!(dmrk.value, crate::document::MarkValue::Str(del_id.clone()));
-            assert_eq!(
-                change_kind(&doc, &c, &ins_id),
-                Some(crate::snapshot::ChangeKind::Ins)
-            );
-            assert_eq!(
-                change_kind(&doc, &c, &del_id),
-                Some(crate::snapshot::ChangeKind::Del)
-            );
-            assert_eq!(change_author(&doc, &c, &ins_id).as_deref(), Some("Ada"));
-            assert_eq!(change_author(&doc, &c, &del_id).as_deref(), Some("Bob"));
-            assert_eq!(
-                change_date(&doc, &c, &del_id).as_deref(),
-                Some("2021-03-04")
-            );
-            let snap = materialize(&doc, &c);
-            assert_eq!(snap.changes.len(), 2);
-            let ins = snap.changes.iter().find(|ch| ch.id == ins_id).unwrap();
-            assert_eq!(ins.kind, crate::snapshot::ChangeKind::Ins);
-            assert_eq!(ins.range, Some((pid.clone(), 5, 11)));
-            let del = snap.changes.iter().find(|ch| ch.id == del_id).unwrap();
-            assert_eq!(del.kind, crate::snapshot::ChangeKind::Del);
-            assert_eq!(del.range, Some((pid, 12, 17)));
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let pid;
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                pid = dm.insert_block(None, "paragraph");
-                dm.splice_text(&pid, 0, 0, "ab");
-                let id = dm.track_insert(&pid, 2, "cd", "A", "");
-                dm.accept_change(&id);
-            }
-            let p = materialize_block(&doc, &c.blocks, &pid);
-            assert_eq!(p.text, "abcd", "accepted insertion keeps the text");
-            assert!(
-                p.marks.iter().all(|m| m.name != MARK_INS),
-                "ins mark dropped on accept"
-            );
-            assert!(
-                materialize_changes(&doc, &c).is_empty(),
-                "change record removed on accept"
-            );
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let pid;
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                pid = dm.insert_block(None, "paragraph");
-                dm.splice_text(&pid, 0, 0, "keep DROP end");
-                let id = dm.track_delete(&pid, 5, 9, "A", "");
-                dm.accept_change(&id);
-            }
-            let p = materialize_block(&doc, &c.blocks, &pid);
-            assert_eq!(
-                p.text, "keep  end",
-                "accepted deletion removes the struck text"
-            );
-            assert!(
-                p.marks.iter().all(|m| m.name != MARK_DEL),
-                "del mark gone with the text"
-            );
-            assert!(
-                materialize_changes(&doc, &c).is_empty(),
-                "change record removed on accept"
-            );
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let pid;
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                pid = dm.insert_block(None, "paragraph");
-                dm.splice_text(&pid, 0, 0, "abYZ");
-                let ins = dm.track_insert(&pid, 4, "QQ", "A", "");
-                dm.reject_change(&ins);
-                let del = dm.track_delete(&pid, 2, 4, "A", "");
-                dm.reject_change(&del);
-            }
-            let p = materialize_block(&doc, &c.blocks, &pid);
-            assert_eq!(
-                p.text, "abYZ",
-                "reject-ins removed inserted text; reject-del kept struck text"
-            );
-            assert!(
-                p.marks
-                    .iter()
-                    .all(|m| m.name != MARK_INS && m.name != MARK_DEL),
-                "both marks dropped"
-            );
-            assert!(
-                materialize_changes(&doc, &c).is_empty(),
-                "both records removed"
-            );
-        }
-        {
-            // A generator seeded over a reloaded doc must skip past change ids, otherwise it would
-            // re-mint an existing change.
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (pid, chid);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                pid = dm.insert_block(None, "paragraph");
-                dm.splice_text(&pid, 0, 0, "abcdef");
-                chid = dm.track_delete(&pid, 0, 3, "A", "");
-            }
-            let mut ids2 = seeded_id_gen(&doc, &c);
-            let chid2;
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids2,
-                };
-                chid2 = dm.track_delete(&pid, 3, 6, "B", "");
-            }
-            assert_ne!(
-                chid, chid2,
-                "second change id must not collide with the first"
-            );
-            let snap = materialize(&doc, &c);
-            assert_eq!(
-                snap.changes.len(),
-                2,
-                "both changes survive (no overwrite): {:?}",
-                snap.changes
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn bookmarks_anchor_cross_references_and_converge() {
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (target, src);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                target = dm.insert_block(None, "paragraph");
-                dm.splice_text(&target, 0, 0, "the intro section");
-                dm.add_bookmark(&target, 4, 9, "intro");
-                src = dm.insert_block(Some(&target), "paragraph");
-                dm.splice_text(&src, 0, 0, "see above");
-                dm.add_cross_ref(&src, 4, 9, "intro");
-            }
-            let tb = materialize_block(&doc, &c.blocks, &target);
-            let bm = tb
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_BOOKMARK)
-                .expect("bookmark mark present");
-            assert_eq!((bm.start, bm.end), (4, 9));
-            assert_eq!(bm.value, crate::document::MarkValue::Str("intro".into()));
-            let sb = materialize_block(&doc, &c.blocks, &src);
-            let link = sb
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_LINK)
-                .expect("cross-ref link mark present");
-            assert_eq!((link.start, link.end), (4, 9));
-            assert_eq!(link.value, crate::document::MarkValue::Str("#intro".into()));
-            let snap = materialize(&doc, &c);
-            assert_eq!(snap.bookmarks.len(), 1);
-            assert_eq!(snap.bookmarks[0].name, "intro");
-            assert_eq!(snap.bookmarks[0].range, (target, 4, 9));
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (h, p);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                h = dm.insert_block(None, "heading");
-                dm.set_attr(&h, "level", 1i64);
-                dm.splice_text(&h, 0, 0, "Title");
-                p = dm.insert_block(Some(&h), "paragraph");
-                dm.splice_text(&p, 0, 0, "abc");
-                // A point bookmark at idx 1 (start == end) widens to one character.
-                dm.add_bookmark(&p, 1, 1, "pt");
-                dm.add_cross_ref(&p, 0, 3, &heading_ref_id(&h));
-            }
-            let snap = materialize(&doc, &c);
-            let pt = snap
-                .bookmarks
-                .iter()
-                .find(|b| b.name == "pt")
-                .expect("point bookmark present");
-            assert_eq!(
-                (pt.range.1, pt.range.2),
-                (1, 2),
-                "point bookmark widened to one char"
-            );
-            let link = snap
-                .blocks
-                .iter()
-                .find(|b| b.text == "abc")
-                .unwrap()
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_LINK)
-                .unwrap()
-                .clone();
-            assert_eq!(
-                link.value,
-                crate::document::MarkValue::Str(format!("#{HEADING_REF_PREFIX}{h}"))
-            );
-        }
-        {
-            // Two replicas each add a bookmark to the same document; after merge both converge with
-            // both bookmarks present.
-            let mut a = crate::Document::new();
-            let p = a.insert_block(None, "paragraph");
-            a.splice_text(&p, 0, 0, "shared base text");
-            let mut b = a.fork();
-            a.add_bookmark(&p, 0, 6, "first");
-            b.add_bookmark(&p, 7, 11, "second");
-            a.merge(&mut b);
-            b.merge(&mut a);
-            assert_eq!(
-                a.materialize(),
-                b.materialize(),
-                "replicas converge with bookmarks"
-            );
-            assert_eq!(
-                a.materialize().bookmarks.len(),
-                2,
-                "both bookmarks present after merge"
-            );
-        }
-    }
-
-    #[test]
-    fn regions_clear_and_requested_blocks_materialize_faithfully() {
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                let a = dm.insert_block_in(Region::Header, None, "paragraph");
-                dm.splice_text_in(Region::Header, &a, 0, 0, "one");
-                dm.clear_region(Region::Header);
-            }
-            assert!(
-                materialize_region(&doc, &c, Region::Header).is_empty(),
-                "header cleared"
-            );
-        }
-        {
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-            let (first, middle, last);
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                first = dm.insert_block(None, "paragraph");
-                dm.splice_text(&first, 0, 0, "first");
-                middle = dm.insert_block(Some(&first), "paragraph");
-                dm.splice_text(&middle, 0, 0, "middle");
-                last = dm.insert_block(Some(&middle), "heading");
-                dm.splice_text(&last, 0, 0, "last");
-                dm.set_attr(&last, "level", 2_i64);
-                dm.add_mark(&last, 0, 4, "strong", true);
-            }
-
-            let requested = vec![last.clone(), first.clone(), "deleted-remotely".into()];
-            let scans_before = ordered_keys_scan_count();
-            let views = materialize_blocks(&doc, &c, &requested);
-
-            assert_eq!(ordered_keys_scan_count(), scans_before, "no body scan");
-            assert_eq!(
-                views.iter().map(|b| &b.id).collect::<Vec<_>>(),
-                vec![&last, &first]
-            );
-            assert_eq!(views[0].kind, "heading");
-            assert_eq!(views[0].text, "last");
-            assert_eq!(views[0].attrs.get("level"), Some(&AttrVal::Int(2)));
-            assert!(
-                views[0]
-                    .marks
-                    .iter()
-                    .any(|m| m.name == "strong" && m.start == 0 && m.end == 4)
-            );
-            assert_eq!(views[1].text, "first");
-        }
+                .any(|m| m.name == "strong" && m.start == 0 && m.end == 4)
+        );
+        assert_eq!(views[1].text, "first");
     }
 }
 
 #[cfg(test)]
-mod preserved_tests {
+mod region_flows {
     use super::*;
-    use automerge::{AutoCommit, ROOT};
+    use crate::Document;
 
-    fn new_doc() -> (AutoCommit, Containers, IdGen) {
-        let mut doc = AutoCommit::new();
-        let c = init(&mut doc, &ROOT);
-        let ids = IdGen::new(doc.get_actor().to_hex_string());
-        (doc, c, ids)
+    /// A page header, a footer with its page number, a footnote and an endnote, a comment
+    /// with its reply thread, and tracked changes: each anchors its content and reads back
+    /// through the document a person's app sees.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one document holding every region reads as one flow"
+    )]
+    fn every_region_anchors_its_content() {
+        let mut document = Document::new();
+        let body = document.insert_block(None, "paragraph");
+        document.splice_text(&body, 0, 0, "body");
+        let header = document.insert_header_block(None, "paragraph");
+        document.splice_header_text(&header, 0, 0, "Title");
+        let footer = document.insert_footer_block(None, "paragraph");
+        document.splice_footer_text(&footer, 0, 0, "Page ");
+        document.insert_footer_page_number(&footer, 5);
+        assert_eq!(document.blocks_in_order().len(), 1, "body stays its own");
+        let header_view = document.header();
+        assert_eq!(header_view.len(), 1);
+        assert_eq!(header_view[0].text, "Title");
+        let footer_view = document.footer();
+        assert_eq!(footer_view.len(), 1);
+        assert_eq!(footer_view[0].text, format!("Page {FIELD_PLACEHOLDER}"));
+        let field = footer_view[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_FIELD)
+            .expect("page-number field mark present");
+        assert_eq!(
+            (field.start, field.end),
+            (5, 6),
+            "field covers exactly the placeholder"
+        );
+        assert_eq!(
+            field.value,
+            crate::document::MarkValue::Str(FIELD_PAGE_NUMBER.into())
+        );
+        let snapshot = document.materialize();
+        assert_eq!(snapshot.header[0].text, "Title");
+        assert_eq!(snapshot.footer.len(), 1);
+
+        // A footnote and an endnote anchor their content by id.
+        let noted = document.insert_block(None, "paragraph");
+        document.splice_text(&noted, 0, 0, "see ref");
+        let footnote = document.insert_footnote(&noted, 4);
+        let note_block = document
+            .insert_note_block(&footnote, None, "paragraph")
+            .unwrap();
+        document.splice_note_text(&footnote, &note_block, 0, 0, "the note");
+        let note_view = document
+            .materialize()
+            .blocks
+            .iter()
+            .find(|b| b.text == format!("see {FIELD_PLACEHOLDER}ref"))
+            .cloned()
+            .expect("the paragraph reads with its placeholder");
+        let marker = note_view
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_NOTE_REF)
+            .expect("note-ref mark present");
+        assert_eq!((marker.start, marker.end), (4, 5));
+        assert_eq!(
+            marker.value,
+            crate::document::MarkValue::Str(footnote.clone())
+        );
+        assert_eq!(document.note_kind(&footnote), Some(NoteKind::Footnote));
+        assert_eq!(document.note_blocks(&footnote)[0].text, "the note");
+        let snapshot = document.materialize();
+        assert_eq!(snapshot.notes.len(), 1);
+        assert_eq!(snapshot.notes[0].kind, "footnote");
+        assert_eq!(snapshot.notes[0].blocks[0].text, "the note");
+
+        // A comment anchors its range, and its replies thread in canonical order however
+        // they arrive; a comment with no replies reads as having none.
+        let commented = document.insert_block(None, "paragraph");
+        document.splice_text(&commented, 0, 0, "please fix this word");
+        let comment = document.add_comment(&commented, 11, 20, "Ada", "note: fix");
+        assert!(
+            document.comment_replies(&comment).is_empty(),
+            "a comment carries no replies until one is added"
+        );
+        let comment_view = document
+            .materialize()
+            .blocks
+            .iter()
+            .find(|b| b.text == "please fix this word")
+            .cloned()
+            .unwrap();
+        let marker = comment_view
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_COMMENT)
+            .expect("comment mark present");
+        assert_eq!((marker.start, marker.end), (11, 20));
+        assert_eq!(
+            marker.value,
+            crate::document::MarkValue::Str(comment.clone())
+        );
+        assert_eq!(document.comment_author(&comment).as_deref(), Some("Ada"));
+        assert_eq!(document.comment_blocks(&comment)[0].text, "note: fix");
+        let snapshot = document.materialize();
+        assert_eq!(snapshot.comments.len(), 1);
+        assert_eq!(snapshot.comments[0].author, "Ada");
+        assert_eq!(snapshot.comments[0].blocks[0].text, "note: fix");
+        assert_eq!(
+            snapshot.comments[0].range,
+            Some((commented.clone(), 11, 20))
+        );
+
+        let first_reply = document
+            .add_comment_reply(&comment, "Bea", "2026-09-07", "First reply")
+            .expect("parent comment exists");
+        let second_reply = document
+            .add_comment_reply(&comment, "Cy", "2026-09-08", "Second reply")
+            .expect("parent comment exists");
+        let replies = document.comment_replies(&comment);
+        let mut canonical = vec![first_reply.clone(), second_reply.clone()];
+        canonical.sort();
+        assert_eq!(
+            replies.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+            canonical,
+            "reply ids are sorted canonically rather than by merge arrival"
+        );
+        for (id, text) in [
+            (&first_reply, "First reply"),
+            (&second_reply, "Second reply"),
+        ] {
+            let reply = replies
+                .iter()
+                .find(|r| &r.id == id)
+                .expect("reply present by id");
+            assert_eq!(reply.blocks[0].text, text);
+        }
+        let snapshot_view = document
+            .materialize()
+            .comments
+            .into_iter()
+            .find(|c| c.id == comment)
+            .unwrap();
+        assert_eq!(
+            snapshot_view.replies, replies,
+            "a comment's replies read the same alone and in the full list"
+        );
+        let bytes = document.save();
+        let reloaded = Document::load(&bytes).unwrap();
+        assert_eq!(
+            reloaded
+                .materialize()
+                .comments
+                .into_iter()
+                .find(|c| c.id == comment)
+                .unwrap()
+                .replies,
+            replies,
+            "the thread survives a reload unchanged"
+        );
+
+        // Tracked insert and delete: the inserted text is content, the deleted text is
+        // retained, and accepting keeps or removes each.
+        let tracked = document.insert_block(None, "paragraph");
+        document.splice_text(&tracked, 0, 0, "hello world");
+        let insertion = document.track_insert(&tracked, 5, " there", "Ada", "2021-01-02");
+        let deletion = document.track_delete(&tracked, 12, 17, "Bob", "2021-03-04");
+        let tracked_view = document
+            .materialize()
+            .blocks
+            .into_iter()
+            .find(|b| b.id == tracked)
+            .unwrap();
+        assert_eq!(
+            tracked_view.text, "hello there world",
+            "inserted text is real content, deletion retained"
+        );
+        let ins_mark = tracked_view
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_INS)
+            .expect("ins mark present");
+        assert_eq!(
+            (ins_mark.start, ins_mark.end),
+            (5, 11),
+            "ins covers ' there'"
+        );
+        assert_eq!(
+            ins_mark.value,
+            crate::document::MarkValue::Str(insertion.clone())
+        );
+        let del_mark = tracked_view
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_DEL)
+            .expect("del mark present");
+        assert_eq!(
+            (del_mark.start, del_mark.end),
+            (12, 17),
+            "del covers 'world'"
+        );
+        assert_eq!(
+            del_mark.value,
+            crate::document::MarkValue::Str(deletion.clone())
+        );
+        assert_eq!(
+            document.change_kind(&insertion),
+            Some(crate::snapshot::ChangeKind::Ins)
+        );
+        assert_eq!(
+            document.change_kind(&deletion),
+            Some(crate::snapshot::ChangeKind::Del)
+        );
+        assert_eq!(document.change_author(&insertion).as_deref(), Some("Ada"));
+        assert_eq!(document.change_author(&deletion).as_deref(), Some("Bob"));
+        assert_eq!(
+            document.change_date(&deletion).as_deref(),
+            Some("2021-03-04")
+        );
+        assert_eq!(
+            document.change_range(&insertion),
+            Some((tracked.clone(), 5, 11))
+        );
+        let snapshot = document.materialize();
+        assert_eq!(snapshot.changes.len(), 2);
+        let ins_view = snapshot.changes.iter().find(|c| c.id == insertion).unwrap();
+        assert_eq!(ins_view.kind, crate::snapshot::ChangeKind::Ins);
+        assert_eq!(ins_view.range, Some((tracked.clone(), 5, 11)));
+        let del_view = snapshot.changes.iter().find(|c| c.id == deletion).unwrap();
+        assert_eq!(del_view.kind, crate::snapshot::ChangeKind::Del);
+        assert_eq!(del_view.range, Some((tracked, 12, 17)));
     }
+
+    /// Several comment threads whose replies arrive interleaved: each comment keeps its
+    /// own replies, in the order they were written, and reads the same alone as in the
+    /// full list.
+    #[test]
+    fn comment_replies_stay_with_their_comment() {
+        let mut document = Document::new();
+        // Several threads with replies arriving interleaved: each comment's replies read
+        // the same alone as in the full list, in the order they were written.
+        let threaded = document.insert_block(None, "paragraph");
+        document.splice_text(&threaded, 0, 0, "one two three four five");
+        let mut threads = Vec::new();
+        for (index, start) in [0usize, 4, 8, 14].into_iter().enumerate() {
+            let thread = document.add_comment(&threaded, start, start + 3, "Ada", "note");
+            for n in 0..(3 - index.min(3)) {
+                document
+                    .add_comment_reply(&thread, "Bea", "2026-09-07", &format!("reply {n}"))
+                    .expect("parent comment exists");
+            }
+            threads.push(thread);
+        }
+        document
+            .add_comment_reply(&threads[0], "Cy", "2026-09-08", "late reply")
+            .expect("parent comment exists");
+        let all = document.comment_replies(&threads[0]);
+        assert_eq!(all.len(), 4, "three replies and one written late: {all:?}");
+        let counts: Vec<usize> = threads
+            .iter()
+            .map(|id| document.comment_replies(id).len())
+            .collect();
+        assert_eq!(counts, vec![4, 2, 1, 0], "replies stay with their comment");
+        let viewed = document.materialize().comments;
+        assert_eq!(viewed.len(), threads.len());
+        for view in &viewed {
+            assert_eq!(
+                view.replies,
+                document.comment_replies(&view.id),
+                "a comment's replies read the same alone and in the full list"
+            );
+        }
+    }
+
+    /// Accepting and rejecting a tracked insertion or deletion each means its own thing:
+    /// accepting an insertion keeps the text, accepting a deletion removes it, and
+    /// rejecting either returns the text to what it was.
+    #[test]
+    fn accepting_and_rejecting_a_change_each_do_what_they_say() {
+        let mut document = Document::new();
+        let accept_insert = document.insert_block(None, "paragraph");
+        document.splice_text(&accept_insert, 0, 0, "ab");
+        let insertion = document.track_insert(&accept_insert, 2, "cd", "A", "");
+        document.accept_change(&insertion);
+        let accepted = document
+            .materialize()
+            .blocks
+            .into_iter()
+            .find(|b| b.id == accept_insert)
+            .unwrap();
+        assert_eq!(accepted.text, "abcd", "accepted insertion keeps the text");
+        assert!(
+            accepted.marks.iter().all(|m| m.name != MARK_INS),
+            "ins mark dropped on accept"
+        );
+        assert!(
+            document.change_ids().is_empty(),
+            "change record removed on accept"
+        );
+
+        let mut document = Document::new();
+        let accept_delete = document.insert_block(None, "paragraph");
+        document.splice_text(&accept_delete, 0, 0, "keep DROP end");
+        let deletion = document.track_delete(&accept_delete, 5, 9, "A", "");
+        document.accept_change(&deletion);
+        let accepted = document
+            .materialize()
+            .blocks
+            .into_iter()
+            .find(|b| b.id == accept_delete)
+            .unwrap();
+        assert_eq!(
+            accepted.text, "keep  end",
+            "accepted deletion removes the struck text"
+        );
+        assert!(
+            accepted.marks.iter().all(|m| m.name != MARK_DEL),
+            "del mark gone with the text"
+        );
+        assert!(
+            document.change_ids().is_empty(),
+            "change record removed on accept"
+        );
+
+        let mut document = Document::new();
+        let rejected = document.insert_block(None, "paragraph");
+        document.splice_text(&rejected, 0, 0, "abYZ");
+        let insertion = document.track_insert(&rejected, 4, "QQ", "A", "");
+        document.reject_change(&insertion);
+        let deletion = document.track_delete(&rejected, 2, 4, "A", "");
+        document.reject_change(&deletion);
+        let after = document
+            .materialize()
+            .blocks
+            .into_iter()
+            .find(|b| b.id == rejected)
+            .unwrap();
+        assert_eq!(
+            after.text, "abYZ",
+            "reject-ins removed inserted text; reject-del kept struck text"
+        );
+        assert!(
+            after
+                .marks
+                .iter()
+                .all(|m| m.name != MARK_INS && m.name != MARK_DEL),
+            "both marks dropped"
+        );
+        assert!(document.change_ids().is_empty(), "both records removed");
+    }
+
+    /// Two replicas that each add a page header keep both after merging.
+    #[test]
+    fn concurrent_headers_on_two_replicas_both_survive() {
+        for _ in 0..32 {
+            let mut a = Document::new();
+            let mut b = Document::new();
+            let left = a.insert_header_block(None, "paragraph");
+            a.splice_header_text(&left, 0, 0, "left");
+            let right = b.insert_header_block(None, "paragraph");
+            b.splice_header_text(&right, 0, 0, "right");
+            a.merge(&mut b);
+            let texts: Vec<String> = a.header().into_iter().map(|b| b.text).collect();
+            assert!(
+                texts.iter().any(|t| t == "left") && texts.iter().any(|t| t == "right"),
+                "both replicas' headers survive the merge; got {texts:?}"
+            );
+        }
+    }
+
+    /// A bookmark anchors a cross-reference, a point bookmark widens to the character it
+    /// stands at, a heading's own target reads as a heading reference, and two replicas
+    /// that each add one converge on both.
+    #[test]
+    fn bookmarks_anchor_cross_references_and_converge() {
+        let mut document = Document::new();
+        let target = document.insert_block(None, "paragraph");
+        document.splice_text(&target, 0, 0, "the intro section");
+        document.add_bookmark(&target, 4, 9, "intro");
+        let source = document.insert_block(Some(&target), "paragraph");
+        document.splice_text(&source, 0, 0, "see above");
+        document.add_cross_ref(&source, 4, 9, "intro");
+        let target_view = document
+            .materialize()
+            .blocks
+            .into_iter()
+            .find(|b| b.id == target)
+            .unwrap();
+        let bookmark = target_view
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_BOOKMARK)
+            .expect("bookmark mark present");
+        assert_eq!((bookmark.start, bookmark.end), (4, 9));
+        assert_eq!(
+            bookmark.value,
+            crate::document::MarkValue::Str("intro".into())
+        );
+        let source_view = document
+            .materialize()
+            .blocks
+            .into_iter()
+            .find(|b| b.id == source)
+            .unwrap();
+        let link = source_view
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_LINK)
+            .expect("cross-ref link mark present");
+        assert_eq!((link.start, link.end), (4, 9));
+        assert_eq!(link.value, crate::document::MarkValue::Str("#intro".into()));
+        let snapshot = document.materialize();
+        assert_eq!(snapshot.bookmarks.len(), 1);
+        assert_eq!(snapshot.bookmarks[0].name, "intro");
+        assert_eq!(snapshot.bookmarks[0].range, (target.clone(), 4, 9));
+
+        let heading = document.insert_block(None, "heading");
+        document.as_mut().set_attr(&heading, "level", 1i64);
+        document.splice_text(&heading, 0, 0, "Title");
+        let paragraph = document.insert_block(Some(&heading), "paragraph");
+        document.splice_text(&paragraph, 0, 0, "abc");
+        document.add_bookmark(&paragraph, 1, 1, "pt");
+        document.add_cross_ref(&paragraph, 0, 3, &heading_ref_id(&heading));
+        let snapshot = document.materialize();
+        let point = snapshot
+            .bookmarks
+            .iter()
+            .find(|b| b.name == "pt")
+            .expect("point bookmark present");
+        assert_eq!(
+            (point.range.1, point.range.2),
+            (1, 2),
+            "point bookmark widened to one char"
+        );
+        let link = snapshot
+            .blocks
+            .iter()
+            .find(|b| b.text == "abc")
+            .unwrap()
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_LINK)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            link.value,
+            crate::document::MarkValue::Str(format!("#{HEADING_REF_PREFIX}{heading}"))
+        );
+
+        let mut a = Document::new();
+        let shared = a.insert_block(None, "paragraph");
+        a.splice_text(&shared, 0, 0, "shared base text");
+        let mut b = a.fork();
+        a.add_bookmark(&shared, 0, 6, "first");
+        b.add_bookmark(&shared, 7, 11, "second");
+        a.merge(&mut b);
+        b.merge(&mut a);
+        assert_eq!(
+            a.materialize(),
+            b.materialize(),
+            "replicas converge with bookmarks"
+        );
+        assert_eq!(
+            a.materialize().bookmarks.len(),
+            2,
+            "both bookmarks present after merge"
+        );
+    }
+
+    /// Clearing a region empties it and leaves the body alone.
+    #[test]
+    fn clearing_a_region_empties_it() {
+        let mut document = Document::new();
+        let body = document.insert_block(None, "paragraph");
+        document.splice_text(&body, 0, 0, "body");
+        let header = document.insert_header_block(None, "paragraph");
+        document.splice_header_text(&header, 0, 0, "one");
+        document.as_mut().clear_region(Region::Header);
+        assert!(document.header().is_empty(), "header cleared");
+        assert_eq!(document.blocks_in_order(), vec![body], "body untouched");
+    }
+}
+
+#[cfg(test)]
+mod preserved_part_flows {
+    use super::*;
+    use crate::Document;
 
     /// A `styles.xml`-shaped part with two independent top-level style atoms: the canonical shape
     /// of two unmodeled regions in one part.
@@ -4600,157 +4425,6 @@ mod preserved_tests {
         vec![TWO_STYLE_PART[..at].to_vec(), TWO_STYLE_PART[at..].to_vec()]
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn preserved_parts_round_trip_merge_per_atom_and_never_reuse_ids() {
-        {
-            let (mut doc, c, mut ids) = new_doc();
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.set_preserved_atoms("odt/part/styles.xml", &two_style_atoms());
-            }
-            let got =
-                preserved_part(&doc, &c, "odt/part/styles.xml", &tilo_content::NoContent).unwrap();
-            assert_eq!(got, TWO_STYLE_PART, "segmented part re-emits verbatim");
-            let parts = preserved_parts(&doc, &c, &tilo_content::NoContent);
-            let p = parts
-                .iter()
-                .find(|(k, _)| k == "odt/part/styles.xml")
-                .unwrap();
-            assert_eq!(p.1, TWO_STYLE_PART);
-            assert!(preserved_atoms(&doc, &c, "odt/part/styles.xml").len() >= 2);
-        }
-        // The core win: two replicas import the same part, each rewrites a different unmodeled
-        // atom, then merge, and both edits survive as independent automerge objects.
-        {
-            let (mut doc, c, mut ids) = new_doc();
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.set_preserved_atoms("odt/part/styles.xml", &two_style_atoms());
-            }
-            doc.commit();
-
-            // Fork into replica B (distinct actor); A and B share the same per-atom object ids from
-            // the common ancestor.
-            let mut doc_b = AutoCommit::load(&doc.save()).unwrap();
-            doc_b.set_actor(automerge::ActorId::random());
-            let c_b = open(&doc_b, &ROOT).unwrap();
-
-            // Replica A rewrites ONLY the alpha atom; replica B rewrites ONLY bravo.
-            let atoms_a = preserved_atoms(&doc, &c, "odt/part/styles.xml");
-            let (id_alpha, cur_alpha) = find_atom(&atoms_a, b"alpha");
-            let (id_bravo, cur_bravo) = find_atom(&atoms_a, b"bravo");
-            let atoms_b = preserved_atoms(&doc_b, &c_b, "odt/part/styles.xml");
-            assert!(
-                atoms_b.iter().any(|(id, _)| id == &id_alpha)
-                    && atoms_b.iter().any(|(id, _)| id == &id_bravo),
-                "fork shares the same stable atom ids: A={atoms_a:?} B={atoms_b:?}"
-            );
-
-            let new_alpha = edit_atom(&cur_alpha, "alpha", "ALPHA-EDITED");
-            let new_bravo = edit_atom(&cur_bravo, "bravo", "BRAVO-EDITED");
-            {
-                let mut dm = DocMut {
-                    doc: &mut doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.set_preserved_atom_bytes("odt/part/styles.xml", &id_alpha, &new_alpha);
-            }
-            doc.commit();
-            {
-                let mut ids_b = IdGen::new(doc_b.get_actor().to_hex_string());
-                let mut dm_b = DocMut {
-                    doc: &mut doc_b,
-                    c: &c_b,
-                    ids: &mut ids_b,
-                };
-                dm_b.set_preserved_atom_bytes("odt/part/styles.xml", &id_bravo, &new_bravo);
-            }
-            doc_b.commit();
-
-            let merged_a = merge_into(&mut doc, &mut doc_b);
-            let merged_b = merge_into(&mut doc_b, &mut doc);
-            doc = merged_a;
-            doc_b = merged_b;
-            let c = open(&doc, &ROOT).unwrap();
-            let c_b = open(&doc_b, &ROOT).unwrap();
-
-            // BOTH edits survive on BOTH replicas — this is what clobbered before.
-            for (d, cc, who) in [(&doc, &c, "A"), (&doc_b, &c_b, "B")] {
-                let merged =
-                    preserved_part(d, cc, "odt/part/styles.xml", &tilo_content::NoContent).unwrap();
-                let txt = String::from_utf8_lossy(&merged);
-                assert!(
-                    txt.contains("ALPHA-EDITED"),
-                    "replica {who} kept A's edit: {txt}"
-                );
-                assert!(
-                    txt.contains("BRAVO-EDITED"),
-                    "replica {who} kept B's edit: {txt}"
-                );
-                // Source order is preserved (alpha before bravo) and the leading
-                // declaration/root-open atom survives untouched.
-                let ai = txt.find("ALPHA-EDITED").unwrap();
-                let bi = txt.find("BRAVO-EDITED").unwrap();
-                assert!(ai < bi, "replica {who} kept atom order");
-                assert!(
-                    txt.contains("<office:styles"),
-                    "replica {who} kept the root open tag"
-                );
-            }
-            // Convergence: both replicas reconstruct identical bytes.
-            assert_eq!(
-                preserved_part(&doc, &c, "odt/part/styles.xml", &tilo_content::NoContent),
-                preserved_part(
-                    &doc_b,
-                    &c_b,
-                    "odt/part/styles.xml",
-                    &tilo_content::NoContent
-                ),
-                "replicas converge on identical reconstructed bytes"
-            );
-        }
-        {
-            let mut ids = IdGen::with_counter("actor".into(), u64::MAX);
-            assert_eq!(ids.try_mint(), Ok("actor.18446744073709551615".into()));
-            assert_eq!(
-                ids.try_mint(),
-                Err(IdGenError::Exhausted {
-                    actor_hex: "actor".into()
-                })
-            );
-        }
-        {
-            use automerge::transaction::Transactable;
-
-            let mut doc = AutoCommit::new();
-            let c = init(&mut doc, &ROOT);
-            let actor = doc.get_actor().to_hex_string();
-            let id = format!("{actor}.{max}", max = u64::MAX);
-            let block = doc.put_object(&c.blocks, id, ObjType::Map).unwrap();
-            doc.put(&block, BLOCK_ORDER, ScalarValue::Bytes(vec![0x80]))
-                .unwrap();
-            assert_eq!(
-                next_counter_for(&doc, &c, &actor),
-                Err(IdGenError::Exhausted { actor_hex: actor })
-            );
-        }
-    }
-
-    /// Read-modify-write the one atom containing `needle` (test fixture helper: the fixture
-    /// guarantees exactly one match), returning its id and current bytes.
     fn find_atom(atoms: &[(String, Vec<u8>)], needle: &[u8]) -> (String, Vec<u8>) {
         atoms
             .iter()
@@ -4765,14 +4439,107 @@ mod preserved_tests {
             .into_bytes()
     }
 
-    /// Merge `src` into `dst` via the low-level Automerge (mirroring `Document::merge`, which
-    /// sidesteps an automerge-0.8 `AutoCommit::merge` patch-log panic), reloaded from the merged
-    /// bytes.
-    fn merge_into(dst: &mut AutoCommit, src: &mut AutoCommit) -> AutoCommit {
-        let mut a = automerge::Automerge::load(&dst.save()).unwrap();
-        let mut b = automerge::Automerge::load(&src.save()).unwrap();
-        let _ = a.merge(&mut b);
-        AutoCommit::load(&a.save()).unwrap()
+    /// Unmodeled parts are kept per atom: a part set from atoms re-emits verbatim, and two
+    /// replicas that each rewrite a different atom keep both edits, in order, when they
+    /// merge.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one part edited on two replicas reads as one flow"
+    )]
+    fn preserved_parts_round_trip_and_merge_per_atom() {
+        let mut document = Document::new();
+        document
+            .as_mut()
+            .set_preserved_atoms("odt/part/styles.xml", &two_style_atoms());
+        {
+            let reference = document.as_ref();
+            assert_eq!(
+                preserved_part(
+                    reference.doc,
+                    reference.c,
+                    "odt/part/styles.xml",
+                    &tilo_content::NoContent
+                )
+                .unwrap(),
+                TWO_STYLE_PART,
+                "segmented part re-emits verbatim"
+            );
+            let parts = preserved_parts(reference.doc, reference.c, &tilo_content::NoContent);
+            let part = parts
+                .iter()
+                .find(|(k, _)| k == "odt/part/styles.xml")
+                .unwrap();
+            assert_eq!(part.1, TWO_STYLE_PART);
+            assert!(preserved_atoms(reference.doc, reference.c, "odt/part/styles.xml").len() >= 2);
+        }
+
+        let mut replica_b = document.fork();
+        let atoms = preserved_atoms(
+            document.as_ref().doc,
+            document.as_ref().c,
+            "odt/part/styles.xml",
+        );
+        let (id_alpha, current_alpha) = find_atom(&atoms, b"alpha");
+        let (id_bravo, current_bravo) = find_atom(&atoms, b"bravo");
+        let other = replica_b.as_ref();
+        let atoms_b = preserved_atoms(other.doc, other.c, "odt/part/styles.xml");
+        assert!(
+            atoms_b.iter().any(|(id, _)| id == &id_alpha)
+                && atoms_b.iter().any(|(id, _)| id == &id_bravo),
+            "a fork shares the same stable atom ids: A={atoms:?} B={atoms_b:?}"
+        );
+        let new_alpha = edit_atom(&current_alpha, "alpha", "ALPHA-EDITED");
+        let new_bravo = edit_atom(&current_bravo, "bravo", "BRAVO-EDITED");
+        document
+            .as_mut()
+            .set_preserved_atom_bytes("odt/part/styles.xml", &id_alpha, &new_alpha);
+        replica_b
+            .as_mut()
+            .set_preserved_atom_bytes("odt/part/styles.xml", &id_bravo, &new_bravo);
+
+        document.merge(&mut replica_b);
+        replica_b.merge(&mut document);
+        for (replica, who) in [(&document, "A"), (&replica_b, "B")] {
+            let merged = preserved_part(
+                replica.as_ref().doc,
+                replica.as_ref().c,
+                "odt/part/styles.xml",
+                &tilo_content::NoContent,
+            )
+            .unwrap();
+            let text = String::from_utf8_lossy(&merged);
+            assert!(
+                text.contains("ALPHA-EDITED"),
+                "replica {who} kept A's edit: {text}"
+            );
+            assert!(
+                text.contains("BRAVO-EDITED"),
+                "replica {who} kept B's edit: {text}"
+            );
+            let alpha_at = text.find("ALPHA-EDITED").unwrap();
+            let bravo_at = text.find("BRAVO-EDITED").unwrap();
+            assert!(alpha_at < bravo_at, "replica {who} kept atom order");
+            assert!(
+                text.contains("<office:styles"),
+                "replica {who} kept the root open tag"
+            );
+        }
+        assert_eq!(
+            preserved_part(
+                document.as_ref().doc,
+                document.as_ref().c,
+                "odt/part/styles.xml",
+                &tilo_content::NoContent
+            ),
+            preserved_part(
+                replica_b.as_ref().doc,
+                replica_b.as_ref().c,
+                "odt/part/styles.xml",
+                &tilo_content::NoContent
+            ),
+            "replicas converge on identical reconstructed bytes"
+        );
     }
 }
 
