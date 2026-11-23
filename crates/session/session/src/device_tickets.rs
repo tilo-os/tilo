@@ -180,6 +180,14 @@ impl Issuer for Desktop {
             .unwrap_or_default()
     }
 
+    /// The keys this desktop's root certified here, which go to the person's hosts with their
+    /// workspace list.
+    fn known(&self) -> Vec<DeviceCert> {
+        self.device()
+            .map(|(cert, _)| crate::identity_admin::root_certificates(&cert.user_public_key))
+            .unwrap_or_default()
+    }
+
     /// The fleet store keeps what this desktop's root revoked, which refuses the key here from
     /// then on.
     fn keep_revocation(&self, entry: &tilo_user_identity::RevocationEntry) {

@@ -291,9 +291,7 @@ impl OtherDevices {
             .places
             .devices(workspace)
             .into_iter()
-            .filter(|device| {
-                device.user_public_key == person && device.device_public_key != this
-            })
+            .filter(|device| device.user_public_key == person && device.device_public_key != this)
             .collect()
     }
 }

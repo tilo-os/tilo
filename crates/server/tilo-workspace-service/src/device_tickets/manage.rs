@@ -28,30 +28,39 @@ const REVOKED_LOOK: Duration = Duration::from_millis(250);
 
 impl TicketServer {
     /// The person's devices, as their hosts list them: `{"devices": [FleetDevice]}`, this one
-    /// marked current. A device with none of their hosts yet lists itself.
+    /// marked current. This device and the keys it knows itself ([`Issuer::known`]) are listed
+    /// whether or not a host has them yet.
     ///
     /// # Errors
     /// This device has no identity yet, or none of the person's hosts answered.
     pub async fn list(&self) -> Result<Value, String> {
         let (cert, _) = self.0.issuer.device()?;
+        let this = cert.device_public_key;
         let hosts = self.0.issuer.hosts();
-        let list = if hosts.is_empty() {
-            PersonalList {
-                workspaces: Vec::new(),
-                devices: vec![PersonalDevice {
-                    cert: cert.clone(),
+        let mut list = if hosts.is_empty() {
+            PersonalList::default()
+        } else {
+            read(&hosts).await?
+        };
+        for known in self.0.issuer.known().into_iter().chain([cert]) {
+            let key = known.device_public_key;
+            if !list
+                .devices
+                .iter()
+                .any(|kept| kept.cert.device_public_key == key)
+            {
+                list.devices.push(PersonalDevice {
+                    cert: known,
                     name: None,
                     revoked: false,
                     browser: None,
                     agent: None,
                     last_active_ms: None,
-                    online: true,
-                }],
+                    online: key == this,
+                });
             }
-        } else {
-            read(&hosts).await?
-        };
-        Ok(json!({ "devices": listed(&list, cert.device_public_key) }))
+        }
+        Ok(json!({ "devices": listed(&list, this) }))
     }
 
     /// Call the device `args` names what `name` says, in every list.

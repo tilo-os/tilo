@@ -107,6 +107,12 @@ pub trait Issuer: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// The person's devices this device knows itself, beside the list their hosts keep: the keys
+    /// its root certified here, which a list shows before a host has them. None by default.
+    fn known(&self) -> Vec<DeviceCert> {
+        Vec::new()
+    }
+
     /// Keep `entry`, a revocation the person's root just signed here, where this device keeps
     /// what its root signed: nowhere by default.
     fn keep_revocation(&self, _entry: &tilo_user_identity::RevocationEntry) {}
