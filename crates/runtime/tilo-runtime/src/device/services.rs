@@ -30,11 +30,13 @@ use std::{
     process::{Child, Command},
     sync::{Arc, Mutex},
 };
+use tilo_actions::ActionOutput;
 use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
     RemoteActionTarget, device_agent_id,
+    workspace_invocations::InvocationsQuery as WorkspaceInvocationsQuery,
 };
 use tilo_api::daemon::DaemonPlace;
 use tilo_api::grant_key::GrantKey;
@@ -682,6 +684,7 @@ impl Daemon {
         stage("starting the collaboration broker");
         #[cfg(unix)]
         let shell_links = Arc::default();
+        let invocations: Arc<Invocations> = Arc::default();
         let (policy_origin, broker) = start_broker(
             BrokerParts {
                 root,
@@ -698,12 +701,16 @@ impl Daemon {
             brokers,
             fanout,
         )?;
+        // The device's record of every invocation it was asked for is what the workspace's
+        // dispatch lists: get, cancel and the listing all read the one record.
+        if let Some(broker) = broker.app_action_broker() {
+            broker.state().serve_invocations(Arc::clone(&invocations));
+        }
         // An action an agent makes for the person, which asks for
         // confirmation, is put to them in the runtime's native prompt.
         // Elsewhere nobody here answers, and such an action is refused.
         #[cfg(target_os = "macos")]
         super::confirm::ask_the_person(&broker, &actor, &apps);
-        let invocations: Arc<Invocations> = Arc::default();
         if let Some(key_sessions) = &key_sessions {
             serve_key_sessions(
                 key_sessions,
@@ -1896,7 +1903,58 @@ impl RuntimeActionProvider {
         let query = query.clone();
         let workspace = self.workspace.clone();
         answer.map(move |answer| {
-            answer.map(|page| super::ticket::with_device_actions(page, &query, &workspace))
+            answer.map(|page| {
+                let mut page = super::ticket::with_device_actions(page, &query, &workspace);
+                // The workspace's invocations are published beside its apps, as one more thing
+                // a walk of the workspace finds.
+                if query.provider.is_none() {
+                    page.providers
+                        .push(tilo_actions::remote::workspace_invocations::publisher(
+                            &workspace,
+                        ));
+                }
+                page
+            })
+        })
+    }
+
+    /// `request`, a listing of this workspace's invocations: one page at once, from the device's
+    /// record of each call it was asked for, running nothing.
+    fn invocation_listing(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        if let Some(session) = &self.session
+            && let Err(refusal) = session.check(caller, &self.workspaces)
+        {
+            return Err(refusal.into());
+        }
+        let invocation = request.invocation;
+        let query = match &request.argument {
+            InvokeArgument::None => Ok(WorkspaceInvocationsQuery::default()),
+            InvokeArgument::Json(arguments) => {
+                serde_json::from_value(serde_json::Value::Object(arguments.clone()))
+            }
+            InvokeArgument::Text(_) => serde_json::from_value(serde_json::Value::Null),
+        }
+        .map_err(|error| ActionCallError::InvalidRequest {
+            reason: format!(
+                "a listing of invocations takes {{limit, cursor, by, invocation, status}}: {error}"
+            ),
+        })?;
+        let listed = self
+            .broker
+            .state()
+            .invocation_listing(&self.workspace, caller, &query)?;
+        Ok(InvocationReceipt {
+            invocation,
+            status: ReceiptStatus::Completed {
+                output: ActionOutput {
+                    value: serde_json::to_value(listed).ok(),
+                    resources: Vec::new(),
+                },
+            },
         })
     }
 
@@ -2027,6 +2085,19 @@ impl ActionProvider for RuntimeActionProvider {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        if query.provider.as_deref() == Some(tilo_actions::remote::workspace_invocations::PROVIDER)
+        {
+            if let Some(session) = &self.session
+                && let Err(refusal) = session.check(caller, &self.workspaces)
+            {
+                return Pending::ready(Err(refusal.into()));
+            }
+            return Pending::ready(self.broker.state().invocation_page(
+                &self.workspace,
+                caller,
+                &query,
+            ));
+        }
         if let Some(session) = &self.session {
             // Owner discovery remains the ordinary read path: no per-query
             // identity-store resolution. Opening a result uses retained ownership.
@@ -2088,6 +2159,9 @@ impl ActionProvider for RuntimeActionProvider {
         {
             return tickets.invoke(&request);
         }
+        if tilo_actions::remote::workspace_invocations::is_listing(&request.target) {
+            return Pending::ready(self.invocation_listing(caller, &request));
+        }
         if let Some(answered) = self.invocations.answer(caller, &request) {
             return answered;
         }
@@ -2096,13 +2170,30 @@ impl ActionProvider for RuntimeActionProvider {
                 return Pending::ready(Err(refusal.into()));
             }
             let runs_as = session.acting().clone();
+            let invocation = request.invocation;
             self.invocations.record(
                 caller,
+                &session.acting(),
                 &request,
                 Some(&self.workspace),
                 (Arc::clone(&session.provider), runs_as.clone()),
             );
-            return session.provider.invoke(&runs_as, request);
+            let records = Arc::clone(&self.invocations);
+            return session
+                .provider
+                .invoke(&runs_as, request)
+                .map(move |result| {
+                    // A call the person is asked about goes on and ends once they decide: the
+                    // record says it waits for them, which the listing shows.
+                    if result
+                        .as_ref()
+                        .err()
+                        .is_some_and(ActionCallError::awaits_person)
+                    {
+                        records.note_waiting(&invocation);
+                    }
+                    result
+                });
         }
         Pending::ready(Err(ActionCallError::NotPermitted))
     }

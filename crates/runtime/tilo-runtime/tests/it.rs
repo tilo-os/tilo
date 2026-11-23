@@ -104,6 +104,8 @@ mod hosted_mail_accounts;
 mod hosted_terminal_fresh_tab;
 #[path = "hosted_web_call.rs"]
 mod hosted_web_call;
+#[path = "invocations.rs"]
+mod invocations;
 #[path = "joining.rs"]
 mod joining;
 #[path = "machine_secrets.rs"]

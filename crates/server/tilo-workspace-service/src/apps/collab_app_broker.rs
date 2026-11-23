@@ -88,6 +88,8 @@ mod file_clipboard;
 mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
+mod invocations;
+use tilo_actions::remote::invocation_record;
 mod invoker;
 mod item_use;
 mod kept_document;
@@ -489,6 +491,9 @@ pub struct AppBrokerState {
     /// someone acting for them makes; see [`Self::approval_confirmation`].
     approved_confirmations: Mutex<HashMap<String, Approval>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
+    /// The device's record of the invocations it was asked for, where its embedder
+    /// shares it: what `tilo.invocations` reads and lists here.
+    invocations: std::sync::OnceLock<Arc<invocation_record::Invocations>>,
     invocation_id: AtomicU64,
     services: ProcessServices,
     workers: Mutex<Vec<PendingWorker>>,

@@ -187,6 +187,10 @@ pub struct InvocationsQuery {
     /// step: what taking it back finds it by.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invocation: Option<String>,
+    /// Only the invocations in this status, when it names one: the questions that wait for the
+    /// person are [`InvocationStatus::Waiting`]. Every status otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<InvocationStatus>,
 }
 
 impl InvocationsQuery {

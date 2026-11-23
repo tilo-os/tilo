@@ -1023,6 +1023,14 @@ impl ActionCallError {
         }
     }
 
+    /// Whether this answer says the invocation waits for its person: the call goes on and ends
+    /// once they decide.
+    #[must_use]
+    pub fn awaits_person(&self) -> bool {
+        matches!(self, Self::Refused { reason } if reason == AWAITING_APPROVAL_REASON)
+    }
+
+
     /// Stable machine-readable code.
     #[must_use]
     pub const fn code(&self) -> &'static str {

@@ -30,6 +30,10 @@ pub type Route = (Arc<dyn ActionProvider + Send + Sync>, Caller);
 pub struct Recorded {
     /// Who asked for it.
     pub caller: Caller,
+    /// Who the workspace names as having asked: the same caller, or the agent the person's
+    /// device handed the run to, which the caller alone does not say. Display only; who may
+    /// follow and stop the call is [`Self::caller`].
+    pub asked: Caller,
     pub request: InvokeRequest,
     /// The workspace it acts in, when it acts in one.
     pub workspace: Option<String>,
@@ -40,6 +44,9 @@ pub struct Recorded {
     pub state: Option<InvocationState>,
     /// How often its state was seen to change: what a follower waits past.
     pub changes: u64,
+    /// It was answered as waiting for its person, and has not ended since: the call goes on and
+    /// ends once they decide.
+    pub waiting: bool,
     route: Route,
 }
 
@@ -58,11 +65,13 @@ impl Invocations {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Record that `caller` asked for `request` in `workspace`, running at `route`. Recorded
-    /// again, the invocation keeps who asked and when, and runs where it was handed on to.
+    /// Record that `caller` asked for `request` in `workspace`, running at `route`, as `asked`
+    /// names the asking. Recorded again, the invocation keeps who asked and when, and runs
+    /// where it was handed on to.
     pub fn record(
         &self,
         caller: &Caller,
+        asked: &Caller,
         request: &InvokeRequest,
         workspace: Option<&str>,
         route: Route,
@@ -70,12 +79,14 @@ impl Invocations {
         let id = request.invocation;
         let recorded = Recorded {
             caller: caller.clone(),
+            asked: asked.clone(),
             request: request.clone(),
             workspace: workspace.map(str::to_owned),
             started_ms: tilo_clock::unix_now_ms(),
             ended_ms: None,
             state: None,
             changes: 0,
+            waiting: false,
             route,
         };
         let mut kept = self.kept();
@@ -108,20 +119,62 @@ impl Invocations {
     /// How `id` stands, asked of the provider it runs at.
     #[must_use]
     pub fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let (provider, runs_as) = self.get(caller, id)?.route;
-        let state = provider.observe(&runs_as, id)?;
-        let mut kept = self.kept();
-        if let Some(recorded) = kept.by_id.get_mut(id) {
-            if recorded.state.as_ref() != Some(&state) {
-                recorded.changes = recorded.changes.saturating_add(1);
-            }
-            if state.update.is_terminal() && recorded.ended_ms.is_none() {
-                recorded.ended_ms = Some(tilo_clock::unix_now_ms());
-            }
-            recorded.state = Some(state.clone());
+        self.get(caller, id)?;
+        self.refreshed(id)?.state
+    }
+
+    /// Every invocation this device was asked for in `workspace`, oldest first, its state asked
+    /// again of the provider it runs at: what a listing of the workspace's invocations reads.
+    ///
+    /// This is the records alone, as the device keeps them. Which of them a caller may read is
+    /// not decided here: the reader of a listing admits its caller and checks each record's
+    /// address against what that caller's grants allow, before it reads this.
+    #[must_use]
+    pub fn listed(&self, workspace: &str) -> Vec<Recorded> {
+        let ids: Vec<InvocationId> = {
+            let kept = self.kept();
+            kept.order
+                .iter()
+                .filter(|id| {
+                    kept.by_id
+                        .get(id)
+                        .is_some_and(|recorded| recorded.workspace.as_deref() == Some(workspace))
+                })
+                .copied()
+                .collect()
+        };
+        ids.iter().filter_map(|id| self.refreshed(id)).collect()
+    }
+
+    /// Note that `id` was answered as waiting for its person: the call goes on and ends once
+    /// they decide.
+    pub fn note_waiting(&self, id: &InvocationId) {
+        if let Some(recorded) = self.kept().by_id.get_mut(id) {
+            recorded.waiting = true;
         }
-        drop(kept);
-        Some(state)
+    }
+
+    /// `id`'s record, its state asked of the provider it runs at and kept.
+    fn refreshed(&self, id: &InvocationId) -> Option<Recorded> {
+        let (provider, runs_as) = {
+            let kept = self.kept();
+            kept.by_id.get(id)?.route.clone()
+        };
+        let state = provider.observe(&runs_as, id);
+        let mut kept = self.kept();
+        let recorded = kept.by_id.get_mut(id)?;
+        if recorded.state.as_ref() != state.as_ref() {
+            recorded.changes = recorded.changes.saturating_add(1);
+        }
+        if state
+            .as_ref()
+            .is_some_and(|state| state.update.is_terminal())
+            && recorded.ended_ms.is_none()
+        {
+            recorded.ended_ms = Some(tilo_clock::unix_now_ms());
+        }
+        recorded.state = state;
+        Some(recorded.clone())
     }
 
     /// What resolves when `id` next changes, at the provider it runs at.
@@ -319,11 +372,12 @@ mod tests {
         let request = request();
         let id = request.invocation;
         let here: Arc<Runs> = Arc::default();
-        invocations.record(&asked, &request, Some("w1"), (here, asked.clone()));
+        invocations.record(&asked, &asked, &request, Some("w1"), (here, asked.clone()));
         // Handed on to the workspace's host, which runs it as the workspace's caller.
         let there: Arc<Runs> = Arc::default();
         let runs_as = Caller::local_agent("host");
         invocations.record(
+            &asked,
             &asked,
             &request,
             Some("w1"),

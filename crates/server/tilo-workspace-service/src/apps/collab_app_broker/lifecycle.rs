@@ -802,6 +802,7 @@ impl AppBrokerState {
                 confirmation_grants: Mutex::new(HashMap::new()),
                 approved_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
+                invocations: std::sync::OnceLock::new(),
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
