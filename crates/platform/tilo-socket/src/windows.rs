@@ -10,27 +10,37 @@
 //! then check the other's token: a server answers only its own account, and
 //! a client talks only to a server of its own account, where Unix compares a
 //! peer's uid.
+//!
+//! Every instance is opened for overlapped I/O, so a read or a write waits
+//! at most its stream's timeout, as a socket's does, and the runtime's
+//! listener takes over the instance this one created.
 use crate::account::{Account, LocalAllocation, attributes};
 use std::ffi::OsStr;
-use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT,
-        GENERIC_READ, GENERIC_WRITE, GetLastError, INVALID_HANDLE_VALUE,
+        ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED,
+        ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE,
+        GetLastError, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
     },
     Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
-        SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+        CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
+        PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
     },
-    System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-        GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-        PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
+    System::{
+        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+        Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
+            GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
+        },
+        Threading::{CreateEventW, INFINITE, WaitForSingleObject},
     },
 };
 
@@ -91,7 +101,12 @@ pub struct Listener {
 #[derive(Clone, Copy, Debug)]
 pub struct SocketAddr;
 
-fn instance(name: &[u16], descriptor: &LocalAllocation, first: bool) -> io::Result<OwnedHandle> {
+/// A new overlapped instance of the pipe `name`; the first one takes the name.
+pub(crate) fn instance(
+    name: &[u16],
+    descriptor: &LocalAllocation,
+    first: bool,
+) -> io::Result<OwnedHandle> {
     let attributes = attributes(descriptor);
     let first = if first {
         FILE_FLAG_FIRST_PIPE_INSTANCE
@@ -102,7 +117,7 @@ fn instance(name: &[u16], descriptor: &LocalAllocation, first: bool) -> io::Resu
     let handle = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | first,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | first,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
             BUFFER,
@@ -145,17 +160,19 @@ impl Listener {
                 Some(pipe) => pipe,
                 None => instance(&self.name, &self.descriptor, false)?,
             };
-            // SAFETY: a live pipe handle, waited on synchronously.
-            if unsafe { ConnectNamedPipe(pipe.as_raw_handle(), std::ptr::null_mut()) } == 0
-                // SAFETY: reads this thread's last error.
-                && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED
-            {
-                return Err(io::Error::last_os_error());
+            // SAFETY: a live pipe handle and the OVERLAPPED the call is waited on with.
+            match overlapped(&pipe, INFINITE, |at| unsafe {
+                ConnectNamedPipe(pipe.as_raw_handle(), at)
+            }) {
+                Ok(_) => {}
+                // A client that connected before the call is connected all the same.
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32) => {}
+                Err(error) => return Err(error),
             }
             // The next client finds an instance waiting while this one is served.
             *next = Some(instance(&self.name, &self.descriptor, false)?);
             if peer_is(pipe.as_raw_handle(), true, &self.account)? {
-                return Ok((Stream(File::from(pipe)), SocketAddr));
+                return Ok((Stream::new(pipe), SocketAddr));
             }
             // SAFETY: a connected pipe handle.
             unsafe { DisconnectNamedPipe(pipe.as_raw_handle()) };
@@ -179,72 +196,199 @@ impl Listener {
     }
 }
 
+/// A read or write bound in milliseconds, `u64::MAX` for none. Every handle
+/// to one connection shares it, as a socket's options are shared.
+#[derive(Debug)]
+struct Timeouts {
+    read: AtomicU64,
+    write: AtomicU64,
+}
+
+const NO_TIMEOUT: u64 = u64::MAX;
+
 /// One end of a connected pipe.
 #[derive(Debug)]
-pub struct Stream(File);
+pub struct Stream {
+    pipe: OwnedHandle,
+    timeouts: Arc<Timeouts>,
+}
+
+/// Run one overlapped call on `pipe` and wait at most `wait_ms` for it; a
+/// call still pending then is cancelled and answers `TimedOut`, unless it
+/// moved bytes before the cancel took.
+fn overlapped(
+    pipe: &OwnedHandle,
+    wait_ms: u32,
+    start: impl FnOnce(*mut OVERLAPPED) -> windows_sys::core::BOOL,
+) -> io::Result<usize> {
+    // SAFETY: an unnamed, manual-reset, unsignalled event.
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: an event CreateEventW just returned, owned from here.
+    let event = unsafe { OwnedHandle::from_raw_handle(event) };
+    // SAFETY: OVERLAPPED is plain data, valid zeroed.
+    let mut call: OVERLAPPED = unsafe { std::mem::zeroed() };
+    call.hEvent = event.as_raw_handle();
+    // SAFETY: reads this thread's last error, right after the call.
+    if start(&raw mut call) == 0 && unsafe { GetLastError() } != ERROR_IO_PENDING {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the event this call signals; then the call's own handle and OVERLAPPED,
+    // which outlive it: GetOverlappedResult waits for a cancelled call to end.
+    unsafe {
+        let timed_out = WaitForSingleObject(event.as_raw_handle(), wait_ms) == WAIT_TIMEOUT;
+        if timed_out {
+            CancelIoEx(pipe.as_raw_handle(), &raw const call);
+        }
+        let mut moved = 0;
+        if GetOverlappedResult(pipe.as_raw_handle(), &raw const call, &raw mut moved, 1) != 0
+            || moved > 0
+        {
+            return Ok(moved as usize);
+        }
+        if timed_out && GetLastError() == ERROR_OPERATION_ABORTED {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the pipe's peer did not answer in time",
+            ));
+        }
+    }
+    Err(io::Error::last_os_error())
+}
+
+fn milliseconds(timeout: Option<Duration>) -> io::Result<u64> {
+    match timeout {
+        None => Ok(NO_TIMEOUT),
+        Some(timeout) if timeout.is_zero() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot set a 0 duration timeout",
+        )),
+        // Rounded up, and kept short of INFINITE.
+        Some(timeout) => Ok(u64::try_from(timeout.as_nanos().div_ceil(1_000_000))
+            .unwrap_or(u64::MAX)
+            .min(u64::from(INFINITE - 1))),
+    }
+}
 
 impl Stream {
-    /// Another handle to the same connection.
+    fn new(pipe: OwnedHandle) -> Self {
+        Self {
+            pipe,
+            timeouts: Arc::new(Timeouts {
+                read: AtomicU64::new(NO_TIMEOUT),
+                write: AtomicU64::new(NO_TIMEOUT),
+            }),
+        }
+    }
+
+    /// Another handle to the same connection, sharing its timeouts.
     ///
     /// # Errors
     /// The handle could not be duplicated.
     pub fn try_clone(&self) -> io::Result<Self> {
-        self.0.try_clone().map(Self)
+        Ok(Self {
+            pipe: self.pipe.try_clone()?,
+            timeouts: Arc::clone(&self.timeouts),
+        })
     }
 
-    /// A pipe opened for synchronous I/O takes no timeout: its peer is this
-    /// account's own process, and a call waits for it as a blocking socket
-    /// without a timeout does. Accepted so a caller bounding a Unix peer needs
-    /// no other path.
+    /// Bound each read: one that waits longer is cancelled and fails with
+    /// `TimedOut`. `None` waits without end.
     ///
     /// # Errors
-    /// Never.
-    pub fn set_read_timeout(&self, _timeout: Option<std::time::Duration>) -> io::Result<()> {
+    /// A zero duration, as a socket refuses it.
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.timeouts
+            .read
+            .store(milliseconds(timeout)?, Ordering::Relaxed);
         Ok(())
     }
 
-    /// As [`Stream::set_read_timeout`].
+    /// Bound each write, as [`Stream::set_read_timeout`] bounds reads.
     ///
     /// # Errors
-    /// Never.
-    pub fn set_write_timeout(&self, _timeout: Option<std::time::Duration>) -> io::Result<()> {
+    /// A zero duration, as a socket refuses it.
+    pub fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.timeouts
+            .write
+            .store(milliseconds(timeout)?, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn wait(bound: &AtomicU64) -> u32 {
+        u32::try_from(bound.load(Ordering::Relaxed)).unwrap_or(INFINITE)
+    }
+
+    fn read_into(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let length = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        // SAFETY: a live pipe handle, and a buffer that outlives the call:
+        // `overlapped` returns only once the call has ended.
+        let read = overlapped(&self.pipe, Self::wait(&self.timeouts.read), |at| unsafe {
+            ReadFile(
+                self.pipe.as_raw_handle(),
+                buf.as_mut_ptr(),
+                length,
+                std::ptr::null_mut(),
+                at,
+            )
+        });
+        match read {
+            // The peer closed its end: the end of the stream, as a socket reads it.
+            Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) => Ok(0),
+            read => read,
+        }
+    }
+
+    fn write_from(&self, buf: &[u8]) -> io::Result<usize> {
+        let length = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        // SAFETY: as `read_into`.
+        overlapped(&self.pipe, Self::wait(&self.timeouts.write), |at| unsafe {
+            WriteFile(
+                self.pipe.as_raw_handle(),
+                buf.as_ptr(),
+                length,
+                std::ptr::null_mut(),
+                at,
+            )
+        })
     }
 }
 
 impl AsRawHandle for Stream {
     fn as_raw_handle(&self) -> RawHandle {
-        self.0.as_raw_handle()
+        self.pipe.as_raw_handle()
     }
 }
 
 impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.read(buf)
+        self.read_into(buf)
     }
 }
 
 impl Read for &Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self.0).read(buf)
+        self.read_into(buf)
     }
 }
 
 impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf)
+        self.write_from(buf)
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        Ok(())
     }
 }
 
 impl Write for &Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (&self.0).write(buf)
+        self.write_from(buf)
     }
     fn flush(&mut self) -> io::Result<()> {
-        (&self.0).flush()
+        Ok(())
     }
 }
 
@@ -261,8 +405,8 @@ pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
     })
 }
 
-/// Open the client end of the pipe `name`, waiting out a busy one.
-pub(crate) fn open(name: &[u16], overlapped: u32) -> io::Result<OwnedHandle> {
+/// Open the overlapped client end of the pipe `name`, waiting out a busy one.
+pub(crate) fn open(name: &[u16]) -> io::Result<OwnedHandle> {
     loop {
         // SAFETY: a NUL-terminated name. Identification only: the server may
         // learn who connects, never act as them.
@@ -273,7 +417,7 @@ pub(crate) fn open(name: &[u16], overlapped: u32) -> io::Result<OwnedHandle> {
                 0,
                 std::ptr::null(),
                 OPEN_EXISTING,
-                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | overlapped,
+                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
                 std::ptr::null_mut(),
             )
         };
@@ -292,14 +436,14 @@ pub(crate) fn open(name: &[u16], overlapped: u32) -> io::Result<OwnedHandle> {
 
 pub(crate) fn connect(path: &Path) -> io::Result<Stream> {
     let account = Account::current()?;
-    let pipe = open(&wide(&pipe_name(&account, path)?), 0)?;
+    let pipe = open(&wide(&pipe_name(&account, path)?))?;
     if !peer_is(pipe.as_raw_handle(), false, &account)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("{}: the pipe is served by another account", path.display()),
         ));
     }
-    Ok(Stream(File::from(pipe)))
+    Ok(Stream::new(pipe))
 }
 
 pub(crate) fn is_bound(path: &Path) -> bool {
@@ -357,6 +501,38 @@ mod tests {
             crate::connect(&path(&dir)).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn a_read_waits_at_most_its_timeout_and_the_stream_goes_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = crate::bind(&path(&dir)).unwrap();
+        let at = path(&dir);
+        let client = std::thread::spawn(move || crate::connect(&at).unwrap());
+        let (mut served, _) = listener.accept().unwrap();
+        let mut client = client.join().unwrap();
+        assert_eq!(
+            client
+                .set_read_timeout(Some(Duration::ZERO))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        client
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let started = std::time::Instant::now();
+        let mut byte = [0];
+        assert_eq!(
+            client.read(&mut byte).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert!(started.elapsed() >= Duration::from_millis(40));
+        served.write_all(&[7]).unwrap();
+        client.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [7]);
+        drop(served);
+        assert_eq!(client.read(&mut byte).unwrap(), 0);
     }
 
     /// Wine lets a second process create a pipe's first instance again: this
