@@ -29,6 +29,10 @@ crate::effects::effect_family!(BluetoothEffect => answer);
 
 crate::area::pane_area! {
     BluetoothArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Bluetooth);
     fn poll(&self) {
         BluetoothArea::poll(self);
     }

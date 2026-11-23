@@ -6,6 +6,26 @@ use std::rc::Rc;
 use crate::categories::Category;
 
 pub trait PaneArea: Any {
+    /// The panes whose page this area fills. The window takes in the work
+    /// of the pane it shows and of an area the person started work in; a
+    /// probe or a read on a pane nobody looks at waits until it is shown.
+    fn serving(&self) -> &'static [Category] {
+        &[]
+    }
+
+    /// Whether this area fills the pane `category`.
+    fn serves(&self, category: Category) -> bool {
+        self.serving().contains(&category)
+    }
+
+    /// Whether the window publishes this area's rows whatever pane it shows
+    /// ([`crate::effects::rows`]): the rows of an area not yet shown are read
+    /// and kept current for agents and search, so its work is taken in as it
+    /// lands.
+    fn rows_published(&self) -> bool {
+        false
+    }
+
     fn poll(&self) {}
 
     fn warm(&self) {}
@@ -65,6 +85,17 @@ pub trait PaneQuery {
 
     fn query_closed(&self);
 }
+
+/// The panes an area fills, inside [`pane_area!`]: `serves!(Sound, Speakers);`.
+#[macro_export]
+macro_rules! serves {
+    ($($category:ident),+ $(,)?) => {
+        fn serving(&self) -> &'static [$crate::categories::Category] {
+            &[$($crate::categories::Category::$category),+]
+        }
+    };
+}
+pub use crate::serves;
 
 #[macro_export]
 macro_rules! pane_area {

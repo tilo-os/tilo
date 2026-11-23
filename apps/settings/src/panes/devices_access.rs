@@ -127,6 +127,10 @@ impl DevicesAccessEffect {
 
 crate::area::pane_area! {
     DevicesAccessArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(DevicesAccess);
     fn poll(&self) {
         DevicesAccessArea::poll(self);
     }

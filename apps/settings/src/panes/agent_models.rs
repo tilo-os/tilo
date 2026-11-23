@@ -49,6 +49,10 @@ crate::effects::effect_family!(AgentModelsEffect => answer);
 
 crate::area::pane_area! {
     AgentModelsArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(AgentModels);
     fn poll(&self) {
         AgentModelsArea::poll(self);
     }

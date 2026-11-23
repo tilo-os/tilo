@@ -35,6 +35,10 @@ crate::effects::effect_family!(DeviceMeshEffect => answer);
 
 crate::area::pane_area! {
     DeviceMeshArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(DeviceMesh);
     fn poll(&self) {
         DeviceMeshArea::poll(self);
     }

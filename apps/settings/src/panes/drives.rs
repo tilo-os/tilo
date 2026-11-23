@@ -33,6 +33,10 @@ crate::effects::effect_family!(DrivesEffect => answer);
 
 crate::area::pane_area! {
     DrivesArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Storage);
     fn poll(&self) {
         DrivesArea::poll(self);
     }

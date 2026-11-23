@@ -326,7 +326,12 @@ impl SettingsApp {
     /// for its area's read, or shows an area's first reading of the device
     /// as on its way.
     pub(crate) fn pane_settling(&self) -> bool {
-        self.pane_waits.get() || self.areas.iter().any(crate::area::PaneArea::first_read)
+        let selected = self.selected();
+        self.pane_waits.get()
+            || self
+                .areas
+                .iter()
+                .any(|area| area.serves(selected) && crate::area::PaneArea::first_read(area))
     }
 
     pub(crate) fn keyboard_partial(&self) -> &ui::LocalState<bool> {

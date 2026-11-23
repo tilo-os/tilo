@@ -39,6 +39,7 @@ crate::effects::effect_family!(StorageEffect => answer);
 
 crate::area::pane_area! {
     StorageArea;
+    crate::area::serves!(Storage);
     fn poll(&self) {
         StorageArea::poll(self);
     }

@@ -226,10 +226,16 @@ impl Chrome {
             notice.expire();
             notice.publish();
         }
-        // Background work an effect started finishes whether or not its pane
-        // is open.
+        // The pane shown takes in its work, and so does an effect the person
+        // started elsewhere (a sound test): it finishes whether or not they
+        // look at it. So do the areas whose rows the window publishes, which
+        // agents and search read without opening them. A probe or a read on
+        // a pane nobody shows waits.
+        let selected = app.selected();
         for area in app.areas().iter() {
-            area.poll();
+            if area.serves(selected) || area.busy() || area.rows_published() {
+                area.poll();
+            }
         }
         // After the first frame, the areas read one at a time until every
         // area's rows are published.
@@ -278,10 +284,12 @@ impl Chrome {
     }
 
     fn next_wake(&self) -> Option<ui::time::Instant> {
+        let selected = self.app.selected();
         let areas = self
             .app
             .areas()
             .iter()
+            .filter(|area| area.serves(selected) || area.busy())
             .filter_map(crate::area::PaneArea::next_wake)
             .min();
         match (areas, self.notice.borrow().deadline()) {
@@ -417,6 +425,19 @@ fn shell(cx: &ViewCx<Settings>, chrome: &Rc<Chrome>) -> NavShell {
         .content(Box::new(content))
 }
 
+/// Whether the window must keep drawing for an area: only work the person started, on the
+/// pane they are looking at, asks animation frames. A probe or a read an area holds in
+/// flight (a device service that never answers, a scan on a pane nobody is looking at) must
+/// not: it would paint the window every frame it can, with nothing changing.
+fn keeps_drawing<'a>(
+    areas: impl IntoIterator<Item = &'a dyn crate::area::PaneArea>,
+    selected: crate::categories::Category,
+) -> bool {
+    areas
+        .into_iter()
+        .any(|area| area.serves(selected) && area.busy())
+}
+
 fn upkeep(cx: &ViewCx<Settings>, chrome: &Rc<Chrome>) -> Upkeep {
     let app = &chrome.app;
     let (synced, waking) = (Rc::clone(chrome), Rc::clone(chrome));
@@ -428,12 +449,14 @@ fn upkeep(cx: &ViewCx<Settings>, chrome: &Rc<Chrome>) -> Upkeep {
     let device = cx.settings::<crate::prefs::AppearanceDevicePrefs>();
     Upkeep::new()
         .syncing(move || synced.sync())
-        .busy(move || busy.areas().iter().any(crate::area::PaneArea::busy))
+        .busy(move || keeps_drawing(busy.areas().iter(), busy.selected()))
         .next_wake(move || waking.next_wake())
         .pending_visual_work(move || {
+            let selected = pending.selected();
             pending.areas().iter().any(|area| {
-                crate::area::PaneArea::first_read(area)
-                    || crate::area::PaneArea::pending_visual_work(area)
+                area.serves(selected)
+                    && (crate::area::PaneArea::first_read(area)
+                        || crate::area::PaneArea::pending_visual_work(area))
             })
         })
         .presenting(move || {
@@ -1299,3 +1322,60 @@ mod tests {
 #[cfg(feature = "tilo-os")]
 #[path = "native_observer_tests.rs"]
 mod native_observer_tests;
+
+#[cfg(test)]
+mod idle_frame_tests {
+    use super::keeps_drawing;
+    use crate::area::PaneArea;
+    use crate::categories::Category;
+    use std::any::Any;
+
+    /// An area whose work runs on its own pane, without the person looking at it.
+    struct Working;
+    impl PaneArea for Working {
+        fn serving(&self) -> &'static [Category] {
+            &[Category::Network]
+        }
+        fn busy(&self) -> bool {
+            true
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    struct Resting;
+    impl PaneArea for Resting {
+        fn serving(&self) -> &'static [Category] {
+            &[Category::Network]
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn work_on_a_pane_nobody_shows_asks_for_no_frames() {
+        let working: Box<dyn PaneArea> = Box::new(Working);
+        assert!(
+            !keeps_drawing(std::iter::once(&*working), Category::Appearance),
+            "work on a pane nobody looks at must not make the window paint"
+        );
+        assert!(
+            keeps_drawing(std::iter::once(&*working), Category::Network),
+            "work on the pane shown keeps the window drawing"
+        );
+        let resting: Box<dyn PaneArea> = Box::new(Resting);
+        assert!(!keeps_drawing(
+            std::iter::once(&*resting),
+            Category::Network
+        ));
+        assert!(!keeps_drawing(std::iter::empty(), Category::Appearance));
+    }
+}

@@ -45,6 +45,10 @@ crate::effects::effect_family!(DisplayEffect => answer);
 
 crate::area::pane_area! {
     DisplayArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Displays);
     fn poll(&self) {
         DisplayArea::poll(self);
     }

@@ -377,6 +377,10 @@ crate::effects::effect_family!(NetworkEffect => answer);
 
 crate::area::pane_area! {
     NetworkArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Network);
     fn poll(&self) {
         NetworkArea::poll(self);
     }
