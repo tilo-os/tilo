@@ -165,6 +165,18 @@ async fn a_device_alone_takes_every_change_to_one_sealed_record_past_its_bound()
         "the history stays within its bound: {}",
         held.len()
     );
+    let kinds: Vec<collab_types::OpKind> = owner
+        .frames(workspace)
+        .iter()
+        .filter_map(|frame| match NeighbourMsg::decode(frame) {
+            Ok(NeighbourMsg::AppDocument { envelope, .. }) => Some(envelope.kind),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        kinds.contains(&collab_types::OpKind::Compaction),
+        "the device compacted its own history: {kinds:?}"
+    );
     let path = joined.path.clone();
     drop(joined.owner);
     let reopened = open_file(&path).unwrap();

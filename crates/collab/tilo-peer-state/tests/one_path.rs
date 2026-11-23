@@ -717,6 +717,19 @@ async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
     let mut here = opened(&owner_b, workspace, &content);
     let b_change = sealed_change(&owner_b, workspace, &b_key, &mut here, "b0");
     sealed_write(&owner_b, workspace, &b_key, &content, &b_change, false).await;
+    // A compacted what it wrote while away.
+    let kinds: Vec<collab_types::OpKind> = owner_a
+        .frames(workspace)
+        .iter()
+        .filter_map(|frame| match NeighbourMsg::decode(frame) {
+            Ok(NeighbourMsg::AppDocument { envelope, .. }) => Some(envelope.kind),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        kinds.contains(&collab_types::OpKind::Compaction),
+        "the device that went away compacted its history: {kinds:?}"
+    );
     // They reconnect: each carries what it wrote to the other.
     carry(
         &owner_a,
