@@ -12,9 +12,15 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::time::Duration;
 
 use app_cli::install::{DownloadProgress, staging_dir, tilo_install_bin};
 use clap::Args;
+
+/// How long `tilo-install check` may take on one file, and the most of its answer kept: the
+/// verdict is a short JSON object, and a wedged checker is not left holding the caller.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(300);
+const CHECK_OUTPUT: usize = 8 * 1024 * 1024;
 
 /// How a package file is accepted; shared by `install` and `update --from`.
 #[derive(Debug, Args, Clone, Default)]
@@ -138,11 +144,9 @@ fn fetch(source: &str, on_progress: &mut dyn FnMut(DownloadProgress)) -> Result<
 
 /// Ask `tilo-install` who signed `path`.
 fn check(path: &Path, trust: &FileTrust) -> Result<Verdict, String> {
-    let output = Command::new(tilo_install_bin())
-        .arg("check")
-        .arg(path)
-        .args(trust.check_args())
-        .output()
+    let mut command = Command::new(tilo_install_bin());
+    command.arg("check").arg(path).args(trust.check_args());
+    let output = bounded_command::run_prepared(command, None, CHECK_OUTPUT, CHECK_TIMEOUT)
         .map_err(|error| format!("could not run tilo-install: {error}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

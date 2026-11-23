@@ -17,6 +17,8 @@ app-registry = { path = "../app-registry" }
 app-cli = { path = "../../os/app-cli" }
 runtime-portal = { path = "../runtime-portal", default-features = false }
 tilo-clock = { path = "../../platform/tilo-clock" }
+# Flatpak is driven through its command line, whose output and deadline are bounded.
+bounded-command = { path = "../../platform/bounded-command" }
 tilo-paths.workspace = true
 semver.workspace = true
 serde.workspace = true

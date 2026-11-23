@@ -9,12 +9,21 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 /// The most bytes a flatpak command's answer is kept to: a catalogue of one remote is the
-/// largest answer, and one that runs past this is cut rather than held whole.
+/// largest answer, and one that runs past this is refused rather than held whole.
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
+
+/// How long a change to the system installation may take: an install fetches and unpacks a
+/// whole app, and a slow remote is a reason to wait, not to hang.
+const CHANGE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How long reading the system installation may take: listing what is there is quick, and a
+/// flatpak that does not answer is not left holding the caller's thread.
+const READ_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// An app installed in the device's system Flatpak installation.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,15 +310,18 @@ impl Flatpak {
     /// Run the program with `args`, answering its standard output.
     fn run(&self, args: &[&str]) -> Result<String, String> {
         let subcommand = args.first().copied().unwrap_or_default();
-        let output = Command::new(&self.program)
-            .args(args)
-            .env("LC_ALL", "C")
-            .output()
+        let mut command = Command::new(&self.program);
+        command.args(args).env("LC_ALL", "C");
+        let timeout = match subcommand {
+            "install" | "uninstall" | "remote-add" | "remote-modify" | "remote-delete" => {
+                CHANGE_TIMEOUT
+            }
+            _ => READ_TIMEOUT,
+        };
+        let output = bounded_command::run_prepared(command, None, MAX_OUTPUT, timeout)
             .map_err(|error| format!("{} {subcommand}: {error}", self.program.display()))?;
         if output.status.success() {
-            let mut stdout = output.stdout;
-            stdout.truncate(MAX_OUTPUT);
-            Ok(String::from_utf8_lossy(&stdout).into_owned())
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
             Err(format!(
                 "{} {subcommand}: {}",
