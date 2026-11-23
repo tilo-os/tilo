@@ -1923,7 +1923,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 /// `items`, the workspace's runs newest first, narrowed by `query` and cut to its page: what a
 /// reader of the record reads without paging the record itself.
 fn page_of(items: Vec<Invocation>, query: &InvocationsQuery) -> Invocations {
-    let mut items: Vec<Invocation> = items
+    let items: Vec<Invocation> = items
         .into_iter()
         .filter(|item| {
             query
@@ -1953,7 +1953,7 @@ fn page_of(items: Vec<Invocation>, query: &InvocationsQuery) -> Invocations {
     let page = query.page();
     let next_cursor =
         (offset.saturating_add(page) < total).then(|| offset.saturating_add(page).to_string());
-    let items = items.drain(..).skip(offset).take(page).collect();
+    let items = items.into_iter().skip(offset).take(page).collect();
     Invocations {
         items,
         total,
