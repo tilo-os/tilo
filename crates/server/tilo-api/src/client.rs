@@ -1191,20 +1191,7 @@ pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
     if !crate::direct::names_this_device(reach.key_file, api_key())? {
         return Ok(None);
     }
-    held_api()
-}
-
-/// Where this computer's daemon serves Tilo's API, when it serves a device here
-/// ([`device::serves_a_device`]).
-///
-/// # Errors
-/// The login is damaged, or the daemon's sockets' directory is not this account's.
-pub fn held_api() -> Result<Option<std::path::PathBuf>> {
-    if !device::serves_a_device(device_keys())? {
-        return Ok(None);
-    }
-    let place = crate::daemon::this_computer().map_err(|why| anyhow!(why))?;
-    Ok(Some(place.api().to_path_buf()))
+    crate::daemon::device_api()
 }
 
 /// The key a script was approved (`token`, as `tilo keys create` answers it),

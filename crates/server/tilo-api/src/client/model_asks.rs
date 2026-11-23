@@ -15,7 +15,7 @@ impl Client {
     /// damaged.
     #[must_use]
     pub fn this_computer() -> Option<Self> {
-        let held = super::held_api()
+        let held = crate::daemon::device_api()
             .ok()
             .flatten()
             .filter(|socket| is_socket(socket));

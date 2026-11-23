@@ -79,6 +79,18 @@ pub fn this_computer() -> Result<DaemonPlace, String> {
     })
 }
 
+/// Where this computer's daemon serves Tilo's API as its device, when it serves one here.
+///
+/// # Errors
+/// The login is damaged, or the daemon's sockets' directory is not this account's.
+pub fn device_api() -> anyhow::Result<Option<PathBuf>> {
+    if !tilo_device_identity::login::serves_a_device(crate::client::device_keys())? {
+        return Ok(None);
+    }
+    let place = this_computer().map_err(|why| anyhow::anyhow!(why))?;
+    Ok(Some(place.api().to_path_buf()))
+}
+
 /// Whether every socket the daemon listens at in `sockets` has a path a socket's address holds:
 /// one that does not is refused, naming it, never cut short.
 fn fits(sockets: &Path) -> Result<(), String> {

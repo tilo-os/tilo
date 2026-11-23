@@ -1303,7 +1303,7 @@ mod tests {
             .unwrap()
             .serving(&key.verifying_key().to_bytes());
         assert_eq!(
-            tilo_api::client::held_api().unwrap(),
+            tilo_api::daemon::device_api().unwrap(),
             Some(place.api().to_path_buf()),
             "the login's commands reach where its holder serves"
         );
