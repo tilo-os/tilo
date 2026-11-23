@@ -24,7 +24,6 @@ app-launch = [
     "dep:tilo-app-window",
     "dep:media",
     "dep:tilo-failure",
-    "dep:tilo-files",
     "dep:tilo-app-module",
     "dep:tilolang-youtube",
     "tilolang-mail/engine",
@@ -95,7 +94,10 @@ ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = f
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true }
 tilo-app-window = { path = "../../sdk/tilo-app-window", optional = true }
 tilo-failure = { path = "../../platform/tilo-failure", optional = true }
-tilo-files = { path = "../../platform/tilo-files", features = ["watch"], optional = true }
+# The device's own folders, watched the way the platform watches them: inotify, FSEvents or
+# ReadDirectoryChangesW where it has one, and a poll only where it has not.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+notify.workspace = true
 tilo-app-module = { version = "0.1.0", path = "../tilo-app-module", optional = true }
 # YouTube as an outside origin: its connector, and a window without a session keeping a video
 # site's resources in step with it, in native code with the network.

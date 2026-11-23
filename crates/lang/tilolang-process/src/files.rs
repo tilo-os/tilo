@@ -742,6 +742,67 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_lists_its_entries_and_reads_their_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("books")).unwrap();
+        std::fs::write(dir.path().join("a.epub"), b"EPUB").unwrap();
+        let mut listed: Vec<(String, bool)> = list(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.name, entry.folder))
+            .collect();
+        listed.sort();
+        assert_eq!(
+            listed,
+            vec![("a.epub".to_owned(), false), ("books".to_owned(), true)]
+        );
+        let found = stat(&dir.path().join("a.epub")).unwrap().unwrap();
+        assert_eq!(found.size, 4, "its bytes' length");
+        assert_eq!(
+            read_bytes(&dir.path().join("a.epub")).unwrap(),
+            b"EPUB",
+            "what File.read reads"
+        );
+        assert!(stat(&dir.path().join("gone")).unwrap().is_none());
+        assert!(read_bytes(dir.path()).is_err(), "a folder is not a file");
+    }
+
+    #[test]
+    fn a_watched_folder_that_gains_an_entry_wakes_and_runs_its_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let (woken, woke) = std::sync::mpsc::channel::<()>();
+        let woken = std::sync::Mutex::new(woken);
+        let watches = Watches::new(std::sync::Arc::new(move || {
+            let _ = woken.lock().unwrap().send(());
+        }));
+        let token = watches
+            .watch(dir.path().to_str().unwrap(), "scan", "person")
+            .expect("the folder is watched");
+        assert!(watches.watching());
+        // Nothing changed: nothing wakes the app, and no action is due.
+        assert!(
+            woke.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "an idle watch does not wake the app"
+        );
+        assert!(watches.take_changed().is_empty(), "nothing changed yet");
+        std::fs::write(dir.path().join("new.epub"), b"EPUB").unwrap();
+        woke.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the new entry wakes the app");
+        assert_eq!(
+            watches.take_changed(),
+            vec![("scan".to_owned(), "person".to_owned())],
+            "the action runs for the member"
+        );
+        assert!(
+            watches.take_changed().is_empty(),
+            "a change runs its action once"
+        );
+        watches.unwatch(&token);
+        assert!(!watches.watching());
+    }
+
+    #[test]
     fn bytes_a_program_makes_are_kept_too() {
         let store = ContentStore::memory();
         let kept = keep(&store, "note.md", "text/markdown", b"hello").expect("kept");
