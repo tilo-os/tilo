@@ -642,6 +642,12 @@ and screen share only, never documents, and stays as it is.
   the same way. A program that needs more extends this API; it gets no call
   of its own. The session's own engine (`EngineRecords`, `settings_sync`)
   goes, and settings are records read and written like any other.
+- **An invocation follows its origin's permissions**: an invocation record
+  names the resource it runs for. Its caller, or anyone who may write that
+  resource, may cancel or retry it; only the identity an ask names may answer
+  that ask, bounded by the smaller permission. What a run cost (provider,
+  model, tokens, cost) is a field of its record, written where the model call
+  returns.
 - **The operator chooses workspaces, membership chooses people**: a host's
   operator decides which workspaces it stores and serves and who may create
   one there. A hosted workspace's signed membership decides who reaches it,
