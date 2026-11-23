@@ -40,7 +40,7 @@ mkdir -p -- "$out"
 keep() {
     local from=$run/walk
     [[ -d $from ]] || from=$run
-    (cd "$from" && find . -maxdepth 3 -type f \
+    (cd "$from" && find . -maxdepth 6 -type f \
         \( -name '*.json' -o -name '*.png' -o -name '*.log' -o -name '*.md' \) \
         -size -20M -exec cp --parents -t "$out" {} +)
     # Each session's own logs say what an app did, and why one did not open: the walk's logs
