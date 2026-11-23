@@ -145,7 +145,6 @@ impl PowerBridge {
     }
 
     fn wake_profiles(&self) {
-        self.wake();
         let wakes = self.profile_wakes.lock_recover().clone();
         for wake in wakes {
             wake();
@@ -162,10 +161,11 @@ impl PowerBridge {
     /// settings reload without asking the daemon from its frame thread.
     pub fn note_active_profile(&self, profile: &str) {
         let mut inner = self.lock();
-        if inner.active_profile.as_deref() != Some(profile) {
+        let first = self.profiles_moved.load(Ordering::Relaxed) == 0;
+        if first || inner.active_profile.as_deref() != Some(profile) {
             inner.active_profile = Some(profile.to_owned());
-            drop(inner);
             self.profiles_moved.fetch_add(1, Ordering::Release);
+            drop(inner);
             self.wake_profiles();
         }
     }
@@ -179,15 +179,45 @@ impl PowerBridge {
     /// Record the power profiles power-profiles-daemon offers, in its order.
     pub fn note_profiles(&self, profiles: Vec<String>) {
         let mut inner = self.lock();
-        if inner.profiles != profiles {
+        let first = self.profiles_moved.load(Ordering::Relaxed) == 0;
+        if first || inner.profiles != profiles {
             inner.profiles = profiles;
-            drop(inner);
             self.profiles_moved.fetch_add(1, Ordering::Release);
+            drop(inner);
             self.wake_profiles();
         }
     }
 
-    /// How often the offered power profiles or the active profile moved.
+    /// Record the offered power profiles and the active profile together in one
+    /// atomic revision and wake.
+    pub fn note_profile_state(&self, profiles: Vec<String>, active: Option<String>) {
+        let mut inner = self.lock();
+        let first = self.profiles_moved.load(Ordering::Relaxed) == 0;
+        if first || inner.profiles != profiles || inner.active_profile != active {
+            inner.profiles = profiles;
+            inner.active_profile = active;
+            self.profiles_moved.fetch_add(1, Ordering::Release);
+            drop(inner);
+            self.wake_profiles();
+        }
+    }
+
+    /// Clear both the offered power profiles and the active profile — for example,
+    /// when `net.hadess.PowerProfiles` leaves the bus.
+    pub fn clear_profiles(&self) {
+        let mut inner = self.lock();
+        let had_any = !inner.profiles.is_empty() || inner.active_profile.is_some();
+        inner.profiles.clear();
+        inner.active_profile = None;
+        if had_any {
+            self.profiles_moved.fetch_add(1, Ordering::Release);
+            drop(inner);
+            self.wake_profiles();
+        }
+    }
+
+    /// How often the offered power profiles or the active profile moved (`0` before
+    /// the service has ever recorded a daemon answer).
     pub fn profiles_moved(&self) -> u64 {
         self.profiles_moved.load(Ordering::Acquire)
     }
@@ -211,10 +241,6 @@ impl PowerBridge {
         inner.moved = inner.moved.wrapping_add(1);
         drop(inner);
         self.wake();
-    }
-
-    pub fn profiles(&self) -> Vec<String> {
-        self.lock().profiles.clone()
     }
 
     /// Record whether the machine runs on battery and answer whether that changed
@@ -397,6 +423,13 @@ mod tests {
         let service = PowerBridge::new();
         let compositor = service.clone();
         assert_eq!(compositor.profiles_moved(), 0);
+        let signal_woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        compositor.set_signal_wake(Arc::new({
+            let signal_woken = Arc::clone(&signal_woken);
+            move || {
+                signal_woken.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
         let profile_woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         compositor.on_profiles_change(Arc::new({
             let profile_woken = Arc::clone(&profile_woken);
@@ -408,6 +441,11 @@ mod tests {
         assert_eq!(compositor.profiles_moved(), 1);
         assert_eq!(compositor.readings_moved(), 0);
         assert_eq!(profile_woken.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            signal_woken.load(Ordering::SeqCst),
+            0,
+            "profile changes wake only profile listeners, avoiding a double wake"
+        );
 
         service.note_active_profile("power-saver");
         assert_eq!(compositor.profiles_moved(), 2);
@@ -429,5 +467,23 @@ mod tests {
         );
         service.note_active_profile("performance");
         assert_eq!(compositor.profiles_moved(), 3);
+
+        service.clear_profiles();
+        assert_eq!(compositor.profiles_moved(), 4);
+        assert_eq!(compositor.profiles_snapshot(), (Vec::new(), None));
+        assert_eq!(profile_woken.load(Ordering::SeqCst), 4);
+        assert_eq!(signal_woken.load(Ordering::SeqCst), 0);
+        service.clear_profiles();
+        assert_eq!(
+            compositor.profiles_moved(),
+            4,
+            "clearing already-empty profiles is a no-op"
+        );
+
+        // Even an empty initial profile list marks the bridge as having received a daemon answer.
+        let fresh = PowerBridge::new();
+        assert_eq!(fresh.profiles_moved(), 0);
+        fresh.note_profiles(Vec::new());
+        assert_eq!(fresh.profiles_moved(), 1);
     }
 }

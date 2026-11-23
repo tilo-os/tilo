@@ -6,7 +6,7 @@ use zbus::zvariant::OwnedValue;
 
 const DEST: &str = "net.hadess.PowerProfiles";
 const PATH: &str = "/net/hadess/PowerProfiles";
-const IFACE: &str = "net.hadess.PowerProfiles";
+pub(crate) const IFACE: &str = "net.hadess.PowerProfiles";
 
 #[derive(Clone)]
 pub struct PowerProfilesMonitor {
@@ -15,7 +15,13 @@ pub struct PowerProfilesMonitor {
 
 impl PowerProfilesMonitor {
     pub async fn with_connection(connection: &zbus::Connection) -> zbus::Result<Self> {
-        let proxy = zbus::Proxy::new(connection, DEST, PATH, IFACE).await?;
+        let proxy = zbus::proxy::Builder::<zbus::Proxy<'static>>::new(connection)
+            .destination(DEST)?
+            .path(PATH)?
+            .interface(IFACE)?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?;
         Ok(Self { proxy })
     }
 
@@ -35,17 +41,25 @@ impl PowerProfilesMonitor {
         Ok(profile_names(&profiles))
     }
 
-    pub async fn receive_active_profile_changed(
+    /// Follow `org.freedesktop.DBus.Properties.PropertiesChanged` signals on
+    /// `net.hadess.PowerProfiles` without maintaining a local property cache.
+    pub async fn receive_properties_changed(
         &self,
-    ) -> zbus::proxy::PropertyStream<'static, String> {
-        self.proxy.receive_property_changed("ActiveProfile").await
+    ) -> zbus::Result<zbus::fdo::PropertiesChangedStream> {
+        let properties = zbus::fdo::PropertiesProxy::builder(self.proxy.connection())
+            .destination(DEST)?
+            .path(PATH)?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?;
+        properties.receive_properties_changed().await
     }
 
-    /// Every change of `Profiles`, the list of profiles the daemon advertises.
-    pub async fn receive_profiles_changed(
+    /// Follow bus-name owner transitions for `net.hadess.PowerProfiles`.
+    pub async fn receive_owner_changed(
         &self,
-    ) -> zbus::proxy::PropertyStream<'static, Vec<HashMap<String, OwnedValue>>> {
-        self.proxy.receive_property_changed("Profiles").await
+    ) -> zbus::Result<zbus::proxy::OwnerChangedStream<'static>> {
+        self.proxy.receive_owner_changed().await
     }
 }
 

@@ -775,7 +775,182 @@ async fn power_profiles_and_active_profile_follow_dbus_signals_live() {
         .await
         .expect("Profiles changed");
     eventually("Profiles signal updates bridge live", || {
-        bridge.profiles() == ["performance", "balanced"]
+        bridge.profiles_snapshot().0 == ["performance", "balanced"]
     })
     .await;
+}
+
+/// A private `dbus-daemon` bus for testing `NameOwnerChanged` across daemon restarts.
+struct PrivateBus {
+    daemon: std::process::Child,
+    address: String,
+    _directory: tempfile::TempDir,
+}
+
+impl PrivateBus {
+    fn start() -> Self {
+        use std::io::BufRead as _;
+        use tilo_test_env::SpawnUnderEnvLock as _;
+
+        let directory = tempfile::tempdir().expect("bus tempdir");
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .arg(format!(
+                "--address=unix:path={}",
+                directory.path().join("bus").display()
+            ))
+            .stdout(std::process::Stdio::piped())
+            .spawn_locked()
+            .expect("dbus-daemon");
+        let mut address = String::new();
+        std::io::BufReader::new(daemon.stdout.take().expect("stdout"))
+            .read_line(&mut address)
+            .expect("address");
+        Self {
+            daemon,
+            address: address.trim().to_owned(),
+            _directory: directory,
+        }
+    }
+}
+
+impl Drop for PrivateBus {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
+async fn wait_short(what: &str, pred: impl Fn() -> bool) {
+    let deadline = after(tokio::time::Instant::now(), Duration::from_secs(3));
+    while tokio::time::Instant::now() < deadline {
+        if pred() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for: {what}");
+}
+
+async fn serve_base_daemons_on_bus(address: &str) -> Connection {
+    let calls = Shared::default();
+    Builder::address(address)
+        .expect("addr")
+        .serve_at(
+            LOGIND_PATH,
+            FakeLogind {
+                calls: Arc::clone(&calls),
+                verdict: "yes".into(),
+                foreign: Vec::new(),
+            },
+        )
+        .expect("logind")
+        .serve_at(
+            UPOWER_PATH,
+            FakeUPower {
+                calls: Arc::clone(&calls),
+                lid_closed: false,
+                lid_present: true,
+                on_battery: true,
+                devices: Vec::new(),
+            },
+        )
+        .expect("upower")
+        .serve_at(
+            DISPLAY_PATH,
+            FakeDisplayDevice {
+                kind: 2,
+                present: true,
+                percentage: 80.0,
+                state: 2,
+                capacity: 90.0,
+            },
+        )
+        .expect("display")
+        .name("org.freedesktop.login1")
+        .expect("login1")
+        .name("org.freedesktop.UPower")
+        .expect("upower")
+        .build()
+        .await
+        .expect("base daemons")
+}
+
+async fn serve_profiles_on_bus(address: &str, active: &str, profiles: &[&str]) -> Connection {
+    Builder::address(address)
+        .expect("addr")
+        .serve_at(
+            PROFILES_PATH,
+            FakePowerProfiles {
+                active: active.to_owned(),
+                profiles: profiles.iter().map(|&name| name.to_owned()).collect(),
+            },
+        )
+        .expect("profiles daemon")
+        .name("net.hadess.PowerProfiles")
+        .expect("ppd name")
+        .build()
+        .await
+        .expect("profiles daemon conn")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn power_profiles_follow_daemon_removal_and_return_without_signals() {
+    let bus = PrivateBus::start();
+    let _base = serve_base_daemons_on_bus(&bus.address).await;
+    let daemon1 =
+        serve_profiles_on_bus(&bus.address, "power-saver", &["balanced", "power-saver"]).await;
+    let client = Builder::address(bus.address.as_str())
+        .expect("addr")
+        .build()
+        .await
+        .expect("client");
+
+    let bridge = PowerBridge::new();
+    let registry = InhibitRegistry::new();
+    let state_home = tempfile::tempdir().expect("state home");
+    let mut service =
+        PowerService::with_connection(&client, bridge.clone(), registry, quiet_policy())
+            .await
+            .expect("service");
+    service.history = PowerHistoryWriter::in_state_home(Some(state_home.path().to_path_buf()));
+    let task = tokio::spawn(async move {
+        let _client = client;
+        service.run().await;
+    });
+
+    wait_short("startup primes power-saver", || {
+        bridge.profiles_snapshot()
+            == (
+                vec!["balanced".to_owned(), "power-saver".to_owned()],
+                Some("power-saver".to_owned()),
+            )
+    })
+    .await;
+
+    daemon1.close().await.expect("close daemon1");
+    wait_short("owner exit clears both profiles and active_profile", || {
+        bridge.profiles_snapshot() == (Vec::new(), None)
+    })
+    .await;
+
+    let _daemon2 = serve_profiles_on_bus(
+        &bus.address,
+        "balanced",
+        &["performance", "balanced", "power-saver"],
+    )
+    .await;
+    wait_short("replacement owner is read uncached without signals", || {
+        bridge.profiles_snapshot()
+            == (
+                vec![
+                    "performance".to_owned(),
+                    "balanced".to_owned(),
+                    "power-saver".to_owned(),
+                ],
+                Some("balanced".to_owned()),
+            )
+    })
+    .await;
+    task.abort();
 }
