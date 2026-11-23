@@ -62,22 +62,22 @@ d-l25oorez = Thumbnail
 d-pkbzjs7l = Stream
     .doc = The address its bytes play from, as the service answered: empty until it is asked.
 
-d-pg3b5q77 = Stream qualities
+d-2ookzgmr = Stream qualities
     .doc = The whole-file qualities it offers, best first; empty for a live stream, which has one.
 
-d-cguf3iuj = Streams
+d-egfxgk6w = Streams
     .doc = Where each of its qualities plays from, by the label the menu shows.
 
-d-rqu22dm2 = Caption tracks
+d-bjq7oz3r = Caption tracks
     .doc = The caption tracks it offers, by language code: the label each shows.
 
-d-t2nrrkbl = Caption language
+d-qobap6wc = Caption language
     .doc = The language of the captions on, empty for off.
 
-d-z7fpspku = Captions
+d-ktznpp6s = Captions
     .doc = The words of the chosen caption track, as the service fetched them.
 
-d-b4x52fj3 = Quality
+d-dk57dzsn = Quality
     .doc = The quality it plays at, empty for the best.
 
 d-jfam7tjf = Live
@@ -239,7 +239,7 @@ d-r3ksw6bn = Trouble
 d-qv7t2mza = Online
     .doc = Whether YouTube answered the last time it was asked.
 
-d-kbi6kunb = Rate
+d-vcsec6gm = Rate
     .doc = The speed videos play at: 1.0 is normal.
 
 d-thwdswkk-filter-online = Online
@@ -284,23 +284,23 @@ d-jxokfijg = Progress
 
 d-jxokfijg-at = At
 
-d-kkuil6ek = Playback speed
+d-lbt75ctk = Playback speed
     .doc = Plays videos at `speed`: a slower read for a dense talk, a quicker one for a long report.
 
-d-kkuil6ek-speed = Speed
+d-lbt75ctk-speed = Speed
 
-d-iwdgdauq = Quality
+d-kiyjmdyz = Quality
     .doc = Plays the video at another of its qualities, from the place it was at: the view plays the address that quality has.
 
-d-iwdgdauq-chosen = Chosen
+d-kiyjmdyz-chosen = Chosen
 
-d-pie2tnpa = Captions
+d-r7mx23eb = Captions
     .doc = Shows the video's words in `language`, or turns them off when it is empty: the service fetches the track's words, which the player draws as the video reaches them.
 
-d-pie2tnpa-language = Language
+d-r7mx23eb-language = Language
 
 d-oqumfxkj = Delete from history
-    .doc = Takes one video out of the person's own history.
+    .doc = Takes one video out of the history.
 
 d-wzt3qvyb = Delete history
     .doc = Deletes the person's own watch history, and the entries carried from before it recorded members, which this history shows them; nobody else's.

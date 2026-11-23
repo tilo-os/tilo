@@ -423,8 +423,6 @@ action progress(v: Video, at: Float) uses time {
     if v.stream == "" { outside("youtube.stream", v.key) }
 }
 
-/// Takes one video out of the person's own history.
-///
 /// Plays videos at `speed`: a slower read for a dense talk, a quicker one for a long report.
 action set_rate(yt: YouTube, speed: Float) (label: "Playback speed") {
     yt.rate = speed
