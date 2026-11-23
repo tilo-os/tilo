@@ -14,7 +14,6 @@ use tilo_sheets::displays::DisplaysState;
 use tilo_sheets::file_picker::FilePickerState;
 use tilo_sheets::invite::InviteState;
 use tilo_sheets::lock::LockState;
-use tilo_sheets::pair_device::AddDeviceState;
 use tilo_sheets::portal::PortalState;
 use tilo_sheets::power::PowerState;
 use tilo_sheets::shortcut_guide::GuideState;
@@ -30,7 +29,6 @@ pub(crate) struct Sheets {
     pub(crate) workspace_settings: Option<WorkspaceSettingsState>,
     pub(crate) directory: Option<DirectoryState>,
     pub(crate) invite: Option<InviteState>,
-    pub(crate) pair_device: Option<AddDeviceState>,
     pub(crate) delete_workspace: Option<DeleteWorkspaceState>,
     pub(crate) portal: Option<PortalState>,
     pub(crate) file_picker: Option<FilePickerState>,
@@ -57,7 +55,6 @@ impl Sheets {
             of(self.workspace_settings.as_ref()),
             of(self.directory.as_ref()),
             of(self.invite.as_ref()),
-            of(self.pair_device.as_ref()),
             of(self.delete_workspace.as_ref()),
             of(self.portal.as_ref()),
             of(self.file_picker.as_ref()),
@@ -127,14 +124,6 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
-    let pair_device = mount_sheet(
-        compositor,
-        surfaces,
-        tilo_sheets::pair_device::definition(),
-        AddDeviceState::default(),
-        who,
-        options,
-    );
     // The question deleting a workspace asks: over whatever the person was looking at, whichever
     // surface asked it.
     let delete_workspace = mount_sheet(
@@ -180,7 +169,6 @@ pub(crate) fn mount_sheets(
         workspace_settings,
         directory,
         invite,
-        pair_device,
         delete_workspace,
         portal,
         file_picker,

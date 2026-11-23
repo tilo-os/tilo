@@ -768,31 +768,3 @@ so-tilo-workspace-settings-change-remove-custom-role = Eine Rolle und ihre Regel
 so-tilo-workspace-settings-change-set-document-access = Dokumentzugriff festlegen
 so-tilo-workspace-settings-change-show-tab = Einen Tab zeigen
 so-tilo-workspace-settings-change-toggle-device = Auf einem Gerät zeigen
-
-## Add a device
-
-pair-device = Gerätekopplung
-so-tilo-pair-device-link-copy = Den Link kopieren
-so-tilo-pair-device-link-done = Schließen
-pair-device-title = Gerät hinzufügen
-pair-device-description = Scanne den Code oder öffne den Link auf deinem neuen Gerät, damit es eines deiner Geräte wird.
-pair-device-close = Schließen
-pair-device-link-label = Der Link
-pair-device-copy = Link kopieren
-pair-device-copied = Kopiert
-pair-device-code-alt = Der Kopplungslink als Code zum Scannen
-pair-device-lasting = { $minutes ->
-    [one] Gilt einmal, für die nächste Minute.
-   *[other] Gilt einmal, für die nächsten { $minutes } Minuten.
-}
-pair-device-in-tilo = Auf einem Computer mit Tilo fügst du den Link in „Arbeitsbereich beitreten“ ein.
-pair-device-no-workspace = Öffne zuerst einen Arbeitsbereich: Der Link öffnet ihn auf deinem neuen Gerät.
-pair-device-no-host = Dieser Computer weiß noch nicht, wo der Host des Arbeitsbereichs erreichbar ist. Öffne den Arbeitsbereich erneut und füge das Gerät dann hinzu.
-pair-device-not-yours = Dieser Computer ist nicht als du angemeldet und kann daher kein neues Gerät aufnehmen.
-pair-device-no-link = Der Link ließ sich nicht erstellen. Schließe dies und versuche es noch einmal.
-pair-device-ticket-description = Gib dieses Ticket auf deinem neuen Computer ein, damit er einer deiner wird.
-pair-device-ticket-label = Das Ticket
-pair-device-ticket-copy = Ticket kopieren
-pair-device-ticket-alt = Das Ticket als Code zum Scannen
-pair-device-ticket-in-tilo = Öffne auf dem neuen Computer Tilo, wähle „Meine vorhandene Identität verwenden“ und tippe das Ticket ein. Alternativ kannst du dort tilo login mit dem Ticket ausführen.
-pair-device-ticket-asking = Dieser Computer stellt ein Ticket aus …

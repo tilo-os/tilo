@@ -58,8 +58,6 @@ pub enum PeopleAsk {
     Colour(String),
     /// Open the Settings page the person chose.
     Settings(String),
-    /// Add another of their own devices: the session's sheet with the link its camera reads.
-    PairDevice,
     /// Do the host action this person's own card offers, as the palette and a banner hand theirs
     /// back: the choice the ask on their avatar waits for is answered here too.
     HostAction(String),
@@ -967,6 +965,8 @@ impl Panel {
         match id {
             OPEN_SETTINGS => Some("settings://"),
             DEVICES_ACCESS => Some("settings://devices_access"),
+            // Another of their devices: Settings' devices page prints the ticket it joins with.
+            "pair-device" => Some("settings://devices_sync"),
             _ => None,
         }
     }
@@ -1056,11 +1056,7 @@ impl Panel {
                     self.asks.borrow_mut().push(PeopleAsk::Colour(id));
                 }
                 ProfileChoice::Action(id) => {
-                    // Another of their devices: the code its camera reads is the session's own
-                    // sheet, beside the card they pressed.
-                    if id == "pair-device" {
-                        self.asks.borrow_mut().push(PeopleAsk::PairDevice);
-                    } else if let Some(link) = Self::own_settings_link(&id) {
+                    if let Some(link) = Self::own_settings_link(&id) {
                         self.asks
                             .borrow_mut()
                             .push(PeopleAsk::Settings(link.to_owned()));

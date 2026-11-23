@@ -139,8 +139,6 @@ mod cards;
 #[cfg(target_os = "linux")]
 mod carets;
 #[cfg(target_os = "linux")]
-mod certification;
-#[cfg(target_os = "linux")]
 mod change_feed;
 #[cfg(target_os = "linux")]
 mod chrome;
@@ -314,11 +312,6 @@ mod overview;
 mod owner_session;
 #[cfg(target_os = "linux")]
 mod page_track;
-#[cfg(target_os = "linux")]
-mod pair_device;
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-mod pairing_link;
 #[cfg(target_os = "linux")]
 mod panels;
 #[cfg(target_os = "linux")]

@@ -27,8 +27,6 @@ mod invite;
 mod lock;
 #[path = "painted.rs"]
 mod painted;
-#[path = "pair_device.rs"]
-mod pair_device;
 #[path = "portal.rs"]
 mod portal;
 #[path = "power.rs"]

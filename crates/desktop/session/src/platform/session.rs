@@ -182,9 +182,6 @@ impl Session {
         ));
         let watched = std::sync::Arc::clone(&notification_policy);
         let woken = options.wake.handle();
-        // A device's answer to another's ask about the person is worked out
-        // off the loop; when it lands here, the loop wakes to put it to them.
-        crate::certification::attach(options.wake.handle());
         // The pictures the shell shows are this device's: a change of the person's reaches them too.
         let wallpapers = std::sync::Arc::new(crate::wallpapers::Wallpapers::new(
             options.state.as_deref(),
@@ -1125,7 +1122,6 @@ impl Session {
             file_picker,
             directory,
             invite,
-            pair_device,
             delete_workspace,
             display_confirm,
             displays: displays_sheet,
@@ -1731,18 +1727,6 @@ impl Session {
                 wake: Some(options.wake.handle()),
             })
         });
-        // Where the sheet's ticket comes from, for a workspace no host on the web keeps: the ticket
-        // service Settings' Add a device asks too, on this session's endpoint and device actions.
-        let adding = crate::pair_device::Adding::new(
-            Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
-            sync.as_deref().map(|sync| {
-                crate::device_tickets::DeviceTickets::new(
-                    Some(sync.endpoint_handle()),
-                    Some(sync.actions_handle()),
-                    workspace_service.clone(),
-                )
-            }),
-        );
         let landings = Rc::new(crate::landing::Landings::new(options.wake.handle()));
         // A share's write into a workspace's governance answers through the same landings.
         window_shares
@@ -1825,8 +1809,6 @@ impl Session {
             directory,
             invite,
             inviting,
-            pair_device,
-            adding,
             delete_workspace,
             delete_workspace_ask: RefCell::default(),
             directory_store,

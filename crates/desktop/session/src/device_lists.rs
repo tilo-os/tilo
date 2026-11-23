@@ -328,9 +328,9 @@ pub(crate) enum InviteEffect {
     /// it this way.
     #[effect(screen)]
     ShowConnect,
-    /// Open the Add a device sheet: the link a new device of the person's becomes one of theirs,
-    /// shown as a code its camera reads. An app that lists what acts as the person offers adding
-    /// to it this way.
+    /// Show how a new device of the person's joins them: Settings' devices page, where "Add a
+    /// device" prints the ticket it logs in with. An app that lists what acts as the person offers
+    /// adding to it this way.
     #[effect(screen)]
     ShowPairDevice,
     /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on

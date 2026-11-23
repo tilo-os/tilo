@@ -309,8 +309,7 @@ pub enum ChromeIntent {
     /// Invite someone to this workspace, straight from the bar's invite button: the host's own
     /// invite flow, in one step.
     Invite,
-    /// Add a device of this person's: the link a new device becomes one of theirs with, which its
-    /// camera reads.
+    /// Add a device of this person's: the ticket a new device joins them with.
     PairDevice,
     /// Open who is here at this person (their roster id): their row, with what they are doing and
     /// the wave.

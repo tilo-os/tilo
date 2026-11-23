@@ -414,13 +414,6 @@ search-action-identity-remove-subtitle = Eine Identität, die du hier nicht mehr
 search-action-identity-protect = Schlüssel einer Identität schützen
 search-action-identity-protect-subtitle = Den Schlüssel einer Identität aus einer einfachen Datei in geschützten Speicher verschieben
 
-# Ein neues Gerät, das ein anderes deiner Geräte gefunden hat: die Mitteilung,
-# die hier die Person fragt.
-pairing-asks-title = Ein Gerät möchte du sein
-pairing-asks-body = { $device }{ $from }, { $when }. Wenn du bestätigst, handelt es als du. Bestätige nur, wenn es { $code } zeigt.
-pairing-asks-via = {" "}(gefunden von deinem Gerät { $device })
-pairing-approve = { $code } bestätigen
-pairing-decline = Ablehnen
 
 # Workspace settings
 workspace-settings-title = Arbeitsbereichseinstellungen
