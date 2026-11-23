@@ -83,7 +83,11 @@ impl<P: Resource> Clone for WorkspaceResource<P> {
     }
 }
 
-struct Shared<P: Resource> {
+/// What a held record is whatever its type: where it is kept, whose it is, the grants that
+/// decide its changes and the edits that wait for its store. The typed record
+/// ([`WorkspaceResource`]) hands its work here, so each record type an app opens compiles only
+/// what reads its own state and builds its own actions.
+struct Core {
     record: StoredResource,
     /// The app that keeps it: whose node the workspace's grants decide on.
     owner: &'static str,
@@ -93,26 +97,36 @@ struct Shared<P: Resource> {
     app_title: &'static str,
     me: tilo_resource::MemberId,
     permissions: Option<LivePermissions>,
-    /// The state, followed change by change.
-    live: Live<P>,
-    /// The same state as view state: a view that read it is built again
-    /// when another app's or device's change arrives.
-    state: LocalState<Rc<P::State>>,
     /// Wakes the window: for an action that waits for the record.
     wake: Option<WakeHandle>,
+    /// The record's type, as its changes and the grants name it.
+    kind: &'static str,
+    label: &'static str,
+    /// The verbs the record's type declares.
+    declarations: fn() -> Vec<tilo_resource::Declaration>,
     /// Actions asked for while the record could not be changed (its store
     /// in use by whatever runs now), applied in order once it can.
-    waiting: RefCell<Vec<Waiting<P>>>,
+    waiting: RefCell<Vec<Waiting>>,
     /// What the state shown was read with while edits waited: the record's
     /// heads and how many waited. The state then holds them, so what is read
     /// after an edit holds it although the store has not taken it yet.
     ahead: RefCell<Option<(Vec<ui_core::automerge::ChangeHash>, usize)>>,
 }
 
+/// One typed record's [`Core`] and its state, followed change by change.
+struct Shared<P: Resource> {
+    core: Core,
+    /// The state, followed change by change.
+    live: Live<P>,
+    /// The same state as view state: a view that read it is built again
+    /// when another app's or device's change arrives.
+    state: LocalState<Rc<P::State>>,
+}
+
 /// An action that waits for its record ([`WorkspaceResource::invoke_then`]),
 /// with what to do once it was applied or refused.
-struct Waiting<P: Resource> {
-    action: P::Action,
+struct Waiting {
+    action: Pending,
     /// Who it is by, as it was asked: it is applied later, outside the
     /// invocation it was asked in.
     invoker: ActionInvoker,
@@ -121,6 +135,23 @@ struct Waiting<P: Resource> {
     /// throughout them waits for the window's next refresh of its own
     /// instead of keeping the window busy.
     woken: u8,
+}
+
+/// An action of the record's type as the record applies it: the action, and its encoded form
+/// or why it has none.
+struct Pending {
+    action: Box<dyn tilo_actions::Action>,
+    encoded: Result<tilo_actions::EncodedAction, String>,
+}
+
+impl Pending {
+    fn of<P: Resource>(action: P::Action) -> Self {
+        let encoded = tilo_resource::encode::<P>(&action).map_err(|error| error.to_string());
+        Self {
+            action: Box::new(action),
+            encoded,
+        }
+    }
 }
 
 /// How many refreshes an action that waits for its record asks for.
@@ -133,62 +164,7 @@ enum Applied {
     Waits,
 }
 
-impl<P: Resource> Shared<P> {
-    /// Follow the record when it moved. Whether it did; `None` when it could not be read now (its
-    /// store in use, or its document not readable yet), and the state is what was last read.
-    fn refresh_now(&self) -> Option<bool> {
-        self.apply_waiting();
-        let mut moved = match self.record.read(|doc| self.live.sync(doc)) {
-            Some(Ok(moved)) => moved,
-            Some(Err(error)) => {
-                tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
-                return None;
-            }
-            None => return None,
-        };
-        let _ = self.live.take_change();
-        let waiting = self.waiting.borrow().len();
-        if waiting > 0 {
-            let read = (self.record.heads(), waiting);
-            if self.ahead.borrow().as_ref() == Some(&read) {
-                return Some(moved);
-            }
-            if let Some(state) = self.state_with_waiting() {
-                self.state.set(state);
-                *self.ahead.borrow_mut() = Some(read);
-                return Some(true);
-            }
-        }
-        if self.ahead.borrow_mut().take().is_some() || moved {
-            self.state.set(self.live.get());
-            moved = true;
-        }
-        Some(moved)
-    }
-
-    /// The state the record has once the edits waiting for its store are
-    /// made: read from a copy of it they are made in, which is then let go.
-    fn state_with_waiting(&self) -> Option<Rc<P::State>> {
-        let mut doc = self.record.read(Clone::clone)?;
-        for entry in self.waiting.borrow().iter() {
-            if let Err(error) = self.apply_to(&mut doc, &entry.action, &entry.invoker) {
-                tracing::warn!(kind = P::KIND, %error, "a waiting edit does not apply");
-            }
-        }
-        match tilo_resource::Reader::<P>::read(&doc) {
-            Ok(reader) => Some(Rc::clone(reader.state())),
-            Err(error) => {
-                tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
-                None
-            }
-        }
-    }
-
-    /// Follow the record when it moved. Whether it did.
-    fn refresh(&self) -> bool {
-        self.refresh_now().is_some_and(|moved| moved)
-    }
-
+impl Core {
     /// The record's document with the edits waiting for its store made in a
     /// copy of it: what a read answers although the store has not taken them
     /// yet.
@@ -201,7 +177,7 @@ impl<P: Resource> Shared<P> {
         let mut doc = self.record.read(Clone::clone)?;
         for entry in waiting.iter() {
             if let Err(error) = self.apply_to(&mut doc, &entry.action, &entry.invoker) {
-                tracing::warn!(kind = P::KIND, %error, "a waiting edit does not apply");
+                tracing::warn!(kind = self.kind, %error, "a waiting edit does not apply");
             }
         }
         Some(doc)
@@ -247,11 +223,29 @@ impl<P: Resource> Shared<P> {
         }
     }
 
+    /// Keep `action` for the record's next free moment, then `then` with what became of it.
+    fn wait(
+        &self,
+        action: Pending,
+        invoker: ActionInvoker,
+        then: Box<dyn FnOnce(Result<(), ActionError>)>,
+    ) {
+        self.waiting.borrow_mut().push(Waiting {
+            action,
+            invoker,
+            then,
+            woken: 0,
+        });
+        if let Some(window) = &self.wake {
+            window.wake();
+        }
+    }
+
     /// Apply `action` as `invoker` (the person, an agent, a script), which
     /// the change is attributed to and which
     /// [`ActionCx::author`](tilo_resource::action) answers inside the action.
-    fn apply_as(&self, action: &P::Action, invoker: &ActionInvoker) -> Applied {
-        let change = action.change_kind();
+    fn apply_as(&self, action: &Pending, invoker: &ActionInvoker) -> Applied {
+        let change = action.action.change_kind();
         let edited = self.record.try_edit(change == ChangeKind::Content, |doc| {
             self.apply_to(doc, action, invoker)
         });
@@ -268,11 +262,11 @@ impl<P: Resource> Shared<P> {
     fn apply_to(
         &self,
         doc: &mut ui_core::automerge::AutoCommit,
-        action: &P::Action,
+        action: &Pending,
         invoker: &ActionInvoker,
     ) -> Result<(), String> {
-        let encoded = tilo_resource::encode::<P>(action).map_err(|error| error.to_string())?;
-        let change = action.change_kind();
+        let encoded = action.encoded.clone()?;
+        let change = action.action.change_kind();
         // Who the change is: the invoker's own actor (an agent acting in a turn, attributed as it
         // is at an app's record origin), or the person at this device for an invoker naming nobody.
         let invoker = if invoker.acting.by.id().is_empty() {
@@ -284,14 +278,261 @@ impl<P: Resource> Shared<P> {
         // The change is the owner's action, whichever window or tab makes it: every receiver
         // decides it against the owner's surface and refuses a verb named under another app. The
         // title still says where it was made ("Workspace settings").
-        let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
+        let context = ActionContext::for_resource(self.kind, self.kind, self.label)
             .with_app(self.owner, self.app_title)
             .with_invoker(invoker)
             .with_change(change);
         let writer = ui_core::history_source::authors::device_actor(&actor, doc.get_actor());
-        tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        tilo_actions::apply_local_with_context(
+            doc,
+            &*action.action,
+            encoded,
+            Some(&writer),
+            context,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+
+    /// The record's id, which names it in the workspace.
+    fn id(&self) -> &ui_core::resource::DocumentId {
+        &self.record.checkout().id
+    }
+
+    fn may_read(&self) -> bool {
+        if self.permissions.is_none()
+            && tilo_actions::policy::roles::has_member_reader(self.owner, self.kind)
+        {
+            return false;
+        }
+        let node = tilo_actions::resource_node(
+            &TreePath::root(),
+            self.owner,
+            self.kind,
+            self.id().route(),
+        );
+        self.answer(&node, tilo_actions::ActionKind::Read) == tilo_actions::policy::Answer::Allow
+    }
+
+    fn answer(
+        &self,
+        node: &TreePath,
+        kind: tilo_actions::ActionKind,
+    ) -> tilo_actions::policy::Answer {
+        use tilo_actions::policy::Answer;
+        let invoker = ui_core::invocation_scope::current_invoker();
+        let Some(permissions) = &self.permissions else {
+            return if invoker.is_none() {
+                Answer::Allow
+            } else {
+                Answer::Deny
+            };
+        };
+        let current = permissions.current();
+        let current = if let Some(invoker) = invoker {
+            let Some(access) = current.access().invoked_by(&invoker.acting) else {
+                return Answer::Deny;
+            };
+            current.with_access(access)
+        } else {
+            current
+        };
+        current.answer(node, kind)
+    }
+
+    fn independently_sealed(&self) -> bool {
+        use tilo_actions::policy::roles;
+        let (app, route) = (self.owner, self.id().route());
+        roles::requires_document_keys(app, route)
+            || roles::has_member_reader(app, self.kind)
+            || roles::is_workspace_moderation(app, route)
+    }
+
+    fn may(&self, verb: &str) -> bool {
+        let Some(declared) = (self.declarations)()
+            .into_iter()
+            .find(|decl| decl.id == verb)
+        else {
+            return self.permissions.is_none() && !self.independently_sealed();
+        };
+        let node = tilo_actions::action_node(
+            &TreePath::root(),
+            self.owner,
+            self.kind,
+            self.id().route(),
+            declared.field,
+            verb,
+        );
+        if self.independently_sealed() {
+            return self.answer(&node, declared.kind) == tilo_actions::policy::Answer::Allow;
+        }
+        self.permissions.as_ref().is_none_or(|permissions| {
+            permissions.check(&PermissionScope::Action {
+                node,
+                kind: declared.kind,
+            })
+        })
+    }
+
+    fn refused(&self) -> ActionError {
+        ActionError::Refused(format!(
+            "you may not change the workspace's {}",
+            self.label.to_lowercase()
+        ))
+    }
+
+    /// Refuse an action invoking `verb`, or else editing what `need` names, unless the
+    /// workspace's grants let the window's person do it: a verb as [`Self::may`] decides it, a
+    /// field edit at the field it changes.
+    fn admitted(
+        &self,
+        verb: Option<String>,
+        need: tilo_actions::ActionNeed,
+    ) -> Result<(), ActionError> {
+        if let Some(verb) = verb {
+            return if self.may(&verb) || self.keeps_its_own_housekeeping(&verb) {
+                Ok(())
+            } else {
+                Err(self.refused())
+            };
+        }
+        let node = tilo_actions::resource_node(
+            &TreePath::root(),
+            self.owner,
+            self.kind,
+            self.id().route(),
+        )
+        .field(need.field.as_deref().unwrap_or_default())
+        .action(tilo_resource::FIELD_EDIT);
+        let allowed = if self.independently_sealed() {
+            self.answer(&node, need.kind) == tilo_actions::policy::Answer::Allow
+        } else {
+            self.permissions.as_ref().is_none_or(|permissions| {
+                permissions.check(&PermissionScope::Action {
+                    node,
+                    kind: need.kind,
+                })
+            })
+        };
+        if allowed { Ok(()) } else { Err(self.refused()) }
+    }
+
+    /// Whether `verb` is one the record's keeper makes for itself and offers no caller — its
+    /// tab's action log, a reading position: the keeper's own window makes it without a grant
+    /// on it, as it keeps the record. Every change an app of the workspace asks for is decided
+    /// by the grants.
+    fn keeps_its_own_housekeeping(&self, verb: &str) -> bool {
+        self.owner == self.app_id
+            && !(self.declarations)()
+                .into_iter()
+                .any(|declared| declared.id == verb)
+    }
+
+    /// Apply `action` as `invoker` once the grants admitted it, at once or once the record's
+    /// store is free.
+    fn act_admitted(&self, action: Pending, invoker: &ActionInvoker) -> Applied {
+        match self.apply_as(&action, invoker) {
+            Applied::Waits => {
+                self.wait(action, invoker.clone(), Box::new(|_| {}));
+                Applied::Waits
+            }
+            done => done,
+        }
+    }
+
+    /// Apply History's verb whose encoded form is `payload`, which `action` is as the record's
+    /// type applies it.
+    fn apply_history(
+        &self,
+        payload: Vec<u8>,
+        action: &dyn tilo_actions::Action,
+        item: Option<&str>,
+    ) -> Result<(), ActionError> {
+        let encoded = tilo_actions::EncodedAction {
+            type_id: super::history::EDIT_TYPE.to_owned(),
+            payload,
+        };
+        let invoker = ActionInvoker::member(self.me.clone());
+        let actor = invoker.acting.by.actor_bytes();
+        let mut context = ActionContext::for_resource(self.kind, self.kind, self.label)
+            .with_app(self.owner, self.app_title)
+            .with_invoker(invoker)
+            .with_change(action.change_kind());
+        context.item = item.map(|item| tilo_actions::ActionItem {
+            id: item.to_owned(),
+            label: item.to_owned(),
+        });
+        let edited = self.record.try_edit(true, |doc| {
+            let writer = ui_core::history_source::authors::device_actor(&actor, doc.get_actor());
+            tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+        match edited {
+            Ok(result) => result.map_err(ActionError::Refused),
+            Err(unavailable) => Err(ActionError::Refused(unavailable.to_string())),
+        }
+    }
+}
+
+/// The declarations of `P`, as [`Core`] reads them.
+fn declarations<P: Resource>() -> Vec<tilo_resource::Declaration> {
+    P::declarations()
+        .iter()
+        .map(|declared| tilo_resource::Declaration::clone(declared))
+        .collect()
+}
+
+impl<P: Resource> Shared<P> {
+    /// Follow the record when it moved. Whether it did; `None` when it could not be read now (its
+    /// store in use, or its document not readable yet), and the state is what was last read.
+    fn refresh_now(&self) -> Option<bool> {
+        let core = &self.core;
+        core.apply_waiting();
+        let mut moved = match core.record.read(|doc| self.live.sync(doc)) {
+            Some(Ok(moved)) => moved,
+            Some(Err(error)) => {
+                tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
+                return None;
+            }
+            None => return None,
+        };
+        let _ = self.live.take_change();
+        let waiting = core.waiting.borrow().len();
+        if waiting > 0 {
+            let read = (core.record.heads(), waiting);
+            if core.ahead.borrow().as_ref() == Some(&read) {
+                return Some(moved);
+            }
+            if let Some(state) = self.state_with_waiting() {
+                self.state.set(state);
+                *core.ahead.borrow_mut() = Some(read);
+                return Some(true);
+            }
+        }
+        if core.ahead.borrow_mut().take().is_some() || moved {
+            self.state.set(self.live.get());
+            moved = true;
+        }
+        Some(moved)
+    }
+
+    /// The state the record has once the edits waiting for its store are
+    /// made: read from a copy of it they are made in, which is then let go.
+    fn state_with_waiting(&self) -> Option<Rc<P::State>> {
+        let doc = self.core.document_with_waiting()?;
+        match tilo_resource::Reader::<P>::read(&doc) {
+            Ok(reader) => Some(Rc::clone(reader.state())),
+            Err(error) => {
+                tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
+                None
+            }
+        }
+    }
+
+    /// Follow the record when it moved. Whether it did.
+    fn refresh(&self) -> bool {
+        self.refresh_now().is_some_and(|moved| moved)
     }
 }
 
@@ -431,17 +672,22 @@ impl<P: Resource> WorkspaceResource<P> {
         let live = Live::new(reader);
         Ok(Self {
             shared: Rc::new(Shared::<P> {
-                record,
-                owner,
-                app_id: app.0,
-                app_title: app.1,
-                me,
-                permissions,
+                core: Core {
+                    record,
+                    owner,
+                    app_id: app.0,
+                    app_title: app.1,
+                    me,
+                    permissions,
+                    wake,
+                    kind: P::KIND,
+                    label: P::LABEL,
+                    declarations: declarations::<P>,
+                    waiting: RefCell::default(),
+                    ahead: RefCell::default(),
+                },
                 state: LocalState::new(live.get()),
                 live,
-                wake,
-                waiting: RefCell::default(),
-                ahead: RefCell::default(),
             }),
         })
     }
@@ -449,7 +695,7 @@ impl<P: Resource> WorkspaceResource<P> {
     /// The record's id, which names it in the workspace.
     #[must_use]
     pub fn id(&self) -> &ui_core::resource::DocumentId {
-        &self.shared.record.checkout().id
+        self.shared.core.id()
     }
 
     /// The record's state as the window follows it, for the chain kept
@@ -462,7 +708,7 @@ impl<P: Resource> WorkspaceResource<P> {
     /// the resource's state, such as a text document's file, which a
     /// workspace's tree holds as a document of its own.
     pub fn read<T>(&self, read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T) -> Option<T> {
-        self.shared.record.read(read)
+        self.shared.core.record.read(read)
     }
 
     /// [`Self::read`] with the edits waiting for the record's store made: what
@@ -472,7 +718,10 @@ impl<P: Resource> WorkspaceResource<P> {
         &self,
         read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T,
     ) -> Option<T> {
-        self.shared.document_with_waiting().map(|doc| read(&doc))
+        self.shared
+            .core
+            .document_with_waiting()
+            .map(|doc| read(&doc))
     }
 
     /// The current state.
@@ -502,85 +751,21 @@ impl<P: Resource> WorkspaceResource<P> {
 
     /// The person who acts here.
     pub fn me(&self) -> &tilo_resource::MemberId {
-        &self.shared.me
+        &self.shared.core.me
     }
 
     /// Whether the caller may read this record. A member's own record follows its
     /// authenticated owner; shared records follow the workspace's policy.
     #[must_use]
     pub fn may_read(&self) -> bool {
-        if self.shared.permissions.is_none()
-            && tilo_actions::policy::roles::has_member_reader(self.shared.owner, P::KIND)
-        {
-            return false;
-        }
-        let node = tilo_actions::resource_node(
-            &TreePath::root(),
-            self.shared.owner,
-            P::KIND,
-            self.id().route(),
-        );
-        self.answer(&node, tilo_actions::ActionKind::Read) == tilo_actions::policy::Answer::Allow
-    }
-
-    fn answer(
-        &self,
-        node: &TreePath,
-        kind: tilo_actions::ActionKind,
-    ) -> tilo_actions::policy::Answer {
-        use tilo_actions::policy::Answer;
-        let invoker = ui_core::invocation_scope::current_invoker();
-        let Some(permissions) = &self.shared.permissions else {
-            return if invoker.is_none() {
-                Answer::Allow
-            } else {
-                Answer::Deny
-            };
-        };
-        let current = permissions.current();
-        let current = if let Some(invoker) = invoker {
-            let Some(access) = current.access().invoked_by(&invoker.acting) else {
-                return Answer::Deny;
-            };
-            current.with_access(access)
-        } else {
-            current
-        };
-        current.answer(node, kind)
-    }
-
-    fn independently_sealed(&self) -> bool {
-        use tilo_actions::policy::roles;
-        let (app, route) = (self.shared.owner, self.id().route());
-        roles::requires_document_keys(app, route)
-            || roles::has_member_reader(app, P::KIND)
-            || roles::is_workspace_moderation(app, route)
+        self.shared.core.may_read()
     }
 
     /// Whether the workspace's grants let the person invoke the verb `verb` of
     /// the record, as its owner publishes it. A window that knows nothing
     /// of the workspace's grants (a test host) lets the record decide.
     pub fn may(&self, verb: &str) -> bool {
-        let Some(declared) = P::declarations().into_iter().find(|decl| decl.id == verb) else {
-            return self.shared.permissions.is_none() && !self.independently_sealed();
-        };
-        let node = tilo_actions::action_node(
-            &TreePath::root(),
-            self.shared.owner,
-            P::KIND,
-            self.id().route(),
-            declared.field,
-            verb,
-        );
-        if self.independently_sealed() {
-            return self.answer(&node, declared.kind) == tilo_actions::policy::Answer::Allow;
-        }
-        self.shared.permissions.as_ref().is_none_or(|permissions| {
-            permissions.check(&PermissionScope::Action {
-                node,
-                kind: declared.kind,
-            })
-        })
+        self.shared.core.may(verb)
     }
 
     /// Apply the action `invoke` names: decided by the workspace's grants on the
@@ -593,7 +778,7 @@ impl<P: Resource> WorkspaceResource<P> {
     /// (a pass of the view), the change waits for the window's next settle and
     /// is made then, in the order it was asked for.
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
-        self.invoke_as(&super::resources::acting(&self.shared.me), invoke)
+        self.invoke_as(&super::resources::acting(&self.shared.core.me), invoke)
     }
 
     /// [`Self::invoke`] as `invoker` (an agent, a script), which the change is attributed to —
@@ -609,20 +794,13 @@ impl<P: Resource> WorkspaceResource<P> {
         invoke: &Invoke<P>,
     ) -> Result<(), ActionError> {
         let scope = self
+            .shared
+            .core
             .independently_sealed()
             .then(|| ui_core::invocation_scope::InvokerScope::enter(invoker.clone()));
         let action = self.admit(invoke)?;
         drop(scope);
-        match self.shared.apply_as(&action, invoker) {
-            Applied::Done(result) => {
-                self.shared.refresh();
-                result
-            }
-            Applied::Waits => {
-                self.wait(action, invoker);
-                Ok(())
-            }
-        }
+        self.applied(Pending::of::<P>(action), invoker)
     }
 
     /// Apply the typed action attributed to the current caller.
@@ -630,7 +808,7 @@ impl<P: Resource> WorkspaceResource<P> {
     /// # Errors
     /// The current grants or the record refuse the change.
     pub fn act(&self, action: &P::Action) -> Result<(), ActionError> {
-        self.act_as(&super::resources::acting(&self.shared.me), action)
+        self.act_as(&super::resources::acting(&self.shared.core.me), action)
     }
 
     /// Apply the typed `action` as `invoker`, as [`Self::invoke_as`] applies the one its
@@ -641,36 +819,25 @@ impl<P: Resource> WorkspaceResource<P> {
     /// use waits for the window's next settle.
     pub fn act_as(&self, invoker: &ActionInvoker, action: &P::Action) -> Result<(), ActionError> {
         let scope = self
+            .shared
+            .core
             .independently_sealed()
             .then(|| ui_core::invocation_scope::InvokerScope::enter(invoker.clone()));
         self.admitted(action)?;
         drop(scope);
-        match self.shared.apply_as(action, invoker) {
+        self.applied(Pending::of::<P>(action.clone()), invoker)
+    }
+
+    /// Apply the admitted `action` as `invoker`. Where its store is in use by whatever runs now
+    /// (a pass of the view), the change lands in the window's next settle, in the order it was
+    /// asked for, as an edit asked for in a pass does ([`Self::invoke_then`]).
+    fn applied(&self, action: Pending, invoker: &ActionInvoker) -> Result<(), ActionError> {
+        match self.shared.core.act_admitted(action, invoker) {
             Applied::Done(result) => {
                 self.shared.refresh();
                 result
             }
-            Applied::Waits => {
-                self.wait(action.clone(), invoker);
-                Ok(())
-            }
-        }
-    }
-
-    /// Keep `action` for the record's next free moment: its store is in use by
-    /// whatever runs now (a pass of the view), so the change lands in the
-    /// window's next settle, in the order it was asked for, as an edit asked
-    /// for in a pass does ([`Self::invoke_then`]).
-    fn wait(&self, action: P::Action, invoker: &ActionInvoker) {
-        let shared = &self.shared;
-        shared.waiting.borrow_mut().push(Waiting {
-            action,
-            invoker: invoker.clone(),
-            then: Box::new(|_| {}),
-            woken: 0,
-        });
-        if let Some(window) = &shared.wake {
-            window.wake();
+            Applied::Waits => Ok(()),
         }
     }
 
@@ -688,25 +855,18 @@ impl<P: Resource> WorkspaceResource<P> {
             Ok(action) => action,
             Err(error) => return then(Err(error)),
         };
-        let shared = &self.shared;
-        let first = shared
+        let action = Pending::of::<P>(action);
+        let core = &self.shared.core;
+        let first = core
             .waiting
             .try_borrow()
             .is_ok_and(|waiting| waiting.is_empty());
-        let invoker = super::resources::acting(&shared.me);
-        if first && let Applied::Done(result) = shared.apply_as(&action, &invoker) {
-            shared.refresh();
+        let invoker = super::resources::acting(&core.me);
+        if first && let Applied::Done(result) = core.apply_as(&action, &invoker) {
+            self.shared.refresh();
             return then(result);
         }
-        shared.waiting.borrow_mut().push(Waiting {
-            action,
-            invoker,
-            then: Box::new(then),
-            woken: 0,
-        });
-        if let Some(window) = &shared.wake {
-            window.wake();
-        }
+        core.wait(action, invoker, Box::new(then));
     }
 
     /// Apply History's verb `edit` (undo a step, restore a version) to the record as the
@@ -720,34 +880,11 @@ impl<P: Resource> WorkspaceResource<P> {
         edit: super::history::HistoryEdit,
         item: Option<&str>,
     ) -> Result<(), ActionError> {
-        let encoded = tilo_actions::EncodedAction {
-            type_id: super::history::EDIT_TYPE.to_owned(),
-            payload: serde_json::to_vec(&edit)
-                .map_err(|error| ActionError::Refused(error.to_string()))?,
-        };
+        let payload =
+            serde_json::to_vec(&edit).map_err(|error| ActionError::Refused(error.to_string()))?;
         let action = super::history::ResourceHistoryEdit::<P>::new(edit);
-        let shared = &self.shared;
-        let invoker = ActionInvoker::member(shared.me.clone());
-        let actor = invoker.acting.by.actor_bytes();
-        let mut context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
-            .with_app(shared.owner, shared.app_title)
-            .with_invoker(invoker)
-            .with_change(action.change_kind());
-        context.item = item.map(|item| tilo_actions::ActionItem {
-            id: item.to_owned(),
-            label: item.to_owned(),
-        });
-        let edited = shared.record.try_edit(true, |doc| {
-            let writer = ui_core::history_source::authors::device_actor(&actor, doc.get_actor());
-            tilo_actions::apply_local_with_context(doc, &action, encoded, Some(&writer), context)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        });
-        let result = match edited {
-            Ok(result) => result.map_err(ActionError::Refused),
-            Err(unavailable) => Err(ActionError::Refused(unavailable.to_string())),
-        };
-        shared.refresh();
+        let result = self.shared.core.apply_history(payload, &action, item);
+        self.shared.refresh();
         result
     }
 
@@ -755,39 +892,9 @@ impl<P: Resource> WorkspaceResource<P> {
     /// [`Self::may`] decides it, a field edit at the field it changes. What a caller from
     /// outside asks for passes here before it is applied.
     fn admitted(&self, action: &P::Action) -> Result<(), ActionError> {
-        let refused = || {
-            ActionError::Refused(format!(
-                "you may not change the workspace's {}",
-                P::LABEL.to_lowercase()
-            ))
-        };
-        if let Some(verb) = verb_of::<P>(action) {
-            return if self.may(&verb) || self.keeps_its_own_housekeeping(&verb) {
-                Ok(())
-            } else {
-                Err(refused())
-            };
-        }
-        let need = tilo_resource::need_of::<P>(action);
-        let node = tilo_actions::resource_node(
-            &TreePath::root(),
-            self.shared.owner,
-            P::KIND,
-            self.id().route(),
-        )
-        .field(need.field.as_deref().unwrap_or_default())
-        .action(tilo_resource::FIELD_EDIT);
-        let allowed = if self.independently_sealed() {
-            self.answer(&node, need.kind) == tilo_actions::policy::Answer::Allow
-        } else {
-            self.shared.permissions.as_ref().is_none_or(|permissions| {
-                permissions.check(&PermissionScope::Action {
-                    node,
-                    kind: need.kind,
-                })
-            })
-        };
-        if allowed { Ok(()) } else { Err(refused()) }
+        self.shared
+            .core
+            .admitted(verb_of::<P>(action), tilo_resource::need_of::<P>(action))
     }
 
     /// The action `invoke` names, once the workspace's grants admit it.
@@ -795,36 +902,23 @@ impl<P: Resource> WorkspaceResource<P> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
-        if self.independently_sealed() {
+        let core = &self.shared.core;
+        if core.independently_sealed() {
             self.admitted(&action)?;
         } else if let Some(verb) = verb_of::<P>(&action)
-            && !self.may(&verb)
-            && !self.keeps_its_own_housekeeping(&verb)
+            && !core.may(&verb)
+            && !core.keeps_its_own_housekeeping(&verb)
         {
-            return Err(ActionError::Refused(format!(
-                "you may not change the workspace's {}",
-                P::LABEL.to_lowercase()
-            )));
+            return Err(core.refused());
         }
         Ok(action)
-    }
-
-    /// Whether `verb` is one the record's keeper makes for itself and offers no caller — its
-    /// tab's action log, a reading position: the keeper's own window makes it without a grant
-    /// on it, as it keeps the record. Every change an app of the workspace asks for is decided
-    /// by the grants.
-    fn keeps_its_own_housekeeping(&self, verb: &str) -> bool {
-        self.shared.owner == self.shared.app_id
-            && !P::declarations()
-                .into_iter()
-                .any(|declared| declared.id == verb)
     }
 
     /// The record underneath, for a test or host that carries it between
     /// devices itself.
     #[must_use]
     pub fn record(&self) -> &StoredResource {
-        &self.shared.record
+        &self.shared.core.record
     }
 }
 
@@ -885,7 +979,7 @@ fn offered<P: Resource>(shared: &Rc<Shared<P>>, id: String) -> Held<P> {
     .reading(move |read| {
         if let Some(shared) = reading.upgrade() {
             let document = WorkspaceResource { shared };
-            if !document.independently_sealed() || document.may_read() {
+            if !document.shared.core.independently_sealed() || document.may_read() {
                 document.read_with_waiting(|doc| read(doc));
             }
         }
@@ -928,6 +1022,13 @@ type AskAgain = Rc<dyn Fn(&WorkspaceState) -> bool>;
 /// was asked for, or none when whatever held the store then lets go without anything arriving,
 /// so it is asked again at the next chance; how to ask for it again, and its type's name.
 type OnItsWay = (Option<u64>, AskAgain, fn() -> String);
+
+/// How the keeping app's window offers a record it opened: as its resource under the id it is
+/// handed, and whether the caller may read it.
+struct Publishing {
+    offer: Box<dyn FnOnce(String) -> Rc<dyn ResourceApi>>,
+    readable: Box<dyn Fn() -> bool>,
+}
 
 struct PublishedWorkspaceResource {
     api: Rc<dyn ResourceApi>,
@@ -1381,59 +1482,85 @@ impl WorkspaceState {
         if owner == self.app_id {
             super::controls::opened_resource::<P>();
         }
-        let arrived = self.arrivals(owner);
+        let arrived = self.asks_again(&key)?;
+        match open(&self.records) {
+            Ok(opened) => {
+                self.opened_now(&key);
+                self.held(key, opened)
+            }
+            Err(why) => {
+                let again = matches!(why, Unopened::Arriving | Unopened::InUse)
+                    .then(|| Self::asking_again::<P>(owner, id));
+                self.not_opened(key, why, arrived, again, P::label);
+                None
+            }
+        }
+    }
+
+    /// What arrived for the record `key` so far, when the workspace is to be asked for it now:
+    /// not when it was on its way the last time and nothing arrived for it since.
+    fn asks_again(&self, key: &OpenKey) -> Option<u64> {
+        let arrived = self.arrivals(key.0);
         if self
             .unopened
             .borrow()
-            .get(&key)
+            .get(key)
             .is_some_and(|(seen, _, _)| *seen == Some(arrived))
         {
-            self.asked_while_building(&key);
+            self.asked_while_building(key);
             return None;
         }
-        match open(&self.records) {
-            Ok(opened) => {
-                self.unopened.borrow_mut().remove(&key);
-                self.waiting.borrow_mut().remove(&key);
-                self.answer_awaited();
-                self.opened_for_parts(&key);
-                self.held(key, Some(opened))
-            }
-            Err(Unopened::Arriving) => {
+        Some(arrived)
+    }
+
+    /// The record `key` opened: what waited for it is answered.
+    fn opened_now(&self, key: &OpenKey) {
+        self.unopened.borrow_mut().remove(key);
+        self.waiting.borrow_mut().remove(key);
+        self.answer_awaited();
+        self.opened_for_parts(key);
+    }
+
+    /// The record `key` did not open, for `why`, with `arrived` arrived for it when it was asked
+    /// for: one on its way is asked for `again` once it can open, and a window that waits for it
+    /// too long names it by `label`.
+    fn not_opened(
+        &self,
+        key: OpenKey,
+        why: Unopened,
+        arrived: u64,
+        again: Option<AskAgain>,
+        label: fn() -> String,
+    ) {
+        match (why, again) {
+            (Unopened::Arriving, Some(again)) => {
                 // Its store tells the window when something arrives in it, also for what
                 // never opened here: nothing else would, and the window would go on showing
                 // that the workspace has none until something else woke it.
-                if let (Some(window), Ok(store)) = (&self.wake, self.records.store_of(owner)) {
+                if let (Some(window), Ok(store)) = (&self.wake, self.records.store_of(key.0)) {
                     store.wake_on_arrival(window.clone());
                 }
-                let again = Self::asking_again::<P>(owner, id);
                 self.asked_while_building(&key);
                 self.waiting_since(&key, Unopened::Arriving);
                 self.unopened
                     .borrow_mut()
-                    .insert(key, (Some(arrived), again, P::label));
-                None
+                    .insert(key, (Some(arrived), again, label));
             }
-            Err(Unopened::InUse) => {
+            (Unopened::InUse, Some(again)) => {
                 // Asked again in the window's next refresh, which is asked for, and whenever a
                 // view asks for it before then: the store lets go when what reads it now is done,
                 // and nothing arrives to say so. Marking it with what arrives next instead would
                 // pass over the very arrival that answers it (the workspace holding none).
-                let again = Self::asking_again::<P>(owner, id);
                 self.asked_while_building(&key);
                 self.waiting_since(&key, Unopened::InUse);
-                self.unopened
-                    .borrow_mut()
-                    .insert(key, (None, again, P::label));
+                self.unopened.borrow_mut().insert(key, (None, again, label));
                 if let Some(window) = &self.wake {
                     window.wake();
                 }
-                None
             }
-            Err(Unopened::Failed) => {
+            _ => {
                 self.waiting.borrow_mut().remove(&key);
                 self.no_longer_awaited(&key);
-                None
             }
         }
     }
@@ -1507,48 +1634,69 @@ impl WorkspaceState {
     fn held<P: Resource>(
         &self,
         key: OpenKey,
-        opened: Option<WorkspaceResource<P>>,
+        opened: WorkspaceResource<P>,
     ) -> Option<WorkspaceResource<P>> {
-        let opened = opened?;
-        let document = opened.id().to_string();
         let WorkspaceResource { shared } = opened;
-        self.owners.borrow_mut().push(shared.record.history_owner());
         let weak = Rc::downgrade(&shared);
-        self.refreshers.borrow_mut().push(Box::new(move || {
-            weak.upgrade().is_some_and(|shared| shared.refresh())
-        }));
+        let refresh = Box::new(move || weak.upgrade().is_some_and(|shared| shared.refresh()));
         // The keeping app's own window offers it to callers from outside, beside its own
         // resource; every other app's window only opens it.
+        let publishing = (key.0 == self.app_id).then(|| {
+            let offering = Rc::clone(&shared);
+            let resource = WorkspaceResource {
+                shared: Rc::clone(&shared),
+            };
+            Publishing {
+                offer: Box::new(move |id| Rc::new(offered(&offering, id)) as Rc<dyn ResourceApi>),
+                readable: Box::new(move || {
+                    !resource.shared.core.independently_sealed() || resource.may_read()
+                }),
+            }
+        });
+        self.keep(
+            key,
+            &shared.core,
+            refresh,
+            publishing,
+            Rc::clone(&shared) as Rc<dyn Any>,
+        );
+        Some(WorkspaceResource { shared })
+    }
+
+    /// [`Self::held`] for a record of any type: `refresh` follows it, and `publishing` offers it
+    /// where this window's app keeps it.
+    fn keep(
+        &self,
+        key: OpenKey,
+        core: &Core,
+        refresh: Box<dyn Fn() -> bool>,
+        publishing: Option<Publishing>,
+        held: Rc<dyn Any>,
+    ) {
+        self.owners.borrow_mut().push(core.record.history_owner());
+        self.refreshers.borrow_mut().push(refresh);
         // The first resource of a kind is offered as the kind; each further one (a part of a
         // resource kept in several documents, as a workspace's tree is) as its own document, so
         // that no two share an address: two that do withdraw the window's every action.
-        if key.0 == self.app_id {
+        if let Some(Publishing { offer, readable }) = publishing {
             let kind_taken = self
                 .published
                 .borrow()
                 .iter()
-                .any(|entry| entry.api.id() == P::KIND);
+                .any(|entry| entry.api.id() == key.1);
             let id = if kind_taken {
-                document
+                core.id().to_string()
             } else {
-                P::KIND.to_owned()
-            };
-            let resource = WorkspaceResource {
-                shared: Rc::clone(&shared),
+                key.1.to_owned()
             };
             self.published
                 .borrow_mut()
                 .push(PublishedWorkspaceResource {
-                    api: Rc::new(offered(&shared, id)),
-                    readable: Box::new(move || {
-                        !resource.independently_sealed() || resource.may_read()
-                    }),
+                    api: offer(id),
+                    readable,
                 });
         }
-        self.opened
-            .borrow_mut()
-            .insert(key, Rc::clone(&shared) as Rc<dyn Any>);
-        Some(WorkspaceResource { shared })
+        self.opened.borrow_mut().insert(key, held);
     }
 
     /// Read every open record that moved. Whether one did.
