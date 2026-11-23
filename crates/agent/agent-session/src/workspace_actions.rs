@@ -93,6 +93,7 @@ mod placed;
 mod publish;
 mod queue;
 mod reads;
+mod resolve;
 mod run_context;
 mod search_access;
 mod search_activity;
@@ -198,6 +199,10 @@ struct Shared {
     puts: tilo_actions::remote::HostedContentPuts,
     /// What writes an invocation that waits for a person's yes as its asked record.
     asked_records: OnceLock<Arc<dyn tilo_actions::remote::asked::AskedRecords>>,
+    /// The store those records are kept in, which admits a person's answer to one.
+    asked_store: OnceLock<Arc<tilo_actions::remote::asked::AskedStore>>,
+    /// This dispatch as that store hands it the calls answered: kept here, held there weakly.
+    asked_dispatch: OnceLock<Arc<dyn tilo_actions::remote::asked::AskedDispatch>>,
     /// Records whose name in their app's index waits to be read again.
     renaming: Mutex<HashSet<DocumentRoute>>,
     /// What search read of the documents, counted for the timing lines and for the tests that
@@ -246,6 +251,8 @@ impl WorkspaceActions {
                 steps: Arc::new(content::ContentSteps::default()),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 asked_records: OnceLock::new(),
+                asked_store: OnceLock::new(),
+                asked_dispatch: OnceLock::new(),
                 renaming: Mutex::default(),
                 agent_sessions: OnceLock::new(),
                 search: SearchActivity::default(),
@@ -707,7 +714,14 @@ impl WorkspaceActions {
         // Answered at admission: a wait is ignored, as an older host
         // would, and is no part of the remembered request.
         request.wait_ms = None;
+        // A person's approve is set only where their answer admits the call again
+        // ([`resolve`]), never by the caller.
+        request.strip_approval();
         let invocation = request.invocation;
+        // A person's answer to an asked record.
+        if tilo_actions::remote::asked::is_resolve(&request.target) {
+            return self.resolve_request(workspace_id, caller, &request);
+        }
         // The listing of the workspace's runs is a read, answered at once and
         // remembered as no run of its own.
         if tilo_actions::remote::workspace_invocations::is_listing(&request.target) {
@@ -735,23 +749,6 @@ impl WorkspaceActions {
         }
         {
             let mut log = self.log();
-            // The person approved the record it was kept as: the dispatch admits it again under
-            // its id, carrying their answer, and it runs from here.
-            if request.approval().is_some()
-                && let Some(entry) = log.entries.get_mut(&invocation)
-                && entry.asked
-                && !entry.update.is_terminal()
-                && caller.continues(&entry.caller)
-                && entry.request.target == request.target
-                && entry.request.argument == request.argument
-            {
-                entry.asked = false;
-                entry.request = request;
-                entry.update = InvocationUpdate::Accepted { invocation };
-                log.moved();
-                drop(log);
-                return self.run_admitted(workspace_id, invocation);
-            }
             let held = log.entries.get(&invocation);
             if let Some(entry) = held
                 && (!caller.continues(&entry.caller) || !entry.request.same_invocation(&request))

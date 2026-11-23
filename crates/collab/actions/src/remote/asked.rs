@@ -13,10 +13,18 @@
 //!
 //! [`WAITING`]`#`[`LIST`] lists the asked records a person may answer, each as
 //! an [`Asked`] row.
+//!
+//! The person answers with `<record>#`[`RESOLVE`] ([`Resolve`]), which [`AskedStore`] admits:
+//! only the person the record asks, only while it is asked, and at most once. An approve hands
+//! the call back to the dispatch that keeps it ([`AskedDispatch`]), which admits it again under
+//! its id for its original caller, checking that caller's grants as they stand then.
 
 use serde::{Deserialize, Serialize};
 
 use super::{ActionAddress, RemoteActionTarget};
+
+mod store;
+pub use store::{ANSWERED, AskedStore, NOT_YOURS, NOTHING_ASKED};
 
 /// The provider the questions that wait for a person are listed under.
 pub const PROVIDER: &str = "tilo.asking";
@@ -25,6 +33,11 @@ pub const PROVIDER: &str = "tilo.asking";
 pub const WAITING: &str = "waiting";
 /// Every question that waits for the person, as [`AskedList`].
 pub const LIST: &str = "list";
+/// Answer an asked record: `<record>#resolve` with a [`Resolve`], on the
+/// [`super::workspace_invocations::PROVIDER`] provider.
+pub const RESOLVE: &str = "resolve";
+/// What an asked invocation the person declined ends with: cancelled, its message this.
+pub const DECLINED: &str = "declined";
 /// The phase of an invocation's progress while it waits in its asked record: its message
 /// names the record (`<workspace>/<record>`).
 pub const ASKED_PHASE: &str = "asked";
@@ -130,6 +143,15 @@ pub struct AskedFacts {
     /// answer; nothing they type passes through the record.
     #[serde(default)]
     pub takes: Option<String>,
+    /// The resource type the action is on, by its id (`clocks.alarm`): what a grant given
+    /// with the answer is scoped to. Empty where the call is on no resource type.
+    #[serde(default)]
+    pub kind: String,
+    /// What the action is able to do, as its contract declares it: the kind of action a grant
+    /// given with the answer allows. `None` where nothing declares it, and then no grant is
+    /// offered.
+    #[serde(default)]
+    pub effect: Option<crate::ActionKind>,
 }
 
 impl AskedFacts {
@@ -250,16 +272,112 @@ pub enum Offer {
 
 impl Offer {
     /// What a question showing `facts` offers, in the order they are shown: approve, approve
-    /// and grant where there is a resource type to name, and decline.
+    /// and grant where there is a resource type to name and an agent or an app to grant it
+    /// to, and decline.
     #[must_use]
     pub fn of(facts: &AskedFacts) -> Vec<Self> {
         let mut offers = vec![Self::Approve];
-        if facts.plural.is_some() && facts.choices.is_empty() {
+        if facts.plural.is_some()
+            && facts.choices.is_empty()
+            && !matches!(facts.by, AskedBy::Device(_))
+        {
             offers.push(Self::ApproveAndGrant);
         }
         offers.push(Self::Decline);
         offers
     }
+}
+
+/// The arguments of [`RESOLVE`]: the person's answer, and for a question that offers choices
+/// the one they picked, by its place among [`AskedFacts::choices`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Resolve {
+    pub resolution: Offer,
+    #[serde(default)]
+    pub choice: Option<usize>,
+}
+
+/// Whether `target` answers an asked record ([`RESOLVE`]).
+#[must_use]
+pub fn is_resolve(target: &RemoteActionTarget) -> bool {
+    target.provider == super::workspace_invocations::PROVIDER && target.address.action == RESOLVE
+}
+
+/// The person a call by `caller` asks when it waits for a yes: the person it acts for, else
+/// the person calling. Never the person of the device that carried the connection.
+#[must_use]
+pub fn asked_person(caller: &super::Caller) -> Option<String> {
+    caller
+        .acting_for_person()
+        .or_else(|| caller.acting().person_id())
+        .filter(|person| !person.is_empty())
+        .map(str::to_owned)
+}
+
+/// The person `caller` answers as: a person acting themselves, or a view acting for the
+/// person it was opened for. An agent, a bot or an automation answers for nobody, whoever it
+/// acts for.
+#[must_use]
+pub fn answering_person(caller: &super::Caller) -> Option<&str> {
+    let acting = caller.acting();
+    if acting.is_agent() || acting.is_bot() || acting.is_automation() {
+        return None;
+    }
+    acting.person_id().filter(|person| !person.is_empty())
+}
+
+/// Whether `a` and `b` are the same call: the same target and the same arguments, byte for byte
+/// as they travel.
+#[must_use]
+pub fn same_call(a: &super::InvokeRequest, b: &super::InvokeRequest) -> bool {
+    let bytes = |request: &super::InvokeRequest| {
+        serde_json::to_vec(&(&request.target, &request.argument)).ok()
+    };
+    matches!((bytes(a), bytes(b)), (Some(a), Some(b)) if a == b)
+}
+
+/// The dispatch that keeps a call waiting in its asked record, as the person's answer reaches
+/// it: the only place a call carrying their approve is admitted again.
+pub trait AskedDispatch: Send + Sync {
+    /// Admit `request` again under its id for `caller`, who asked for it, carrying the person's
+    /// approve ([`super::InvokeRequest::approval`]): only where it still waits in its asked
+    /// record for the same call. It runs under `caller`'s grants as they stand now, and how it
+    /// goes reaches `caller` as every invocation of theirs does.
+    ///
+    /// # Errors
+    /// Why it was not admitted again.
+    fn readmit(
+        &self,
+        caller: &super::Caller,
+        request: super::InvokeRequest,
+    ) -> Result<(), super::ActionCallError>;
+
+    /// End `invocation`, which `caller` asked for, declined by the person: `caller` is told so.
+    ///
+    /// # Errors
+    /// Why it could not be ended.
+    fn declined(
+        &self,
+        caller: &super::Caller,
+        invocation: super::InvocationId,
+    ) -> Result<(), super::ActionCallError>;
+}
+
+/// What writes the grant a person gives with an approve
+/// ([`Offer::ApproveAndGrant`]): an ordinary grant of the workspace's policy, shown and taken
+/// back as every grant is.
+pub trait AskedGrants: Send + Sync {
+    /// Write `grant` in `workspace`, given by `person` (their root key, hex).
+    ///
+    /// # Errors
+    /// Why it was not written: refused where it reaches beyond what `person` may grant.
+    fn grant(
+        &self,
+        workspace: &str,
+        person: &str,
+        grant: tilo_action_policy::Grant,
+    ) -> super::Pending<Result<(), String>>;
 }
 
 /// Where the call was pressed, when a person's press asked it.
@@ -367,6 +485,8 @@ mod tests {
                 "plural": "alarms",
                 "conversation": null,
                 "takes": null,
+                "kind": "",
+                "effect": null,
             })
         );
         assert_eq!(serde_json::from_value::<Asked>(json).unwrap(), row);

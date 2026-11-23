@@ -266,6 +266,8 @@ impl About {
                 .filter(|plural| !plural.is_empty()),
             conversation: caller.turn().map(|turn| turn.conversation.clone()),
             takes: None,
+            kind: self.descriptor.resource_kind.clone(),
+            effect: Some(self.descriptor.contract.kind),
         }
     }
 }

@@ -648,6 +648,15 @@ impl InvokeRequest {
         }
     }
 
+    /// The request as a caller may send it: without a person's approve of an asked record,
+    /// which only the dispatch sets when it admits the call again on their answer
+    /// ([`asked::AskedDispatch::readmit`]). Every admission of a caller's request drops one.
+    pub fn strip_approval(&mut self) {
+        if self.approval().is_some() {
+            self.confirmation = None;
+        }
+    }
+
     /// What the agent's harness calls the session this request was sent in ("Release prep"), as
     /// the client's agent-session group says it: display only, the name people see the agent by
     /// ([`Caller::in_named_session`]). `None` when the client named no session.
