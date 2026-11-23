@@ -257,8 +257,16 @@ fn the_shots_card_and_the_markup_editor_name_the_controls_a_screen_reader_reache
     // Mark it up: the editor draws over the desktop, and its tools and Save are
     // controls the session publishes too.
     ask_studio(&mut session, "annotate", &serde_json::json!({}));
-    until(&mut session, "the editor shows its tools", |s| {
-        published_control(s, "Pen").is_some() && published_control(s, "Save copy").is_some()
+    until(&mut session, "the editor shows its toolbar", |s| {
+        published_control(s, "Save copy").is_some() && published_control(s, "Pen tools").is_some()
+    });
+    // Its tool menu opens from the published control, and its options are
+    // controls by name while it is open.
+    session
+        .press_action("Pen tools", ui::window_targets::TargetAction::Activate)
+        .expect("the tool menu opens");
+    until(&mut session, "the tool menu names its options", |s| {
+        published_control(s, "Pen").is_some()
     });
 }
 

@@ -42,7 +42,7 @@
           "must": {
             "see": [
               "Save copy",
-              "Pen"
+              "Pen tools"
             ],
             "within": 15
           }
