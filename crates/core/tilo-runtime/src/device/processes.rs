@@ -27,8 +27,9 @@
 //!
 //! A process is started through the platform's launcher ([`spawn_host`]; on Linux the launch kind
 //! "tilolang process", `tilo-launcher tilolang-process`), keyed by its workspace, its app and the
-//! runtimes it runs on, with the storage of that workspace and app; it ends once the last of its
-//! calls ended, which it says on its socket.
+//! runtimes it runs on, with the storage of that workspace and app. It stays once the last of its
+//! calls ended, which it says on its socket, and ends when nothing called it for [`IDLE`]: a person
+//! who closes an app and opens it again finds it running.
 //!
 //! In a development session (`TILO_LAUNCHER_LIVE_MODULES`), a reinstall of an app a process runs is
 //! verified as a launch verifies it and handed to the process on its socket ([`Processes::reinstalled`]):
@@ -42,6 +43,7 @@ use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use launcher::run::tilolang_process::VerifiedInstance;
 use runtime_portal::process_link::{
@@ -72,6 +74,11 @@ pub const PROCESS_ARG: &str = "--tilolang-process";
 /// The app that keeps each person's own views (`apps/tl/views`): views they, their agents or
 /// others wrote, which read whatever the workspace has installed.
 const PERSON_VIEWS_APP: &str = "so.tilo.lang.views";
+
+/// How long a process runs on with no call before it ends: long enough that an app closed and
+/// opened again finds its process running, short enough that the apps of an afternoon don't hold a
+/// small device's memory.
+pub const IDLE: Duration = Duration::from_secs(5 * 60);
 
 /// How many of its last error lines a process that ended without saying why is reported by.
 const SAID_LINES: usize = 8;
@@ -117,6 +124,8 @@ struct Host {
     generation: u64,
     /// The build of each app it runs, the one it was handed last.
     builds: HashMap<String, Build>,
+    /// Since when it runs no call: it ends [`IDLE`] after.
+    idle_since: Option<Instant>,
 }
 
 /// The build of an app a process runs: its module's hash.
@@ -692,6 +701,7 @@ impl Processes {
         if let Some(process) = processes.get_mut(key) {
             match send_instance(&process.socket, request, fds) {
                 Ok(()) => {
+                    process.idle_since = None;
                     process
                         .instances
                         .insert(request.instance, request.app.clone());
@@ -865,13 +875,14 @@ impl Processes {
             instances: HashMap::new(),
             generation,
             builds: HashMap::new(),
+            idle_since: None,
         })
     }
 
     /// Follow the process `key` of `generation` over its socket `followed` until it ends: each
     /// instance that ends is noted, then the process's own end and why, and the process is forgotten.
     fn follow(
-        &self,
+        self: &Arc<Self>,
         key: &HostKey,
         generation: u64,
         followed: &OwnedFd,
@@ -923,9 +934,9 @@ impl Processes {
     }
 
     /// The process `key` (its start `generation`) says the instance of the window `instance` ended.
-    /// Once its last instance ended it is closed: it ends when it has written what it keeps.
-    fn ended(&self, key: &HostKey, generation: u64, instance: u64) {
-        let closed = {
+    /// Once its last instance ended it is idle, and ends [`IDLE`] later unless called again.
+    fn ended(self: &Arc<Self>, key: &HostKey, generation: u64, instance: u64) {
+        let idle = {
             let mut processes = self.running();
             let Some(process) = processes
                 .get_mut(key)
@@ -938,13 +949,46 @@ impl Processes {
             {
                 process.builds.remove(&app);
             }
-            if process.instances.is_empty() {
-                processes.remove(key)
-            } else {
-                None
-            }
+            process.instances.is_empty().then(|| {
+                process.idle_since = Some(Instant::now());
+            })
         };
-        if let Some(process) = closed {
+        if idle.is_some() {
+            let processes = Arc::clone(self);
+            let spawned = std::thread::Builder::new()
+                .name("tilolang-process-idle".into())
+                .spawn(move || {
+                    std::thread::sleep(IDLE);
+                    processes.close_idle(Instant::now());
+                });
+            if let Err(error) = spawned {
+                // With no thread to end it later, it ends now: a process is never left for good.
+                tracing::warn!(%error, "no thread to end an idle tilolang process later");
+                self.close_idle(Instant::now() + IDLE);
+            }
+        }
+    }
+
+    /// Close every process that ran no call for [`IDLE`] by `now`: each ends once it has written
+    /// what it keeps.
+    fn close_idle(&self, now: Instant) {
+        let closed: Vec<Host> = {
+            let mut processes = self.running();
+            let idle: Vec<HostKey> = processes
+                .iter()
+                .filter(|(_, process)| {
+                    process.instances.is_empty()
+                        && process
+                            .idle_since
+                            .is_some_and(|since| now.saturating_duration_since(since) >= IDLE)
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            idle.iter()
+                .filter_map(|key| processes.remove(key))
+                .collect()
+        };
+        for process in closed {
             // The process reads the end of its socket and ends once it runs nothing.
             // SAFETY: shutting down the writing half of a socket the session owns.
             let _ = unsafe { libc::shutdown(process.socket.as_raw_fd(), libc::SHUT_WR) };
@@ -1213,6 +1257,7 @@ mod tests {
                 instances: HashMap::from([(7, NOTES.to_owned()), (8, NOTES.to_owned())]),
                 generation: 1,
                 builds,
+                idle_since: None,
             };
             processes.running().insert(key(workspace, NOTES), process);
         }
@@ -1309,6 +1354,51 @@ mod tests {
                 "{what} is told once, or not at all"
             );
         }
+    }
+
+    /// A process whose last window closed runs on, so the app opened again finds it, and ends only
+    /// once nothing called it for [`IDLE`]; a process still running a call is never ended as idle.
+    #[test]
+    fn a_process_outlives_its_last_window_until_it_is_idle() {
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a1";
+        const BUSY: &str = "7a110d00-0000-4000-8000-0000000000a2";
+        let processes = processes(std::env::temp_dir());
+        let (ours, theirs) = runtime_portal::process_link::pair().unwrap();
+        let (busy_ours, busy_theirs) = runtime_portal::process_link::pair().unwrap();
+        for (workspace, socket) in [(WORKSPACE, ours), (BUSY, busy_ours)] {
+            processes.running().insert(
+                key(workspace, NOTES),
+                Host {
+                    socket: Arc::new(socket),
+                    instances: HashMap::from([(7, NOTES.to_owned())]),
+                    generation: 1,
+                    builds: HashMap::new(),
+                    idle_since: None,
+                },
+            );
+        }
+        let running = |workspace: &str| {
+            processes
+                .instances()
+                .into_iter()
+                .any(|(running, app, _)| running == workspace && app == NOTES)
+        };
+
+        processes.ended(&key(WORKSPACE, NOTES), 1, 7);
+        processes.close_idle(Instant::now());
+        assert!(
+            running(WORKSPACE),
+            "its last window closed, and it still runs"
+        );
+
+        processes.close_idle(Instant::now() + IDLE);
+        assert!(!running(WORKSPACE), "idle for long enough, it is closed");
+        assert!(
+            ToProcess::receive(&theirs).unwrap().is_none(),
+            "the process reads the end of its socket, and ends"
+        );
+        assert!(running(BUSY), "a process running a window is never idle");
+        drop(busy_theirs);
     }
 
     /// A process that ended without saying why is reported by how it ended and what it last wrote.

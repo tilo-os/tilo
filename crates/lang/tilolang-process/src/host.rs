@@ -163,7 +163,7 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                 tracing::warn!(%error, instance, "the session was not told what plays");
             }
         }
-        // The session stops the host once its last instance ended.
+        // The session stops the host once it ran no instance for a while.
         for instance in host.take_ended() {
             if let Some(open) = api.as_ref()
                 && let Err(error) = FromProcess::Ended(instance).send(open)
