@@ -1012,6 +1012,7 @@ impl tilo_session_actions::RemoteSession for Asking {
                             app: focus.app,
                             document: focus.document,
                         }),
+                        devices: vec![shown.publisher.clone()],
                     }
                 })
                 .collect(),

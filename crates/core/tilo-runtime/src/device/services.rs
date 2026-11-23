@@ -2634,11 +2634,19 @@ impl ActionProvider for RuntimeActionProvider {
             }
             self.broker.state().here(&on_this_device(caller))
         };
-        let Some(who_is_here) = &self.who_is_here else {
-            return listed;
-        };
+        if listed.is_none() && self.who_is_here.is_none() {
+            return None;
+        }
         let mut here = listed.unwrap_or_default();
-        who_is_here.add_here(&self.workspace, &mut here);
+        if let Some(who_is_here) = &self.who_is_here {
+            who_is_here.add_here(&self.workspace, &mut here);
+        }
+        // The devices each is present on, as this device's links hear them.
+        tilo_workspace_service::workspaces::PresentDevices::attach(
+            self.workspaces.copies(),
+            &self.workspace,
+            &mut here,
+        );
         Some(here)
     }
 

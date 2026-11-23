@@ -771,6 +771,9 @@ pub struct ProcessServices {
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     /// The workspaces' agents, as their records name them; without it no agent joins.
     pub agents: Option<Arc<dyn AgentRoster>>,
+    /// The devices each person is present on, as this device hears them; without it who is here
+    /// names no device.
+    pub present_devices: Option<Arc<dyn crate::workspaces::PresentDevices>>,
     /// The agent sessions this host serves: the MCP connections a person admitted, each with what
     /// its person allowed it.
     pub agent_sessions: Option<Arc<dyn AgentSessions>>,

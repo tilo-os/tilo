@@ -695,6 +695,8 @@ impl AppBrokerState {
             // Nor does it wait for another device's workspace to change.
             | RemoteActionMessage::ChangedRequest { .. }
             | RemoteActionMessage::SurfaceRequest { .. } => None,
+            // Who is here it reads as the person using it, as a list of their devices does.
+            RemoteActionMessage::HereRequest { .. } => Some(person.clone()),
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -708,6 +710,7 @@ impl AppBrokerState {
             | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::ChangedResponse { .. }
+            | RemoteActionMessage::HereResponse { .. }
             | RemoteActionMessage::SurfaceResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
@@ -2605,10 +2608,9 @@ impl AppBrokerState {
             .and_then(|surfaces| {
                 let surface = surfaces.get(&peer_id).filter(|surface| surface.live)?;
                 let resource = surface.current_resource(&address.resource, &address.action)?;
-                let action = surface
-                    .actions
-                    .iter()
-                    .find(|action| action.resource == resource && action.action == address.action)?;
+                let action = surface.actions.iter().find(|action| {
+                    action.resource == resource && action.action == address.action
+                })?;
                 Some((
                     surface.app_id.clone(),
                     surface.route.cluster_id.clone(),

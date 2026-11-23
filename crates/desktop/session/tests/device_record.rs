@@ -4,7 +4,7 @@
 //! workspace list, and every device of theirs lists those keys: a browser a
 //! page's root approved in its own tab, a phone paired on their desktop. A
 //! device's own fleet is not that list — a key the root certified elsewhere is
-//! in no fleet of theirs but the one that signed it — so Settings asks the
+//! in no fleet of theirs but the one that signed it — so Settings reads the
 //! record, and a pairing says the list again even though no workspace moved.
 
 #![cfg(target_os = "linux")]
@@ -19,23 +19,46 @@
 
 use crate::common::people::{Device, Person, Site, join_together};
 use serde_json::{Value, json};
-use tilo_actions::remote::device_tickets;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_server_protocol::workspaces::Role;
 
-/// The devices Settings lists on `device`.
+/// The devices Settings lists on `device`: the record of the person's devices, read through the
+/// record API of the device's session, as every list of them reads it.
 fn listed(device: &Device) -> Vec<Value> {
-    let answer = device.act_wait(&device_tickets::target(device_tickets::LIST), &json!({}));
-    answer["update"]["output"]["value"]["devices"]
-        .as_array()
-        .cloned()
-        .unwrap_or_else(|| {
-            panic!(
-                "{} lists the person's devices: {answer}\n{}",
-                device.label,
-                device.diagnostic()
-            )
-        })
+    use tilo_actions::remote::{RemoteActionMessage, ResourceReadRequest};
+    use tilo_server_protocol::devices::{DEVICES, FleetRecords, fleet, record_value};
+    let person = device.cert.user_public_key;
+    let answer = device.frame(RemoteActionMessage::ResourceRead {
+        correlation: 1,
+        on_behalf_of: None,
+        read: ResourceReadRequest {
+            workspace: tilo_action_policy::roles::person_workspace_id(&person),
+            app: DEVICES.0.to_owned(),
+            record: DEVICES.1.to_owned(),
+            joined: false,
+            after: None,
+            wait_ms: None,
+        },
+    });
+    let RemoteActionMessage::ResourceReading {
+        result: Ok(read), ..
+    } = answer
+    else {
+        panic!(
+            "{} reads the person's devices: {answer:?}\n{}",
+            device.label,
+            device.diagnostic()
+        );
+    };
+    let read: Value = serde_json::from_str(&read).expect("a reading is JSON");
+    let records = FleetRecords {
+        devices: record_value(&read),
+        ..FleetRecords::default()
+    };
+    fleet(&person, &device.cert.device_public_key, &records, &[])
+        .into_iter()
+        .map(|listed| serde_json::to_value(listed).expect("a listed device is JSON"))
+        .collect()
 }
 
 /// Whether `listed` holds a device called `label`.

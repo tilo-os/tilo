@@ -31,7 +31,7 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, ISSUE, LIST,
+    APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, ISSUE,
     LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS, PROVIDER, Place, RENAME, REPORTED, RESOURCE,
     REVOKE, Report, SCOPE, TICKET_LIFETIME_NS, Ticket, UPDATE,
 };
@@ -135,13 +135,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
                          entry in your Servers workspace.",
                 ),
             ],
-        ))),
-        row(Some(descriptor(
-            LIST,
-            "Your devices",
-            "Every device of the person's: how it is listed, whether it is online, and whether \
-                 it was revoked.",
-            &[],
         ))),
         row(Some(descriptor(
             RENAME,
@@ -550,15 +543,7 @@ impl Tickets {
             && request.target.address.resource == RESOURCE
             && matches!(
                 request.target.address.action.as_str(),
-                INFO | ISSUE
-                    | LOG_IN
-                    | PENDING
-                    | APPROVE
-                    | REPORTED
-                    | LIST
-                    | RENAME
-                    | REVOKE
-                    | UPDATE
+                INFO | ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
             )
     }
 
@@ -586,10 +571,9 @@ impl Tickets {
         // endpoint reached one of its relays, it would name only the network this device stands
         // in. It waits for the relay first, as an invitation does.
         let unreached = action == ISSUE && !wait && !reached(&self.0.endpoint);
-        let waiting =
-            matches!(
+        let waiting = matches!(
             action.as_str(),
-            LOG_IN | PENDING | APPROVE | REPORTED | LIST | RENAME | REVOKE | UPDATE
+            LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
         ) || wait
             || unreached;
         if !waiting {
@@ -619,7 +603,7 @@ impl Tickets {
                 PENDING => served.pending(&args).await,
                 APPROVE => served.approve(&args).await,
                 REPORTED => served.report(&args).await,
-                LIST | RENAME | REVOKE | UPDATE => served.manage(&action, &args).await,
+                RENAME | REVOKE | UPDATE => served.manage(&action, &args).await,
                 ISSUE if !wait => {
                     tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
                     served.issue(&args)

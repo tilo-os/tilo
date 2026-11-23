@@ -21,9 +21,9 @@
 //! another device of the person's reads the entry and leaves it.
 //!
 //! What is the embedder's own (its endpoint and action service, how it signs, where its root and
-//! its workspaces are, where a computer it adds enters, which of the person's devices it hears
-//! present) it supplies as an [`Issuer`]. The same server lists, names and revokes the person's
-//! devices, from the record of their own workspace, and keeps there each computer it adds.
+//! its workspaces are, where a computer it adds enters) it supplies as an [`Issuer`]. The same
+//! server names and revokes the person's devices in the record of their own workspace, and keeps
+//! there each computer it adds.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
@@ -103,16 +103,9 @@ pub trait Issuer: Send + Sync + 'static {
     fn servers(&self) -> Option<Workspaces>;
 
     /// The person's devices this device knows itself, beside the record of their own workspace:
-    /// the keys its root certified here, which a list shows before the record has them. None by
-    /// default.
+    /// the keys its root certified here, which a revocation takes into the record when it has
+    /// not got them yet. None by default.
     fn known(&self) -> Vec<DeviceCert> {
-        Vec::new()
-    }
-
-    /// The keys of the person's devices this device hears present now, as its own presence says
-    /// beyond the live sessions its workspace service holds ([`Self::servers`]), which a list
-    /// counts as well: none by default.
-    fn present(&self) -> Vec<[u8; 32]> {
         Vec::new()
     }
 

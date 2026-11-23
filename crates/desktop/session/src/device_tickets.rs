@@ -1,6 +1,6 @@
 //! The person's devices on this desktop: a ticket for a new computer (Settings' "Add a device",
-//! `tilo machine add`), and the list Settings' devices page shows, names and revokes from,
-//! answered through the one ticket server every device of the person's runs
+//! `tilo machine add`), and the list, names and revocations Settings' devices page asks for, answered
+//! through the one ticket server every device of the person's runs
 //! ([`tilo_workspace_service::device_tickets`]).
 //!
 //! The desktop supplies what is its own: the endpoint and device action service its network
@@ -49,14 +49,12 @@ impl DeviceTickets {
         endpoint: Option<Arc<OnceLock<iroh::Endpoint>>>,
         actions: Option<Arc<OnceLock<DeviceActions>>>,
         service: ServiceSlot,
-        fabric: Option<crate::platform::fabric::SharedLink>,
     ) -> Self {
         Self {
             tickets: TicketServer::new(Arc::new(Desktop {
                 endpoint,
                 actions,
                 service: service.clone(),
-                fabric,
             })),
             service,
         }
@@ -91,8 +89,6 @@ struct Desktop {
     actions: Option<Arc<OnceLock<DeviceActions>>>,
     /// The workspace service this device holds its workspaces in.
     service: ServiceSlot,
-    /// The person's devices as this desktop's session hears them live: which are present now.
-    fabric: Option<crate::platform::fabric::SharedLink>,
 }
 
 impl Desktop {
@@ -181,24 +177,6 @@ impl Issuer for Desktop {
     fn known(&self) -> Vec<DeviceCert> {
         self.device()
             .map(|(cert, _)| crate::identity_admin::root_certificates(&cert.user_public_key))
-            .unwrap_or_default()
-    }
-
-    /// The person's devices on a live session with this desktop now, as its device fabric hears
-    /// them.
-    fn present(&self) -> Vec<[u8; 32]> {
-        self.fabric
-            .as_ref()
-            .map(|fabric| {
-                crate::platform::fabric::FabricLink::online_device_ids(fabric)
-                    .iter()
-                    .filter_map(|device| {
-                        let mut key = [0; 32];
-                        hex::decode_to_slice(device.as_str(), &mut key).ok()?;
-                        Some(key)
-                    })
-                    .collect()
-            })
             .unwrap_or_default()
     }
 
@@ -420,7 +398,6 @@ mod tests {
             None,
             None,
             tilo_workspace_service::service::ServiceSlot::default(),
-            None,
         );
         // The ticket is issued on a worker, as the broker's own runtime does it: the test
         // thread only waits for the answer.

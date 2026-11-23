@@ -580,7 +580,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let here = self.host.here(&self.caller())?;
         let mut listed: Vec<Value> = here
             .iter()
-            .map(|here| json!({"who": here.who, "name": here.name, "kind": here.kind}))
+            .map(|here| {
+                json!({"who": here.who, "name": here.name, "kind": here.kind,
+                    "devices": here.devices})
+            })
             .collect();
         listed.sort_by(|left, right| {
             left["who"]

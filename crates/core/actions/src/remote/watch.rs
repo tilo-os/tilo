@@ -22,7 +22,14 @@ pub struct Here {
     /// where the roster does not know.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub works_in: Option<HereWindow>,
+    /// The keys of the devices they are present on now (lowercase hex), as the presence service
+    /// hears them: the device's own links and the devices it reaches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<String>,
 }
+
+/// What a provider that keeps no roster answers a read of who is here.
+pub const HERE_UNAVAILABLE: &str = "this provider keeps no roster of who is in the workspace";
 
 /// The window a member works in, as their presence names it to everyone in the workspace.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

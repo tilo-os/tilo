@@ -1741,7 +1741,6 @@ impl Session {
                     Some(sync.endpoint_handle()),
                     Some(sync.actions_handle()),
                     workspace_service.clone(),
-                    fabric.clone(),
                 )
             }),
         );

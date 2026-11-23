@@ -114,6 +114,7 @@ broker_services! {
     audio_output: Arc<dyn AudioOutputServices>,
     workspace_memberships: Arc<dyn WorkspaceMemberships>,
     agents: Arc<dyn tilo_broker_core::services::AgentRoster>,
+    present_devices: Arc<dyn tilo_workspace_service::workspaces::PresentDevices>,
     agent_sessions: Arc<dyn tilo_broker_core::services::AgentSessions>,
     native_certificates: Arc<dyn tilo_workspace_service::apps::certificate_authority::CertificateAuthority>,
     local_person: Arc<dyn LocalPersonServices>,

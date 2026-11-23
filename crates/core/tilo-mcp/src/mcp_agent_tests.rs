@@ -208,6 +208,7 @@ impl Notes {
                 name: "Ada".into(),
                 kind: "person".into(),
                 works_in: None,
+                devices: Vec::new(),
             }]))),
             asks: Arc::default(),
             links: Arc::default(),
@@ -1823,12 +1824,14 @@ tilo_test_env::scenario! {
                     name: "Ada".into(),
                     kind: "person".into(),
                     works_in: None,
+                    devices: Vec::new(),
                 },
                 tilo_actions::remote::Here {
                     who: "agent:claude".into(),
                     name: "Claude Code".into(),
                     kind: "agent".into(),
                     works_in: None,
+                    devices: Vec::new(),
                 },
             ]));
             let (ran, failed) = answer(

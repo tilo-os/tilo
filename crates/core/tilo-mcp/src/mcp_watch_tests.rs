@@ -97,6 +97,7 @@ impl Watched {
             name: name.to_owned(),
             kind: "person".into(),
             works_in: None,
+            devices: Vec::new(),
         }]));
         self.roster.wake();
     }

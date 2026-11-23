@@ -358,6 +358,7 @@ impl WhoIsHere {
                 name: session.name.clone(),
                 kind: "agent".to_owned(),
                 works_in: None,
+                devices: Vec::new(),
             });
         }
     }

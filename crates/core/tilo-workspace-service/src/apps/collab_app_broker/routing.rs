@@ -765,6 +765,7 @@ impl AppBrokerState {
                 name,
                 kind: "person".into(),
                 works_in: None,
+                devices: Vec::new(),
             })
             .collect();
         here.extend(
@@ -775,8 +776,12 @@ impl AppBrokerState {
                     name: Self::agent_name(&listed, &agent),
                     kind: "agent".into(),
                     works_in: None,
+                    devices: Vec::new(),
                 }),
         );
+        if let Some(present) = &self.services.present_devices {
+            present.attach(workspace, &mut here);
+        }
         Some(here)
     }
     /// The next time what a watch of `caller`'s workspace follows may have changed, as this

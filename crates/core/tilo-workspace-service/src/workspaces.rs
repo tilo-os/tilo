@@ -167,6 +167,7 @@ pub mod machine_secrets;
 mod record_reads;
 pub use record_reads::RecordReads;
 mod personal;
+pub use personal::{PresentDevices, present_on};
 mod weak;
 pub use weak::WeakWorkspaces;
 mod publication;
@@ -198,9 +199,9 @@ pub use sealed_documents::fixtures as sealed_fixtures;
 mod desktop_document;
 #[cfg(test)]
 mod governed_grants_tests;
+pub mod membership;
 #[cfg(test)]
 mod naming_tests;
-pub mod membership;
 pub mod person_workspace;
 // The person's own workspace's resources, as a part of a session reads and writes them.
 #[cfg(not(target_arch = "wasm32"))]

@@ -35,8 +35,8 @@ use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
-    KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser,
-    PersonalList, PersonalWorkspace,
+    KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser, PersonalList,
+    PersonalWorkspace,
 };
 use tilo_user_identity::{
     DeviceCert, RevocationEntry, WorkspaceDirectory, WorkspaceMeta, verify_device_cert,
@@ -585,25 +585,8 @@ impl Workspaces {
             .unwrap_or_default()
     }
 
-    /// The devices present here now: each holds a link a workspace this host
-    /// serves admitted and has not ended, as presence counts a device here.
-    pub(crate) fn present_devices(&self) -> std::collections::BTreeSet<[u8; 32]> {
-        let admitted = self.inner.link_remotes.lock_recover().clone();
-        let mut present = std::collections::BTreeSet::new();
-        for (workspace_id, remotes) in admitted {
-            let Some(link) = self.inner.direct.link(workspace_id) else {
-                continue;
-            };
-            present.extend(
-                remotes
-                    .into_iter()
-                    .filter(|remote| link.ended_link(*remote).is_none()),
-            );
-        }
-        present
-    }
-
     /// Each tab key's browser, by key, as the person's own workspace holds it.
+    #[cfg(test)]
     pub(crate) async fn tab_groups(&self, person: &[u8; 32]) -> BTreeMap<String, String> {
         let workspace = person_workspace_id(person);
         let Ok(Some(bytes)) = person_workspace::document_on(self, &workspace, TAB_GROUPS).await
@@ -753,4 +736,68 @@ fn ordered(directory: &WorkspaceDirectory) -> Vec<WorkspaceMeta> {
             .then_with(|| left.id.cmp(&right.id))
     });
     out
+}
+
+/// Who is present on which device, as one source of presence on this device hears it: what who
+/// is here ([`tilo_actions::remote::Here`]) carries beyond a workspace's roster, and nothing else
+/// reads.
+pub trait PresentDevices: Send + Sync {
+    /// Add the devices present in `workspace` now to who is `here`: a person present on a device
+    /// and missing from `here` is added.
+    fn attach(&self, workspace: &str, here: &mut Vec<tilo_actions::remote::Here>);
+}
+
+/// Mark `person` (hex) present on `device` (hex) in `here`, adding them when they are missing.
+pub fn present_on(here: &mut Vec<tilo_actions::remote::Here>, person: &str, device: String) {
+    match here
+        .iter_mut()
+        .find(|entry| entry.kind == "person" && entry.who == person)
+    {
+        Some(entry) if !entry.devices.contains(&device) => entry.devices.push(device),
+        Some(_) => {}
+        None => here.push(tilo_actions::remote::Here {
+            who: person.to_owned(),
+            name: person.to_owned(),
+            kind: "person".into(),
+            works_in: None,
+            devices: vec![device],
+        }),
+    }
+}
+
+impl PresentDevices for Workspaces {
+    /// The devices holding a link of this host's into `workspace` that has not ended, each under
+    /// the person its certificate names there.
+    fn attach(&self, workspace: &str, here: &mut Vec<tilo_actions::remote::Here>) {
+        let Some(workspace_id) = tilo_server_protocol::WorkspaceId::parse(workspace) else {
+            return;
+        };
+        let remotes = self
+            .inner
+            .link_remotes
+            .lock_recover()
+            .get(&workspace_id)
+            .cloned()
+            .unwrap_or_default();
+        let (Some(link), Some(held)) = (
+            self.inner.direct.link(workspace_id),
+            self.inner.readings.held(workspace),
+        ) else {
+            return;
+        };
+        let certificates = held.replica.lock().certificates();
+        for remote in remotes {
+            if link.ended_link(remote).is_some() {
+                continue;
+            }
+            let Some(person) = certificates
+                .iter()
+                .find(|certificate| certificate.device_public_key == remote)
+                .map(|certificate| hex::encode(certificate.user_public_key))
+            else {
+                continue;
+            };
+            present_on(here, &person, hex::encode(remote));
+        }
+    }
 }

@@ -10,13 +10,15 @@ and prints one line, `E2E-MCP <json>`, with everything it saw. It judges nothing
 reads the transcript. Python standard library only (the guest image's).
 
 Scenarios:
-  devices     initialize, tools/list, then `devices#list` until it lists the device online
-              E2E_DEVICE (an endpoint id) as reachable, or E2E_WAIT_S passes
-  not_accepted  initialize, tools/list, `devices#list`, `tilo_ls`, whose answers the harness reads
-  stop        initialize, tools/list, `devices#list`, `tilo_ls`; then E2E_READY is written
+  devices     initialize, tools/list, then the person's devices (their record, read with
+              `tilo_read record:so.tilo.devices:devices`, and who is here, from `tilo_watch`)
+              until they list the device E2E_DEVICE (an endpoint id) online, or E2E_WAIT_S passes
+  not_accepted  initialize, tools/list, the person's devices, `tilo_ls`, whose answers the
+              harness reads
+  stop        initialize, tools/list, the person's devices, `tilo_ls`; then E2E_READY is written
               and `tilo_ls` asked once a second until it is refused or the connection ends (or
               E2E_WAIT_S)
-  work        initialize, tools/list, `devices#list`, `tilo_ls`, Notes opened with
+  work        initialize, tools/list, the person's devices, `tilo_ls`, Notes opened with
               `notes#open`; then E2E_ASKING is written and the command E2E_COMMAND run with
               `terminal#run` (a step that asks first, which a device puts to its person
               unless they let their other devices' agents act without asking), waited on
@@ -162,21 +164,46 @@ def until(client: Client, name: str, arguments: dict, ready, timeout: float):
         time.sleep(1.0)
 
 
-def listed(text: str) -> list:
-    """The devices a `devices#list` answer names, each `{device, label, online, ...}`."""
+def structured(reply) -> dict:
+    """What a tool answered, as the JSON it is."""
     try:
-        answer = json.loads(text)
-    except ValueError:
-        return []
-    if isinstance(answer, dict) and isinstance(answer.get("result"), dict):
-        answer = answer["result"]
-    devices = answer.get("devices") if isinstance(answer, dict) else None
-    return [one for one in devices or [] if isinstance(one, dict)]
+        answer = reply["result"].get("structuredContent")
+        return answer if isinstance(answer, dict) else json.loads(text_of(reply))
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return {}
+
+
+def person_devices(client: Client) -> dict:
+    """The person's devices as every list of them reads them: the record of their own workspace
+    and who is here, whose devices are online. Answered as `{devices: [{device, label, online}]}`
+    in a tool reply's shape, with the two answers it was read from beside it."""
+    record = client.tool("tilo_read", {"path": "record:so.tilo.devices:devices"})
+    watch = client.tool("tilo_watch", {"wait_ms": 0})
+    present = {device for event in structured(watch).get("events") or []
+               if isinstance(event, dict) and event.get("kind") == "presence"
+               for one in event.get("here") or [] if isinstance(one, dict)
+               for device in one.get("devices") or []}
+    records = structured(record).get("records") or [{}]
+    value = (records[0] if isinstance(records[0], dict) else {}).get("value") or {}
+    entries = value.get("devices") if isinstance(value, dict) else None
+    devices = []
+    for key, entry in (entries or {}).items():
+        entry = entry.get("v", entry) if isinstance(entry, dict) else {}
+        devices.append({"device": key, "label": entry.get("name"),
+                        "revoked": entry.get("revoked") is True, "online": key in present})
+    text = json.dumps({"devices": devices})
+    return {"result": {"content": [{"type": "text", "text": text}]}, "record": record, "watch": watch}
 
 
 def online(text: str, device: str) -> bool:
-    """Whether the `devices#list` answer `text` names `device` as online."""
-    return any(one.get("device") == device and one.get("online") is True for one in listed(text))
+    """Whether the list of the person's devices `text` names `device` as online."""
+    try:
+        answer = json.loads(text)
+    except ValueError:
+        return False
+    devices = answer.get("devices") if isinstance(answer, dict) else None
+    return any(isinstance(one, dict) and one.get("device") == device and one.get("online") is True
+               for one in devices or [])
 
 
 def touch(path: str) -> None:
@@ -218,7 +245,7 @@ def introduce(client: Client, out: dict) -> bool:
     if not isinstance(out["initialize"], dict) or "result" not in out["initialize"]:
         return False
     out["tools_list"] = client.call("tools/list")
-    out["devices"] = client.tool("tilo_do", {"path": "devices#list"})
+    out["devices"] = person_devices(client)
     out["apps"] = client.tool("tilo_ls", {})
     return True
 
@@ -230,8 +257,12 @@ def devices(client: Client, out: dict) -> None:
         return
     out["tools_list"] = client.call("tools/list")
     want = os.environ.get("E2E_DEVICE", "")
-    out["devices"] = until(client, "tilo_do", {"path": "devices#list"},
-                           lambda text: online(text, want), WAIT_S)
+    deadline = time.monotonic() + WAIT_S
+    while True:
+        out["devices"] = person_devices(client)
+        if online(text_of(out["devices"]), want) or time.monotonic() >= deadline:
+            break
+        time.sleep(1.0)
     out["devices_at"] = client.since()
     # The same action the agent takes on the other device, taken here: whether this API
     # carries it out tells a refusal of the other device's API from every API's.

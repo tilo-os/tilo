@@ -97,6 +97,8 @@ pub type ResourceReadCall = Arriving<serde_json::Value, ActionCallError>;
 /// A wait for a change of the workspace: `Ready(())` once what the watch follows may have changed,
 /// or why the provider cannot tell when it does.
 pub type ChangedCall = Arriving<(), ActionCallError>;
+/// Who is in the workspace, as the provider answers it.
+pub type HereCall = Arriving<Vec<tilo_actions::remote::Here>, ActionCallError>;
 
 impl Arrival<InvocationUpdate, ActionCallError> {
     /// Whether the invocation can no longer change: refused, or finished.
@@ -261,6 +263,7 @@ struct Inner {
     following: HashMap<u64, Following>,
     next_follow: u64,
     changes: HashMap<u64, ArrivalWriter<(), ActionCallError>>,
+    heres: HashMap<u64, ArrivalWriter<Vec<tilo_actions::remote::Here>, ActionCallError>>,
     /// Whether the provider holds a waiting observe until something changes; cleared the first time it
     /// answers one at once with nothing new.
     host_waits: bool,
@@ -361,6 +364,7 @@ impl RemoteActions {
                 following: HashMap::new(),
                 next_follow: 1,
                 changes: HashMap::new(),
+                heres: HashMap::new(),
                 host_waits: true,
                 host_holds_reads: true,
                 wake: WakeHandle::new(),
@@ -643,6 +647,22 @@ impl RemoteActions {
         answer
     }
 
+    /// Who is in the workspace now, each with the devices they are present on: read again after
+    /// [`Self::changed`] with [`WatchScope::Here`] answers, to follow it.
+    #[must_use]
+    pub fn here(&self) -> HereCall {
+        let answer = Arriving::pending(self.source());
+        let correlation = {
+            let mut inner = self.lock();
+            let correlation = inner.next_correlation;
+            inner.next_correlation = inner.next_correlation.wrapping_add(1);
+            inner.heres.insert(correlation, answer.writer());
+            correlation
+        };
+        self.send(RemoteActionMessage::HereRequest { correlation });
+        answer
+    }
+
     /// Whether any request is still waiting for its answer. A followed record waits for its first
     /// readings only: the read held for its next write is not something this client is busy with.
     #[must_use]
@@ -651,6 +671,7 @@ impl RemoteActions {
         !inner.catalogue.is_empty()
             || !inner.invocations.is_empty()
             || !inner.changes.is_empty()
+            || !inner.heres.is_empty()
             || inner
                 .reads
                 .values()
@@ -934,6 +955,13 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             inner.changes.remove(&correlation)?.finish(result);
             None
         }
+        RemoteActionMessage::HereResponse {
+            correlation,
+            result,
+        } => {
+            inner.heres.remove(&correlation)?.finish(result);
+            None
+        }
         RemoteActionMessage::CatalogueRequest { .. }
         | RemoteActionMessage::Invoke(_)
         | RemoteActionMessage::Observe { .. }
@@ -954,6 +982,7 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::ChangesRequest { .. }
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedRequest { .. }
+        | RemoteActionMessage::HereRequest { .. }
         | RemoteActionMessage::SurfaceRequest { .. }
         | RemoteActionMessage::SurfaceResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => None,

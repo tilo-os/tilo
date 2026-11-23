@@ -335,6 +335,37 @@ impl SpeakerServices for FabricSpeakers {
     }
 }
 
+/// Who is present on which device, as this session hears it: the links this device's workspaces
+/// hold into each, and the person's own devices on a live session with it, as its fabric hears
+/// them.
+struct SessionPresence {
+    service: tilo_workspace_service::service::ServiceSlot,
+    fabric: Option<crate::platform::fabric::SharedLink>,
+}
+
+impl tilo_workspace_service::workspaces::PresentDevices for SessionPresence {
+    fn attach(&self, workspace: &str, here: &mut Vec<tilo_actions::remote::Here>) {
+        if let Some(service) = self.service.service() {
+            tilo_workspace_service::workspaces::PresentDevices::attach(
+                service.workspaces(),
+                workspace,
+                here,
+            );
+        }
+        let (Some(fabric), Some(identity)) = (&self.fabric, crate::sync::device_identity()) else {
+            return;
+        };
+        let person = hex::encode(identity.device_cert.user_public_key);
+        for device in crate::platform::fabric::FabricLink::online_device_ids(fabric) {
+            tilo_workspace_service::workspaces::present_on(
+                here,
+                &person,
+                device.as_str().to_owned(),
+            );
+        }
+    }
+}
+
 /// The host service the broker hands apps' search publications to: the
 /// session's index of what apps hold, which the desktop's search reads and
 /// which keeps what was published after the app closes and the session
@@ -1126,8 +1157,12 @@ fn broker_services(
         hosted_endpoint,
         hosted_device_actions,
         service.clone(),
-        fabric.clone(),
     );
+    let present_devices: std::sync::Arc<dyn tilo_workspace_service::workspaces::PresentDevices> =
+        std::sync::Arc::new(SessionPresence {
+            service: service.clone(),
+            fabric: fabric.clone(),
+        });
     device_tickets.restore_once_open();
     // The session decides who may administer a workspace's identity.
     let layout_authority = std::sync::Arc::clone(&layout);
@@ -1250,6 +1285,9 @@ fn broker_services(
         // Which agents each workspace keeps, and whose session runs each: the
         // record the broker admits an agent's join on.
         agents: BrokerService::when(agents),
+        // Which devices each person is present on: the links this device's workspaces hold,
+        // and the person's own devices its fabric hears.
+        present_devices: BrokerService::served(present_devices),
         agent_sessions: BrokerService::when(agent_sessions),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.

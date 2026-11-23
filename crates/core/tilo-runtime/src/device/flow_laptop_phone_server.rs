@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
 use serde_json::json;
-use tilo_device_identity::login::{LIST, RENAME, UPDATE};
+use tilo_device_identity::login::{RENAME, UPDATE};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tilo_workspace_service::workspaces::person_workspace::{self, devices};
 
@@ -193,23 +193,62 @@ async fn flow_every_device_manages_every_other() {
             .await
             .unwrap_or_else(|error| panic!("the phone names the device {key}: {error}"));
     }
-    let listed = ask_device(&phone.tickets, LIST, json!({}))
+    // Every list of the person's devices reads their record and joins who is here: the phone's
+    // copy, read as the record API answers it, with the laptop present.
+    let record = person_workspace::document(phone.own.copies(), devices::DEVICES)
         .await
-        .expect("the phone lists the person's devices");
-    let devices = listed["devices"].as_array().expect("a list of devices");
-    let named = devices
-        .iter()
-        .find(|listed| listed["key_hex"] == laptop_key.as_str())
-        .and_then(|listed| listed["label"].as_str());
+        .expect("the phone reads the person's devices")
+        .expect("the phone holds the person's devices");
+    let mut held = tilo_actions::remote::HeldCopies::default();
+    held.0.insert(devices::DEVICES.1.to_owned(), record);
+    let read = held
+        .readable(
+            &tilo_actions::remote::Caller::local_system(),
+            &[tilo_actions::remote::ResourceAsk {
+                address: tilo_actions::remote::ResourceAddress {
+                    workspace: person_workspace::workspace_id(phone.own.copies()),
+                    app: devices::DEVICES.0.to_owned(),
+                    record: devices::DEVICES.1.to_owned(),
+                },
+                joined: false,
+            }],
+        )
+        .expect("the record reads as every reader is answered");
+    let here = [tilo_actions::remote::Here {
+        who: hex::encode(phone_cert.user_public_key),
+        name: "Ada".into(),
+        kind: "person".into(),
+        works_in: None,
+        devices: vec![laptop_key.clone()],
+    }];
+    let devices = tilo_server_protocol::devices::fleet(
+        &phone_cert.user_public_key,
+        &phone_cert.device_public_key,
+        &tilo_server_protocol::devices::FleetRecords {
+            devices: tilo_server_protocol::devices::record_value(&read),
+            ..Default::default()
+        },
+        &here,
+    );
+    let shown = |key: &[u8; 32]| {
+        devices
+            .iter()
+            .find(|listed| listed.key_hex == hex::encode(key))
+            .unwrap_or_else(|| panic!("the list shows {}: {devices:?}", hex::encode(key)))
+    };
     assert_eq!(
-        named,
-        Some("Ada's laptop"),
-        "the phone's name for the laptop is what every list shows: {listed}"
+        shown(&laptop_cert.device_public_key).label,
+        "Ada's laptop",
+        "the phone's name for the laptop is what every list shows"
     );
     assert!(
-        devices.iter().any(|listed| listed["current"] == true
-            && listed["key_hex"] == hex::encode(phone_cert.device_public_key).as_str()),
-        "the phone's list says which device is the phone: {listed}"
+        shown(&phone_cert.device_public_key).current,
+        "the phone's list says which device is the phone"
+    );
+    assert!(
+        shown(&laptop_cert.device_public_key).online
+            && !shown(&server_cert.device_public_key).online,
+        "a device is online when who is here is present on it: {devices:?}"
     );
 
     // From the phone, the laptop is updated: the phone's daemon asks the laptop's, which carries

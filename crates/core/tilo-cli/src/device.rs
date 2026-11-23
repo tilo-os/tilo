@@ -1,9 +1,9 @@
 //! `tilo device add`, `tilo device ls` and `tilo device revoke`: the person's devices, from a
 //! computer that is logged in and holds their root.
 //!
-//! `ls` and `revoke` ask this computer's daemon, which reads the person's devices from the record
-//! of their own workspace and whether each is online from presence, and whose root marks a
-//! revoked device there.
+//! `ls` reads the person's devices from the record of their own workspace through this computer's
+//! daemon, and whether each is online from who is here; `rename` and `revoke` ask the daemon,
+//! whose record takes the name and whose root marks a revoked device there.
 //!
 //! `add` has this computer's daemon serve a ticket ([`tilo_device_identity::login`]) on the
 //! endpoint it already runs, while the ticket lasts. A computer that runs `tilo login` with it
@@ -240,42 +240,79 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
 
 /// The workspace this computer's daemon serves, where its `devices` actions are asked: the one
 /// its login names, else the one it founded.
-async fn served(client: &Client) -> Result<String> {
+async fn served(client: &Calls) -> Result<String> {
     match login::home().filter(Device::reaches_a_server) {
         Some(device) => Ok(device.workspace),
         None => client.founded_workspace().await,
     }
 }
 
-/// The person's devices as this computer's daemon lists them.
-async fn devices(client: &Client) -> Result<Vec<FleetDevice>> {
-    let workspace = served(client).await?;
-    let answer = client
-        .act(
-            &workspace,
-            "devices",
-            tilo_device_identity::login::LIST,
-            &json!({}),
-            "Your devices",
-        )
-        .await?;
-    let listed = answer
-        .get("result")
-        .and_then(|result| result.get("devices"))
-        .cloned()
-        .ok_or_else(|| anyhow!("this computer's daemon answered no list of your devices"))?;
-    serde_json::from_value(listed).map_err(|error| {
-        anyhow!("this computer's daemon answered no list of your devices: {error}")
-    })
+/// This computer's certificate: its login's, else the one its person's root here signed for it.
+fn this_computer() -> Result<DeviceCert> {
+    if let Some(device) = login::home() {
+        return Ok(device.cert);
+    }
+    let person = crate::identity::held()?.ok_or_else(|| {
+        anyhow!("This computer is no device of yours yet: log it in with `tilo login`.")
+    })?;
+    tilo_device_identity::persist::read_device_cert(
+        &crate::identity::paths().device_cert_for_user(&person.public_key()),
+    )
+    .map_err(|error| anyhow!("this computer's certificate does not read: {error}"))
 }
 
-/// This computer's daemon, as `ls` and `revoke` ask it.
-fn daemon() -> Result<Client> {
-    Client::open(Reach {
-        api: None,
-        key_file: None,
-        json: false,
-    })
+/// The person's devices: the record of their own workspace, read through the record API of this
+/// computer's daemon, joined with who is here now for which are online.
+async fn devices(client: &Calls) -> Result<Vec<FleetDevice>> {
+    use tilo_server_protocol::devices::{DEVICES, FleetRecords, TAB_GROUPS, fleet, record_value};
+    let cert = this_computer()?;
+    let person = cert.user_public_key;
+    let own = tilo_server_protocol::servers::person_workspace_id(&person);
+    let read = |(app, record): (&'static str, &'static str)| {
+        let own = own.clone();
+        async move {
+            client
+                .typed(
+                    Some(&own),
+                    "tilo_read",
+                    json!({ "path": format!("record:{app}:{record}") }),
+                    None,
+                )
+                .await
+                .map(|read| record_value(&read))
+        }
+    };
+    let records = FleetRecords {
+        devices: read(DEVICES)
+            .await
+            .context("this computer's daemon reads no record of your devices")?,
+        // A person with no browser tab, or no list of workspaces yet, has no such record.
+        tab_groups: read(TAB_GROUPS).await.unwrap_or_default(),
+        workspaces: read(tilo_server_protocol::workspaces::IDENTITY_LIST)
+            .await
+            .unwrap_or_default(),
+    };
+    // One look at who is here: a watch with no cursor answers who is here at once.
+    let watched = client
+        .typed(Some(&own), "tilo_watch", json!({ "wait_ms": 0 }), None)
+        .await
+        .context("this computer's daemon says nothing of who is here")?;
+    let here: Vec<tilo_actions::remote::Here> = watched
+        .get("events")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("presence"))
+        .filter_map(|event| event.get("here").cloned())
+        .filter_map(|here| serde_json::from_value::<Vec<_>>(here).ok())
+        .flatten()
+        .collect();
+    Ok(fleet(&person, &cert.device_public_key, &records, &here))
+}
+
+/// This computer's daemon, as `ls`, `rename` and `revoke` ask it.
+async fn daemon() -> Result<Calls> {
+    Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await
 }
 
 /// The start of a device's key, as lists show it.
@@ -317,7 +354,7 @@ pub fn key() -> Result<ExitCode> {
 /// This computer's daemon does not run, or answered no list.
 pub fn list(json: bool) -> Result<ExitCode> {
     login::ensure_daemon()?;
-    let devices = login::runtime()?.block_on(async { devices(&daemon()?).await })?;
+    let devices = login::runtime()?.block_on(async { devices(&daemon().await?).await })?;
     if json {
         let listed: Vec<_> = devices
             .iter()
@@ -355,6 +392,32 @@ pub fn list(json: bool) -> Result<ExitCode> {
         println!("{short}  {}{notes}", device.label);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `tilo device rename DEVICE NAME`: call that device `name` in every list of the person's
+/// devices: the record of their own workspace takes the name.
+///
+/// # Errors
+/// The device is none or several of the person's, or the record refused the name.
+pub fn rename(which: &str, name: &str) -> Result<ExitCode> {
+    login::ensure_daemon()?;
+    login::runtime()?.block_on(async {
+        let client = daemon().await?;
+        let devices = devices(&client).await?;
+        let target = pick(&devices, which)?;
+        let workspace = served(&client).await?;
+        client
+            .act(
+                Some(&workspace),
+                "devices",
+                tilo_device_identity::login::RENAME,
+                &json!({ "device": target.key_hex, "name": name }),
+                "Rename a device",
+            )
+            .await?;
+        println!("{} is called {} now.", target.label, name.trim());
+        Ok(ExitCode::SUCCESS)
+    })
 }
 
 /// Why a device's login is ended, as `tilo device revoke --reason` names it.
@@ -417,7 +480,7 @@ fn pick<'a>(devices: &'a [FleetDevice], which: &str) -> Result<&'a FleetDevice> 
 pub fn revoke(which: &str, why: Why, yes: bool) -> Result<ExitCode> {
     login::ensure_daemon()?;
     login::runtime()?.block_on(async {
-        let client = daemon()?;
+        let client = daemon().await?;
         let devices = devices(&client).await?;
         let target = pick(&devices, which)?;
         if target.current {
@@ -432,7 +495,7 @@ pub fn revoke(which: &str, why: Why, yes: bool) -> Result<ExitCode> {
         let workspace = served(&client).await?;
         client
             .act(
-                &workspace,
+                Some(&workspace),
                 "devices",
                 tilo_device_identity::login::REVOKE,
                 &json!({ "device": target.key_hex, "reason": why.as_str() }),

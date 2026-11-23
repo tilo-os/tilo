@@ -1,5 +1,5 @@
 //! The person's devices, as every device of theirs manages them through its daemon's `devices`
-//! actions: [`LIST`], [`RENAME`] and [`REVOKE`] are the ticket server's, which every device of
+//! actions: [`RENAME`] and [`REVOKE`] are the ticket server's, which every device of
 //! theirs answers alike, and [`UPDATE`] is carried out by the device it names.
 //!
 //! A call naming another device goes to that device as an ordinary action over the action service
@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_device_identity::login::{LIST, PROVIDER, RENAME, RESOURCE, REVOKE, UPDATE};
+use tilo_device_identity::login::{PROVIDER, RENAME, RESOURCE, REVOKE, UPDATE};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
 
@@ -42,10 +42,9 @@ const ANSWER_WAIT: Duration = Duration::from_secs(60);
 pub(crate) type UpdateStart = std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 impl Tickets {
-    /// Answer `action`, one of [`LIST`], [`RENAME`], [`REVOKE`] and [`UPDATE`], asked with `args`.
+    /// Answer `action`, one of [`RENAME`], [`REVOKE`] and [`UPDATE`], asked with `args`.
     pub(super) async fn manage(&self, action: &str, args: &Value) -> Result<Value> {
         match action {
-            LIST => self.0.fleet.list().await.map_err(anyhow::Error::msg),
             RENAME => self.0.fleet.rename(args).await.map_err(anyhow::Error::msg),
             REVOKE => self.0.fleet.revoke(args).await.map_err(anyhow::Error::msg),
             UPDATE => self.update(args).await,
@@ -182,7 +181,7 @@ fn device_in(args: &Value) -> Result<Option<[u8; 32]>> {
     };
     let mut key = [0; 32];
     hex::decode_to_slice(text, &mut key)
-        .map_err(|_| anyhow!("{text} is not a device's key: `devices#list` lists them"))?;
+        .map_err(|_| anyhow!("{text} is not a device's key: `tilo device ls` lists them"))?;
     Ok(Some(key))
 }
 

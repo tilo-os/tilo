@@ -84,7 +84,7 @@ pub mod task_programs;
 mod test_provider;
 mod wait;
 mod watch;
-pub use watch::{CHANGED_UNAVAILABLE, Here, HereWindow, WatchScope};
+pub use watch::{CHANGED_UNAVAILABLE, HERE_UNAVAILABLE, Here, HereWindow, WatchScope};
 mod window_actions;
 mod within;
 pub mod workspace_activity;
@@ -483,7 +483,8 @@ pub mod device_tickets {
     pub const RESOURCE: &str = "devices";
     /// Serve a ticket for a new computer.
     pub const ISSUE: &str = "issue";
-    /// The person's devices, as every device of theirs lists them: `{"devices": [FleetDevice]}`.
+    /// The person's devices as Settings lists them: `{"devices": [FleetDevice]}`, joined from
+    /// the records of their own workspace and who is here, as every list of them is.
     pub const LIST: &str = "list";
     /// Name one of the person's devices (`device`, `name`) in every list.
     pub const RENAME: &str = "rename";
@@ -499,7 +500,8 @@ pub mod device_tickets {
         }
     }
 
-    /// One of the person's devices, as [`LIST`] answers it.
+    /// One of the person's devices, as every list of them shows it: joined from the record of
+    /// their own workspace and who is here.
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub struct FleetDevice {
         /// The name the device was enrolled with.
@@ -1209,7 +1211,6 @@ impl ActionCallError {
         matches!(self, Self::Refused { reason } if reason == AWAITING_APPROVAL_REASON)
     }
 
-
     /// Stable machine-readable code.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -1808,6 +1809,15 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<(), ActionCallError>,
     },
+    /// Ask who is in the workspace now ([`ActionProvider::here`]): its people and agents, each
+    /// with the devices they are present on.
+    HereRequest { correlation: u64 },
+    /// Answer to [`Self::HereRequest`], same correlation: who is here, or why this provider keeps
+    /// no roster.
+    HereResponse {
+        correlation: u64,
+        result: Result<Vec<Here>, ActionCallError>,
+    },
 }
 
 /// One record a reader asks for over the action API: alone, or `joined`
@@ -1880,6 +1890,7 @@ impl RemoteActionMessage {
                 | Self::Confirm { .. }
                 | Self::ChangesRequest { .. }
                 | Self::ChangedRequest { .. }
+                | Self::HereRequest { .. }
                 | Self::SurfaceRequest { .. }
         )
     }
@@ -2106,6 +2117,16 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         RemoteActionMessage::ChangedRequest { correlation, scope } => {
             watch::noticed(provider, caller, correlation, scope)
         }
+        RemoteActionMessage::HereRequest { correlation } => {
+            Pending::ready(RemoteActionMessage::HereResponse {
+                correlation,
+                result: provider
+                    .here(caller)
+                    .ok_or_else(|| ActionCallError::Unavailable {
+                        reason: watch::HERE_UNAVAILABLE.into(),
+                    }),
+            })
+        }
         RemoteActionMessage::SurfaceRequest { correlation, app } => {
             surfaces::surfaced(provider, correlation, &app)
         }
@@ -2122,6 +2143,7 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedResponse { .. }
+        | RemoteActionMessage::HereResponse { .. }
         | RemoteActionMessage::SurfaceResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
@@ -2207,6 +2229,10 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::HereRequest { correlation } => RemoteActionMessage::HereResponse {
+            correlation: *correlation,
+            result: Err(error),
+        },
         RemoteActionMessage::SurfaceRequest { correlation, .. } => {
             RemoteActionMessage::SurfaceResponse {
                 correlation: *correlation,

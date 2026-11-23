@@ -1,71 +1,54 @@
-//! The person's devices, as every device of theirs lists, names and revokes them: the `devices`
-//! actions [`LIST`], [`RENAME`] and [`REVOKE`], answered the same by a computer's daemon and by
-//! its desktop. Their devices are the record of the person's own workspace
-//! ([`person_workspace::devices`]), which this device holds and every device of theirs reads and
-//! writes; whether one is online comes from presence, never from the record. A revocation is
-//! signed by the person's root on the device that holds it and marked in the record, and the
-//! marked record is what every host refuses the device by.
+//! The person's devices, as every device of theirs names and revokes them: the `devices` actions
+//! [`RENAME`] and [`REVOKE`], answered the same by a computer's daemon and by its desktop, and
+//! [`LIST`], which Settings asks its desktop. Their devices are the record of the person's own
+//! workspace ([`person_workspace::devices`]), which this device holds and every device of theirs
+//! reads and writes; a list of them reads that record and joins who is here for online. A
+//! revocation is signed by the person's root on the device that holds it and marked in the
+//! record, and the marked record is what every host refuses the device by.
 //!
 //! [`LIST`]: tilo_actions::remote::device_tickets::LIST
 //! [`RENAME`]: tilo_actions::remote::device_tickets::RENAME
 //! [`REVOKE`]: tilo_actions::remote::device_tickets::REVOKE
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use serde_json::{Value, json};
-use tilo_actions::remote::device_tickets::{FleetDevice, KeyKind};
 use tilo_user_identity::{RevocationEntry, RevocationReason};
 
 use super::TicketServer;
-use crate::workspaces::person_workspace::devices::{DEVICES, Device, Devices, Listed};
+use crate::workspaces::person_workspace::devices::{DEVICES, Devices, Listed};
 use crate::workspaces::{Workspaces, person_workspace};
 
 impl TicketServer {
-    /// The person's devices, as their own workspace's record lists them: `{"devices":
-    /// [FleetDevice]}`, this one marked current. This device and the keys it knows itself
-    /// ([`Issuer::known`]) are listed whether or not the record has them yet. A device is online
-    /// when it is this one, presence here says so ([`Issuer::present`]), or it holds a link
-    /// this device's workspace service admitted.
+    /// The person's devices as Settings lists them: `{"devices": [FleetDevice]}`, joined from the
+    /// records of their own workspace and who is present in it, as every list of them is
+    /// ([`tilo_server_protocol::devices::fleet`]).
     ///
     /// # Errors
-    /// This device has no identity yet.
-    ///
-    /// [`Issuer::known`]: super::Issuer::known
-    /// [`Issuer::present`]: super::Issuer::present
+    /// This device has no identity yet, or holds no record of the person's devices.
     pub async fn list(&self) -> Result<Value, String> {
+        use tilo_server_protocol::devices::{FleetRecords, TAB_GROUPS, fleet, record_value};
         let (cert, _) = self.0.issuer.device()?;
-        let person = cert.user_public_key;
-        let this = cert.device_public_key;
-        let mut present: BTreeSet<[u8; 32]> = self.0.issuer.present().into_iter().collect();
-        let (mut devices, browsers, names): (Vec<Listed>, BTreeMap<_, _>, BTreeMap<_, _>) =
-            match self.0.issuer.servers() {
-                Some(workspaces) => {
-                    present.extend(workspaces.present_devices());
-                    (
-                        workspaces.devices_of(&person).await.listed(&person),
-                        workspaces.tab_groups(&person).await,
-                        workspaces
-                            .list()
-                            .await
-                            .into_iter()
-                            .map(|held| (held.workspace, held.name))
-                            .collect(),
-                    )
-                }
-                None => (Vec::new(), BTreeMap::new(), BTreeMap::new()),
-            };
-        for known in self.0.issuer.known().into_iter().chain([cert]) {
-            let key = hex::encode(known.device_public_key);
-            if !devices.iter().any(|kept| kept.key == key) {
-                devices.push(Listed {
-                    key,
-                    cert: known,
-                    device: Device::default(),
-                });
-            }
+        let workspaces = self.record()?;
+        let own = person_workspace::workspace_id(&workspaces);
+        let mut records = Vec::new();
+        for record in [
+            DEVICES,
+            TAB_GROUPS,
+            tilo_server_protocol::workspaces::IDENTITY_LIST,
+        ] {
+            records.push(read_record(&workspaces, &own, record).await?);
         }
-        let online = |key: &[u8; 32]| *key == this || present.contains(key);
-        Ok(json!({ "devices": listed(&devices, &browsers, &names, this, online) }))
+        let [devices, tab_groups, listed] =
+            <[Value; 3]>::try_from(records).map_err(|_| "three records were read".to_owned())?;
+        let mut here = Vec::new();
+        crate::workspaces::PresentDevices::attach(&workspaces, &own, &mut here);
+        let records = FleetRecords {
+            devices: record_value(&devices),
+            tab_groups: record_value(&tab_groups),
+            workspaces: record_value(&listed),
+        };
+        Ok(json!({
+            "devices": fleet(&cert.user_public_key, &cert.device_public_key, &records, &here),
+        }))
     }
 
     /// Call the device `args` names what `name` says, in every list: the record of the person's
@@ -134,7 +117,7 @@ impl TicketServer {
         }
         let listed = held(&workspaces, &person, &key)
             .await
-            .ok_or_else(|| format!("{key} is no device of yours: `devices#list` lists them"))?;
+            .ok_or_else(|| format!("{key} is no device of yours: `tilo device ls` lists them"))?;
         let mut entry = RevocationEntry {
             user_public_key: person,
             revoked_device_public_key: device,
@@ -171,6 +154,31 @@ impl TicketServer {
     }
 }
 
+/// The record `(app, record)` of `workspace` as every reader is answered it (`{"records"}`).
+async fn read_record(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (app, record): (&str, &str),
+) -> Result<Value, String> {
+    use tilo_actions::remote::{Caller, HeldCopies, ResourceAddress, ResourceAsk};
+    let mut held = HeldCopies::default();
+    if let Some(bytes) = person_workspace::document_on(workspaces, workspace, (app, record)).await?
+    {
+        held.0.insert(record.to_owned(), bytes);
+    }
+    held.readable(
+        &Caller::local_system(),
+        &[ResourceAsk {
+            address: ResourceAddress {
+                workspace: workspace.to_owned(),
+                app: app.to_owned(),
+                record: record.to_owned(),
+            },
+            joined: false,
+        }],
+    )
+}
+
 /// The device `key` of `person`'s, as the record `workspaces` holds lists it.
 async fn held(workspaces: &Workspaces, person: &[u8; 32], key: &str) -> Option<Listed> {
     workspaces
@@ -179,65 +187,6 @@ async fn held(workspaces: &Workspaces, person: &[u8; 32], key: &str) -> Option<L
         .listed(person)
         .into_iter()
         .find(|listed| listed.key == key)
-}
-
-/// `devices` as a list of them shows them: each tab key as its browser's (`browsers`), an
-/// agent's grant with the name of the workspace it reaches (`names`), `this` marked current and
-/// each that `online` says so of online.
-fn listed(
-    devices: &[Listed],
-    browsers: &BTreeMap<String, String>,
-    names: &BTreeMap<String, String>,
-    this: [u8; 32],
-    online: impl Fn(&[u8; 32]) -> bool,
-) -> Vec<FleetDevice> {
-    devices
-        .iter()
-        .map(|listed| {
-            let (cert, device) = (&listed.cert, &listed.device);
-            let workspace = cert
-                .capabilities
-                .agent
-                .and_then(|scope| scope.workspace_name())
-                .map(|id| names.get(id.as_str()).cloned().unwrap_or(id));
-            FleetDevice {
-                label: device.called(cert),
-                key_hex: listed.key.clone(),
-                fingerprint: fingerprint(&cert.device_public_key),
-                current: cert.device_public_key == this,
-                revoked: device.revoked,
-                kind: if device.agent.is_some() {
-                    KeyKind::Agent
-                } else {
-                    KeyKind::of(
-                        cert.capabilities.agent.is_some(),
-                        cert.capabilities.server_key,
-                    )
-                },
-                browser: browsers.get(&listed.key).cloned(),
-                agent: device.agent.clone(),
-                issued_ms: Some(ms(cert.issued_at_ns)),
-                expires_ms: cert.expires_at_ns.map(ms),
-                last_active_ms: device.seen_ms(),
-                online: online(&cert.device_public_key),
-                workspace,
-            }
-        })
-        .collect()
-}
-
-/// A key's short form people compare between screens: its first six bytes.
-fn fingerprint(key: &[u8; 32]) -> String {
-    key.iter()
-        .take(6)
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Nanoseconds since the epoch as ms, for a time a list shows.
-fn ms(ns: u64) -> i64 {
-    i64::try_from(ns / 1_000_000).unwrap_or(i64::MAX)
 }
 
 /// The device `args` names by its key, when it names one.
@@ -252,7 +201,7 @@ fn device_in(args: &Value) -> Result<Option<[u8; 32]>, String> {
     };
     let mut key = [0; 32];
     hex::decode_to_slice(text, &mut key)
-        .map_err(|_| format!("{text} is not a device's key: `devices#list` lists them"))?;
+        .map_err(|_| format!("{text} is not a device's key: `tilo device ls` lists them"))?;
     Ok(Some(key))
 }
 
