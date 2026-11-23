@@ -32,3 +32,20 @@ pub use tilo_render_protocol::patch::{
     Actor, Binding, Event, Invocation, Level, Node as UiNode, ResourceRef, Value,
 };
 pub use window::AppWindow;
+
+/// Construct a `tilolang_tilo::instance::GlobalLocale` wired to the toolkit's shared catalogues,
+/// language, revision and region formats. Hosts using the toolkit construct a `static` with this
+/// macro and override only fields that genuinely differ (such as `add_words` on the session
+/// process).
+#[macro_export]
+macro_rules! platform_locale {
+    ($($locale:ident)::+) => {
+        $($locale)::+ {
+            add_words: $crate::i18n::add_window_words,
+            words_revision: $crate::i18n::revision,
+            language: $crate::i18n::language,
+            formats: $crate::date::formats,
+            format_words: $crate::date::format_words,
+        }
+    };
+}
