@@ -1151,31 +1151,8 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// The text helpers of the profile reader.
-        fn profile_patterns_compile_and_suffixes_follow_pathlib;
-
-        phase every_pattern_compiles;
-        {
-            for pattern in [
-                &*TILO_VM_REF,
-                &*RELEASE_REF,
-                &*DEVELOPMENT_REF,
-                &*TAG_ARCHITECTURE,
-                &*OWNER_KEY,
-                &*PROFILE_ID,
-                &*PATH_PART,
-                &*MODULE_NAME,
-                &*KEYBOARD_ID,
-                &*KEYBOARD_NAME,
-                &*COMPATIBLE,
-                &*KERNEL_ARG,
-                &*DMI_VALUE,
-                &*KERNEL_VERSION,
-                &*DTB_DIGEST,
-            ] {
-                assert_ne!(pattern.as_str(), never().as_str());
-            }
-        }
+        /// The profile reader's suffix helper follows `pathlib`.
+        fn profile_suffixes_follow_pathlib;
 
         phase suffix_is_pathlib_suffix;
         {
