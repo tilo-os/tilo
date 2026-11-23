@@ -136,8 +136,11 @@ fn too_long(path: &Path) -> io::Error {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::mixed_attributes_style,
+    reason = "the module is a test module, whose panics the lint rules exempt, that binds a Unix socket"
+)]
 mod tests {
-    // The socket a test binds is a Unix one.
     #![cfg(unix)]
 
     use super::*;
