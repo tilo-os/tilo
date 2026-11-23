@@ -898,6 +898,7 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         id: id.to_string(),
         name: id.to_string(),
         doc: doc.to_string(),
+        verb: String::new(),
         params,
         result: Some("Text".to_string()),
         class: EffectClass::Outside,

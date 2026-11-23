@@ -1084,11 +1084,13 @@ impl Decoder<'_> {
             self.down(step, value, &field.ty)
                 .map_err(|why| format!("`{}` of `{}`: {why}", field.name, info.name))?;
         }
-        // A record names itself with its `id` when the reading gives one (a menu's row), and
-        // by where it stands in the reading when it does not (a menu's corner). A row that
-        // chooses nothing gives its id as empty, which names nothing either.
+        // A record names itself with its resource's address when it is a resource of its own
+        // (a Wi-Fi network in the network reading), with its `id` when the reading gives one (a
+        // menu's row), and by where it stands in the reading when it gives neither (a menu's
+        // corner). A row that chooses nothing gives its id as empty, which names nothing either.
         let id = json
-            .get("id")
+            .get(tilo_actions::surface::ADDRESS_KEY)
+            .or_else(|| json.get("id"))
             .and_then(Json::as_str)
             .filter(|id| !id.is_empty())
             .map_or_else(|| self.at(), ToOwned::to_owned);

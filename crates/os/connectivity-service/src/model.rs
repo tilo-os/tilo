@@ -60,6 +60,10 @@ impl Wifi {
 )]
 #[serde(default, rename_all = "kebab-case")]
 pub struct WifiNetwork {
+    /// The network as the resource it is (`wifi-network:Home`): what its own actions
+    /// (`join`, `leave`) are called on. The service sets it as it publishes the network.
+    #[serde(rename = "$address")]
+    pub address: tilo_resource::Handle<crate::WifiNetworkRow>,
     pub name: String,
     /// Signal from 0 to 4.
     pub signal: u8,
@@ -131,9 +135,13 @@ pub struct Wired {
 )]
 #[serde(default, rename_all = "kebab-case")]
 pub struct SavedNetwork {
+    /// The network as the resource it is (`saved-network:<id>`): what its own actions
+    /// (`join`, `forget`, `set-autoconnect`) are called on. The service sets it as it
+    /// publishes the network.
+    #[serde(rename = "$address")]
+    pub address: tilo_resource::Handle<crate::SavedNetworkRow>,
     pub name: String,
-    /// `NetworkManager`'s id of the profile; the `profile` every action on it
-    /// takes.
+    /// `NetworkManager`'s id of the profile, which its address names.
     pub id: String,
     pub kind: SavedKind,
     /// It joins by itself when it is in reach.
@@ -467,6 +475,7 @@ impl From<&os_actions::WifiNetworkInfo> for WifiNetwork {
             secure: network.secure,
             known: network.known,
             connected: network.connected,
+            ..Self::default()
         }
     }
 }

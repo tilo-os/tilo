@@ -319,6 +319,7 @@ fn published() -> tilolang::PackageMeta {
         actions: vec![ActionMeta {
             id: "place".to_owned(),
             name: "place".to_owned(),
+            verb: String::new(),
             doc: String::new(),
             params: vec![
                 param("workspace", "Text", true),

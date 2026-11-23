@@ -13,12 +13,12 @@
 //! does not describe ([`FieldType::Any`]), and the platform's reactions and outboxes, are left
 //! out: tilolang code does not read them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tilo_actions::ActionKind;
-use tilo_actions::surface::{FieldType, NamedType, Surface, VerbSurface};
+use tilo_actions::surface::{ADDRESS_KEY, FieldType, NamedType, Surface, VerbSurface};
 use tilolang::meta::NamedRootMeta;
 use tilolang::types::Ty;
 use tilolang_runtime::meta::{
@@ -101,6 +101,23 @@ pub fn addresses(text: &str) -> Result<BTreeMap<String, String>, String> {
         }
     }
     Ok(out)
+}
+
+/// The loose actions of a `surface.toml` as it declares them, by id: the verbs of the resources
+/// whose `id` the file gives ([`addresses`]). A kind of `instances` offers its verbs on each
+/// resource of it, so an app's `open` is no loose `open` and never stands for the layout's.
+///
+/// # Errors
+/// As [`addresses`].
+pub fn loose_verbs(text: &str) -> Result<BTreeMap<String, VerbSurface>, String> {
+    addresses(text)?;
+    Ok(parse_surfaces(text)?
+        .into_iter()
+        .zip(published(text)?)
+        .filter(|(_, published)| published.id.is_some())
+        .flat_map(|(surface, _)| surface.verbs)
+        .map(|verb| (verb.id.clone(), verb))
+        .collect())
 }
 
 /// The resources a `surface.toml` lists.
@@ -196,12 +213,14 @@ pub fn action_id(app: &str, verb: &str) -> String {
 }
 
 /// The verb id the app's own api takes for the catalogue action `id` ([`action_id`]): a
-/// tilolang package's action keeps the id its app gives it.
+/// tilolang package's action keeps the id its app gives it, and one whose id names its resource
+/// type (`Workspace/rename`, where several types offer the verb) is taken by the verb alone.
 #[must_use]
 pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {
-    id.strip_prefix(app)
-        .and_then(|rest| rest.strip_prefix('#'))
-        .unwrap_or(id)
+    let Some(verb) = id.strip_prefix(app).and_then(|rest| rest.strip_prefix('#')) else {
+        return id;
+    };
+    verb.rsplit_once('/').map_or(verb, |(_, verb)| verb)
 }
 
 /// The surface a native app directory publishes: its manifest's id and name, and its
@@ -257,7 +276,27 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
 /// its document a root a program names ([`document_root`]).
 pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
     let (surfaces, instances) = read_surfaces(text)?;
-    Ok(package_with(app, title, &surfaces, &instances, Ids::Record))
+    one_action_per_id(package_with(app, title, &surfaces, &instances, Ids::Record))
+}
+
+/// `meta`, refused where two of its actions have one id, so a call of it would name neither. An
+/// action's name belongs to its resource type: two types offering one verb are two actions, each
+/// with an id naming its type, so what is refused is one verb declared twice for one type, or
+/// twice loose.
+///
+/// # Errors
+/// The id that two actions of `meta` have.
+pub fn one_action_per_id(meta: PackageMeta) -> Result<PackageMeta, String> {
+    let mut seen = BTreeSet::new();
+    for action in meta.actions.iter().filter(|action| !action.scenario) {
+        if !seen.insert(action.id.as_str()) {
+            return Err(format!(
+                "{} declares the action `{}` twice",
+                meta.app, action.id
+            ));
+        }
+    }
+    Ok(meta)
 }
 
 /// The resources `text` publishes, and the kinds `instances` marks: the ones whose verbs act on
@@ -476,6 +515,8 @@ fn package_with(
         app,
         ids,
         kinds: kind_names(surfaces, instances),
+        rows: row_kinds(surfaces),
+        shared: shared_verbs(surfaces),
         declared: BTreeMap::new(),
         meta: PackageMeta {
             app: app.to_owned(),
@@ -514,6 +555,41 @@ fn kind_names(surfaces: &[Surface], instances: &[String]) -> BTreeMap<String, St
     kinds
 }
 
+/// The record types of `surfaces` that are resources of their own, by their kind: a record a
+/// reading holds with its address ([`ADDRESS_KEY`], a Wi-Fi network in the network's reading).
+/// The kind's own surface lists the verbs offered on it, which are actions on that record type.
+fn row_kinds(surfaces: &[Surface]) -> BTreeMap<String, String> {
+    surfaces
+        .iter()
+        .flat_map(|surface| &surface.types)
+        .filter_map(|named| {
+            named.fields.iter().find_map(|field| match &field.ty {
+                FieldType::Resource(kind) if field.name == ADDRESS_KEY && !kind.is_empty() => {
+                    Some((kind.clone(), named.name.clone()))
+                }
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// The verbs more than one of `surfaces` offers: `act` on the banners and on the notifications.
+fn shared_verbs(surfaces: &[Surface]) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    surfaces
+        .iter()
+        .flat_map(|surface| {
+            surface
+                .verbs
+                .iter()
+                .filter(|verb| !platform_verb(verb))
+                .map(|verb| verb.id.clone())
+                .collect::<BTreeSet<_>>()
+        })
+        .filter(|verb| !seen.insert(verb.clone()))
+        .collect()
+}
+
 /// How a package spells the ids of its types.
 #[derive(Clone, Copy)]
 enum Ids {
@@ -544,6 +620,11 @@ struct Reader<'a> {
     ids: Ids,
     /// The type name of each resource kind of the app.
     kinds: BTreeMap<String, String>,
+    /// The record types that are resources of their own ([`row_kinds`]), by kind: their kind's
+    /// verbs are actions on them, and the record its reading declares is their type.
+    rows: BTreeMap<String, String>,
+    /// The verbs several of the app's resource types offer ([`shared_verbs`]).
+    shared: BTreeSet<String>,
     /// The named types declared so far, by name, and whether each is an enum.
     declared: BTreeMap<String, (NamedType, bool)>,
     meta: PackageMeta,
@@ -573,7 +654,12 @@ impl Reader<'_> {
     }
 
     fn surface(&mut self, surface: &Surface) {
-        let own = self.kinds.get(&surface.kind).cloned();
+        let row = self.rows.get(&surface.kind).cloned();
+        let own = self
+            .kinds
+            .get(&surface.kind)
+            .cloned()
+            .or_else(|| row.clone());
         let renamed = self.named_types(surface, own.as_deref());
         let rename = |name: &str| {
             renamed
@@ -581,7 +667,7 @@ impl Reader<'_> {
                 .cloned()
                 .unwrap_or_else(|| name.to_owned())
         };
-        if let Some(own) = &own {
+        if let Some(own) = own.as_ref().filter(|_| row.is_none()) {
             self.own_type(surface, own, &rename);
         }
         for verb in surface.verbs.iter().filter(|verb| !platform_verb(verb)) {
@@ -744,8 +830,18 @@ impl Reader<'_> {
             };
             self.ty(&ty, rename)
         });
+        // An action's name belongs to its resource type: `act` on `Banners` and `act` on
+        // `Notifications` are two actions, so where several types offer a verb, the id of each
+        // names its type (`Banners/act`), and the app's own api takes it back by the verb alone.
+        let (id, by_verb) = match own {
+            Some(own) if self.shared.contains(&verb.id) => {
+                (format!("{own}/{}", verb.id), verb.id.clone())
+            }
+            _ => (verb.id.clone(), String::new()),
+        };
         self.meta.actions.push(ActionMeta {
-            id: verb.id.clone(),
+            id,
+            verb: by_verb,
             // The name the action API offers it by, made a tilolang action's name: a tilolang
             // app's own (`pin`), else the id a native verb publishes it as
             // (`read-form-fields` is `read_form_fields`).
@@ -786,6 +882,11 @@ impl Reader<'_> {
         field: &tilo_actions::surface::TypeField,
         rename: &dyn Fn(&str) -> String,
     ) -> Option<FieldMeta> {
+        // The address a record of a reading carries is what its actions are called on, not a
+        // field code reads: the record is the resource.
+        if field.name == ADDRESS_KEY {
+            return None;
+        }
         let ty = self.ty(&field.ty, rename)?;
         let merge = match field.ty {
             FieldType::Collection(_) | FieldType::Set(_) | FieldType::Map(_) => {
@@ -869,7 +970,7 @@ impl Reader<'_> {
                 tilolang::RESOURCE_TYPE_NAME
             ));
         }
-        if let Some(name) = self.kinds.get(kind) {
+        if let Some(name) = self.kinds.get(kind).or_else(|| self.rows.get(kind)) {
             return Some(self.own(name));
         }
         let (app, name) = tilolang_kind(kind)?;

@@ -653,6 +653,7 @@ fn build_meta(
                 meta.actions.push(ActionMeta {
                     id: c.id.clone(),
                     name: c.name.clone(),
+                    verb: String::new(),
                     doc: doc(&sc.doc),
                     params: Vec::new(),
                     result: result_meta(&c.result, app),
@@ -726,7 +727,7 @@ fn build_meta(
                 });
             }
             Item::Action(a) => {
-                let Some(c) = env.own_callable(&a.name.name) else {
+                let Some(c) = env.own_action(a) else {
                     continue;
                 };
                 let Some(idx) = c.func else { continue };
@@ -745,6 +746,7 @@ fn build_meta(
                 meta.actions.push(ActionMeta {
                     id: c.id.clone(),
                     name: c.name.clone(),
+                    verb: String::new(),
                     doc: doc(&a.doc),
                     params: params_meta(&c.params, app),
                     result: result_meta(&c.result, app),
@@ -1036,6 +1038,7 @@ pub fn compile_program_reading(
         actions: vec![ActionMeta {
             id: action.clone(),
             name: "main".to_owned(),
+            verb: String::new(),
             doc: String::new(),
             params: params_meta(&params, &app),
             result: None,

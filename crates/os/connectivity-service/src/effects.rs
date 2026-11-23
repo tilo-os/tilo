@@ -7,6 +7,50 @@ use crate::{
     BluetoothAccessoryRow, BluetoothNearbyRow, SavedNetworkRow, VpnProfileRow, WifiNetworkRow,
 };
 
+/// A Wi-Fi network's own actions, called on the network's address
+/// (`wifi-network:Home`) as every caller names it.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.connectivity.wifi-network")]
+pub enum WifiNetworkAction {
+    /// Join the network: one this device knows, or an open one.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "wifi", on = WifiNetworkRow)]
+    Join,
+    /// Leave the network, when this device is connected to it.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "wifi-off", on = WifiNetworkRow)]
+    Leave,
+}
+
+/// A saved network's own actions, called on the saved network's address
+/// (`saved-network:<id>`).
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.connectivity.saved-network")]
+pub enum SavedNetworkAction {
+    /// Join the saved network now.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "wifi", on = SavedNetworkRow)]
+    Join,
+    /// Join the network by itself when it is in reach, or stop.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, idempotent, icon = "wifi", on = SavedNetworkRow)]
+    SetAutoconnect {
+        #[param("Whether it joins by itself")]
+        on: bool,
+    },
+    /// Forget the network: this device no longer joins it by itself.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, destructive, icon = "trash-2", on = SavedNetworkRow)]
+    Forget,
+    /// Send the network's traffic through a proxy, or straight out.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, idempotent, icon = "globe", on = SavedNetworkRow)]
+    SetProxy {
+        #[param("The proxy server as host:port; nothing for no proxy")]
+        server: Option<String>,
+    },
+}
+
 /// The `network` resource's actions.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.connectivity.network")]
@@ -36,13 +80,6 @@ pub enum NetworkAction {
         keywords = "scan, search networks"
     )]
     ScanWifi,
-    /// Join a Wi-Fi network: one this device knows, or an open one.
-    #[effect(kind = "outside")]
-    #[effect(own_device, row, icon = "wifi", on = WifiNetworkRow)]
-    JoinWifi {
-        #[param("The network's name")]
-        network: String,
-    },
     /// Join a protected Wi-Fi network with its password.
     #[effect(kind = "outside")]
     #[effect(own_device, icon = "wifi")]
@@ -90,38 +127,6 @@ pub enum NetworkAction {
         private_key: Option<String>,
         #[param(secret, "The password")]
         password: Option<String>,
-    },
-    /// Leave the Wi-Fi network this device is connected to.
-    #[effect(kind = "outside")]
-    #[effect(own_device, row, icon = "wifi-off", on = WifiNetworkRow)]
-    DisconnectWifi {
-        #[param("The network's name")]
-        network: String,
-    },
-    /// Join a saved network by itself when it is in reach, or stop.
-    #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "wifi", on = SavedNetworkRow)]
-    SetNetworkAutoconnect {
-        #[param("The saved network, by its id")]
-        profile: String,
-        #[param("Whether it joins by itself")]
-        on: bool,
-    },
-    /// Forget a saved network: this device no longer joins it by itself.
-    #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash-2", on = SavedNetworkRow)]
-    ForgetNetwork {
-        #[param("The saved network, by its id")]
-        profile: String,
-    },
-    /// Send a saved network's traffic through a proxy, or straight out.
-    #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "globe", on = SavedNetworkRow)]
-    SetNetworkProxy {
-        #[param("The saved network, by its id")]
-        profile: String,
-        #[param("The proxy server as host:port; nothing for no proxy")]
-        server: Option<String>,
     },
     /// Connect or disconnect the wired network.
     #[effect(kind = "outside")]

@@ -2325,6 +2325,32 @@ fn a_notice_rises_as_a_banner_over_a_surface_with_a_dismiss_that_takes_it_away()
     );
 }
 
+/// A banner's action is the banners' own `act`, apart from the centre's action of that name: the
+/// press runs the sender's choice, and the banner it chose from goes.
+#[test]
+fn a_banners_action_runs_and_the_banner_goes() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    let mut notice = tilo_session_core::desktop::notifications::Notification::new(
+        "Download finished",
+        "report.pdf",
+    )
+    .with_app_name("Files");
+    notice.actions = vec![("open".to_owned(), "Show the file".to_owned())];
+    session.notices().post(notice);
+    until(&mut session, |session| {
+        centre(session).banners.len() == 1 && says(session, "Show the file")
+    });
+    press(&mut session, "Show the file");
+    until(&mut session, |session| centre(session).banners.is_empty());
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the banner's action reached the banners: {:?}",
+        session.shell_refusals()
+    );
+}
+
 /// The quick settings' Night light tile runs the night light's own `toggle`: the published night
 /// light turns from what it was.
 #[test]
@@ -3252,6 +3278,16 @@ impl tilo_connectivity_service::device::Device for Radios {
                     reachable.connected = reachable.name == *network;
                 }
             }
+            tilo_connectivity_service::device::Change::Forget { profile } => {
+                readings.network.saved.retain(|saved| saved.id != *profile);
+            }
+            tilo_connectivity_service::device::Change::Autoconnect { profile, on } => {
+                for saved in &mut readings.network.saved {
+                    if saved.id == *profile {
+                        saved.autoconnect = *on;
+                    }
+                }
+            }
             tilo_connectivity_service::device::Change::Vpn { profile, on } => {
                 for vpn in &mut readings.vpn.profiles {
                     if vpn.id == *profile {
@@ -3265,8 +3301,8 @@ impl tilo_connectivity_service::device::Device for Radios {
     }
 }
 
-/// A session whose laptop has Wi-Fi with one open network in reach and Bluetooth, the person's
-/// settings, and a sound card: what the panel's switches change.
+/// A session whose laptop has Wi-Fi with one open network in reach and one it keeps, Bluetooth,
+/// the person's settings, and a sound card: what the panel's switches change.
 fn wireless_session() -> Session {
     let radios = Radios::default();
     {
@@ -3278,6 +3314,11 @@ fn wireless_session() -> Session {
             signal: 3,
             secure: false,
             ..tilo_connectivity_service::model::WifiNetwork::default()
+        }];
+        readings.network.saved = vec![tilo_connectivity_service::model::SavedNetwork {
+            name: "Home".to_owned(),
+            id: "uuid-home".to_owned(),
+            ..tilo_connectivity_service::model::SavedNetwork::default()
         }];
         readings.bluetooth.available = true;
         readings.vpn.profiles = vec![tilo_connectivity_service::model::VpnProfile {
@@ -3325,14 +3366,12 @@ fn the_quick_settings_switches_change_what_they_publish() {
     until_settled(&mut session, |session| here(session) == "quick-settings");
     until_settled(&mut session, |session| says(session, "Cafe"));
 
-    // The network in reach stands in the panel; joining it is the network's row action, which
-    // lives on the row's own resource (`wifi-network:Cafe`) and has no root address yet, so it is
-    // not pressed here.
-    assert!(
-        says(&session, "Cafe"),
-        "the network in reach stands on the panel: {:?}",
-        session.accessible_labels()
-    );
+    // The network in reach stands in the panel, and its row joins it: the press is the
+    // network's own `join`, on its own resource, as any caller's would be.
+    press_at(&mut session, "Cafe", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "network")["wifi"]["networks"][0]["connected"] == serde_json::json!(true)
+    });
     press_at(&mut session, "Wi-Fi", WIDTH, TALL);
     until_settled(&mut session, |session| {
         published(session, "network")["wifi"]["on"] == serde_json::json!(false)
@@ -3375,6 +3414,40 @@ fn the_quick_settings_switches_change_what_they_publish() {
         published(session, "network")["airplane-mode"] == serde_json::json!(true)
     });
     keep(&mut session, "shell-quick-settings-switches");
+}
+
+/// A network the laptop keeps is its own resource with its own actions: the row's menu sets it to
+/// join by itself and forgets it, each the saved network's own action on its own address.
+#[test]
+fn a_saved_networks_menu_changes_that_network() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = wireless_session();
+    let saved = |session: &Session| {
+        session.read("network").expect("the network is published")["saved"].clone()
+    };
+    press_at(&mut session, "Volume, 40%", WIDTH, TALL);
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| says(session, "Home"));
+    press_at(&mut session, "This network", WIDTH, TALL);
+    until_settled(&mut session, |session| says(session, "Join by itself"));
+    press_at(&mut session, "Join by itself", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        saved(session)[0]["autoconnect"] == serde_json::json!(true)
+    });
+    until_settled(&mut session, |session| says(session, "Joins by itself"));
+    press_at(&mut session, "This network", WIDTH, TALL);
+    until_settled(&mut session, |session| says(session, "Forget this network"));
+    press_at(&mut session, "Forget this network", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        saved(session).as_array().is_some_and(Vec::is_empty)
+    });
+    until_settled(&mut session, |session| !says(session, "Home"));
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the menu's choices reached the saved network: {:?}",
+        session.shell_refusals()
+    );
 }
 
 /// The panel draws the tiles the person's setting keeps, and hiding one takes it off: the

@@ -282,6 +282,23 @@ pub fn present_key(action: &str) -> String {
 
 pub const PRESENT_SUFFIX: &str = "~present";
 
+/// The ids-lock name of the action `a` of `m`: its name, or, where another action of `m` has the
+/// same name, its name on the resource type it takes first (`join@WifiNetwork`). An action's name
+/// belongs to its resource type, so two types' `join` are two actions, each with its own id.
+pub fn action_key(m: &Module, a: &crate::ast::ActionDecl) -> String {
+    let shared = m.items.iter().any(|item| {
+        matches!(item, Item::Action(other)
+            if other.name.name == a.name.name && !std::ptr::eq(other, a))
+    });
+    match a.params.first().map(|p| &p.ty.kind) {
+        Some(crate::ast::TypeExprKind::Named(path)) if shared => {
+            let ty: Vec<&str> = path.iter().map(|part| part.name.as_str()).collect();
+            format!("{}@{}", a.name.name, ty.join("."))
+        }
+        _ => a.name.name.clone(),
+    }
+}
+
 /// The qualified name of every declaration that gets an id: types (`Album`), fields (`Album.title`),
 /// actions, views and fns (`play`), anchors (`album_page#play`), scenarios (`scenario "a week of
 /// notes"`), and the presentation view of an action whose label, icon or state follow its target
@@ -315,10 +332,11 @@ pub fn declared_names(m: &Module) -> Vec<String> {
                 }
             }
             Item::Action(a) => {
-                out.push(a.name.name.clone());
+                let key = action_key(m, a);
                 if a.presents_state() {
-                    out.push(present_key(&a.name.name));
+                    out.push(present_key(&key));
                 }
+                out.push(key);
             }
             Item::Fn(f) => out.push(f.name.name.clone()),
             Item::View(v) => {

@@ -176,7 +176,7 @@ view network_rows(
             } else if n.secure and not n.known {
                 set(password_for, n.name)
             } else {
-                device.join_wifi(device.network, n.name)
+                n.join()
             }
             trailing: {
                 row(gap: .tight, align: .center) {
@@ -255,14 +255,10 @@ view known_networks(page: State<Text>) {
                             if s.autoconnect { "Stop joining by itself" } else { "Join by itself" },
                             icon: .refresh,
                         ) {
-                            on choose: device.set_network_autoconnect(
-                                device.network,
-                                s.id,
-                                on: not s.autoconnect,
-                            )
+                            on choose: s.set_autoconnect(not s.autoconnect)
                         }
                         ui.MenuItem("Forget this network", icon: .trash) {
-                            on choose: device.forget_network(device.network, s.id)
+                            on choose: s.forget()
                         }
                     }
                 }
@@ -287,13 +283,15 @@ view network_page(name: Text, page: State<Text>) {
             ui.Property("Security", if n?.secure ?? false { "Password" } else { "Open" })
             if let signal = n?.signal { ui.Property("Signal", "{signal} of 4") }
         }
-        if n?.connected ?? false {
-            ui.Button("Leave this network", icon: .wifi_off) {
-                on press: device.disconnect_wifi(device.network, name)
-            }
-        } else {
-            ui.Button("Join", icon: .wifi, role: .primary) {
-                on press: device.join_wifi(device.network, name)
+        if let w = n {
+            if w.connected {
+                ui.Button("Leave this network", icon: .wifi_off) {
+                    on press: w.leave()
+                }
+            } else {
+                ui.Button("Join", icon: .wifi, role: .primary) {
+                    on press: w.join()
+                }
             }
         }
     }
@@ -303,11 +301,7 @@ view network_page(name: Text, page: State<Text>) {
                 ui.ListRow("Joins by itself", secondary: if saved.autoconnect { "On" } else { "Off" }, icon: .refresh) {
                     trailing: {
                         ui.Button("Change", role: .plain, size: .small) {
-                            on press: device.set_network_autoconnect(
-                                device.network,
-                                saved.id,
-                                on: not saved.autoconnect,
-                            )
+                            on press: saved.set_autoconnect(not saved.autoconnect)
                         }
                     }
                 }
@@ -348,7 +342,7 @@ view network_page(name: Text, page: State<Text>) {
                     }
                 }
             ui.Button("Forget this network", icon: .trash, role: .destructive) {
-                on press: device.forget_network(device.network, saved.id)
+                on press: saved.forget()
             }
         }
     }

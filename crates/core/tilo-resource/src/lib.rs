@@ -223,7 +223,7 @@ pub use resource::{
     origin_now_ms, publish, publish_head, publish_head_of, reset_type_schemas, scope_contains,
     spec_kind, state_from_reading, with_origin_clock,
 };
-pub use row::{LiveRow, RowBindings, typed_resource};
+pub use row::{Handle, LiveRow, RowBindings, typed_resource};
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};

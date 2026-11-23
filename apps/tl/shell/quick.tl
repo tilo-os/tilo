@@ -388,7 +388,7 @@ view network_section() {
                 ) {
                     on activate: if n.secure and not n.known {
                         set(password_for, n.name)
-                    } else { device.join_wifi(device.network, n.name) }
+                    } else { n.join() }
                 }
             }
             if password_for != "" {
@@ -438,7 +438,7 @@ view network_section() {
                         secondary: if s.autoconnect { "Joins by itself" } else { "Saved" },
                         icon: .wifi,
                     ) {
-                        on activate: device.join_wifi(device.network, s.name)
+                        on activate: s.join()
                         trailing: {
                             ui.MenuButton(
                                 "This network",
@@ -452,14 +452,10 @@ view network_section() {
                                     } else { "Join by itself" },
                                     icon: .refresh,
                                 ) {
-                                    on choose: device.set_network_autoconnect(
-                                        device.network,
-                                        s.id,
-                                        on: not s.autoconnect,
-                                    )
+                                    on choose: s.set_autoconnect(not s.autoconnect)
                                 }
                                 ui.MenuItem("Forget this network", icon: .trash) {
-                                    on choose: device.forget_network(device.network, s.id)
+                                    on choose: s.forget()
                                 }
                             }
                         }

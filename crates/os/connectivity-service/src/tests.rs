@@ -150,6 +150,7 @@ fn network(name: &str, known: bool, secure: bool, connected: bool) -> WifiNetwor
         secure,
         known,
         connected,
+        ..WifiNetwork::default()
     }
 }
 
@@ -532,27 +533,37 @@ fn wifi_switches_and_joins_from_the_network_resource() {
     assert_eq!(
         children,
         [
-            ("wifi-network:Home", "disconnect-wifi"),
-            ("wifi-network:Cafe", "join-wifi"),
-            ("wifi-network:Office", "join-wifi"),
-            ("saved-network:uuid-home", "set-network-autoconnect"),
-            ("saved-network:uuid-office", "set-network-autoconnect"),
+            ("wifi-network:Home", "leave"),
+            ("wifi-network:Cafe", "join"),
+            ("wifi-network:Office", "join"),
+            ("saved-network:uuid-home", "join"),
+            ("saved-network:uuid-office", "join"),
         ]
     );
     assert!(
-        network.actions.iter().all(|spec| spec.id != "join-wifi"),
+        network.actions.iter().all(|spec| spec.id != "join"),
         "joining is offered on the networks only"
+    );
+    // Each row of the reading carries the address its own actions are called on.
+    let reading = read(&service, NETWORK);
+    assert_eq!(
+        reading["wifi"]["networks"][1]["$address"],
+        json!("wifi-network:Cafe")
+    );
+    assert_eq!(
+        reading["saved"][0]["$address"],
+        json!("saved-network:uuid-home")
     );
 
     service
-        .invoke("wifi-network:Cafe", "join-wifi", &Map::new())
+        .invoke("wifi-network:Cafe", "join", &Map::new())
         .expect("an open network joins");
     service.settle();
     assert_eq!(
         read(&service, NETWORK)["wifi"]["networks"][1]["connected"],
         json!(true)
     );
-    let refused = service.invoke("wifi-network:Office", "join-wifi", &Map::new());
+    let refused = service.invoke("wifi-network:Office", "join", &Map::new());
     assert!(
         matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "password_needed"),
         "{refused:?}"
@@ -729,16 +740,12 @@ fn the_wired_link_and_saved_networks_are_controlled_from_their_resources() {
 
     assert_eq!(
         child_actions(&service, "saved-network:uuid-home"),
-        [
-            "set-network-autoconnect",
-            "forget-network",
-            "set-network-proxy"
-        ]
+        ["join", "set-autoconnect", "forget", "set-proxy"]
     );
     assert_eq!(
         child_actions(&service, "saved-network:uuid-office"),
-        ["set-network-autoconnect", "forget-network"],
-        "a network with no proxy offers no proxy to stop"
+        ["join", "set-autoconnect", "forget", "set-proxy"],
+        "a network with no proxy is given one by its own action"
     );
     let saved = &read(&service, NETWORK)["saved"];
     assert_eq!(saved[0]["id"], json!("uuid-home"));
@@ -749,12 +756,12 @@ fn the_wired_link_and_saved_networks_are_controlled_from_their_resources() {
     service
         .invoke(
             "saved-network:uuid-office",
-            "set-network-autoconnect",
-            &Map::new(),
+            "set-autoconnect",
+            &arguments(json!({"on": true})),
         )
         .expect("taken");
     service
-        .invoke("saved-network:uuid-home", "set-network-proxy", &Map::new())
+        .invoke("saved-network:uuid-home", "set-proxy", &Map::new())
         .expect("taken");
     service.settle();
     assert_eq!(
@@ -777,9 +784,9 @@ fn the_wired_link_and_saved_networks_are_controlled_from_their_resources() {
 
     // A proxy is typed in as `host:port`; one that is not is refused.
     let refused = service.invoke(
-        NETWORK,
-        "set-network-proxy",
-        &arguments(json!({"profile": "uuid-home", "server": "proxy.local"})),
+        "saved-network:uuid-home",
+        "set-proxy",
+        &arguments(json!({"server": "proxy.local"})),
     );
     assert!(
         matches!(refused, Err(ApiError::InvalidArguments(_))),
@@ -787,9 +794,9 @@ fn the_wired_link_and_saved_networks_are_controlled_from_their_resources() {
     );
     service
         .invoke(
-            NETWORK,
-            "set-network-proxy",
-            &arguments(json!({"profile": "uuid-home", "server": "proxy.local:8080"})),
+            "saved-network:uuid-home",
+            "set-proxy",
+            &arguments(json!({"server": "proxy.local:8080"})),
         )
         .expect("taken");
     service.settle();
@@ -806,7 +813,7 @@ fn the_wired_link_and_saved_networks_are_controlled_from_their_resources() {
     );
 
     service
-        .invoke("saved-network:uuid-office", "forget-network", &Map::new())
+        .invoke("saved-network:uuid-office", "forget", &Map::new())
         .expect("taken");
     service.settle();
     assert_eq!(

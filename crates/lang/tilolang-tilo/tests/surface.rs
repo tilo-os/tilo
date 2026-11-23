@@ -1004,3 +1004,72 @@ fn a_package_keeping_a_workspace_record_publishes_its_surface() {
         "another app publishes none of Chat's records: {counter:?}"
     );
 }
+
+/// A description in which a loose resource and a kind of `instances` offer one verb, each its
+/// own action: the layout's `open` beside an app's.
+const ONE_VERB_ON_TWO: &str = r#"
+[[resources]]
+id = "shell:layout"
+kind = "shell"
+label = ""
+version = 0
+fields = []
+
+[[resources.verbs]]
+id = "open"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "link"
+required = true
+type = "text"
+
+[[resources]]
+instances = true
+kind = "applications.app"
+label = ""
+version = 0
+fields = []
+
+[[resources.verbs]]
+id = "open"
+kind = "undoable"
+params = []
+"#;
+
+/// An action's name belongs to its resource type: a description may offer one verb on two of its
+/// resources, each an action of its own, and the loader refuses only one verb declared twice on
+/// one, which a call could not tell apart.
+#[test]
+fn a_description_declares_each_action_once_for_its_resource() {
+    let read = tilolang_tilo::catalogue::described("t.session", "Session", ONE_VERB_ON_TWO)
+        .expect("one verb on two resources is two actions");
+    let mut opens: Vec<(&str, &str)> = read
+        .actions
+        .iter()
+        .filter(|action| action.name == "open")
+        .map(|action| (action.id.as_str(), action.verb.as_str()))
+        .collect();
+    opens.sort_unstable();
+    assert_eq!(
+        opens,
+        [("App/open", "open"), ("open", "")],
+        "{:#?}",
+        read.actions
+    );
+    // What the session sends a loose call with is the layout's `open`, never the app's.
+    let loose = tilolang_tilo::catalogue::loose_verbs(ONE_VERB_ON_TWO).unwrap();
+    assert_eq!(
+        loose["open"].params.len(),
+        1,
+        "the layout's `open` takes its link"
+    );
+
+    let twice = ONE_VERB_ON_TWO.replace(
+        "[[resources]]\ninstances = true",
+        "[[resources.verbs]]\nid = \"open\"\nkind = \"outside\"\nparams = []\n\n[[resources]]\ninstances = true",
+    );
+    let refused = tilolang_tilo::catalogue::described("t.session", "Session", &twice)
+        .expect_err("one verb twice on the layout names neither");
+    assert!(refused.contains("`open` twice"), "{refused}");
+}

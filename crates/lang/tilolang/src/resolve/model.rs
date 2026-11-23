@@ -148,6 +148,8 @@ impl ParamDefault {
 #[derive(Clone, Debug)]
 pub struct DefaultFn {
     pub action: String,
+    /// The function of the action it is a default of: two actions may share a name.
+    pub of: usize,
     pub param: usize,
     pub func: usize,
 }

@@ -627,3 +627,97 @@ impl Exports for LiveRow {
         &self.resource
     }
 }
+
+/// A row of a reading as the resource it is: its address, typed by its row
+/// type `R`. A record of a reading that is a resource of its own (a Wi-Fi
+/// network in the network's reading) holds one under
+/// [`ADDRESS_KEY`](tilo_actions::surface::ADDRESS_KEY), so a caller of any
+/// language calls the row's own actions on the address it carries, the way
+/// every caller does: never a root action taking the row's name.
+///
+/// It is written as the address alone, and published as a resource of `R`'s
+/// kind ([`FieldType::Resource`](tilo_actions::surface::FieldType::Resource)).
+pub struct Handle<R> {
+    address: String,
+    row: std::marker::PhantomData<fn() -> R>,
+}
+
+impl<R: crate::words::RowType> Handle<R> {
+    /// The row at `address`, as the resource publishing it names its child.
+    #[must_use]
+    pub fn new(address: impl Into<String>) -> Self {
+        Self {
+            address: address.into(),
+            row: std::marker::PhantomData,
+        }
+    }
+
+    /// The address the row's actions are called on (`wifi-network:Home`).
+    #[must_use]
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+
+    /// The address of `action`, one of the row type's own, on this row.
+    #[must_use]
+    pub fn action(&self, action: &str) -> tilo_actions::ActionAddress {
+        tilo_actions::ActionAddress::new(self.address.clone(), action)
+    }
+}
+
+impl<R> Clone for Handle<R> {
+    fn clone(&self) -> Self {
+        Self {
+            address: self.address.clone(),
+            row: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R> Default for Handle<R> {
+    fn default() -> Self {
+        Self {
+            address: String::new(),
+            row: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R> PartialEq for Handle<R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.address == other.address
+    }
+}
+
+impl<R> Eq for Handle<R> {}
+
+impl<R> std::fmt::Debug for Handle<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Handle").field(&self.address).finish()
+    }
+}
+
+impl<R> serde::Serialize for Handle<R> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.address)
+    }
+}
+
+impl<'de, R> serde::Deserialize<'de> for Handle<R> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self {
+            address: String::deserialize(deserializer)?,
+            row: std::marker::PhantomData,
+        })
+    }
+}
+
+impl<R: crate::words::RowType> crate::JsonSchema for Handle<R> {
+    fn json_schema() -> serde_json::Value {
+        tilo_actions::params::picked_address_schema(R::KIND)
+    }
+
+    fn field_type(_: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Resource(R::KIND.to_owned())
+    }
+}

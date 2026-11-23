@@ -216,11 +216,7 @@ view banner_full(n: device.Notice) {
         } else if n.kind == "success" { .success } else { .info },
         action: if not actions.is_empty() { actions.first()?.label ?? "Open" },
     ) {
-        on act: device.act(
-            device.notifications,
-            notification: n.number,
-            action: actions.first()?.key ?? "",
-        )
+        on act: device.banners.act(banner: "{n.number}", choice: actions.first()?.key ?? "")
         on dismiss: device.dismiss(device.notifications, notification: n.number)
     }
     if can_reply {
@@ -266,11 +262,7 @@ view banner_row(n: device.Notice) {
                     }
                 } else if a.key != "inline-reply" {
                     ui.Button(a.label, size: .small) {
-                        on press: device.act(
-                            device.notifications,
-                            notification: n.number,
-                            action: a.key,
-                        )
+                        on press: device.banners.act(banner: "{n.number}", choice: a.key)
                     }
                 }
             }

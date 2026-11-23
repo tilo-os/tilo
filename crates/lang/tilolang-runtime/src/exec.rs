@@ -2305,15 +2305,17 @@ impl Core {
             // What the app's action API takes it by: a compiled package's action by its name, an
             // action of a description of an app's surface (no module) by the verb it describes,
             // without the app its id is named by (`so.tilo.vision#cancel` is published as
-            // `cancel`).
-            name: if pkg.meta.module_hash.is_empty() {
+            // `cancel`), and by the verb alone where its id names its resource type too.
+            name: if !pkg.meta.module_hash.is_empty() {
+                meta.name.clone()
+            } else if meta.verb.is_empty() {
                 meta.id
                     .strip_prefix(pkg.meta.app.as_str())
                     .and_then(|verb| verb.strip_prefix('#'))
                     .unwrap_or(&meta.id)
                     .to_owned()
             } else {
-                meta.name.clone()
+                meta.verb.clone()
             },
             // A flag travels as the integer the guest boxed it as; the invocation carries it
             // as the flag its parameter declares, so the app it goes to reads a flag.

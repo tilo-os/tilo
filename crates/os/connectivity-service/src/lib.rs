@@ -40,7 +40,10 @@ use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
 use device::{Change, Device, Readings};
-use effects::{BluetoothAction, ModemAction, NetworkAction, TetheringAction, VpnAction};
+use effects::{
+    BluetoothAction, ModemAction, NetworkAction, SavedNetworkAction, TetheringAction, VpnAction,
+    WifiNetworkAction,
+};
 use model::{Bluetooth, Modem, Network, Tethering, Vpn};
 
 /// The resources' ids.
@@ -49,6 +52,10 @@ pub const BLUETOOTH: &str = "bluetooth";
 pub const VPN: &str = "vpn";
 pub const TETHERING: &str = "tethering";
 pub const MODEM: &str = "modem";
+/// The kind part of a Wi-Fi network's address (`wifi-network:Home`).
+pub const WIFI_NETWORK: &str = "wifi-network";
+/// The kind part of a saved network's address (`saved-network:<id>`).
+pub const SAVED_NETWORK: &str = "saved-network";
 
 /// Which resource a change belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +167,7 @@ impl Connectivity {
         readings.vpn.problem = old.vpn.problem.take();
         readings.tethering.pending = std::mem::take(&mut old.tethering.pending);
         readings.tethering.problem = old.tethering.problem.take();
+        address_rows(&mut readings.network);
         self.readings = readings;
     }
 
@@ -217,20 +225,6 @@ impl Connectivity {
             NetworkAction::SetWifi { on } => Change::Wifi(on),
             NetworkAction::ToggleWifi => Change::Wifi(!network.wifi.on),
             NetworkAction::ScanWifi => Change::Scan,
-            NetworkAction::JoinWifi { network: name } => {
-                let known = network.wifi.networks.iter().find(|n| n.name == name);
-                if known.is_some_and(|n| n.secure && !n.known) {
-                    return Err(ApiError::Unavailable {
-                        code: "password_needed".into(),
-                        reason: format!("{name} asks for a password: join it with connect-wifi"),
-                    });
-                }
-                Change::Join {
-                    network: name,
-                    password: None,
-                    hidden: false,
-                }
-            }
             NetworkAction::ConnectWifi { network, password } => Change::Join {
                 network,
                 password: Some(password),
@@ -269,15 +263,6 @@ impl Connectivity {
                     password: password.filter(|password| !password.is_empty()),
                 }
             }
-            NetworkAction::DisconnectWifi { network } => Change::Leave { network },
-            NetworkAction::ForgetNetwork { profile } => Change::Forget { profile },
-            NetworkAction::SetNetworkAutoconnect { profile, on } => {
-                Change::Autoconnect { profile, on }
-            }
-            NetworkAction::SetNetworkProxy { profile, server } => Change::Proxy {
-                profile,
-                server: proxy(server)?,
-            },
             NetworkAction::SetMobileMetered { metered } => Change::MobileMetered {
                 metered: metered_from_key(&metered)?,
             },
@@ -366,6 +351,68 @@ impl Connectivity {
         Ok(self.start(Part::Network, id, change))
     }
 
+    /// `action` on the Wi-Fi network in reach named `name`.
+    fn wifi_network(&mut self, name: &str, action: WifiNetworkAction) -> Result<Started, ApiError> {
+        let id = action.id();
+        let network = self
+            .readings
+            .network
+            .wifi
+            .networks
+            .iter()
+            .find(|n| n.name == name);
+        let change = match action {
+            WifiNetworkAction::Join => {
+                if network.is_some_and(|n| n.secure && !n.known) {
+                    return Err(ApiError::Unavailable {
+                        code: "password_needed".into(),
+                        reason: format!("{name} asks for a password: join it with connect-wifi"),
+                    });
+                }
+                Change::Join {
+                    network: name.to_owned(),
+                    password: None,
+                    hidden: false,
+                }
+            }
+            WifiNetworkAction::Leave => Change::Leave {
+                network: name.to_owned(),
+            },
+        };
+        Ok(self.start(Part::Network, id, change))
+    }
+
+    /// `action` on the network this device keeps under the id `profile`.
+    fn saved_network(
+        &mut self,
+        profile: &str,
+        action: SavedNetworkAction,
+    ) -> Result<Started, ApiError> {
+        let id = action.id();
+        let change = match action {
+            SavedNetworkAction::Join => {
+                let saved = self.readings.network.saved.iter().find(|s| s.id == profile);
+                Change::Join {
+                    network: saved.map_or_else(|| profile.to_owned(), |s| s.name.clone()),
+                    password: None,
+                    hidden: false,
+                }
+            }
+            SavedNetworkAction::SetAutoconnect { on } => Change::Autoconnect {
+                profile: profile.to_owned(),
+                on,
+            },
+            SavedNetworkAction::Forget => Change::Forget {
+                profile: profile.to_owned(),
+            },
+            SavedNetworkAction::SetProxy { server } => Change::Proxy {
+                profile: profile.to_owned(),
+                server: proxy(server)?,
+            },
+        };
+        Ok(self.start(Part::Network, id, change))
+    }
+
     fn bluetooth(&mut self, action: BluetoothAction) -> Started {
         let id = action.id();
         let change = match action {
@@ -448,6 +495,19 @@ fn refresh(jobs: &Jobs<dyn Device, Landed>) {
 fn child_id(kind: &str, key: &str) -> Option<String> {
     (!key.is_empty() && !key.contains(tilo_actions::resource::KEY_SEP))
         .then(|| format!("{kind}:{key}"))
+}
+
+/// Each network of `network` that is a resource of its own carries its address, the one its
+/// child is published at: a view calls the row's own actions on it, as every caller does.
+fn address_rows(network: &mut Network) {
+    for wifi in &mut network.wifi.networks {
+        wifi.address =
+            tilo_resource::Handle::new(child_id(WIFI_NETWORK, &wifi.name).unwrap_or_default());
+    }
+    for saved in &mut network.saved {
+        saved.address =
+            tilo_resource::Handle::new(child_id(SAVED_NETWORK, &saved.id).unwrap_or_default());
+    }
 }
 
 /// The proxy server as it is used: `host:port`, or nothing for no proxy. An
@@ -591,6 +651,19 @@ pub fn network_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Network, NetworkAction>("network", "Network")
 }
 
+/// A Wi-Fi network in reach as a view of another language calls it: the actions offered on the
+/// address its row in the network's reading carries.
+#[must_use]
+pub fn wifi_network_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::row_surface::<WifiNetworkRow, WifiNetworkAction>()
+}
+
+/// A network this device keeps as a view of another language calls it.
+#[must_use]
+pub fn saved_network_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::row_surface::<SavedNetworkRow, SavedNetworkAction>()
+}
+
 /// The Bluetooth resource as a view of another language reads and changes it.
 #[must_use]
 pub fn bluetooth_surface() -> tilo_resource::surface::Surface {
@@ -646,7 +719,7 @@ pub struct TetheringReading;
 #[row(
     kind = "so.tilo.connectivity.wifi-network",
     label = "Wi-Fi network",
-    effects = NetworkAction
+    effects = WifiNetworkAction
 )]
 pub struct WifiNetworkRow;
 
@@ -655,7 +728,7 @@ pub struct WifiNetworkRow;
 #[row(
     kind = "so.tilo.connectivity.saved-network",
     label = "Saved network",
-    effects = NetworkAction
+    effects = SavedNetworkAction
 )]
 pub struct SavedNetworkRow;
 
@@ -760,38 +833,33 @@ fn mark_what_the_device_lacks(resource: &mut ResourceSpec, network: &Network) {
     }
 }
 
+/// No argument bound: a row's own action knows the row by the address it is called on.
+const NO_ARGUMENTS: [(&str, Value); 0] = [];
+
 /// The networks in reach and the networks this device keeps, each with what
 /// pressing it does now.
 fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '_ {
     let reachable = network.wifi.networks.iter().filter_map(|wifi| {
-        let id = child_id("wifi-network", &wifi.name)?;
+        let id = child_id(WIFI_NETWORK, &wifi.name)?;
         let action = if wifi.connected {
-            NetworkAction::DISCONNECT_WIFI
+            WifiNetworkAction::LEAVE
         } else {
-            NetworkAction::JOIN_WIFI
+            WifiNetworkAction::JOIN
         };
-        let bindings =
-            tilo_resource::RowBindings::new().bind(action, [("network", wifi.name.clone().into())]);
+        let bindings = tilo_resource::RowBindings::new().bind(action, NO_ARGUMENTS);
         Some(
             tilo_resource::LiveRow::typed_with::<WifiNetworkRow>(id, wifi.name.clone(), &bindings)
                 .into_resource(),
         )
     });
     let saved = network.saved.iter().filter_map(|profile| {
-        let id = child_id("saved-network", &profile.id)?;
+        let id = child_id(SAVED_NETWORK, &profile.id)?;
         let profile_id: Value = profile.id.clone().into();
-        let mut bindings = tilo_resource::RowBindings::new()
-            .bind(
-                NetworkAction::SET_NETWORK_AUTOCONNECT,
-                [
-                    ("profile", profile_id.clone()),
-                    ("on", (!profile.autoconnect).into()),
-                ],
-            )
-            .bind(
-                NetworkAction::FORGET_NETWORK,
-                [("profile", profile_id.clone())],
-            )
+        let bindings = tilo_resource::RowBindings::new()
+            .bind(SavedNetworkAction::JOIN, NO_ARGUMENTS)
+            .bind(SavedNetworkAction::SET_AUTOCONNECT, NO_ARGUMENTS)
+            .bind(SavedNetworkAction::FORGET, NO_ARGUMENTS)
+            .bind(SavedNetworkAction::SET_PROXY, NO_ARGUMENTS)
             .bind(NetworkAction::SET_NETWORK_IPV4, [("profile", profile_id.clone())])
             .bind(NetworkAction::SET_NETWORK_IPV6, [("profile", profile_id.clone())])
             .bind(NetworkAction::SET_NETWORK_DNS, [("profile", profile_id.clone())])
@@ -800,19 +868,7 @@ fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '
                 NetworkAction::SET_ENTERPRISE_IDENTITY,
                 [("profile", profile_id.clone())],
             )
-            .bind(
-                NetworkAction::SET_WIFI_PASSWORD,
-                [("profile", profile_id)],
-            );
-        if profile.proxy.is_some() {
-            bindings = bindings.bind(
-                NetworkAction::SET_NETWORK_PROXY,
-                [
-                    ("profile", profile.id.clone().into()),
-                    ("server", Value::Null),
-                ],
-            );
-        }
+            .bind(NetworkAction::SET_WIFI_PASSWORD, [("profile", profile_id)]);
         Some(
             tilo_resource::LiveRow::typed_with::<SavedNetworkRow>(
                 id,
@@ -986,10 +1042,21 @@ impl Service for Connectivity {
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
         let published = self.resources();
-        // A child's action belongs to its parent's vocabulary.
-        let parent = resource.split_once(':').map_or(resource, |(kind, _)| kind);
+        // A Wi-Fi network's and a saved network's actions are their own, the row named by its
+        // address; a Bluetooth device's and a VPN profile's belong to their parent's vocabulary.
+        let (parent, key) = resource
+            .split_once(':')
+            .map_or((resource, ""), |(kind, key)| (kind, key));
         match parent {
-            NETWORK | "wifi-network" | "saved-network" => {
+            WIFI_NETWORK => {
+                let action = decode::<WifiNetworkAction>(&published, resource, action, arguments)?;
+                self.wifi_network(key, action)
+            }
+            SAVED_NETWORK => {
+                let action = decode::<SavedNetworkAction>(&published, resource, action, arguments)?;
+                self.saved_network(key, action)
+            }
+            NETWORK => {
                 let action = decode::<NetworkAction>(&published, resource, action, arguments)?;
                 self.network(action)
             }

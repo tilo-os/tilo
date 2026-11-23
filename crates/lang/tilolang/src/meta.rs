@@ -636,6 +636,12 @@ pub struct ProposalMeta {
 pub struct ActionMeta {
     pub id: String,
     pub name: String,
+    /// The verb the app's own action API takes the action by, where that is neither its id nor
+    /// its name: a description of an app's surface gives a verb offered on one of its resource
+    /// types an id naming the type too, since an action's name belongs to its resource type
+    /// (`act` on `Banners` and `act` on `Notifications` are two actions).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub verb: String,
     pub doc: String,
     pub params: Vec<ParamMeta>,
     pub result: Option<String>,

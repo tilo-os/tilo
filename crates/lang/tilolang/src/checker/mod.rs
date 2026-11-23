@@ -352,6 +352,9 @@ fn lower(
     };
     let mut funcs = Vec::new();
     let mut declaring: Vec<(usize, Span)> = Vec::new();
+    // The function of each action the module declares, by its declaration's node.
+    let mut action_funcs: std::collections::HashMap<ast::NodeId, usize> =
+        std::collections::HashMap::new();
     let mut initials = Vec::new();
     for item in &module.items {
         let idx = funcs.len();
@@ -361,6 +364,7 @@ fn lower(
         c.at = Some(item.span().start);
         if let Item::Action(a) = item {
             declaring.push((idx, a.name.span));
+            action_funcs.insert(a.node, idx);
         }
         c.migrating = matches!(
             item,
@@ -413,10 +417,15 @@ fn lower(
         let Some(view) = env.callables.iter().find(|x| x.func == Some(idx)).cloned() else {
             continue;
         };
-        if view.name != crate::ids::present_key(&a.name.name) {
+        if view.name != crate::ids::present_key(&crate::ids::action_key(module, a)) {
             continue;
         }
-        let Some(action) = env.own_callable(&a.name.name) else {
+        let of = action_funcs.get(&a.node).copied();
+        let Some(action) = env
+            .callables
+            .iter()
+            .find(|x| x.own && x.func.is_some() && x.func == of)
+        else {
             continue;
         };
         c.at = Some(a.name.span.start);
@@ -427,10 +436,13 @@ fn lower(
             break;
         }
         let written = module.items.iter().find_map(|item| match item {
-            Item::Action(a) if a.name.name == d.action => a.params.get(d.param)?.default.as_ref(),
+            Item::Action(a) if action_funcs.get(&a.node) == Some(&d.of) => {
+                a.params.get(d.param)?.default.as_ref()
+            }
             _ => None,
         });
-        let (Some(written), Some(action)) = (written, env.own_callable(&d.action)) else {
+        let action = env.callables.iter().find(|x| x.own && x.func == Some(d.of));
+        let (Some(written), Some(action)) = (written, action) else {
             break;
         };
         c.at = Some(written.span.start);
@@ -469,7 +481,7 @@ fn lower(
     // it is offered in alone decide.
     for item in &module.items {
         let Item::Action(a) = item else { continue };
-        let Some(action) = env.own_callable(&a.name.name) else {
+        let Some(action) = env.own_action(a) else {
             continue;
         };
         let decides = |lines: &[ast::Require]| {
@@ -1508,7 +1520,7 @@ impl Checker<'_> {
                 );
                 continue;
             };
-            let Some(action) = env.own_callable(&a.name.name) else {
+            let Some(action) = env.own_action(a) else {
                 continue;
             };
             let args: Vec<String> = match &p.args {

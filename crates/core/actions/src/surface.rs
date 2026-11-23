@@ -27,6 +27,13 @@ const fn is_false(value: &bool) -> bool {
 /// The record unit, as footprints and unit indexes name it.
 pub const RESOURCE_UNIT: &str = "record";
 
+/// The key under which a record of a reading that is a resource of its own (a Wi-Fi network in
+/// the network's reading) carries its address. Its type declares it as a field of that name,
+/// typed [`FieldType::Resource`] of the record's kind, and the kind's own surface lists the
+/// actions offered on it: a caller of another language calls them on that address, the way any
+/// caller does, so a row's `join` is its own action and never a root action taking its name.
+pub const ADDRESS_KEY: &str = "$address";
+
 /// The record kind in which the framework keeps each member's actions waiting
 /// for the part of a chain they go to (an app whose records are a chain's
 /// parts): one record per member, which an app keeping chains declares its

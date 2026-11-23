@@ -198,6 +198,14 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
+        let typed: Vec<Callable> = env
+            .actions_named(true, &env.app, name)
+            .into_iter()
+            .cloned()
+            .collect();
+        if typed.len() > 1 {
+            return self.call_of_type(&typed, args, name_span, span);
+        }
         if let Some(c) = self.own_callable(name) {
             let c = c.clone();
             return self.call_callable(&c, args, span);
@@ -365,6 +373,14 @@ impl Checker<'_> {
             return ex;
         }
         let env = self.env;
+        let typed: Vec<Callable> = env
+            .actions_named(false, &import.app, &name.name)
+            .into_iter()
+            .cloned()
+            .collect();
+        if typed.len() > 1 {
+            return self.call_of_type(&typed, args, name.span, span);
+        }
         if let Some(c) =
             env.foreign_callable_marked(&import.app, &name.name, name.from_template_of.as_deref())
         {
@@ -729,6 +745,115 @@ impl Checker<'_> {
         // An action a view applies runs when its event fires: the view state it takes is read then.
         let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
         let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
+        self.call_bound(c, bound, span)
+    }
+
+    /// The action `c` called on `on`, the resource it is offered on, with `args` after it:
+    /// `n.join()` on a Wi-Fi network is `join(n)` of the network's type, the same call any
+    /// caller makes of that resource's address.
+    fn call_on(&mut self, c: &Callable, on: Ex, args: &[ast::Arg], span: Span) -> Ex {
+        let sig = c.signature(&self.env.app);
+        let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
+        let rest = c.params.get(1..).unwrap_or_default();
+        let bound = std::iter::once(Some(on))
+            .chain(self.bind_args_or_default(&c.name, rest, args, span, &sig, at_press))
+            .collect();
+        self.call_bound(c, bound, span)
+    }
+
+    /// A call of one of `candidates`, the actions of one name each offered on its own resource
+    /// type: the resource the call names first (`act(banners, …)`) says which.
+    fn call_of_type(
+        &mut self,
+        candidates: &[Callable],
+        args: &[ast::Arg],
+        name_span: Span,
+        span: Span,
+    ) -> Ex {
+        let name = candidates
+            .first()
+            .map_or("", |c| c.name.as_str())
+            .to_owned();
+        let types: Vec<String> = candidates
+            .iter()
+            .filter_map(|c| c.params.first())
+            .map(|p| format!("`{}`", p.ty.display(&self.env.app)))
+            .collect();
+        // An action of the app's own that no resource type holds (the layout's `open`, beside an
+        // app's) is the one a call names when its first argument is no resource of the others.
+        let loose: Vec<&Callable> = candidates
+            .iter()
+            .filter(|c| !matches!(c.params.first().map(|p| &p.ty), Some(Ty::Record(_))))
+            .collect();
+        if let [loose] = loose.as_slice() {
+            let loose = (*loose).clone();
+            // The first argument is typed once to see whether it is a resource of one of the
+            // others; when it is not, it is the loose action's, checked as its argument.
+            let known = self.diags.len();
+            if let Some((first, rest)) =
+                args.split_first().filter(|(first, _)| first.name.is_none())
+            {
+                self.push_sink();
+                let on = self.expr(&first.value, None);
+                let lowered = self.pop_sink();
+                let typed = candidates
+                    .iter()
+                    .find(|c| {
+                        c.params
+                            .first()
+                            .is_some_and(|p| matches!(p.ty, Ty::Record(_)) && p.ty == on.ty)
+                    })
+                    .cloned();
+                if let Some(c) = typed {
+                    for stmt in lowered {
+                        self.emit(stmt);
+                    }
+                    return self.call_on(&c, on, rest, span);
+                }
+            }
+            self.diags.truncate(known);
+            return self.call_callable(&loose, args, span);
+        }
+        let Some((first, rest)) = args.split_first().filter(|(first, _)| first.name.is_none())
+        else {
+            self.err(
+                "E022",
+                name_span,
+                format!(
+                    "`{name}` is an action of {}, each its own: name the resource it acts on first (`{name}(r, …)`), or call it on the resource (`r.{name}(…)`)",
+                    types.join(" and ")
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        let on = self.expr(&first.value, None);
+        if on.ty.is_error() {
+            return Ex::error();
+        }
+        let chosen = candidates
+            .iter()
+            .find(|c| c.params.first().is_some_and(|p| p.ty == on.ty))
+            .cloned();
+        let Some(c) = chosen else {
+            let given = self.show(&on.ty);
+            self.err(
+                "E022",
+                first.value.span,
+                format!(
+                    "`{name}` is an action of {}, and {given} has none",
+                    types.join(" and ")
+                ),
+            );
+            return Ex::error();
+        };
+        self.call_on(&c, on, rest, span)
+    }
+
+    /// The action `c`, its arguments `bound` to its parameters.
+    fn call_bound(&mut self, c: &Callable, bound: Vec<Option<Ex>>, span: Span) -> Ex {
         let ctx = self.st.ctx;
         match (c.kind, ctx) {
             (CKind::Fn, _) => {
@@ -3942,6 +4067,14 @@ impl Checker<'_> {
             {
                 let name = k.name.clone();
                 self.names_action(r, &name, args, span)
+            }
+            // An action offered on the record's type, called on it: `n.join()`.
+            (Ty::Record(key), _) if self.env.action_on(key, m).is_some() => {
+                let c = self.env.action_on(key, m).cloned();
+                match c {
+                    Some(c) => self.call_on(&c, r, args, span),
+                    None => Ex::error(),
+                }
             }
             (other, _) => {
                 let t = self.show(other);

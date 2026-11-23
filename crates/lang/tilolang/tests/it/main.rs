@@ -34,6 +34,7 @@ mod shadowing;
 mod text_math;
 mod titles;
 mod triggers;
+mod typed_actions;
 mod unions;
 mod wasm;
 mod width;

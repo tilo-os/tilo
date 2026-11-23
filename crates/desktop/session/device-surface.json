@@ -572,22 +572,6 @@
           "params": []
         },
         {
-          "id": "join-wifi",
-          "label": "Join a Wi-Fi network",
-          "description": "Join a Wi-Fi network: one this device knows, or an open one.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "network",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            }
-          ]
-        },
-        {
           "id": "connect-wifi",
           "label": "Join with its password",
           "description": "Join a protected Wi-Fi network with its password.",
@@ -765,92 +749,6 @@
             },
             {
               "name": "password",
-              "required": false,
-              "schema": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "type": {
-                "option": "text"
-              }
-            }
-          ]
-        },
-        {
-          "id": "disconnect-wifi",
-          "label": "Leave the Wi-Fi network",
-          "description": "Leave the Wi-Fi network this device is connected to.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "network",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "id": "set-network-autoconnect",
-          "label": "Join by itself in reach",
-          "description": "Join a saved network by itself when it is in reach, or stop.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "profile",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            },
-            {
-              "name": "on",
-              "required": true,
-              "schema": {
-                "type": "boolean"
-              },
-              "type": "bool"
-            }
-          ]
-        },
-        {
-          "id": "forget-network",
-          "label": "Forget the network",
-          "description": "Forget a saved network: this device no longer joins it by itself.",
-          "kind": "outside",
-          "destructive": true,
-          "params": [
-            {
-              "name": "profile",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "id": "set-network-proxy",
-          "label": "Set a proxy",
-          "description": "Send a saved network's traffic through a proxy, or straight out.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "profile",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            },
-            {
-              "name": "server",
               "required": false,
               "schema": {
                 "type": [
@@ -1203,6 +1101,12 @@
           "doc": "A network this device keeps: what it joins by itself and how it is set up.",
           "fields": [
             {
+              "name": "$address",
+              "type": {
+                "resource": "so.tilo.connectivity.saved-network"
+              }
+            },
+            {
               "name": "name",
               "type": "text"
             },
@@ -1279,6 +1183,12 @@
           "doc": "One Wi-Fi network in reach.",
           "fields": [
             {
+              "name": "$address",
+              "type": {
+                "resource": "so.tilo.connectivity.wifi-network"
+              }
+            },
+            {
               "name": "name",
               "type": "text"
             },
@@ -1329,6 +1239,88 @@
           ]
         }
       ]
+    },
+    {
+      "kind": "so.tilo.connectivity.wifi-network",
+      "label": "Wi-Fi network",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "join",
+          "label": "Join the network",
+          "description": "Join the network: one this device knows, or an open one.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "leave",
+          "label": "Leave the network",
+          "description": "Leave the network, when this device is connected to it.",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": []
+    },
+    {
+      "kind": "so.tilo.connectivity.saved-network",
+      "label": "Saved network",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "join",
+          "label": "Join the network",
+          "description": "Join the saved network now.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "set-autoconnect",
+          "label": "Join by itself in reach",
+          "description": "Join the network by itself when it is in reach, or stop.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "forget",
+          "label": "Forget the network",
+          "description": "Forget the network: this device no longer joins it by itself.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "set-proxy",
+          "label": "Set a proxy",
+          "description": "Send the network's traffic through a proxy, or straight out.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "server",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        }
+      ],
+      "fields": []
     },
     {
       "kind": "bluetooth",

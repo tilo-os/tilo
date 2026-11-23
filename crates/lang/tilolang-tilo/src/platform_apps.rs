@@ -54,11 +54,7 @@ const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surf
 /// are sent as ([`tilo_actions::surface::nest_arguments`]).
 pub fn session_verbs()
 -> Result<std::collections::BTreeMap<String, tilo_actions::surface::VerbSurface>, String> {
-    Ok(crate::catalogue::parse_surfaces(SESSION_DESCRIPTION)?
-        .into_iter()
-        .flat_map(|surface| surface.verbs)
-        .map(|verb| (verb.id.clone(), verb))
-        .collect())
+    crate::catalogue::loose_verbs(SESSION_DESCRIPTION)
 }
 
 /// The session's package: its resources' types and actions, which a shell's views, an agent's
@@ -436,6 +432,7 @@ fn package(published: &Published) -> Result<PackageMeta, String> {
     } else {
         package_of(published.app, published.title, &surfaces)
     };
+    meta = crate::catalogue::one_action_per_id(meta)?;
     if !published.listed.is_empty() {
         tilolang::search::describe_defaults(&mut meta);
     }

@@ -49,6 +49,10 @@ pub struct Env {
     pub app: String,
     pub types: Vec<TypeInfo>,
     pub callables: Vec<Callable>,
+    /// Each action the module declares, by its declaration's node: where it stands among the
+    /// callables. Two actions may share a name, each on its own resource type, so a declaration
+    /// finds its own by this and never by its name.
+    pub actions: HashMap<ast::NodeId, usize>,
     pub imports: Vec<Import>,
     /// `view#anchor` to id.
     pub anchors: HashMap<String, String>,
@@ -134,6 +138,11 @@ impl Env {
             .find(|t| t.key.app == self.app && t.key.name == name)
     }
 
+    /// The action the module's declaration `a` declares.
+    pub fn own_action(&self, a: &ast::ActionDecl) -> Option<&Callable> {
+        self.callables.get(*self.actions.get(&a.node)?)
+    }
+
     pub fn own_callable(&self, name: &str) -> Option<&Callable> {
         self.callables
             .iter()
@@ -185,6 +194,36 @@ impl Env {
     /// host imports the checker lowers (see [`crate::agent`]).
     pub fn add_agent(&mut self) {
         self.add_import(crate::agent::NS, crate::agent::meta());
+    }
+
+    /// The action `name` offered on the resource type `key`: the one, of any package, taking a
+    /// resource of that type first. An action's name belongs to its resource type, so a Wi-Fi
+    /// network's `join` and a saved network's are two actions, and `n.join()` is the one of
+    /// `n`'s type.
+    pub fn action_on(&self, key: &TypeKey, name: &str) -> Option<&Callable> {
+        self.callables.iter().find(|c| {
+            c.kind == CKind::Action
+                && c.name == name
+                && !c.hidden()
+                && !c.private
+                && matches!(c.params.first().map(|p| &p.ty), Some(Ty::Record(on)) if on == key)
+        })
+    }
+
+    /// The actions of `app` named `name` (the module's own when `own`), one for each resource
+    /// type it is offered on: more than one when two of its types each have an action of that
+    /// name, which the resource a call names first chooses between.
+    pub fn actions_named(&self, own: bool, app: &str, name: &str) -> Vec<&Callable> {
+        self.callables
+            .iter()
+            .filter(|c| {
+                c.kind == CKind::Action
+                    && c.own == own
+                    && c.app == app
+                    && c.name == name
+                    && !c.scenario
+            })
+            .collect()
     }
 
     pub fn foreign_callable(&self, app: &str, name: &str) -> Option<&Callable> {
@@ -596,6 +635,11 @@ fn name_case_ok(name: &str, upper: bool) -> bool {
 mod types;
 
 impl Resolver<'_> {
+    /// The callable the module's action `a` declares.
+    fn own_action(&self, a: &ast::ActionDecl) -> Option<&Callable> {
+        self.env.own_action(a)
+    }
+
     fn err(&mut self, code: &str, span: Span, msg: impl Into<String>) {
         self.diags.push(Diagnostic::new(code, span, msg));
     }
@@ -1643,8 +1687,9 @@ impl Resolver<'_> {
         let mut func = 0usize;
         // The presentation views of actions, which get functions after every declared one.
         let mut presents: Vec<(String, ParamInfo)> = Vec::new();
-        // The defaults of action parameters: the callable's index and the parameter's.
-        let mut defaults: Vec<(usize, usize)> = Vec::new();
+        // The defaults of action parameters: the callable's index, the parameter's and what the
+        // default is written as.
+        let mut defaults: Vec<(usize, usize, &ast::Expr)> = Vec::new();
         for item in &module.items {
             if let Item::Scenario(sc) = item {
                 let index = func;
@@ -1658,6 +1703,12 @@ impl Resolver<'_> {
                 self.template(v);
                 continue;
             }
+            // An action's key in the ids lock: its name, or its name on its resource type where
+            // another action shares the name.
+            let key = match item {
+                Item::Action(a) => crate::ids::action_key(module, a),
+                _ => String::new(),
+            };
             let (kind, name, params, result) = match item {
                 Item::Action(a) => (CKind::Action, &a.name, &a.params, a.result.as_ref()),
                 Item::View(v) => (CKind::View, &v.name, &v.params, None),
@@ -1697,27 +1748,48 @@ impl Resolver<'_> {
                     ),
                 );
             }
-            if self.env.own_callable(&name.name).is_some() {
+            let ast_params = params;
+            let params = self.params(params, kind == CKind::View, kind == CKind::Action);
+            // Two actions may share a name when each is offered on its own resource type: the
+            // type is part of an action's name, so `join(n: WifiNetwork)` and
+            // `join(s: SavedNetwork)` are two actions, a call choosing by its resource.
+            let on_type = |params: &[ParamInfo]| match params.first().map(|p| &p.ty) {
+                Some(Ty::Record(key)) => Some(key.clone()),
+                _ => None,
+            };
+            let ours = on_type(&params);
+            let clash = self.env.callables.iter().any(|c| {
+                c.own
+                    && !c.scenario
+                    && c.name == name.name
+                    && !(kind == CKind::Action
+                        && c.kind == CKind::Action
+                        && ours.is_some()
+                        && on_type(&c.params).is_some()
+                        && on_type(&c.params) != ours)
+            });
+            if clash {
                 self.err(
                     "E011",
                     name.span,
                     format!(
-                        "`{}` is declared twice; actions, views and fns share one namespace",
+                        "`{}` is declared twice; actions, views and fns share one namespace, and \
+                         two actions share a name only when each takes a resource of its own type first",
                         name.name
                     ),
                 );
             }
-            let ast_params = params;
-            let params = self.params(params, kind == CKind::View, kind == CKind::Action);
             self.supplied(ast_params, &params, kind, name.span);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
+                if let Item::Action(a) = item {
+                    self.env.actions.insert(a.node, at);
+                }
                 defaults.extend(
                     ast_params
                         .iter()
                         .enumerate()
-                        .filter(|(_, p)| p.default.is_some())
-                        .map(|(i, _)| (at, i)),
+                        .filter_map(|(i, p)| p.default.as_deref().map(|d| (at, i, d))),
                 );
             } else {
                 // A view that takes a default is a component ([`crate::checker::is_template`]) and
@@ -1740,7 +1812,7 @@ impl Resolver<'_> {
                     if a.presents_state() {
                         match params.first() {
                             Some(target) => {
-                                let key = crate::ids::present_key(&name.name);
+                                let key = crate::ids::present_key(&key);
                                 p.view = Some(id_of(lock, &key));
                                 presents.push((key, target.clone()));
                             }
@@ -1755,7 +1827,14 @@ impl Resolver<'_> {
             self.env.callables.push(Callable {
                 kind,
                 name: name.name.clone(),
-                id: id_of(lock, &name.name),
+                id: id_of(
+                    lock,
+                    if kind == CKind::Action {
+                        &key
+                    } else {
+                        &name.name
+                    },
+                ),
                 app: self.env.app.clone(),
                 own: true,
                 func: Some(index),
@@ -1790,24 +1869,11 @@ impl Resolver<'_> {
             });
             func += 1;
         }
-        let actions: Vec<&ast::ActionDecl> = module
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Action(a) => Some(a),
-                _ => None,
-            })
-            .collect();
-        for (at, index) in defaults {
+        for (at, index, written) in defaults {
             let Some(callable) = self.env.callables.get_mut(at) else {
                 continue;
             };
-            let written = actions
-                .iter()
-                .find(|a| a.name.name == callable.name)
-                .and_then(|a| a.params.get(index))
-                .and_then(|p| p.default.as_deref());
-            let (Some(written), Some(param)) = (written, callable.params.get_mut(index)) else {
+            let Some(param) = callable.params.get_mut(index) else {
                 continue;
             };
             param.default = Some(ParamDefault {
@@ -1817,6 +1883,7 @@ impl Resolver<'_> {
             });
             self.env.defaults.push(DefaultFn {
                 action: callable.name.clone(),
+                of: callable.func.unwrap_or_default(),
                 param: index,
                 func,
             });
@@ -2212,8 +2279,7 @@ impl Resolver<'_> {
             };
             let name = &a.name.name;
             let target = self
-                .env
-                .own_callable(name)
+                .own_action(a)
                 .and_then(|c| c.params.first())
                 .and_then(|p| match &p.ty {
                     Ty::Record(key) if key.app == self.env.app && !crate::host::is_value(key) => {
@@ -2282,8 +2348,7 @@ impl Resolver<'_> {
             };
             let name = &a.name.name;
             let target = self
-                .env
-                .own_callable(name)
+                .own_action(a)
                 .and_then(|c| c.params.first())
                 .and_then(|p| match &p.ty {
                     Ty::Record(key) if key.app == self.env.app && !crate::host::is_value(key) => {
@@ -2329,8 +2394,7 @@ impl Resolver<'_> {
                 continue;
             };
             let target = self
-                .env
-                .own_callable(&a.name.name)
+                .own_action(a)
                 .and_then(|c| c.params.first())
                 .and_then(|p| match &p.ty {
                     Ty::Record(key) => Some(key.clone()),
@@ -2359,7 +2423,7 @@ impl Resolver<'_> {
             let Some(opt) = a.opts.iter().find(|opt| opt.name.name == "opens") else {
                 continue;
             };
-            let Some((root, files, kinds)) = self.env.own_callable(&a.name.name).map(|c| {
+            let Some((root, files, kinds)) = self.own_action(a).map(|c| {
                 (
                     c.params.first().and_then(|p| match &p.ty {
                         Ty::Record(key) => self.env.roots.contains(key).then(|| key.clone()),
@@ -2467,10 +2531,7 @@ impl Resolver<'_> {
             else {
                 continue;
             };
-            let scope = self
-                .env
-                .own_callable(&a.name.name)
-                .and_then(|c| self.shortcut_scope(c));
+            let scope = self.own_action(a).and_then(|c| self.shortcut_scope(c));
             if let Some((_, _, holder)) = seen.iter().find(|(s, k, _)| *s == scope && *k == key) {
                 let said = match &scope {
                     Some(ty) => format!(

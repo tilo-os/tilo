@@ -993,6 +993,11 @@ fn saved(uuid: &str) -> String {
     format!("saved-network:{uuid}")
 }
 
+/// One Wi-Fi network in reach, whose actions take the network from it.
+fn wifi_network(ssid: &str) -> String {
+    format!("wifi-network:{ssid}")
+}
+
 /// One VPN profile's own entry, whose actions take the profile from it.
 fn vpn_profile(uuid: &str) -> String {
     format!("vpn-profile:{uuid}")
@@ -1130,16 +1135,14 @@ impl NetworkService for DeviceNetwork {
             NetworkChange::Radio(Radio::Hotspot, on) => {
                 ask(TETHERING, "set-hotspot", json!({ "on": on }))
             }
-            NetworkChange::Autoconnect { uuid, on, .. } => ask(
-                NETWORK,
-                "set-network-autoconnect",
-                json!({ "profile": uuid, "on": on }),
-            ),
+            NetworkChange::Autoconnect { uuid, on, .. } => {
+                ask(&saved(uuid), "set-autoconnect", json!({ "on": on }))
+            }
             NetworkChange::Wake { uuid, on } => {
                 let status = host_network_wake(uuid, Some(*on))?;
                 status.problem.map_or(Ok(()), Err)
             }
-            NetworkChange::Forget { uuid, .. } => ask(&saved(uuid), "forget-network", json!({})),
+            NetworkChange::Forget { uuid, .. } => ask(&saved(uuid), "forget", json!({})),
             NetworkChange::Hotspot(config) => ask(
                 TETHERING,
                 "configure-hotspot",
@@ -1210,7 +1213,7 @@ impl NetworkService for DeviceNetwork {
             NetworkChange::Connect {
                 ssid,
                 password: None,
-            } => ask(NETWORK, "join-wifi", json!({ "network": ssid })),
+            } => ask(&wifi_network(ssid), "join", json!({})),
             NetworkChange::JoinHidden { ssid, password } => ask(
                 NETWORK,
                 "connect-hidden-wifi",

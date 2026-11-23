@@ -1178,9 +1178,27 @@ impl Host {
     ) -> Option<tilolang_runtime::meta::ActionMeta> {
         let app = crate::publish::app_of(resource)?;
         self.find_in_packages(|package| {
-            (package.meta.app == app)
-                .then(|| package.meta.action_published_as(action).cloned())
-                .flatten()
+            if package.meta.app != app {
+                return None;
+            }
+            // An action's name belongs to its resource type: where two of the package's types
+            // each have an action of this name, the one of the resource it is called on.
+            let named: Vec<&tilolang_runtime::meta::ActionMeta> = package
+                .meta
+                .actions
+                .iter()
+                .filter(|declared| !declared.scenario && declared.name == action)
+                .collect();
+            if named.len() < 2 {
+                return package.meta.action_published_as(action).cloned();
+            }
+            let id = resource.strip_prefix(&crate::publish::resource_id(app, ""))?;
+            let ty = self.store().type_of_id(id)?;
+            let name = &package.meta.types.iter().find(|t| t.id == ty)?.name;
+            named
+                .into_iter()
+                .find(|declared| declared.params.first().is_some_and(|p| p.ty == *name))
+                .cloned()
         })
     }
 

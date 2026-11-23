@@ -227,6 +227,30 @@ pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label
     }
 }
 
+/// The surface of the row type `R`, whose rows a reading carries with their
+/// addresses ([`crate::Handle`]): its kind, its name, and the effects `E` it
+/// offers on each row, called on the row's address. Its fields are the
+/// record the reading declares for it, so it lists none of its own.
+#[must_use]
+pub fn row_surface<R: crate::words::RowType, E: crate::Effect>() -> Surface {
+    let mut types = TypeSet::new();
+    let verbs = E::declarations()
+        .iter()
+        .map(|decl| effect_verb(decl, &mut types))
+        .collect();
+    Surface {
+        kind: R::KIND.to_owned(),
+        label: R::LABEL.to_owned(),
+        version: 1,
+        person: false,
+        readers: None,
+        verbs,
+        fields: Vec::new(),
+        types: types.into_types(),
+        shows: Vec::new(),
+    }
+}
+
 /// An effect's declaration as a verb of the surface: its id, words,
 /// parameters and the value it answers with, each typed by its schema.
 #[must_use]
