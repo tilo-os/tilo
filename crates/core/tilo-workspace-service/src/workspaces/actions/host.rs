@@ -1344,7 +1344,7 @@ impl Workspaces {
                 if let Some(mut one) = kept.remove(workspace) {
                     one.role = Some(OWNER_ROLE.to_owned());
                     one.labels = self.labels_of(workspace);
-                    one.unattended = self.listed_unattended(workspace);
+                    one.unattended = self.runs_unattended(workspace);
                     listed.push(one);
                 }
             }
@@ -1380,7 +1380,7 @@ impl Workspaces {
             let mut one = WorkspaceListing {
                 role: Some(OWNER_ROLE.to_owned()),
                 labels: self.labels_of(&summary.workspace),
-                unattended: self.listed_unattended(&summary.workspace),
+                unattended: self.runs_unattended(&summary.workspace),
                 ..listing(&summary)
             };
             one.made_at_ms = self
@@ -1538,7 +1538,7 @@ impl Workspaces {
                 .map_err(ActionCallError::refused)?;
             own.record(&person, &summary.workspace)
                 .map_err(ActionCallError::refused)?;
-            self.keep_membership(&summary.workspace, OWNER_ROLE)
+            self.keep_membership(&summary.workspace, &person, OWNER_ROLE)
                 .map_err(ActionCallError::refused)?;
             summary
         };
@@ -1632,7 +1632,7 @@ impl Workspaces {
             && own.is_of(&person, &summary.workspace)
         {
             workspace.labels = self.labels_of(&summary.workspace);
-            workspace.unattended = self.listed_unattended(&summary.workspace);
+            workspace.unattended = self.runs_unattended(&summary.workspace);
         }
         answer(&CreatedWorkspace {
             workspace,

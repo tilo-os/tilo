@@ -73,73 +73,10 @@ impl Workspaces {
         *self.inner.asks_people.write_recover() = Some(asker);
     }
 
-    /// Whether `caller` runs a command in the machine of the workspace
-    /// `workspace_id` carries without its person being asked: an agent's key
-    /// whose certificate reaches that workspace alone, of the person whose own
-    /// workspace it is, who let it run commands unattended. Anyone else is
-    /// asked as before: a key reaching all their workspaces, a key for another
-    /// workspace, an agent on a device of theirs, and any other person's key.
-    pub async fn runs_unattended(&self, workspace_id: WorkspaceId, caller: &Caller) -> bool {
-        // An agent's key, as the server names one: the agent is the key.
-        let (Some(user), Some(device)) = (caller.user_public_key(), caller.device_public_key())
-        else {
-            return false;
-        };
-        if caller
-            .acting()
-            .agent_id()
-            .and_then(tilo_action_policy::key_of_agent)
-            != Some(*device)
-        {
-            return false;
-        }
-        let Some(own) = self.own() else {
-            return false;
-        };
-        let Some((workspace, certificate)) = self.member_certificate(workspace_id, device).await
-        else {
-            return false;
-        };
-        let one_workspace = certificate
-            .capabilities
-            .agent
-            .and_then(|scope| scope.workspace_name())
-            .is_some_and(|one| one == workspace);
-        one_workspace
-            && certificate.user_public_key == *user
-            && own.owner_of(&workspace) == Some(*user)
-            && self.membership_unattended(&workspace)
-    }
-
-    /// The UUID of the workspace `workspace_id` carries, and the certificate
-    /// it holds for `device` among its members'.
-    async fn member_certificate(
-        &self,
-        workspace_id: WorkspaceId,
-        device: &[u8; 32],
-    ) -> Option<(String, DeviceCert)> {
-        let workspace = self.workspace_identity(workspace_id).await?;
-        let governed = self.inner.workspaces.lock().await.get(&workspace)?.clone();
-        let certificate = governed
-            .lock()
-            .await
-            .peer()
-            .certificates()
-            .into_iter()
-            .find(|certificate| certificate.device_public_key == *device)?;
-        Some((workspace, certificate))
-    }
-
-    /// Whether the own workspace `workspace` (its UUID) runs commands
-    /// unattended: what its listing says to its owner.
-    pub(super) fn listed_unattended(&self, workspace: &str) -> bool {
-        self.membership_unattended(workspace)
-    }
-
     /// A branch `branch` of `source` holds what its source holds: running
     /// commands unattended too, when the source does.
     pub(super) fn branch_unattended(&self, source: &str, branch: &str) -> Result<(), String> {
-        if self.listed_unattended(source) {
+        if self.runs_unattended(source) {
             self.set_unattended(branch, true)
         } else {
             Ok(())
@@ -209,7 +146,7 @@ impl Workspaces {
             return Err(refused(AdminRefusal::NotYourOwn.to_reason()));
         }
         let answer = |on: bool| json!({"workspace": workspace, "unattended": on});
-        if !on || self.listed_unattended(&workspace) {
+        if !on || self.runs_unattended(&workspace) {
             self.set_unattended(&workspace, on)
                 .map_err(ActionCallError::refused)?;
             return Ok(answer(on));

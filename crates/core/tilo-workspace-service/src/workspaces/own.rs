@@ -20,12 +20,9 @@
 //! ones, and a person's listing is found by their ids rather than by reading
 //! every workspace this host governs. What each owner labelled theirs with
 //! (`customer_id` → `cus_8121`, [`WorkspaceLabels`]), and whether they let it
-//! run commands unattended ([`Workspaces::runs_unattended`]), is their
-//! membership of it ([`Membership`]): a record of the owner's own workspace,
-//! so nobody invited in reads the labels, and no key working in the workspace
-//! turns running unattended on for itself.
-//!
-//! [`Membership`]: super::person_workspace::membership::Membership
+//! run commands unattended ([`Workspaces::runs_unattended`]), is a record of
+//! the workspace that only its owner reads and changes
+//! ([`Ownership`](super::membership::Ownership)).
 //!
 //! [`ServiceOperation::CreateOwnWorkspace`]: crate::service_authority::ServiceOperation::CreateOwnWorkspace
 
@@ -40,10 +37,8 @@ use tilo_actions::remote::server_account::{
 use tilo_lock::MutexRecover as _;
 
 use super::Workspaces;
-use super::person_workspace::{
-    self,
-    membership::{self, Membership},
-};
+use super::membership::{self, Membership, Ownership};
+use super::person_workspace;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::workspaces::WorkspaceLabels;
 
@@ -630,75 +625,59 @@ impl Workspaces {
         self.own().is_some()
     }
 
-    /// What `workspace`'s owner labelled it with, as their membership of it says: none for one
-    /// they did not label.
+    /// What `workspace`'s owner labelled it with ([`Ownership`]): none for one they did not label.
     #[must_use]
     pub fn labels_of(&self, workspace: &str) -> WorkspaceLabels {
-        self.membership(workspace)
-            .map(|membership| membership.labels)
+        self.ownership(workspace)
+            .map(|ownership| ownership.labels)
             .unwrap_or_default()
     }
 
     /// Whether `workspace`'s owner let keys reaching it alone run commands in its machine
-    /// without asking them each time, as their membership of it says.
+    /// without asking them each time ([`Ownership`]).
     #[must_use]
     pub fn runs_unattended(&self, workspace: &str) -> bool {
-        self.membership_unattended(workspace)
+        self.ownership(workspace)
+            .is_some_and(|ownership| ownership.unattended)
     }
 
-    /// [`Self::runs_unattended`].
-    pub(super) fn membership_unattended(&self, workspace: &str) -> bool {
-        self.membership(workspace)
-            .is_some_and(|membership| membership.unattended)
-    }
-
-    /// Where the owner of `workspace`, an own workspace here, keeps their membership of it: their
-    /// own workspace, and the record there.
-    fn membership_at(&self, workspace: &str) -> Option<(String, String)> {
-        let person = self.own()?.owner_of(workspace)?;
-        Some((
-            tilo_server_protocol::servers::person_workspace_id(&person),
-            membership::record(workspace),
-        ))
-    }
-
-    /// The owner's membership of `workspace`, when it is an own workspace here and this host
-    /// holds the owner's workspace.
-    fn membership(&self, workspace: &str) -> Option<Membership> {
-        let (person, record) = self.membership_at(workspace)?;
+    /// `workspace`'s record of what its owner alone keeps of it, as this host holds it.
+    fn ownership(&self, workspace: &str) -> Option<Ownership> {
         let workspaces = self.clone();
+        let workspace = workspace.to_owned();
         crate::device_documents::on_its_own(async move {
-            person_workspace::read_on::<Membership>(
-                &workspaces,
-                &person,
-                (membership::APP, &record),
-            )
-            .await
+            person_workspace::read_on::<Ownership>(&workspaces, &workspace, membership::OWNERSHIP)
+                .await
         })
         .ok()
     }
 
-    /// Apply `action` to the owner's membership of `workspace`, an own workspace here.
-    fn change_membership(
+    /// Apply `action` to a record of `workspace`, as this host.
+    fn change<R: tilo_resource::Resource>(
         &self,
         workspace: &str,
-        action: tilo_resource::Invoke<Membership>,
+        record: (&str, &str),
+        action: tilo_resource::Invoke<R>,
     ) -> Result<(), String> {
-        let (person, record) = self
-            .membership_at(workspace)
-            .ok_or("the workspace is nobody's own here")?;
         let workspaces = self.clone();
+        let workspace = workspace.to_owned();
+        let (app, record) = (record.0.to_owned(), record.1.to_owned());
         crate::device_documents::on_its_own(async move {
-            person_workspace::apply_on(&workspaces, &person, (membership::APP, &record), action)
-                .await
+            person_workspace::apply_on(&workspaces, &workspace, (&app, &record), action).await
         })
     }
 
-    /// Keep that `workspace`'s owner holds `role` in it, made now.
-    pub(super) fn keep_membership(&self, workspace: &str, role: &str) -> Result<(), String> {
+    /// Keep that `person` holds `role` in `workspace`, made now.
+    pub(super) fn keep_membership(
+        &self,
+        workspace: &str,
+        person: &[u8; 32],
+        role: &str,
+    ) -> Result<(), String> {
         let now = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
-        self.change_membership(
+        self.change(
             workspace,
+            (membership::APP, &membership::member_record(person)),
             Membership::KEEP_ROLE.with((role.to_owned(), now)),
         )
     }
@@ -707,17 +686,20 @@ impl Workspaces {
     /// them all off).
     pub(super) fn label(&self, workspace: &str, labels: WorkspaceLabels) -> Result<(), String> {
         let labels = serde_json::to_string(&labels).map_err(|error| error.to_string())?;
-        self.change_membership(workspace, Membership::RELABEL.with(labels))
+        self.change(
+            workspace,
+            membership::OWNERSHIP,
+            Ownership::RELABEL.with(labels),
+        )
     }
 
     /// Turn [`Self::runs_unattended`] for `workspace` on or off.
     pub(super) fn set_unattended(&self, workspace: &str, on: bool) -> Result<(), String> {
-        self.change_membership(workspace, Membership::RUN_UNATTENDED.with(on))
-    }
-
-    /// `workspace` was deleted: its owner's membership of it keeps nothing.
-    pub(super) fn forget_membership(&self, workspace: &str) -> Result<(), String> {
-        self.change_membership(workspace, Membership::FORGET.with(()))
+        self.change(
+            workspace,
+            membership::OWNERSHIP,
+            Ownership::RUN_UNATTENDED.with(on),
+        )
     }
 
     /// Record `workspace`, which this host keeps for its own person, as one of `person`'s own: a
@@ -739,7 +721,7 @@ impl Workspaces {
             return false;
         }
         let claimed = own.record(person, workspace).is_ok();
-        if claimed && let Err(error) = self.keep_membership(workspace, "owner") {
+        if claimed && let Err(error) = self.keep_membership(workspace, person, "owner") {
             tracing::warn!(%workspace, %error, "a claimed workspace's owner's membership of it is not kept");
         }
         claimed

@@ -193,6 +193,7 @@ mod desktop_document;
 mod governed_grants_tests;
 #[cfg(test)]
 mod naming_tests;
+pub mod membership;
 pub mod person_workspace;
 // The person's own workspace's resources, as a part of a session reads and writes them.
 #[cfg(not(target_arch = "wasm32"))]

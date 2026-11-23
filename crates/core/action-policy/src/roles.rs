@@ -41,6 +41,11 @@ pub const WORKSPACE_TERMINAL_HISTORY_DOCUMENT: &str = "uuid:8038f29a-fb3e-400a-a
 /// The workspace's Tube watch history.
 pub const WORKSPACE_TUBE_HISTORY_DOCUMENT: &str = "uuid:3bd2daf5-120b-469b-be38-d5203c58efb2";
 
+/// The app whose records of a workspace only its owner reads and changes: what they labelled it
+/// with, and whether keys reaching it alone run commands in its machine unasked. Every other role
+/// is denied it ([`role_rules`]).
+pub const OWNER_ONLY_APP: &str = "so.tilo.ownership";
+
 /// These earlier singleton routes could contain several people's private data. They have no
 /// authenticated record owner, so neither a workspace role nor a grant can disclose them.
 #[must_use]
@@ -833,6 +838,13 @@ impl Preset {
 pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {
     let mut rules = shown_role_rules(role, workspace);
     rules.extend(private_record_rules(workspace));
+    if !matches!(role, Role::Owner) {
+        rules.push(Rule::new(
+            TreePath::workspace(workspace).app(OWNER_ONLY_APP),
+            KindSet::ALL,
+            Answer::Deny,
+        ));
+    }
     rules
 }
 

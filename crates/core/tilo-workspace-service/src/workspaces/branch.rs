@@ -376,7 +376,7 @@ mod copy {
                 ownership()("this host keeps no workspaces of people's own".to_owned())
             })?;
             own.record(&person, branch).map_err(ownership())?;
-            if let Err(error) = self.keep_membership(branch, "owner") {
+            if let Err(error) = self.keep_membership(branch, &person, "owner") {
                 tracing::warn!(%branch, %error, "a branch's owner's membership of it is not kept");
             }
             let held = self
