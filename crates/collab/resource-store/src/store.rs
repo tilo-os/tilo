@@ -1932,6 +1932,13 @@ impl Store {
         {
             return Err(Refusal::Unplaced);
         }
+        // A store that declares no type has nothing to judge a change by: it admits none, so a
+        // writer whose surface was never named here is refused rather than taken on trust.
+        if self.schema.types.is_empty() && schema.is_none_or(|schema| schema.types.is_empty()) {
+            return Err(Refusal::Undeclared(
+                "the store declares no type, so it admits no change".to_owned(),
+            ));
+        }
         let index = &self.index;
         let stamp = Stamp::of(&received.change);
         for schema in std::iter::once(&self.schema).chain(schema) {

@@ -2043,6 +2043,39 @@ mod store {
         assert_eq!(held.scalar("name"), Value::from("Gallery"));
     }
 
+    /// A store that declares no type admits no change it receives: a writer whose surface was
+    /// never named there is refused, not taken on trust.
+    #[test]
+    fn a_store_that_declares_no_type_admits_no_change() {
+        use tilo_resource_store::Refusal;
+        let mut there = Store::new();
+        let anyone = |_: &Proposal<'_>| true;
+        let made = Store::new()
+            .put(
+                "tl.so.tilo.lang.gallery.Gallery",
+                "g",
+                Resource {
+                    readers: MEMBERS.to_owned(),
+                    parent: None,
+                    order: None,
+                    fields: BTreeMap::from([("name".to_owned(), Cell::One("Gallery".into()))]),
+                },
+                &stamp("$create", "i1"),
+            )
+            .unwrap();
+        let refused = deliver(&made, &mut there, &anyone);
+        assert!(
+            matches!(refused.as_slice(), [Refusal::Undeclared(_)]),
+            "{refused:?}"
+        );
+        let all = |_: &str| true;
+        assert!(
+            there
+                .get("tl.so.tilo.lang.gallery.Gallery", "g", &all)
+                .is_none()
+        );
+    }
+
     /// A record a field holds is nested in the record holding it, as a collection's items are:
     /// the store admits it under its holder, and the holder's type says it nests that kind.
     #[test]
