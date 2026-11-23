@@ -1075,6 +1075,12 @@ signal-meter-fair = Fair signal
 signal-meter-good = Good signal
 signal-meter-strong = Strong signal
 
+# The microphone level meter: its spoken name, and the state where there is no
+# microphone to read.
+level-meter-name = Microphone level
+level-meter-no-microphone = No microphone
+level-meter-no-output = No audio output
+
 # Reactions: the pills under a message or on a page, one per emoji. $emoji is
 # the emoji itself, or a workspace emoji written as :name:.
 reaction-strip-add = Add reaction
