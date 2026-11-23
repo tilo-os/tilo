@@ -41,7 +41,6 @@ exclude = [
     "vendor/iroh",
     "vendor/iroh-relay",
     "vendor/netwatch",
-    "vendor/noq-udp",
     "vendor/accesskit_unix",
     "vendor/atspi",
     "vendor/atspi-common",
@@ -1756,9 +1755,6 @@ iroh = { path = "vendor/iroh" }
 # on for its relay connections. See vendor/iroh-relay/TILO-PATCH.md.
 iroh-relay = { path = "vendor/iroh-relay" }
 netwatch = { path = "vendor/netwatch" }
-# A static musl build reads every packet's timestamp without panicking. See
-# vendor/noq-udp/TILO-PATCH.md.
-noq-udp = { path = "vendor/noq-udp" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }

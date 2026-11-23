@@ -2,7 +2,7 @@
 
 crates.io `netwatch` 0.19.1, verbatim (archive SHA-256
 `4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976`, upstream
-commit `051ab8761006d7f2155e34a49f6bb881b582d5ab`) but for the three changes below,
+commit `051ab8761006d7f2155e34a49f6bb881b582d5ab`) but for the changes below,
 marked `TILO PATCH` in the source. netwatch 0.19.3, the newest release when
 this was written, has the same actor loop. Pinned by
 `crates/system/fs/tests/iroh_idle.rs`.
@@ -101,3 +101,11 @@ time without this and pass with it.
 > and nothing re-reads it until the next event, so a change in that window
 > (or during a reconnect) is lost. Proposed: once subscribed, have the route
 > monitor send one `NetworkMessage::Change` so the actor re-reads the state.
+
+## noq-udp 1.4's deprecated `send`
+
+noq-udp 1.4 deprecated `UdpSocketState::send` (it silences I/O errors) for
+`try_send` (which returns them, and noq treats every one as fatal). The five
+calls in `src/udp.rs` carry `#[allow(deprecated)]`, the same attribute at the
+same calls as upstream netwatch 0.20, so the workspace builds with noq-udp's
+registry release. No behaviour change; this goes with the move to 0.20.
