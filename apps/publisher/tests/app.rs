@@ -19,7 +19,7 @@ struct Machine {
 }
 
 impl Machine {
-    /// The publisher key in the machine's secret store, as `tilo-app` reads it.
+    /// The publisher key in the machine's secret store, as `tilolang` reads it.
     #[expect(clippy::expect_used, reason = "the in-memory store always answers")]
     fn key(&self) -> Option<app_registry::publisher::key::SigningKey> {
         app_registry::publisher::key::stored(&self.secrets).expect("the secret store answers")
@@ -162,7 +162,7 @@ fn creating_a_key_needs_confirmation_and_keeps_it_out_of_the_resource() {
         .wait_for_named("public-key", tilo_test_env::hang_bound())
         .expect("the new key's public half is shown");
 
-    let key = home.key().expect("the key tilo-app reads");
+    let key = home.key().expect("the key tilolang reads");
     let public = app_registry::publisher::key::public_hex(&key);
     app.harness()
         .expect(&SemanticExpectation::named("public-key").name_contains(&public))

@@ -165,11 +165,11 @@ pub enum UserEvent {
     HostSearch(String),
     /// Synchronize and redraw after typed state was changed by a worker.
     Wake(crate::wake::WakeEvent),
-    /// `tilo-app dev` is replacing this process. Flush the document and write
+    /// `tilolang dev` is replacing this process. Flush the document and write
     /// the route and caret, then leave the event loop so the next process can
     /// read them.
     DevSessionStop,
-    /// `tilo-app dev` rebuilt the app.
+    /// `tilolang dev` rebuilt the app.
     DevSessionReload,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]

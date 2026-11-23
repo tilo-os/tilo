@@ -1,7 +1,7 @@
 # Working on this Tilo app
 
 Start with `src/lib.rs`, `tests/app.rs`, and `tilo-app.toml`. `README.md`
-contains this project's longer workflow. Use `tilo-app --help` or a command's
+contains this project's longer workflow. Use `tilolang --help` or a command's
 `--help` for flags; the SDK revision is pinned by the project's dependencies.
 
 ## Make a feature
@@ -15,7 +15,7 @@ contains this project's longer workflow. Use `tilo-app --help` or a command's
    verbs, `cx.form::<Params>()` for a verb's parameters, and `cx.each` for
    collections (`let p = cx.paths()`). A click handler alone is not the app's
    public API: accessibility, automation and members use the same actions.
-   Commit the public surface with `tilo-app surface`.
+   Commit the public surface with `tilolang surface`.
 3. Use shared widgets and the theme. Put visible strings in `locales/*.ftl`,
    and pass Fluent message ids to controls. Start empty; keep sample data in
    tests or explicit demos. Tilo OS owns window chrome.
@@ -32,23 +32,23 @@ merged and replayed. Device sync uses the host's collaboration transport;
 do not invent app-local identities, a second database or a permission bypass.
 An agent is an ordinary member subject to the same roles.
 For a short, offline workflow with runnable peer-edit and undo tests, use
-`tilo-app guide collaborate --json` (also `guide undo`, `history` or `sync`).
+`tilolang guide collaborate --json` (also `guide undo`, `history` or `sync`).
 For live roles, permission-aware panes and refused actions, use
-`tilo-app guide permissions --json` (also `guide roles` or `access`).
+`tilolang guide permissions --json` (also `guide roles` or `access`).
 
 ## Work and verify
 
 Run these commands from any directory inside the app:
 
 ```sh
-tilo-app dev                       # rebuild on save; retain state after reload
-tilo-app test                      # resource and production-view tests
-tilo-app inspect                   # headless widget/accessibility tree
-tilo-app shot                      # headless image of the production root
-tilo-app check                     # quality check, including audited scenarios
+tilolang dev                       # rebuild on save; retain state after reload
+tilolang test                      # resource and production-view tests
+tilolang inspect                   # headless widget/accessibility tree
+tilolang shot                      # headless image of the production root
+tilolang check                     # quality check, including audited scenarios
 ```
 
-A failed rebuild leaves the last good app running. Use `tilo-app add --help`
+A failed rebuild leaves the last good app running. Use `tilolang add --help`
 for components, screens, scenarios, translations, capabilities and CI.
 Declare host capabilities in `tilo-app.toml`; keep optional capabilities
 optional and handle unavailable hosts through the SDK.
@@ -56,6 +56,6 @@ optional and handle unavailable hosts through the SDK.
 For automation, append `--json`: stdout is one result document, tool progress
 is stderr, and commands do not prompt. Inspect `ok`, the exit status, and
 `result`; a failed quality verdict still contains its findings. Keep the SDK,
-toolchain and lockfile pinned. Run the relevant tests and `tilo-app check`
-before publishing; `tilo-app package --help` and `tilo-app publish --help`
+toolchain and lockfile pinned. Run the relevant tests and `tilolang check`
+before publishing; `tilolang package --help` and `tilolang publish --help`
 describe packaging and registry submission.

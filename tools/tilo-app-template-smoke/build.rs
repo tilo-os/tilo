@@ -1,6 +1,6 @@
-use tilo_app_cli::ComponentTemplate;
+use tilo_app_builder::ComponentTemplate;
 
-/// Emit the component sources and the component registry `tilo-app add component` writes into an
+/// Emit the component sources and the component registry `tilolang add component` writes into an
 /// app's `src/components/`, one component per template. The display and form components are
 /// graph-compatible, so the registry registers them with serialized screens as `--mount` does.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,14 +19,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("article-body", ComponentTemplate::Text),
     ];
     for (name, template) in components {
-        let source = tilo_app_cli::render_component_source(name, template)?;
+        let source = tilo_app_builder::render_component_source(name, template)?;
         std::fs::write(
             output.join(format!("{}.rs", name.replace('-', "_"))),
             source,
         )?;
     }
-    let registry = tilo_app_cli::render_component_registry_source(&components)?;
+    let registry = tilo_app_builder::render_component_registry_source(&components)?;
     std::fs::write(output.join("mod.rs"), registry)?;
-    println!("cargo:rerun-if-changed=../tilo-app-cli/src/lib.rs");
+    println!("cargo:rerun-if-changed=../../crates/lang/tilo-app-builder/src/lib.rs");
     Ok(())
 }

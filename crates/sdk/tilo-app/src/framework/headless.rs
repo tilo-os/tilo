@@ -2872,7 +2872,7 @@ fn split_command_line(
 
 /// Make a control bound to an action the resource does not publish a panic
 /// on this thread, as [`HeadlessApp`] and
-/// `tilo-app check` do: a typo in a binding must fail, not grey a button.
+/// `tilolang check` do: a typo in a binding must fail, not grey a button.
 fn strict_bindings() {
     super::controls::STRICT.with(|strict| strict.set(true));
 }

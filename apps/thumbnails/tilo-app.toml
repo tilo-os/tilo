@@ -24,7 +24,7 @@ platform-reason = "Runs only as a compute job, which a Linux device's package la
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-# What the app's code uses (tilo-app check holds the code to this list).
+# What the app's code uses (tilolang check holds the code to this list).
 [capabilities]
 optional = ["threads"]
 

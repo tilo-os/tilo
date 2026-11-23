@@ -176,10 +176,10 @@ with no external registry account, no domain DNS proof, and no external review q
 
 Public publish sends the package to `apps.tilo.so` (or any configured registry,
 `docs/registry.md`) directly from inside Tilo, using the same cryptographic trust model as
-`tilo-app publish`.
+`tilolang publish`.
 
 - **Publisher key**: uses the person's Ed25519 publisher key stored in the local secret store
-  (shared with App Publisher and `tilo-app`; never written to a synced workspace resource, per
+  (shared with App Publisher and `tilolang`; never written to a synced workspace resource, per
   `docs/publishing.md` Decision 13). If no key exists yet, the publish sheet creates one and
   walks the person through exporting a backup before proceeding.
 - **Namespace proof**: public `AppId`s use lowercase reverse DNS with at least three labels
@@ -320,14 +320,14 @@ Additional invariants:
 
 | Aspect | Native / Rust apps (`docs/publishing.md`) | tilolang apps (this doc) |
 |---|---|---|
-| Authoring | Rust workspace + `tilo-app` CLI | Chat / in-Tilo editor (`DraftPackage`), or `.tl` files in git |
+| Authoring | Rust workspace + `tilolang` | Chat / in-Tilo editor (`DraftPackage`), or `.tl` files in git |
 | Build | 10-target CI matrix (`tilo-builder`, macOS, Windows, Android, Web) | Single platform-independent WASM `.tapp` compiled inside Tilo |
 | Workspace-only publish | Not supported without a self-hosted registry | First-class: signed `WorkspacePackage` resource synced over peer network |
-| Public publish | `tilo-app publish` / CI on `v*` tags | In-Tilo publish sheet (same publisher key, registry API, and review flow); CLI/CI also supported |
+| Public publish | `tilolang publish` / CI on `v*` tags | In-Tilo publish sheet (same publisher key, registry API, and review flow); CLI/CI also supported |
 | Client adoption | Explicit install of platform binary | Zero-install on-demand fetch, verify, compile, and LRU cache; optional pin |
 
 Teams that prefer git repositories and CI can still check `.tl` files and `app.ids` into a
-repository and invoke `tilo-app package` / `tilo-app publish` with the same `.tapp` format and
+repository and invoke `tilolang package` / `tilolang publish` with the same `.tapp` format and
 publisher key.
 
 ---

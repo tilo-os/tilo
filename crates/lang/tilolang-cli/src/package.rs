@@ -798,7 +798,7 @@ fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<A
     let built = compiled(options)?;
     let publisher = hex::encode(identity.public_key_bytes());
     let mut apps = Vec::new();
-    for (package, bundle) in built.iter().zip(bundles_of(&built)) {
+    for (package, bundle) in built.iter().zip(tilolang_tilo::bundle::of_build(&built)) {
         let meta = &package.compiled.meta;
         let accessibility = source_accessibility(&package.dir)?;
         let manifest = manifest_text(
@@ -819,33 +819,6 @@ fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<A
         });
     }
     Ok(apps)
-}
-
-/// The bundle of each compiled package, in the order given: each carries the packages it uses,
-/// the standard library first and the earlier packages of the build after it.
-fn bundles_of(built: &[tilolang::source::BuiltPackage]) -> Vec<Bundle> {
-    built
-        .iter()
-        .enumerate()
-        .map(|(index, package)| {
-            let used = &package.compiled.meta.uses;
-            // The standard library first: every module's code may call into it, and it is compiled
-            // with Tilo rather than with the packages of this build.
-            let imports = std::iter::once(tilolang::stdlib::compiled())
-                .chain(built.iter().take(index).map(|earlier| &earlier.compiled))
-                .filter(|earlier| used.contains(&earlier.meta.app));
-            Bundle::new(&package.compiled, imports)
-        })
-        .collect()
-}
-
-/// The bundles of the package in `dir` and the packages it uses, in compilation order: the last is
-/// `dir`'s own. What a host that carries packages as assets packs, without writing ids locks.
-/// # Errors A package does not compile (the message lists the errors by file).
-pub fn bundles(dir: &Path, search: &[PathBuf]) -> Result<Vec<Bundle>, String> {
-    let (built, _) =
-        crate::compile(dir, search, &mut OsEntropy::default()).map_err(|e| e.to_string())?;
-    Ok(bundles_of(&built))
 }
 
 /// Stage, pack and sign one already-compiled package as the `.tapp` a session installs: the same

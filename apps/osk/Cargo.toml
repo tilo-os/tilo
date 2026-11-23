@@ -26,7 +26,7 @@ thin = ["dep:runtime-dylib"]
 # locale) through its engine library in the runtime bundle
 # (libtilo_emoji_engine.so, crates/engines/loadable/emoji) instead of linking
 # it. The release collection enables it (dist/apps/app-collections.toml); a
-# `thin` build without it (`tilo-app dev`) links it statically, because an
+# `thin` build without it (`tilolang dev`) links it statically, because an
 # engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-emoji-engine/thin"]
 

@@ -217,7 +217,7 @@ an older one may lack arm64.
 
 ## Apps (`app:<dir>`)
 
-`swap app:settings` builds `apps/settings` with `tilo-app package` (self-signed
+`swap app:settings` builds `apps/settings` with `tilolang package` (self-signed
 `.tapp`) and installs it as your account user with
 `tilo-install install --allow-self-signed --force`. The user store shadows
 the image's copy, so it is live the next time the app launches; nothing

@@ -127,7 +127,7 @@ pub fn tapp_size_allowed(kind: Kind, size: u64) -> bool {
 /// registry `platform` (`registry_types::TILO_OS_PLATFORM`, `"linux"`,
 /// `"android"`, …): [`MAX_DESKTOP_APP_TAPP_BYTES`] for a build that links the
 /// toolkit in, [`MAX_APP_TAPP_BYTES`] otherwise. The registry enforces it and
-/// `tilo-app package` reports against it.
+/// `tilolang package` reports against it.
 #[must_use]
 pub fn platform_size_limit(platform: &str) -> u64 {
     if registry_types::DESKTOP_PLATFORMS.contains(&platform) {

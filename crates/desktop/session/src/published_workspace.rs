@@ -2,7 +2,7 @@
 //! join.
 //!
 //! An app the launcher starts is told which workspace it opens in; one a person runs themselves —
-//! from a terminal, by `tilo-app dev` — has no launcher to tell it, so it reads the workspace the
+//! from a terminal, by `tilolang dev` — has no launcher to tell it, so it reads the workspace the
 //! person is looking at ([`tilo_paths::login::WORKSPACE_ID_FILE`]) and joins it: its windows land
 //! beside theirs rather than in none, and its file chooser is the one that workspace grants.
 //!

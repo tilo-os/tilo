@@ -65,8 +65,8 @@ workspace members, so every app's module shares one lockfile and one wasm32
 target directory, and each is built for size (opt-level `z`, no unwinding, no
 debug info, then `wasm-opt`), since it is the same bytes on every device. The
 crate's own `.cargo` config says what makes a module rather than a page (no
-JavaScript glue, no browser clocks). Built alone (`tilo-app model`), a guest is
-a whole module, and `tilo-app package` ships it so: any device calls it as it
+JavaScript glue, no browser clocks). Built alone (`tilolang model`), a guest is
+a whole module, and `tilolang package` ships it so: any device calls it as it
 is.
 
 Nearly all of such a module is code every app's model shares: automerge, std,

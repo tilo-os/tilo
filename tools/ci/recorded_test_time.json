@@ -59,7 +59,7 @@
   "terminal": 9,
   "tilo-actions": 1,
   "tilo-app": 2,
-  "tilo-app-cli": 11,
+  "tilo-app-builder": 11,
   "tilo-app-package": 1,
   "tilo-app-state": 1,
   "tilo-app-template-smoke": 4,

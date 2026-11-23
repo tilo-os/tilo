@@ -30,9 +30,9 @@ import rust_source as rust
 ROOT = Path(__file__).resolve().parents[2]
 
 # App code: the crates under `apps/`, the examples people copy an app from, and
-# the templates `tilo-app` generates one from. The toolkit is not app code.
+# the templates `tilolang` generates one from. The toolkit is not app code.
 SCOPES = ("apps", "examples/apps")
-TEMPLATES = "tools/tilo-app-cli/templates"
+TEMPLATES = "crates/lang/tilo-app-builder/templates"
 
 # The manager's own resolution, called from an app: no catalogue is loaded by it.
 BARE = re.compile(r"\bI18nManager\s*::\s*(?:lookup_plain|lookup|format)\s*\(")

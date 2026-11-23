@@ -35,7 +35,7 @@ class ExampleScenariosTest(unittest.TestCase):
             cargo = bin_dir / "cargo"
             cargo.write_text("#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ['CALLS'],'a') as f: f.write(json.dumps(['cargo',*sys.argv[1:]])+'\\n')\n")
             cargo.chmod(0o755)
-            executable = root / "target/debug/tilo-app"
+            executable = root / "target/debug/tilolang"
             executable.parent.mkdir(parents=True)
             executable.write_text("#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ['CALLS'],'a') as f: f.write(json.dumps(['scenario',*sys.argv[1:]])+'\\n')\nsys.exit(int(sys.argv[-1]==os.environ['FAIL_APP']))\n")
             executable.chmod(0o755)
@@ -49,7 +49,7 @@ class ExampleScenariosTest(unittest.TestCase):
             return result, records
 
     def test_all_examples_keep_every_audit_after_one_batch(self):
-        result, calls = self.run_driver(["-p", "tilo-app-cli"])
+        result, calls = self.run_driver(["-p", "tilo-app-builder"])
         self.assertEqual(result.returncode, 0, result.stderr)
         builds = [call for call in calls if call[0] == "cargo"]
         self.assertEqual(len(builds), 2)
@@ -61,7 +61,7 @@ class ExampleScenariosTest(unittest.TestCase):
             self.assertEqual(call[1:5], ["scenario", "run", "--audit", "--app"])
 
     def test_failure_remains_red_and_does_not_drop_later_scenarios(self):
-        result, calls = self.run_driver(["-p", "tilo-app-cli"], "examples/apps/background-task")
+        result, calls = self.run_driver(["-p", "tilo-app-builder"], "examples/apps/background-task")
         self.assertEqual(result.returncode, 1)
         self.assertIn("saved scenarios failed", result.stderr)
         self.assertEqual(len([call for call in calls if call[0] == "scenario"]), len(list((ROOT / "examples/apps").glob("*/Cargo.toml"))))

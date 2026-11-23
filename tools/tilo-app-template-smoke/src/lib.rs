@@ -1,13 +1,13 @@
-//! Compile fixture for source emitted by every `tilo-app new` template.
+//! Compile fixture for source emitted by every `tilolang new` template.
 
 pub mod locales {
     // One catalog holding every template's messages; each template's own
     // `locales/en-US.ftl` is exactly its file here.
     const EN_US: &str = concat!(
-        include_str!("../../tilo-app-cli/templates/starter.ftl"),
-        include_str!("../../tilo-app-cli/templates/document.ftl"),
-        include_str!("../../tilo-app-cli/templates/collection.ftl"),
-        include_str!("../../tilo-app-cli/templates/graph.ftl"),
+        include_str!("../../../crates/lang/tilo-app-builder/templates/starter.ftl"),
+        include_str!("../../../crates/lang/tilo-app-builder/templates/document.ftl"),
+        include_str!("../../../crates/lang/tilo-app-builder/templates/collection.ftl"),
+        include_str!("../../../crates/lang/tilo-app-builder/templates/graph.ftl"),
     );
 
     /// The declarations read their words where the crate is built, from
@@ -18,10 +18,10 @@ pub mod locales {
     fn the_declarations_read_every_templates_words() {
         let declared = include_str!("../locales/en-US.ftl");
         for template in [
-            include_str!("../../tilo-app-cli/templates/starter.ftl"),
-            include_str!("../../tilo-app-cli/templates/document.ftl"),
-            include_str!("../../tilo-app-cli/templates/collection.ftl"),
-            include_str!("../../tilo-app-cli/templates/graph.ftl"),
+            include_str!("../../../crates/lang/tilo-app-builder/templates/starter.ftl"),
+            include_str!("../../../crates/lang/tilo-app-builder/templates/document.ftl"),
+            include_str!("../../../crates/lang/tilo-app-builder/templates/collection.ftl"),
+            include_str!("../../../crates/lang/tilo-app-builder/templates/graph.ftl"),
         ] {
             let (_, actions) = template
                 .split_once("## Actions")
@@ -32,7 +32,7 @@ pub mod locales {
         }
     }
 
-    // What `tilo-app add locale de-DE` and a translator make of the starter's.
+    // What `tilolang add locale de-DE` and a translator make of the starter's.
     const DE_DE: &str = "starter-title = Hallo\n\
 starter-name-label = Dein Name\n\
 starter-name-placeholder = Name eingeben\n\
@@ -53,19 +53,19 @@ pub const APP_ID: &str = "so.tilo.template-smoke";
 pub const APP_TITLE: &str = "Template smoke";
 
 pub mod starter {
-    include!("../../tilo-app-cli/templates/starter.rs");
+    include!("../../../crates/lang/tilo-app-builder/templates/starter.rs");
 }
 
 pub mod document {
-    include!("../../tilo-app-cli/templates/document.rs");
+    include!("../../../crates/lang/tilo-app-builder/templates/document.rs");
 }
 
 pub mod collection {
-    include!("../../tilo-app-cli/templates/collection.rs");
+    include!("../../../crates/lang/tilo-app-builder/templates/collection.rs");
 }
 
 pub mod graph {
-    include!("../../tilo-app-cli/templates/graph.rs");
+    include!("../../../crates/lang/tilo-app-builder/templates/graph.rs");
 }
 
 pub mod screens {
@@ -188,8 +188,8 @@ macro_rules! generated_tests {
         #[cfg(test)]
         mod $module {
             use crate::$template as generated_app;
-            include!(concat!("../../tilo-app-cli/templates/tests/", $file));
-            include!("../../tilo-app-cli/templates/tests/native.rs");
+            include!(concat!("../../../crates/lang/tilo-app-builder/templates/tests/", $file));
+            include!("../../../crates/lang/tilo-app-builder/templates/tests/native.rs");
         }
     )*};
 }

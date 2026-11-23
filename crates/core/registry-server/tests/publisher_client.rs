@@ -1,4 +1,4 @@
-//! `registry-client`, as `tilo-app apply` and `tilo-app publish` drive it, against a running
+//! `registry-client`, as `tilolang apply` and `tilolang publish` drive it, against a running
 //! registry: apply for a namespace, get approved, publish a build into it, and find the upload
 //! where review reads it.
 

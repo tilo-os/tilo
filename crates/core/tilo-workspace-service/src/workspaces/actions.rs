@@ -4705,7 +4705,7 @@ mod surface_tests {
                 })
             })
             .collect();
-        tilo_app_cli::surface::render_with(&resources, HEADER).expect("a surface writes as TOML")
+        tilo_resource::surface::file::render(HEADER, &resources).expect("a surface writes as TOML")
     }
 
     /// The parameters the action `verb` takes, each with the schema its type gives and the

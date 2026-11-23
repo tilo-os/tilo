@@ -953,7 +953,7 @@ fn run(
     tilo_startup_metrics::mark("display-bound");
     println!("WAYLAND_DISPLAY={socket}");
     // The workspace in front, for a command started here that no launcher tells one: a program run
-    // from a terminal, or `tilo-app dev`. Published beside the display, for as long as the session
+    // from a terminal, or `tilolang dev`. Published beside the display, for as long as the session
     // runs, when this session is the one the login's programs reach.
     session.publish_workspace(&socket);
     // Where a program of this login asks to work here as an agent. The session bound it as it

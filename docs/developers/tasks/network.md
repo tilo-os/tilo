@@ -3,8 +3,8 @@
 From your app directory, declare the portable HTTP capability:
 
 ```bash
-tilo-app add capability network.http
-tilo-app doctor --json
+tilolang add capability network.http
+tilolang doctor --json
 ```
 
 Use `--required` only if the app cannot work without it. A capability declaration
@@ -58,7 +58,7 @@ An agent and a button invoke the same permission-filtered action.
 
 Verify offline, refusal, non-2xx replies, timeout, a stale completion and a
 metering transition. Use a local test server rather than a live API or a secret.
-Run `tilo-app test --json`; real host permission and transport acceptance need
+Run `tilolang test --json`; real host permission and transport acceptance need
 separate integration journeys.
 
 Next: [Actions and effects](actions.md), [Verification](verify.md),

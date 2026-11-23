@@ -753,13 +753,27 @@ package = "tilolang-cli"
 # generations of Counter against the repository it is handed; the check test compiles a copy of
 # a native app's surface, and the build test reads where the runtime names its platforms. The
 # copy they all stage from is `tests/support`, which names the packages' directory.
+# The Rust apps' commands embed the task guides (`guide`), and their tests read the example apps,
+# every app's manifest (workspace certification) and the checkout a generated app builds against.
 inputs = [
   "crates/lang/tilolang-tilo/tests/native-chat/",
   "apps/tl/",
   "apps/clocks/surface.toml",
   "crates/lang/tilolang-process/tilo-runtime.toml",
+  "docs/developers/tasks/",
+  "examples/apps/",
+  "apps/",
+  "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "crates/sdk/",
+  # A new Rust app is scaffolded against the toolkit in the checkout, and checked under the
+  # test environment's wrapper.
+  "crates/ui/ui-core/", "tools/with-test-environment.sh",
 ]
 readers = [
+  "crates/lang/tilolang-cli/src/cli.rs",
+  "crates/lang/tilolang-cli/src/cli/guide.rs",
+  "crates/lang/tilolang-cli/tests/json_output.rs",
+  "crates/lang/tilolang-cli/tests/outside_repo.rs",
+  "crates/lang/tilolang-cli/tests/native_sdk.rs",
   "crates/lang/tilolang-cli/src/layout_check/stage.rs",
   "crates/lang/tilolang-cli/src/layout_check/windows.rs",
   "crates/lang/tilolang-cli/tests/support/mod.rs",
@@ -1216,7 +1230,7 @@ readers = [
 ]
 
 [[cargo]]
-package = "tilo-app-cli"
+package = "tilo-app-builder"
 # Scaffolding and the dev loop locate the SDK and the UI builder in the tree;
 # standalone scaffolds embed the workspace's lock, patches, profiles and toolchain.
 # `--from-example` embeds the example apps, and a test checks them and their index.
@@ -1304,31 +1318,26 @@ inputs = [
 # The record-kinds tests read the sources of the local crates the apps depend on, the
 # production resource regression Music's whole normal local dependency closure.
 readers = [
-  "tools/tilo-app-cli/src/tests.rs",
+  "crates/lang/tilo-app-builder/src/tests.rs",
   # The SDK's current interfaces are the image's declaration from the same commit.
-  "tools/tilo-app-cli/src/interface_versions.rs",
-  "tools/tilo-app-cli/src/guide.rs",
+  "crates/lang/tilo-app-builder/src/interface_versions.rs",
   # Messages' history is checked against the app's own surface (`apps/` above).
-  "tools/tilo-app-cli/src/surface.rs",
-  # Focused source lookup verifies the embedded shared-checklist test bytes.
-  "tools/tilo-app-cli/tests/json_output.rs",
-  "tools/tilo-app-cli/src/standalone.rs", "tools/tilo-app-cli/tests/outside_repo.rs",
-  "tools/tilo-app-cli/src/capability_usage.rs",
+  "crates/lang/tilo-app-builder/src/surface.rs",
+  "crates/lang/tilo-app-builder/src/standalone.rs",
+  "crates/lang/tilo-app-builder/src/capability_usage.rs",
   # Android packaging copies the standalone font catalog out of the SDK.
-  "tools/tilo-app-cli/src/android.rs",
+  "crates/lang/tilo-app-builder/src/android.rs",
   # The model module embeds the wasm-opt argument list ("tools/web/wasm-opt-flags").
-  "tools/tilo-app-cli/src/model_wasm.rs",
-  "tools/tilo-app-cli/src/resource_kinds.rs",
-  # Workspace certification's compute-package test reads real manifests.
-  "tools/tilo-app-cli/src/main.rs",
-  "tools/tilo-app-cli/src/native_sdk/tests.rs", "tools/tilo-app-cli/tests/native_sdk.rs",
+  "crates/lang/tilo-app-builder/src/model_wasm.rs",
+  "crates/lang/tilo-app-builder/src/resource_kinds.rs",
+  "crates/lang/tilo-app-builder/src/native_sdk/tests.rs",
   # `--from-example` embeds the example apps' files.
-  "tools/tilo-app-cli/src/examples.rs",
+  "crates/lang/tilo-app-builder/src/examples.rs",
 ]
 
 [[cargo]]
 package = "tilo-app-template-smoke"
-inputs = ["tools/tilo-app-cli/templates/", "tools/tilo-app-cli/src/lib.rs"]
+inputs = ["crates/lang/tilo-app-builder/templates/", "crates/lang/tilo-app-builder/src/lib.rs"]
 readers = ["tools/tilo-app-template-smoke/src/lib.rs"]
 
 [[cargo]]

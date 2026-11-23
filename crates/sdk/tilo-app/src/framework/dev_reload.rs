@@ -1,4 +1,4 @@
-//! The symbols a `thin` app library exports so `tilo-app dev` can run new
+//! The symbols a `thin` app library exports so `tilolang dev` can run new
 //! code inside the windows the process already has.
 
 use tilo_resource::{Doc, Reader, Resource};

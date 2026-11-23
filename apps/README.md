@@ -108,9 +108,9 @@ second app-specific automation protocol.
 Validate one app or the graphical workspace:
 
 ```bash
-tilo-app check apps/my-app
-tilo-app certify apps/my-app
-tilo-app certify . --workspace
+tilolang check apps/my-app
+tilolang certify apps/my-app
+tilolang certify . --workspace
 ```
 
 `check` includes structural validation, app-local formatting and Clippy, tests,

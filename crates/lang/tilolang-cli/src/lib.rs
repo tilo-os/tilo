@@ -14,26 +14,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::pack::SigningIdentity;
 
-/// The package in `dir` and the packages it uses, found in `search` (else among `dir`'s siblings),
-/// compiled in dependency order against what the platform and the native apps among them publish
-/// ([`tilolang_tilo::catalogue::published_packages`]); and that published metadata.
-pub fn compile(
-    dir: &Path,
-    search: &[PathBuf],
-    rng: &mut dyn tilolang::ids::Entropy,
-) -> Result<
-    (
-        Vec<tilolang::source::BuiltPackage>,
-        Vec<tilolang::PackageMeta>,
-    ),
-    tilolang::source::BuildError,
-> {
-    let published =
-        tilolang_tilo::catalogue::published_packages(&tilolang::source::search_of(dir, search))
-            .map_err(tilolang::source::BuildError::Read)?;
-    let built = tilolang::source::compile_package(dir, search, &published, rng)?;
-    Ok((built, published))
-}
+pub use tilolang_tilo::catalogue::compile;
 
 /// The package directories [`compile`] reads for `dir`: the ones to watch.
 pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {

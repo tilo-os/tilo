@@ -631,7 +631,7 @@ def prepare_tools(args, tilolang=False):
         # tilolang package.
         tools += ['-p', 'tilolang-cli']
     if args.compiler_interface_out is not None:
-        tools += ['-p', 'tilo-app-cli']
+        tools += ['-p', 'tilolang-cli']
     run(tools, env=tools_env)
 
 

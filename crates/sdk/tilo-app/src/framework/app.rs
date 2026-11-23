@@ -338,7 +338,7 @@ pub trait ResourceApp: 'static {
     /// workspace records and settings sections that are resource models. Each is
     /// opened with the window and published beside the app's resource, so
     /// the palette and agents change it whether or not a view has shown it,
-    /// and `tilo-app surface` commits its surface with the app's.
+    /// and `tilolang surface` commits its surface with the app's.
     ///
     /// ```ignore
     /// fn resources(resources: &mut Resources<'_>) {
@@ -406,7 +406,7 @@ impl OtherWindow {
     }
 
     /// Take their surface report's resources (one of a kind `report` has not), effects, views
-    /// and unbound controls into `report`, the app's own, as `tilo-app surface` reads it.
+    /// and unbound controls into `report`, the app's own, as `tilolang surface` reads it.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn merge_into(self, report: &mut serde_json::Value) {
         use serde_json::Value;
@@ -2296,7 +2296,7 @@ pub fn run<A: ResourceApp>() {
 
 /// The flag that makes an app's binary print its
 /// [`surface_report`](super::headless::surface_report)
-/// instead of running: what `tilo-app surface` and `tilo-app check` read.
+/// instead of running: what `tilolang surface` and `tilolang check` read.
 pub const SURFACE_FLAG: &str = "--surface";
 
 /// Run the first of `A`'s [helpers](ResourceApp::helpers) that `args` is

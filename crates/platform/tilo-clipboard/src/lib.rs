@@ -18,7 +18,7 @@
 //! An app runs in a process of its own, so it holds no selection to offer or read: the process
 //! that holds the person's selection serves it, and an app's copies and pastes cross to it over the
 //! one service ([`service`]) whether the app is written in Rust or in tilolang. Where a Tilo
-//! session serves no clipboard — a person's own macOS, Windows or Linux desktop, or `tilo-app run`
+//! session serves no clipboard — a person's own macOS, Windows or Linux desktop, or `tilolang run`
 //! outside a session — the launcher serves the same wire from the operating system's clipboard
 //! ([`os`]). A process handed no connection (the launch runs without services) copies nothing and
 //! pastes nothing, rather than keeping a copy that reaches no one.
@@ -495,7 +495,7 @@ pub fn unavailable() -> std::sync::Arc<dyn ClipboardBackend> {
 /// The operating system's clipboard of this process: the selection a person's own desktop holds.
 ///
 /// This is for the process that serves an app's clipboard where no Tilo session does — the
-/// launcher, or `tilo-app run` — not for an app, which talks only to [`service::Connected`]. It is
+/// launcher, or `tilolang run` — not for an app, which talks only to [`service::Connected`]. It is
 /// `arboard`, the protocol for a client without focus: Wayland's data-control protocol, X11
 /// (including `XWayland`) where a compositor lacks data-control, `NSPasteboard` and the Windows
 /// clipboard; where none of those answers, a buffer private to the process.

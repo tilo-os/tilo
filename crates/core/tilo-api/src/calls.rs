@@ -1,5 +1,5 @@
 //! Tilo's actions, as a program of the person's on this computer calls them: `tilo`'s workspace
-//! commands, `tilolang repl`, a model ask, `tilo-app push`. Every call is a tool of the agent
+//! commands, `tilolang repl`, a model ask, `tilolang push`. Every call is a tool of the agent
 //! surface ([`tilo_mcp::McpServer`]), walked in the caller's own process, over whichever actions
 //! the caller reaches ([`Calls::open`]):
 //!

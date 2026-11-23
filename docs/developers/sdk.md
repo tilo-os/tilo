@@ -39,7 +39,7 @@ and land in history like any other action.
 
 Each app publishes its surface: its resource kinds, their fields with types and which are
 read-only, and its actions with their parameters (`surface.toml`, written by
-`tilo-app surface`, signed with the app). tilolang already compiles programs against this
+`tilolang surface`, signed with the app). tilolang already compiles programs against this
 catalogue, using the loader `tilolang check` uses. The SDK generates its types from the same
 catalogue:
 

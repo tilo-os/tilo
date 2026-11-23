@@ -929,7 +929,7 @@ mod image_interface_tests {
             );
         }
 
-        // The examples are copied into new apps (`tilo-app new --from-example`), so they must fit the
+        // The examples are copied into new apps (`tilolang new --from-example`), so they must fit the
         // image they are scaffolded on as well.
         let mut checked = 0;
         for root in ["apps", "examples/apps"] {

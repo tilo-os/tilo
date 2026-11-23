@@ -13,13 +13,13 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [build-dependencies]
-tilo-app-cli = { path = "../tilo-app-cli" }
+tilo-app-builder = { path = "../../crates/lang/tilo-app-builder" }
 
-# The smoke crate compiles sources emitted by tilo-app through `include!`, so
+# The smoke crate compiles sources emitted by `tilolang add` through `include!`, so
 # cargo-machete cannot observe these dependencies in the crate's handwritten
 # source or its build script even though removing them breaks the compile.
 [package.metadata.cargo-machete]
-ignored = ["tilo-app-cli"]
+ignored = ["tilo-app-builder"]
 
 [lints]
 workspace = true

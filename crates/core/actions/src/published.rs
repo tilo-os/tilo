@@ -95,7 +95,7 @@ pub struct PublishedAction {
 }
 
 /// One action an app offers while it is closed, as its manifest's `[[offers]]` declare it:
-/// what the app's code publishes on an empty document, written there by `tilo-app surface`.
+/// what the app's code publishes on an empty document, written there by `tilolang surface`.
 /// Invoking one launches the app, and the action it then publishes admits the invocation.
 #[derive(Clone, Debug)]
 pub struct Offer<'a> {

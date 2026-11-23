@@ -1,4 +1,4 @@
-# Written by `tilo-app surface`; review changes like an API change.
+# Written by `tilolang surface`; review changes like an API change.
 
 [[resources]]
 kind = "example.counter"

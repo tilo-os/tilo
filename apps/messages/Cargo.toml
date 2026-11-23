@@ -11,7 +11,7 @@ thin = ["dep:runtime-dylib"]
 # bundle (libtilo_contact_directory_engine.so,
 # crates/engines/loadable/contact-directory) instead of the runtime. The
 # release collection enables it (dist/apps/app-collections.toml); a `thin`
-# build without it (`tilo-app dev`) links tilo-contact-directory statically,
+# build without it (`tilolang dev`) links tilo-contact-directory statically,
 # because an engine library links only through
 # tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-contact-directory-engine/thin"]

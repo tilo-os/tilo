@@ -1,6 +1,6 @@
 # Follow the host's permissions
 
-Retrieve this task with `tilo-app guide permissions --json`; `roles` and
+Retrieve this task with `tilolang guide permissions --json`; `roles` and
 `access` are aliases. No project, network connection or full manual is needed.
 
 Keep permissions on the resource action. Every action has a kind the
@@ -50,5 +50,5 @@ frame and a history view. `for_person` supplies test attribution, not real
 sign-in. Authenticated membership and device delivery need host integration
 tests.
 
-Next: `tilo-app guide actions` or `guide collaborate`.
+Next: `tilolang guide actions` or `guide collaborate`.
 More: [Executable live-permission tests](../../../crates/sdk/tilo-app/tests/live_permissions.rs).

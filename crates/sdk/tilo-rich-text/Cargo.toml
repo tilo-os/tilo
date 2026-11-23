@@ -7,7 +7,7 @@ license.workspace = true
 description = "The SDK rich-text editor: the toolkit's block editor bound to tilo-doc's rich-text resource through the app framework"
 
 # The app SDK: the kinds it declares are the framework's, which no app lists as
-# its own (tools/tilo-app-cli/src/resource_kinds.rs).
+# its own (crates/lang/tilo-app-builder/src/resource_kinds.rs).
 [package.metadata.tilo]
 framework = true
 

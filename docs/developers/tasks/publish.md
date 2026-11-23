@@ -3,9 +3,9 @@
 For local signing and namespace registration:
 
 ```bash
-tilo-app keys new
-tilo-app apply --domain example.com --contact you@example.com
-tilo-app apply --status
+tilolang keys new
+tilolang apply --domain example.com --contact you@example.com
+tilolang apply --status
 ```
 
 Replace the example domain and contact with yours. Publish the proof line
@@ -14,8 +14,8 @@ App Publisher on Tilo OS provides the same key and application workflows.
 Wait for namespace approval before submitting packages under it.
 
 ```bash
-tilo-app package
-tilo-app publish --metadata store.json
+tilolang package
+tilolang publish --metadata store.json
 ```
 
 `store.json` contains localized `name`, `tagline`, `description`, optional
@@ -27,7 +27,7 @@ use credential-free HTTPS and each image needs an `alt` description. See the
 For the supported platform/architecture matrix:
 
 ```bash
-tilo-app add ci --forge github --json
+tilolang add ci --forge github --json
 ```
 
 This writes a small caller and reusable `tilo-build.yml`. GitHub can import

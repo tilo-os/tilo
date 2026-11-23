@@ -19,14 +19,14 @@ and on the page's executor on the web, so the example runs everywhere.
 Start your own app from it:
 
 ```bash
-tilo-app new my-app --from-example virtual-list
+tilolang new my-app --from-example virtual-list
 ```
 
 Run and verify it in the Tilo checkout:
 
 ```bash
-tilo-app run examples/apps/virtual-list
-tilo-app check examples/apps/virtual-list
+tilolang run examples/apps/virtual-list
+tilolang check examples/apps/virtual-list
 ```
 
-`tilo-app examples` lists every example.
+`tilolang examples` lists every example.

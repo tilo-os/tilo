@@ -80,7 +80,7 @@ WGPU_ADAPTER_NAME = "llvmpipe"
 # `python3 -I tools/ci/package_sets.py per-arch` disagree.
 #
 # app-catalogue app-cli browser compat-service env-tools fs-native install launcher launcher-macos
-# local-model-service runtime-bundle store tilo-agent-session tilo-app-cli tilo-device-steps
+# local-model-service runtime-bundle store tilo-agent-session tilo-app-builder tilo-device-steps
 # tilo-environment tilo-liveness tilo-oci-images tilo-sandbox tilo-sandbox-core
 # tilolang-cli tilolang-tilo ush windows-vm
 
@@ -109,7 +109,7 @@ exclude = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native",
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
     "runtime-bundle", "tilo-agent-session",
-    "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
+    "tilo-app-builder", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
     "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
 ]
@@ -158,7 +158,7 @@ unify = "workspace-unify"
 packages = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "install",
     "launcher", "launcher-macos", "local-model-service", "runtime-bundle",
-    "tilo-agent-session", "tilo-app-cli", "tilo-environment", "tilo-liveness",
+    "tilo-agent-session", "tilo-app-builder", "tilo-environment", "tilo-liveness",
     "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli",
     "tilolang-tilo", "ush", "windows-vm",
 ]
@@ -287,7 +287,7 @@ trailing = ["-D", "warnings"]
 exclude = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "tilo-agent-session", "tilo-app-cli",
+    "runtime-bundle", "tilo-agent-session", "tilo-app-builder",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -323,7 +323,7 @@ trailing = ["-D", "warnings"]
 packages = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "tilo-agent-session", "tilo-app-cli",
+    "runtime-bundle", "tilo-agent-session", "tilo-app-builder",
     "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
     "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
 ]
@@ -386,7 +386,7 @@ unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "tilo-agent-session", "tilo-app-cli",
+    "runtime-bundle", "tilo-agent-session", "tilo-app-builder",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -777,7 +777,7 @@ git = true
 [[check]]
 name = "app-lints"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all"
+run = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- check --lint --all"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 on = ["dispatch", "idle"]
 heavy = true
@@ -797,8 +797,8 @@ heavy = true
 name = "app-surfaces"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 isolation = "nested"
-run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/apps/generate_default_apps.py --check\n"
-fix = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces --write\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\"\npython3 -I tools/apps/generate_default_apps.py\n"
+run = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/apps/generate_default_apps.py --check\n"
+fix = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces --write\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\"\npython3 -I tools/apps/generate_default_apps.py\n"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
 [[check]]
@@ -903,8 +903,8 @@ requires = ["arch=x86_64"]
 on = ["dispatch", "idle"]
 heavy = true
 
-# The Tilo app's APK, built as a developer builds one: `tilo-app setup android` installs the SDK's
-# build tools and platform from Google's repository, and `tilo-app build` compiles the phone's
+# The Tilo app's APK, built as a developer builds one: `tilolang setup android` installs the SDK's
+# build tools and platform from Google's repository, and `tilolang build` compiles the phone's
 # library and its tilolang apps and links them. The JDK the SDK's tools run on, and zip, come from
 # Fedora's release repository in the setup, which never changes (updates go to another), so the
 # setup is pinned and served from t's cache; the builder image carries the NDK only. The JDK is
@@ -915,7 +915,7 @@ heavy = true
 name = "android-apk"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 setup = { run = "dnf install -y --setopt=install_weak_deps=False --repo=fedora --setopt=fedora.metalink= '--setopt=fedora.baseurl=https://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' java-25-openjdk-devel zip unzip && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
-run = "export JAVA_HOME=\"$(dirname \"$(dirname \"$(ls /usr/lib/jvm/java-25-openjdk*/bin/javac | head -n 1)\")\")\"\nexport PATH=\"$JAVA_HOME/bin:$PATH\"\nexport ANDROID_HOME=\"$TMPDIR/android-sdk\"\nexport ANDROID_USER_HOME=\"$TMPDIR/android-user\"\nmkdir -p \"$ANDROID_HOME\" \"$ANDROID_USER_HOME\"\ncargo run --locked -p tilo-app-cli --bin tilo-app -- setup android --accept-licenses\ncargo run --locked -p tilo-app-cli --bin tilo-app -- build --platform android --arch x86_64 apps/phone\n"
+run = "export JAVA_HOME=\"$(dirname \"$(dirname \"$(ls /usr/lib/jvm/java-25-openjdk*/bin/javac | head -n 1)\")\")\"\nexport PATH=\"$JAVA_HOME/bin:$PATH\"\nexport ANDROID_HOME=\"$TMPDIR/android-sdk\"\nexport ANDROID_USER_HOME=\"$TMPDIR/android-user\"\nmkdir -p \"$ANDROID_HOME\" \"$ANDROID_USER_HOME\"\ncargo run --locked -p tilolang-cli --bin tilolang -- setup android --accept-licenses\ncargo run --locked -p tilolang-cli --bin tilolang -- build --platform android --arch x86_64 apps/phone\n"
 requires = ["arch=x86_64"]
 on = ["dispatch", "idle"]
 heavy = true
@@ -999,7 +999,7 @@ env = { CARGO_NET_OFFLINE = "false" }
 [[check]]
 name = "example-scenarios"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/example-scenarios.sh -p tilo-app-cli"
+run = "bash tools/ci/example-scenarios.sh -p tilo-app-builder"
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 on = ["dispatch", "idle"]
 heavy = true
@@ -1007,7 +1007,7 @@ heavy = true
 [[check]]
 name = "certify"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace"
+run = "cargo run --locked -p tilolang-cli --bin tilolang -- certify --workspace"
 env = { TILO_REQUIRE_GPU = "1", TILO_CERTIFY_SURFACES = "/target/certify/surfaces" }
 outputs = ["/target/certify/surfaces/**"]
 on = ["schedule:0 3 * * *", "dispatch"]
@@ -1231,7 +1231,7 @@ fix = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I t
 [[check]]
 name = "sdk-linux"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo test --locked -p tilo-caps\ncargo test --locked -p tilo-app-cli --lib targets::\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=$CARGO_TARGET_DIR/debug\n\"$bin/tilo-app\" build --target linux apps/scratchpad\ncargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nTILO_PKG=$bin/tilo-app-package CARGO_PROFILE_THIN_APP_OPT_LEVEL=1 CARGO_PROFILE_THIN_APP_CODEGEN_UNITS=16 CARGO_PROFILE_THIN_APP_DEBUG=0 \"$bin/tilo-app\" package --target linux apps/scratchpad --output \"$TMPDIR/scratchpad.tapp\" --force\ntest -s \"$TMPDIR/scratchpad.tapp\"\n"
+run = "cargo test --locked -p tilo-caps\ncargo test --locked -p tilo-app-builder --lib targets::\ncargo build --locked -p tilolang-cli -p tilo-app-package-cli --bin tilolang --bin tilo-app-package\nbin=$CARGO_TARGET_DIR/debug\n\"$bin/tilolang\" build --target linux apps/scratchpad\ncargo test --locked -p tilolang-cli --test it outside_repo -- --ignored --nocapture\nTILO_PKG=$bin/tilo-app-package CARGO_PROFILE_THIN_APP_OPT_LEVEL=1 CARGO_PROFILE_THIN_APP_CODEGEN_UNITS=16 CARGO_PROFILE_THIN_APP_DEBUG=0 \"$bin/tilolang\" package --target linux apps/scratchpad --output \"$TMPDIR/scratchpad.tapp\" --force\ntest -s \"$TMPDIR/scratchpad.tapp\"\n"
 on = ["dispatch", "idle"]
 heavy = true
 
@@ -1529,7 +1529,7 @@ on = ["schedule:0 3 * * *", "dispatch"]
 [[check]]
 name = "nightly-arm64-certify"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo run --locked -p tilolang-cli --bin tilolang -- certify --workspace\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1" }
 requires = ["arch=arm64"]
 on = ["schedule:0 3 * * *", "dispatch"]
@@ -1669,7 +1669,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 # a git dependency on this tree, so it needs cargo's network; t turns it off where it hands a job
 # the state's crates.
 env = { CARGO_NET_OFFLINE = "false" }
-run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in scratchpad; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/scratchpad --output \"$TMPDIR/Scratchpad-macos.zip\" --force\ntest -s \"$TMPDIR/Scratchpad-macos.zip\"\ntest -s \"$TMPDIR/Scratchpad-macos.zip.json\"\n"
+run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilolang-cli -p tilo-app-package-cli --bin tilolang --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilolang-cli --test it outside_repo -- --ignored --nocapture\nfor app in scratchpad; do\n  bundle=$(\"$bin/tilolang\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilolang\" package --target macos apps/scratchpad --output \"$TMPDIR/Scratchpad-macos.zip\" --force\ntest -s \"$TMPDIR/Scratchpad-macos.zip\"\ntest -s \"$TMPDIR/Scratchpad-macos.zip.json\"\n"
 requires = ["os=macos", "arch=arm64"]
 on = ["dispatch", "idle"]
 heavy = true

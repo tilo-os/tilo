@@ -4,7 +4,7 @@
 //! ([`crate::SignedOp::surface`]), the file the app's package ships at
 //! its payload root. Whoever starts the app names that file
 //! ([`SURFACE_FILE_ENV`]) and its hash ([`SURFACE_HASH_ENV`]): the launcher
-//! the file in the package it runs, `tilo-app run`/`dev` the app's committed
+//! the file in the package it runs, `tilolang run`/`dev` the app's committed
 //! file. The app reads it, checks the hash and registers it
 //! ([`register_named`]); an app's own binary does not carry the file. A host
 //! that runs an app in its own process (the shell's built-in apps, the web

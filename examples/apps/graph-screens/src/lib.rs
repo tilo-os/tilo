@@ -1,11 +1,11 @@
 //! Graph screens: presentation as data, state as a resource.
 //!
 //! The top of the window is not Rust. It is a serialized UI graph under
-//! `ui/`, validated when the app starts, that `tilo-app ui edit` changes
+//! `ui/`, validated when the app starts, that `tilolang ui edit` changes
 //! while the app runs, with its own undo history. Screens reach Rust in two
 //! ways: a component node mounts a widget an app-owned factory builds
 //! (`src/components/`), and the screen router hosts every screen
-//! registered in `src/screens.rs`, which `tilo-app add screen` maintains.
+//! registered in `src/screens.rs`, which `tilolang add screen` maintains.
 //! A navigation button in a screen (the About link) is published as a view
 //! action, so an agent reaches the About screen the way a click does.
 //!
@@ -58,8 +58,8 @@ impl Projects {
 }
 
 /// The serialized screens under `ui/`, validated before any widget reaches
-/// the app. `tilo-app ui edit ui/main.json` edits them while the app runs;
-/// `tilo-app add screen` and `tilo-app add component --mount` extend them.
+/// the app. `tilolang ui edit ui/main.json` edits them while the app runs;
+/// `tilolang add screen` and `tilolang add component --mount` extend them.
 fn screens() -> Element {
     match crate::screens::router_with(
         "main",

@@ -10,20 +10,20 @@ any text that bypassed the catalog.
 
 Read:
 
-- `locales/`: the catalogs; `tilo-app add locale de-DE` created the German one.
+- `locales/`: the catalogs; `tilolang add locale de-DE` created the German one.
 - `tests/app.rs`: plurals per language, live switching, and the pseudo-locale check.
 
 Start your own app from it:
 
 ```bash
-tilo-app new my-app --from-example localized
+tilolang new my-app --from-example localized
 ```
 
 Run and verify it in the Tilo checkout:
 
 ```bash
-tilo-app run examples/apps/localized
-tilo-app check examples/apps/localized
+tilolang run examples/apps/localized
+tilolang check examples/apps/localized
 ```
 
-`tilo-app examples` lists every example.
+`tilolang examples` lists every example.

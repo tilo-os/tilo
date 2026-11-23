@@ -409,7 +409,7 @@ impl ActionTable {
     }
 
     /// [`Self::binding`] for a control being built, where an action the
-    /// resource does not publish fails tests and `tilo-app check`: `key`'s
+    /// resource does not publish fails tests and `tilolang check`: `key`'s
     /// app id read in `opened_in`'s place where a control built from a typed
     /// reference names the app by
     /// [`Resource::APP_ID`](tilo_resource::Resource::APP_ID) and this table
@@ -745,7 +745,7 @@ impl<R: Resource> Actions<R> {
     }
 
     /// [`Self::binding`] for a control being built: an action the resource
-    /// does not publish fails tests and `tilo-app check`.
+    /// does not publish fails tests and `tilolang check`.
     pub(crate) fn control_binding<I: 'static>(
         &self,
         action: impl Binds<R, I>,
@@ -848,7 +848,7 @@ impl<R: Resource> Actions<R> {
     }
 
     /// `control`, bound to `action`. An action the resource does not publish
-    /// leaves it disabled, and fails tests and `tilo-app check`.
+    /// leaves it disabled, and fails tests and `tilolang check`.
     pub fn bind<I: 'static, C: ActionControl<I>>(&self, control: C, action: impl Binds<R, I>) -> C {
         match self.control_binding(action) {
             Some(binding) => control.bind_action(binding),

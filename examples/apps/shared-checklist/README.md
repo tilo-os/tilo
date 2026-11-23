@@ -18,14 +18,14 @@ Read:
 Start your own app from it:
 
 ```bash
-tilo-app new my-app --from-example shared-checklist
+tilolang new my-app --from-example shared-checklist
 ```
 
 Run and verify it in the Tilo checkout:
 
 ```bash
-tilo-app run examples/apps/shared-checklist
-tilo-app check examples/apps/shared-checklist
+tilolang run examples/apps/shared-checklist
+tilolang check examples/apps/shared-checklist
 ```
 
-`tilo-app examples` lists every example.
+`tilolang examples` lists every example.

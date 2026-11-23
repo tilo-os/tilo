@@ -385,7 +385,7 @@ fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut ResourceSpec) {
 /// beside the app's own: the generic `apply`, `group` and `field-edit`, the
 /// views `open`, `read` and `facts`, history, and the presentation operations. An app
 /// verb, effect or view under one of these ids shadows the framework's or is
-/// shadowed by it, so `tilo-app check` refuses it.
+/// shadowed by it, so `tilolang check` refuses it.
 #[must_use]
 pub fn reserved_action_ids() -> Vec<String> {
     let mut ids: Vec<String> = [

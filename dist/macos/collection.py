@@ -147,7 +147,7 @@ def parser():
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--resume', action='store_true')
     p.add_argument('--reuse-bundles', action='store_true', help='import existing SDK outputs; never compile')
-    p.add_argument('--tilo-app', type=Path, help='existing tilo-app CLI executable; never installed automatically')
+    p.add_argument('--tilolang', type=Path, help='existing tilolang executable; never installed automatically')
     p.add_argument('--compiler-guard', type=Path, help='existing shared rustc-budget.py wrapper')
     p.add_argument('--identity', help='exact Keychain SHA-1 or full identity name; development also accepts ad-hoc')
     p.add_argument('--offline', action='store_true', help='development signatures without secure timestamp; builds are always offline')

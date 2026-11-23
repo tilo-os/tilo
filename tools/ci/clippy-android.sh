@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint with clippy, for both Android targets, the libraries `tilo-app build
+# Lint with clippy, for both Android targets, the libraries `tilolang build
 # --platform android` builds: the tilolang runtime's, and the Tilo app's
 # (tilo-phone), which runs the device daemon in its own process and draws the
 # toolkit.

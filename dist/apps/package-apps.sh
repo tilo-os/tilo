@@ -275,7 +275,7 @@ while IFS=$'\t' read -r name package binary id version manifest; do
             -exec install -pm 0644 -t "$payload/screenshots" {} +
     fi
     install -pm 0755 "$built" "$payload/bin/$binary"
-    # The app's public surface ships at the payload root, as `tilo-app package`
+    # The app's public surface ships at the payload root, as `tilolang package`
     # stages it: the launcher names that file to the app, which reads it from
     # there, and relays fetch it from the registry by the hash its ops name.
     surface="$repo_root/$(dirname "$manifest")/surface.toml"
@@ -285,7 +285,7 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     # An app declares a model by keeping a guest crate beside it (apps/db-client ->
     # apps/db-client-model-wasm). The module the app-models check built for it ships
     # at the payload root, where every device holding the workspace's keys reads
-    # it and `tilo-app package` stages it. A declared model with no module built
+    # it and `tilolang package` stages it. A declared model with no module built
     # fails the pack here: the app would ship unable to apply its own actions.
     if [[ -f $app_dir-model-wasm/Cargo.toml ]]; then
         module="$(basename "$app_dir")/model.wasm"

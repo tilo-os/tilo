@@ -19,14 +19,14 @@ and on the page's executor on the web, so the example runs everywhere.
 Start your own app from it:
 
 ```bash
-tilo-app new my-app --from-example data-table
+tilolang new my-app --from-example data-table
 ```
 
 Run and verify it in the Tilo checkout:
 
 ```bash
-tilo-app run examples/apps/data-table
-tilo-app check examples/apps/data-table
+tilolang run examples/apps/data-table
+tilolang check examples/apps/data-table
 ```
 
-`tilo-app examples` lists every example.
+`tilolang examples` lists every example.

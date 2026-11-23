@@ -4614,7 +4614,7 @@ fn identity_service(
 /// The person-record kinds of the surfaces this runtime holds. Started with
 /// `--dev`, an app that is not installed is a build under development (as
 /// [`RecordCreation`] treats it): the surface it attaches naming, which
-/// `tilo-app dev` sets, is taken as its own, so its person records reach
+/// `tilolang dev` sets, is taken as its own, so its person records reach
 /// the person's workspace. An installed app runs only with its package's signed
 /// surface, and no attach replaces a surface the runtime already holds.
 struct AttachedSurfaces {

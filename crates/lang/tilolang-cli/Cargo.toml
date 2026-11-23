@@ -6,9 +6,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license.workspace = true
-description = "The tilolang tool: check, format and lock packages, build each into a signed Tilo app (.tapp), and run them as apps in a nested Tilo session."
+description = "The tilolang command: create, check, run, build, package and publish Tilo apps, written in tilolang or in Rust."
 
-# What authors type: `tilolang build`, `tilolang run`.
+# What authors type: `tilolang new`, `tilolang dev`, `tilolang package`.
 [[bin]]
 name = "tilolang"
 path = "src/main.rs"
@@ -24,6 +24,17 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+# The commands of an app written in Rust, and the ones every app shares (`src/cli.rs`).
+tilo-app-builder = { path = "../tilo-app-builder" }
+anyhow.workspace = true
+clap.workspace = true
+# `check` reads the PNGs a responsive acceptance run left.
+image = { workspace = true, features = ["png"] }
+libc.workspace = true
+# `publish` and `apply`: the registry the packages go to.
+app-registry = { path = "../../core/app-registry" }
+# `ui`: the serialized screens it edits.
+tilo-ui-graph = { path = "../../ui/ui-graph" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 jiff.workspace = true
 ed25519-dalek.workspace = true
@@ -64,6 +75,11 @@ tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 
 [dev-dependencies]
+# The outside-repository journey publishes into a real registry on loopback.
+registry-server = { path = "../../core/registry-server" }
+tokio = { workspace = true, features = ["rt"] }
+runtime-bundle = { path = "../../core/runtime-bundle" }
+blake3.workspace = true
 tilo-rich-edit = { path = "../../ui/tilo-rich-edit" }
 tilo-test-env = { path = "../../../tools/test-env" }
 # What an agent's action is, as the frame draws it on the control that runs it.
@@ -73,6 +89,15 @@ launcher = { path = "../../core/launcher" }
 
 [lints]
 workspace = true
+
+[features]
+# Explicit expensive real generated-app/toolkit/package qualification.
+native-sdk-qualification = []
+
+[[test]]
+name = "native-sdk"
+path = "tests/native_sdk.rs"
+required-features = ["native-sdk-qualification"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

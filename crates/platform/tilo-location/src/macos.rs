@@ -26,7 +26,7 @@ const IDLE: Duration = Duration::from_millis(50);
 const USAGE_KEY: &str = "NSLocationWhenInUseUsageDescription";
 
 pub(crate) const NO_USAGE_STRING: &str = "Location needs the app's bundle to explain why \
-     (NSLocationWhenInUseUsageDescription): run the .app `tilo-app build --target macos` makes.";
+     (NSLocationWhenInUseUsageDescription): run the .app `tilolang build --target macos` makes.";
 
 pub(crate) struct CoreLocation;
 

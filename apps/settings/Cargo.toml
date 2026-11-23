@@ -34,7 +34,7 @@ thin = ["dep:runtime-dylib"]
 # this package's library and links account credentials and the IMAP client from
 # their own engine library: the binary is one call into it (src/main.rs). The
 # release collection enables it (dist/apps/app-collections.toml); a `thin`
-# build without it (`tilo-app dev`) links the library statically, because an
+# build without it (`tilolang dev`) links the library statically, because an
 # engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin"]
 

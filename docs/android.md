@@ -2,7 +2,7 @@
 
 A Tilo app can run as a standalone Android app: the same code, the same
 toolkit and the same widgets, drawn with wgpu on Vulkan in a `NativeActivity`.
-Every app `tilo-app new` scaffolds builds for Android with no Android code of
+Every app `tilolang new` scaffolds builds for Android with no Android code of
 its own. This is the app process only; the compositor, `fs`, sandboxing and
 collaboration are Linux services and do not exist on Android (see
 [Limits](#limits)).
@@ -12,13 +12,13 @@ collaboration are Linux services and do not exist on Android (see
 Android is one more `--platform` of the ordinary commands:
 
 ```bash
-tilo-app doctor --platform android           # what the toolchain lacks, and each fix
-tilo-app setup android                       # install the SDK side of it
-tilo-app run --platform android              # build, install, start, stream the log
-tilo-app dev --platform android              # the same, again on every save
-tilo-app build --platform android --arch x86_64
-tilo-app package --platform android          # per architecture: signed .apk + .aab + a registry .tapp
-tilo-app check --platform android            # Clippy for aarch64-linux-android
+tilolang doctor --platform android           # what the toolchain lacks, and each fix
+tilolang setup android                       # install the SDK side of it
+tilolang run --platform android              # build, install, start, stream the log
+tilolang dev --platform android              # the same, again on every save
+tilolang build --platform android --arch x86_64
+tilolang package --platform android          # per architecture: signed .apk + .aab + a registry .tapp
+tilolang check --platform android            # Clippy for aarch64-linux-android
 ```
 
 `--arch` is `aarch64` (arm64-v8a) or `x86_64`. `build` and `check` default to
@@ -46,7 +46,7 @@ same name: a release build, signed as below. It checks every output before it
 builds either, and `--output` names one package, so it needs `--arch`. There
 is one APK per architecture rather than one universal APK because the registry
 lists one build per architecture and a device downloads only its own. The
-`.tapp` is what `tilo-app publish` uploads; the registry lists it under the
+`.tapp` is what `tilolang publish` uploads; the registry lists it under the
 `android` platform, and Tilo OS clients never install it.
 
 **Size.** An Android package answers to the registry's limit for a build that
@@ -72,7 +72,7 @@ The build uses no Gradle. It needs:
 - optionally bundletool, for the `.aab`. Without it `package` makes the APK
   only and says so; `--no-bundle` skips the bundle on purpose.
 
-`tilo-app doctor --platform android` checks each and prints the fix. For the
+`tilolang doctor --platform android` checks each and prints the fix. For the
 JDK and the zip tools that is the one command for this system's family, read
 from `/etc/os-release` (every family's when it is none of them):
 
@@ -82,7 +82,7 @@ from `/etc/os-release` (every family's when it is none of them):
 | Debian, Ubuntu (apt) | `sudo apt-get install -y openjdk-17-jdk-headless zip unzip` |
 | macOS (brew) | `brew install openjdk@21 zip unzip` |
 
-`tilo-app setup android` fetches the command-line tools when `sdkmanager` is
+`tilolang setup android` fetches the command-line tools when `sdkmanager` is
 missing, installs the SDK packages (and the NDK when none is found), downloads
 bundletool into the SDK and adds the Rust targets; `--accept-licenses` accepts
 the SDK licences without prompting, for CI. It cannot install a JDK or the zip
@@ -122,11 +122,11 @@ The APK is signed with `apksigner` (v2 and v3 schemes) after `zipalign`
 
 ## CI
 
-`tilo-app add ci` adds an `android` `aarch64` build to the package matrix. It
+`tilolang add ci` adds an `android` `aarch64` build to the package matrix. It
 runs in the builder image on the forge's ordinary Linux x86_64 runner (for
 GitHub, `ubuntu-latest`): the image already carries the NDK and its linker
 variables, and the job installs a JDK and `zip` with `dnf`, then the SDK with
-`tilo-app setup android --accept-licenses`, cached between runs. The SDK and
+`tilolang setup android --accept-licenses`, cached between runs. The SDK and
 JDK are not in the image because Tilo's own CI never packages APKs and they
 would add about a gigabyte to every job that pulls it. Set the
 `TILO_ANDROID_KEYSTORE` secret (the keystore, base64) and
@@ -213,7 +213,7 @@ down while hardware keys still type.
 (`accesskit_android_adapter.rs`). The vendored winit leaves hover events
 unhandled so explore-by-touch reaches that view.
 
-**Fonts.** `tilo-app build --platform android` packs the font catalog into `assets/tilo/fonts`.
+**Fonts.** `tilolang build --platform android` packs the font catalog into `assets/tilo/fonts`.
 The first start of each catalog version copies it into the app's files
 directory, since fontdb cannot map a file inside an APK; the device's
 `/system/fonts` cover the scripts the catalog does not.
@@ -260,7 +260,7 @@ emulator is for what only Android shows: the activity lifecycle, touch, the
 input method, choosers and insets. With an `x86_64` AVD running:
 
 ```bash
-tilo-app run --platform android --device emulator-5554 apps/calculator
+tilolang run --platform android --device emulator-5554 apps/calculator
 adb -s emulator-5554 shell input tap X Y            # physical pixels
 adb -s emulator-5554 exec-out screencap -p > shot.png
 ```

@@ -19,14 +19,14 @@ Read:
 Start your own app from it:
 
 ```bash
-tilo-app new my-app --from-example counter
+tilolang new my-app --from-example counter
 ```
 
 Run and verify it in the Tilo checkout:
 
 ```bash
-tilo-app run examples/apps/counter
-tilo-app check examples/apps/counter
+tilolang run examples/apps/counter
+tilolang check examples/apps/counter
 ```
 
-`tilo-app examples` lists every example.
+`tilolang examples` lists every example.

@@ -1,16 +1,16 @@
 # Publish a Tilo app
 
-Getting an app from `tilo-app package` into the store takes the CLI, one key,
+Getting an app from `tilolang package` into the store takes the CLI, one key,
 one application for the namespace your app ids live in, and then one command
 per release ([Build a Tilo app](app-development.md) covers the app itself):
 
 ```bash
-cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli   # once
-tilo-app new reading-list --id org.example.reading-list && cd reading-list
-tilo-app keys new                                                # once
-tilo-app apply --domain example.com --contact you@example.com    # once
-tilo-app package
-tilo-app publish
+cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilolang-cli   # once
+tilolang new reading-list --id org.example.reading-list && cd reading-list
+tilolang keys new                                                # once
+tilolang apply --domain example.com --contact you@example.com    # once
+tilolang package
+tilolang publish
 ```
 
 To build and publish from your forge's CI instead, see [From CI](#from-ci). The two SDKs are
@@ -23,16 +23,16 @@ each one can still change.
 
 ## Your publisher key
 
-`tilo-app keys new` creates a new Ed25519 key in your secret store (the Secret
+`tilolang keys new` creates a new Ed25519 key in your secret store (the Secret
 Service on Linux, the login Keychain on macOS, or sealed files in
 `$TILO_SECRETS_DIR` on a machine without one) and prints its public half. It
-never replaces an existing key. Back it up with `tilo-app keys export`, which
+never replaces an existing key. Back it up with `tilolang keys export`, which
 prints it as a key file, `{"secret_key_hex": ...}`: the key is your identity as
 a publisher, and an update signed by any other key is refused.
 
-The same key signs your packages and the registry requests `tilo-app publish`
-sends: `tilo-app package` uses it whenever it can find it, and a throwaway key
-otherwise (`--identity FILE` picks another). `tilo-app keys show` prints the
+The same key signs your packages and the registry requests `tilolang publish`
+sends: `tilolang package` uses it whenever it can find it, and a throwaway key
+otherwise (`--identity FILE` picks another). `tilolang keys show` prints the
 public key and the proof line described below. Every command that needs the
 key reads `--key FILE` (a key file), then `$TILO_PUBLISHER_KEY` (the key
 file's contents, which is how CI passes it), then the secret store. A key file
@@ -43,7 +43,7 @@ On Tilo OS, the App Publisher app does the same with buttons and actions:
 it creates the key, shows the public key and proof line, copies the key for a
 CI secret, applies for namespaces and checks the application. It uses the
 same key: the secret store holds it under App Publisher's app id, which
-`tilo-app` reads too.
+`tilolang` reads too.
 
 ## Your namespace
 
@@ -52,13 +52,13 @@ A package id is lowercase reverse DNS with at least three labels, such as
 you have proven you own. Apply once per set of namespaces:
 
 ```bash
-tilo-app apply --domain example.com --contact you@example.com
-tilo-app apply --forge github:ada --forge codeberg:ada --contact ada@example.com
-tilo-app apply --status
+tilolang apply --domain example.com --contact you@example.com
+tilolang apply --forge github:ada --forge codeberg:ada --contact ada@example.com
+tilolang apply --status
 ```
 
 Before applying, publish the line `tilo-publisher=<your public key>` (from
-`tilo-app keys show`) where only the namespace's owner can write:
+`tilolang keys show`) where only the namespace's owner can write:
 
 | You own | Namespace | Put the line in |
 | --- | --- | --- |
@@ -71,7 +71,7 @@ Before applying, publish the line `tilo-publisher=<your public key>` (from
 before it queues the application, and answers with the namespace, the line
 and what it found at each place when a proof is missing. The owner then
 reviews the application; approval checks the proofs once more, so leave them
-in place until `tilo-app apply --status` says `approved`.
+in place until `tilolang apply --status` says `approved`.
 
 ## Your Store page
 
@@ -115,7 +115,7 @@ list, and an agent can read it by inspecting the specific app.
 Submit it with the builds:
 
 ```bash
-tilo-app publish --metadata store.json
+tilolang publish --metadata store.json
 ```
 
 Publication still queues an owner review. A missing field or invalid locale
@@ -126,13 +126,13 @@ is refused rather than silently dropping your presentation.
 Build and sign each platform you ship, then publish everything in `dist/`:
 
 ```bash
-tilo-app package                                   # Tilo OS, this machine's CPU
-tilo-app package --arch aarch64                    # Tilo OS on ARM
-tilo-app package --platform linux --arch x86_64    # other Linux desktops
-tilo-app package --platform macos --arch aarch64   # macOS
-tilo-app package --platform windows --arch x86_64  # Windows
-tilo-app package --platform android                # Android phones and tablets
-tilo-app publish
+tilolang package                                   # Tilo OS, this machine's CPU
+tilolang package --arch aarch64                    # Tilo OS on ARM
+tilolang package --platform linux --arch x86_64    # other Linux desktops
+tilolang package --platform macos --arch aarch64   # macOS
+tilolang package --platform windows --arch x86_64  # Windows
+tilolang package --platform android                # Android phones and tablets
+tilolang publish
 ```
 
 `publish` checks each package the way the registry will, uploads it, and asks
@@ -160,18 +160,18 @@ update signed with another key.
 ## From CI
 
 ```bash
-tilo-app add ci --forge github                            # .github/workflows/tilo.yml
-tilo-app add ci --forge forgejo --runs-on codeberg-small  # Codeberg
-tilo-app add ci --forge forgejo                           # another Forgejo host
-tilo-app add ci --forge gitea                             # .gitea/workflows/tilo.yml
+tilolang add ci --forge github                            # .github/workflows/tilo.yml
+tilolang add ci --forge forgejo --runs-on codeberg-small  # Codeberg
+tilolang add ci --forge forgejo                           # another Forgejo host
+tilolang add ci --forge gitea                             # .gitea/workflows/tilo.yml
 ```
 
 The workflow goes at the root of the repository holding the app and runs in
-the app's directory. Every push and pull request runs `tilo-app check`, then
+the app's directory. Every push and pull request runs `tilolang check`, then
 packages each platform and uploads the packages as build artifacts. Pushing a
-tag named `v*` also runs one `tilo-app publish` over all of them.
+tag named `v*` also runs one `tilolang publish` over all of them.
 
-Add one secret, `TILO_PUBLISHER_KEY`, holding what `tilo-app keys export`
+Add one secret, `TILO_PUBLISHER_KEY`, holding what `tilolang keys export`
 prints. Builds without it, such as pull requests from forks, are
 signed with a throwaway key and are never published. Set the variable
 `TILO_REGISTRY` to publish to another registry.
@@ -181,12 +181,12 @@ aarch64, the web and Android (aarch64), using GitHub's hosted runners. Forgejo
 and Gitea hosts provide Linux runners, so their workflow builds Tilo OS for
 x86_64, the web and Android and lists the other builds commented out: enable
 each one you have a runner for. The Android job installs the Android SDK with
-`tilo-app setup android` and caches it; set the `TILO_ANDROID_KEYSTORE`
+`tilolang setup android` and caches it; set the `TILO_ANDROID_KEYSTORE`
 (base64) and `TILO_ANDROID_KEYSTORE_PASS` secrets to sign with your own
 release key. The Tilo OS, web and Android jobs run in `registry.tilo.so/tilo/tilo-builder`, the
 image Tilo itself builds in, so a package built in CI links the same system
 libraries and CPU floor as the OS it runs on, and the web job finds the web
-toolchain there. Each job installs `tilo-app` from the Tilo revision your
+toolchain there. Each job installs `tilolang` from the Tilo revision your
 `Cargo.lock` pins and caches it.
 
 ### Reuse a GitHub build workflow
@@ -468,17 +468,17 @@ constraint of the design, and may change before Tilo leaves alpha.
    architecture it was built for and no other.
 8. **Every release is reviewed.** New entries and updates alike wait for the
    owner; `publish` never makes anything public by itself.
-9. **Builds happen in your CI.** The registry builds nothing. `tilo-app add
+9. **Builds happen in your CI.** The registry builds nothing. `tilolang add
    ci` writes a workflow for GitHub Actions, Forgejo Actions (including
    Codeberg) or Gitea Actions, and the same commands run anywhere else.
 10. **Tags publish.** Pushes and pull requests build; a `v*` tag publishes.
     The key lives in one CI secret, and the registry's review, not the
     workflow, decides what users see.
 11. **CI builds with Tilo's toolchain.** Tilo OS packages build in the
-    published `tilo-builder` image, and `tilo-app` comes from the Tilo
+    published `tilo-builder` image, and `tilolang` comes from the Tilo
     revision the app's `Cargo.lock` pins, so CI checks and packages the app
     against the same SDK it was written against.
-12. **Packages are signed by the publisher key by default.** `tilo-app
+12. **Packages are signed by the publisher key by default.** `tilolang
     package` signs with the key `publish` would use, so a package built on
     any machine with the key can be published unchanged.
 13. **The key stays on the machine.** App Publisher keeps the key in its file,

@@ -56,7 +56,7 @@ splash-budget = 250
 mime = []
 ext = []
 
-# What the app offers a person while it is closed: written by `tilo-app surface` from
+# What the app offers a person while it is closed: written by `tilolang surface` from
 # what its code publishes. Invoking one opens the app and invokes it there.
 
 [[offers]]

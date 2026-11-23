@@ -14,7 +14,7 @@ de = "Notizblock"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-# What the app's code uses (tilo-app check holds the code to this list).
+# What the app's code uses (tilolang check holds the code to this list).
 [capabilities]
 optional = ["files.paths", "app-files"]
 

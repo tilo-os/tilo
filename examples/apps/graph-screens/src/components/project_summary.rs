@@ -2,7 +2,7 @@ use ui::tokens::TextRole;
 use ui::widget::{Element, Text};
 use ui::{GraphPropKind, UiBuildContext, UiComponentRequest};
 
-/// The props a serialized UI graph node names, and what each must hold. `tilo-app doctor` reads it.
+/// The props a serialized UI graph node names, and what each must hold. `tilolang doctor` reads it.
 pub const GRAPH_PROPS: &[(&str, GraphPropKind)] = &[
     ("title", GraphPropKind::Text),
     ("detail", GraphPropKind::Text),

@@ -2,8 +2,8 @@
 
 Manages the publisher key that signs your Tilo apps and applies to the
 registry for the namespaces your app ids live in. It is the graphical side of
-`tilo-app keys` and `tilo-app apply`, and reads and creates the same key: one
-secret in this app's secret store (the system keychain), which `tilo-app`
+`tilolang keys` and `tilolang apply`, and reads and creates the same key: one
+secret in this app's secret store (the system keychain), which `tilolang`
 addresses under this app's id.
 
 The key never enters the app's resource, which is synced to members and

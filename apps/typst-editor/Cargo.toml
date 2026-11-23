@@ -25,7 +25,7 @@ thin = ["dep:runtime-dylib"]
 # Link Typst from its engine library in the runtime bundle
 # (libtilo_typst_engine.so, crates/engines/loadable/typst) instead of the
 # executable. The release collection enables it (dist/apps/app-collections.toml);
-# a `thin` build without it (`tilo-app dev`) links Typst statically, because
+# a `thin` build without it (`tilolang dev`) links Typst statically, because
 # the engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-typst-engine/thin"]
 

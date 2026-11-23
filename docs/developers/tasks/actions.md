@@ -44,8 +44,8 @@ display labels and pointer coordinates do not identify an operation. Confirmed
 effects and role restrictions use the same host action API as the controls.
 
 ```bash
-tilo-app test --json
-tilo-app inspect --audit --json
+tilolang test --json
+tilolang inspect --audit --json
 ```
 
 More: [Build an app](../../app-development.md).

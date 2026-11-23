@@ -1,4 +1,4 @@
-//! Publisher keys. A machine keeps its key in the secret store, where `tilo-app` and the App
+//! Publisher keys. A machine keeps its key in the secret store, where `tilolang` and the App
 //! Publisher app both find it through [`stored`], [`create`] and [`discover`]. Anywhere else (a
 //! file a command names, the CI secret in [`KEY_ENV`], a backup) a key is the one key file format,
 //! `{"secret_key_hex": "<64 hex digits>"}`.
@@ -16,7 +16,7 @@ use tilo_secrets::{ItemSecret, Secret, SecretError, SecretStore};
 pub const KEY_ENV: &str = "TILO_PUBLISHER_KEY";
 
 /// The app whose secrets hold the publisher key: the App Publisher's. Secret stores are scoped per
-/// app, and `tilo-app` addresses the same app's secret so both see one key.
+/// app, and `tilolang` addresses the same app's secret so both see one key.
 pub use tilo_app_id::apps::PUBLISHER as SECRETS_APP;
 
 /// The key's purpose and item in [`SECRETS_APP`]'s store: one key per
@@ -99,7 +99,7 @@ pub fn resolve(path: Option<&Path>, store: &SecretStore) -> Result<SigningKey> {
     }
     discover(store)?.ok_or_else(|| {
         anyhow!(
-            "no publisher key: pass --key, set ${KEY_ENV}, or create one with `tilo-app keys new`"
+            "no publisher key: pass --key, set ${KEY_ENV}, or create one with `tilolang keys new`"
         )
     })
 }

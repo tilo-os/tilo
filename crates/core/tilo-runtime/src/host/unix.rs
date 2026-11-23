@@ -61,7 +61,7 @@ pub(crate) struct ServiceConnections {
 }
 
 /// The surface file this process was started with ([`ui::app_surface::SURFACE_FILE_ENV`]),
-/// when it hashes to [`ui::app_surface::SURFACE_HASH_ENV`]: what `tilo-app dev`
+/// when it hashes to [`ui::app_surface::SURFACE_HASH_ENV`]: what `tilolang dev`
 /// names for an app under development.
 fn started_surface() -> Option<String> {
     let path = std::env::var_os(ui::app_surface::SURFACE_FILE_ENV)?;

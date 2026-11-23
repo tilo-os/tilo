@@ -82,7 +82,7 @@ ext  = []
 # places a query finds, as desktop search's "Search Maps for …" does.
 schemes = ["geo"]
 
-# What the app offers a person while it is closed: written by `tilo-app surface` from
+# What the app offers a person while it is closed: written by `tilolang surface` from
 # what its code publishes. Invoking one opens the app and invokes it there.
 
 [[offers]]

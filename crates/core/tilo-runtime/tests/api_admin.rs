@@ -243,7 +243,7 @@ fn a_devices_key_moves_a_member_and_a_stranger_removes_nobody() {
 const PIECE: usize = 256 * 1024;
 
 /// A device hands the workspace an app version in pieces, makes it the one the workspace uses,
-/// asks for a bot, and takes the version back: the same path `tilo-app push` takes.
+/// asks for a bot, and takes the version back: the same path `tilolang push` takes.
 #[test]
 fn a_device_installs_an_app_version_and_asks_for_a_bot() {
     host::run(|host| async move {

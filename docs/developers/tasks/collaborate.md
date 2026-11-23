@@ -1,16 +1,16 @@
 # Keep collaboration, undo and history on the resource path
 
 ```bash
-tilo-app new shared-list --from-example shared-checklist
+tilolang new shared-list --from-example shared-checklist
 cd shared-list
-tilo-app test
+tilolang test
 ```
 
 The app starts empty and uses shared controls, theme values and Fluent labels.
 Read `src/lib.rs` for the model and `tests/app.rs` for executable examples.
 Without creating a project, retrieve just either file with
-`tilo-app examples shared-checklist --file tests/app.rs --json` (or
-`--file src/lib.rs`). This guide also answers `tilo-app guide undo`,
+`tilolang examples shared-checklist --file tests/app.rs --json` (or
+`--file src/lib.rs`). This guide also answers `tilolang guide undo`,
 `guide history` and `guide sync`, including `--json`.
 
 Put durable fields in the `Model` resource and edits in `#[action]` methods.
@@ -58,7 +58,7 @@ succeeds. Test an actual old document, migration failure leaving it unchanged,
 and a second open preserving the migrated content. A fresh empty app test does
 not exercise an upgrade.
 
-Next: `tilo-app guide actions` to expose the capability or `guide verify` to
+Next: `tilolang guide actions` to expose the capability or `guide verify` to
 inspect its public surface.
 More: [Build an app](../../app-development.md), the
 [`shared-checklist` example](../../../examples/apps/shared-checklist).

@@ -327,7 +327,7 @@ struct EntryArgs {
     #[arg(long)]
     identity: PathBuf,
     /// Platform family of the tapp: a native Tilo OS build, or a desktop
-    /// or Android build made by `pack-desktop` or `tilo-app package`.
+    /// or Android build made by `pack-desktop` or `tilolang package`.
     #[arg(long, value_enum, default_value_t)]
     platform: TargetPlatform,
     /// Target architecture: `x86_64` or `aarch64` (inferred when the

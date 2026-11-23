@@ -7,7 +7,7 @@ Four layers, each useful on its own:
 1. **`tilo-session --backend headless`** — the real session binary, painting into an off-screen texture instead of a display, publishing the same sockets and files a login session does.
 2. **`tilo-control` / `TILO_TEST_CONTROL`** — JSON over a unix socket: click, drag, type, invoke an action, snapshot, read the layout.
 3. **`scripts/headless-examples/`** — short Python harnesses that spawn a session, drive it and put it down.
-4. **`tilo-app dev` and `scripts/agent-loop/session.py`** — an app rebuilt on every source change, in a session of its own.
+4. **`tilolang dev` and `scripts/agent-loop/session.py`** — an app rebuilt on every source change, in a session of its own.
 
 The session binary is `tilo-session` (`crates/desktop/session`); its scenarios are `crates/desktop/session/tests/`.
 
@@ -17,8 +17,8 @@ A session binds its Wayland socket, its service sockets and its files under `$XD
 
 | Path | Written by | Read by |
 |---|---|---|
-| `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `real_apps.ScriptedSession` |
-| `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which names it to the session's file chooser with the app; `scripts/agent-loop/session.py`, which waits for it |
+| `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilolang dev`, `scripts/agent-loop/session.py`, `real_apps.ScriptedSession` |
+| `workspace-id` | the session, on every workspace switch | `tilolang dev`, which names it to the session's file chooser with the app; `scripts/agent-loop/session.py`, which waits for it |
 | `agent.sock` | the session's MCP server, for a session that owns the machine or was started with `--agent-key` | `tilo-runtime --connect` |
 | `test-control.sock` | a development build, or `--test-control PATH` | `tilo-control`, every harness here |
 | `admin-control.sock` | a session that owns the machine, for the device's owner | `tilo-control --socket …` (semantic ops only) |
@@ -351,11 +351,11 @@ with Session(state) as session:                    # fresh desktop, headless
 
 `session.click_named(name)` presses an app's own control, `session.wait_target(name)` waits for one to be laid out, `session.windows()` reads the layout, `session.type(text)` and `session.key(...)` type, `session.actions()` and `session.invoke(provider, id)` read and invoke what the apps publish. There is no `foreign_frames` op and `list_targets` names dedupe across surfaces, so readiness is the process plus the window, never a frame op.
 
-## An app under development: `tilo-app dev`
+## An app under development: `tilolang dev`
 
-`tilo-app dev APP_DIR` builds an app, runs it in the session beside it and restarts it on every source change, so an agent (or a person) can drive the app it is writing. It draws on the display from `wayland-display` and reads the workspace in front from `workspace-id`, which it names to the app and to the session's file chooser; a window it opens lands in that workspace, as the session places any window that arrives without a launcher naming one.
+`tilolang dev APP_DIR` builds an app, runs it in the session beside it and restarts it on every source change, so an agent (or a person) can drive the app it is writing. It draws on the display from `wayland-display` and reads the workspace in front from `workspace-id`, which it names to the app and to the session's file chooser; a window it opens lands in that workspace, as the session places any window that arrives without a launcher naming one.
 
-`scripts/agent-loop/session.py` wraps that for an agent: `start` puts a headless session and a `tilo-app dev` on a private home, runtime profile and identity; `mcp` is the MCP endpoint for that session on stdio; `usage` and `report` say what each connection cost and what the agent made, from the app's own `history`, `inspect` and `look` actions.
+`scripts/agent-loop/session.py` wraps that for an agent: `start` puts a headless session and a `tilolang dev` on a private home, runtime profile and identity; `mcp` is the MCP endpoint for that session on stdio; `usage` and `report` say what each connection cost and what the agent made, from the app's own `history`, `inspect` and `look` actions.
 
 ```bash
 scripts/agent-loop/session.py start apps/canvas

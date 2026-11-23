@@ -15,14 +15,14 @@ Read:
 Start your own app from it:
 
 ```bash
-tilo-app new my-app --from-example qr-code
+tilolang new my-app --from-example qr-code
 ```
 
 Run and verify it in the Tilo checkout:
 
 ```bash
-tilo-app run examples/apps/qr-code
-tilo-app check examples/apps/qr-code
+tilolang run examples/apps/qr-code
+tilolang check examples/apps/qr-code
 ```
 
-`tilo-app examples` lists every example.
+`tilolang examples` lists every example.

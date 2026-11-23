@@ -7,7 +7,7 @@ Tilo has seven interfaces between separately updated parts: app and shell
 (``app-keeper``), host CLI and guest daemon (``vm``) and the store's package
 formats (``package``). Each one has a single version
 number in the code and a committed schema, ``interface.toml`` in the crate
-that owns the number, written from the code the way ``tilo-app surface``
+that owns the number, written from the code the way ``tilolang surface``
 writes an app's ``surface.toml``. Two sides speak to each other only when
 their numbers are equal (docs/architecture/compatibility.md); there is no
 negotiation and no code for an older number, except the runtime interface,
@@ -1004,7 +1004,7 @@ def app_service_versions(root: Path = ROOT) -> list[str]:
     asking for any other is refused at install on the system built beside it.
     A runtime service is served at every version from the image's oldest to its
     current one; the others at one version. The examples are app manifests too:
-    `tilo-app new --from-example` copies one into a new app, scaffolded on the
+    `tilolang new --from-example` copies one into a new app, scaffolded on the
     same image."""
     served = service_versions(root)
     problems = []

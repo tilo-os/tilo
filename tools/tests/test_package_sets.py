@@ -98,7 +98,7 @@ class PackageSetsTests(unittest.TestCase):
             "imager-backend": "capture build --arch",
             "store": "the native target in tests",
             "launcher": "seccomp in tests",
-            "tilo-app-cli": "the other architecture in tests",
+            "tilo-app-builder": "the other architecture in tests",
         }
         sys.path.insert(0, str(ROOT / "tools/ci"))
         import workspace_graph

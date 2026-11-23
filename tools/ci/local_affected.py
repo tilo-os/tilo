@@ -572,10 +572,10 @@ def main() -> int:
         for row in rows:
             row_tests = names(row.get("test_packages", ""))
             if want("certify") and row.get("certify") and row_tests:
-                post.run(f"tilo-app certify shard {row['shard']}", local,
-                         ["env", "TILO_REQUIRE_GPU=1", "cargo", "run", "--locked", "-p", "tilo-app-cli", "--bin",
-                          "tilo-app", "--", "certify", "--workspace", *flags(row_tests)])
-            if want("scenarios") and any(n.startswith("example-") or n == "tilo-app-cli" for n in row_tests):
+                post.run(f"tilolang certify shard {row['shard']}", local,
+                         ["env", "TILO_REQUIRE_GPU=1", "cargo", "run", "--locked", "-p", "tilolang-cli", "--bin",
+                          "tilolang", "--", "certify", "--workspace", *flags(row_tests)])
+            if want("scenarios") and any(n.startswith("example-") or n == "tilo-app-builder" for n in row_tests):
                 post.run(f"example scenarios shard {row['shard']}", local,
                          ["bash", "tools/ci/example-scenarios.sh", *flags(row_tests)])
             if want("scoped") and row.get("scoped_tests"):

@@ -23,28 +23,31 @@ You need Rust through [rustup](https://rustup.rs) and Python 3.11 or newer as
 macOS, `brew install python`). Then:
 
 ```sh
-cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
+cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilolang-cli
 ```
 
-This installs `tilo-app`. `tilo-app --help` lists its commands; every command
-accepts `--json` and then writes exactly one JSON document to stdout, so
-scripts and agents can drive it. `tilo-app guide` has short offline workflows
+This installs `tilolang`, the one command for apps written in tilolang and in
+Rust alike: `dev`, `check`, `build`, `package` and `run` read which kind of app
+they were given from its directory (one holding `.tl` files is a tilolang
+package). `tilolang --help` lists its commands; a Rust app's commands accept
+`--json` and then write exactly one JSON document to stdout, so scripts and
+agents can drive them. `tilolang guide` has short offline workflows
 (`start`, `actions`, `collaborate`, `permissions`, `network`, `verify`,
 `publish`).
 
-In a Tilo checkout, `cargo run --locked -p tilo-app-cli -- <command>` runs the
+In a Tilo checkout, `cargo run --locked -p tilolang-cli -- <command>` runs the
 tool from source instead.
 
 ## Create an app
 
 ```sh
-tilo-app new reading-list --id org.example.reading-list
+tilolang new reading-list --id org.example.reading-list
 cd reading-list
-tilo-app dev
+tilolang dev
 ```
 
 The id is the app's permanent name; use a namespace you control (a domain you
-own, reversed), because publishing checks that you own it. `tilo-app new
+own, reversed), because publishing checks that you own it. `tilolang new
 --list-templates` lists the templates (`starter`, `document`, `collection`,
 `graph`).
 
@@ -52,19 +55,19 @@ To learn one idea at a time, start from an example instead. Each app in
 [`examples/apps`](../examples/README.md) is complete and tested:
 
 ```sh
-tilo-app examples
-tilo-app new my-list --from-example shared-checklist
+tilolang examples
+tilolang new my-list --from-example shared-checklist
 ```
 
-`tilo-app dev` builds the app, opens it and rebuilds on every save; the open
+`tilolang dev` builds the app, opens it and rebuilds on every save; the open
 document, screen and caret carry over, and a failed build leaves the last good
 version running. The other everyday commands:
 
 ```sh
-tilo-app run      # build once and open it
-tilo-app test     # the Rust tests, plus the accessibility and action audit
-tilo-app check    # the full check: structure, format, Clippy, tests, scenarios
-tilo-app shot     # render the app to an image without a window
+tilolang run      # build once and open it
+tilolang test     # the Rust tests, plus the accessibility and action audit
+tilolang check    # the full check: structure, format, Clippy, tests, scenarios
+tilolang shot     # render the app to an image without a window
 ```
 
 A new app is a Cargo project: `src/` holds the app, `tilo-app.toml` is the
@@ -158,7 +161,7 @@ What this gives you without more code:
 - **Permissions.** Roles decide who may invoke which action; a viewer sees the
   state and cannot change it.
 - **Search, palette, scripts and agents.** The resource and its actions are
-  published (`tilo-app surface` writes them to `surface.toml`), so system
+  published (`tilolang surface` writes them to `surface.toml`), so system
   search, the command palette and agents find and invoke them.
 
 Apps start empty. Sample content belongs in tests, screenshots
@@ -190,7 +193,7 @@ assertions (roles, names, state) over pixels. In the Tilo checkout:
 t cargo test --locked -p example-counter    # on the build server
 ```
 
-`tilo-app check` also fails on actions that read a clock, randomness, files or
+`tilolang check` also fails on actions that read a clock, randomness, files or
 the network, on missing translations, on controls bound to something the
 resource does not publish, and on a public surface that differs from
 `surface.toml`.
@@ -201,8 +204,8 @@ resource does not publish, and on a public surface that differs from
 `macos`, `windows`, `android`) and `--arch` (`x86_64`, `aarch64`):
 
 ```sh
-tilo-app check --platform all        # lint every other target too
-tilo-app package --platform macos --arch aarch64
+tilolang check --platform all        # lint every other target too
+tilolang package --platform macos --arch aarch64
 ```
 
 On other systems an app ships as one executable with the toolkit linked in.
@@ -211,9 +214,9 @@ On other systems an app ships as one executable with the toolkit linked in.
 ## Publish
 
 ```sh
-tilo-app keys new
-tilo-app package
-tilo-app publish
+tilolang keys new
+tilolang package
+tilolang publish
 ```
 
 [Publishing](publishing.md) covers the publisher key, proving a namespace and

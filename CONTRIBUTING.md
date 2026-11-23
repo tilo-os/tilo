@@ -140,11 +140,11 @@ development VM: `cargo run --locked -p tilo-vm -- guide quickstart`.
 
 ## Write your first app
 
-Apps use the `tilo-app` SDK and the `tilo-app` command. The quickest start is
+Apps use the `tilo-app` SDK and the `tilolang` command. The quickest start is
 an example from `examples/apps`:
 
 ```sh
-cargo run --locked -p tilo-app-cli -- new my-list --from-example shared-checklist
+cargo run --locked -p tilolang-cli -- new my-list --from-example shared-checklist
 ```
 
 [Build an app](docs/app-development.md) walks through the model (resources,

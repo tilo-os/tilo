@@ -1,4 +1,4 @@
-//! The tilolang apps the phone carries. `tilo-app build --platform android` packs each app's
+//! The tilolang apps the phone carries. `tilolang build --platform android` packs each app's
 //! bundle into the APK's `assets/tilo/apps`, with an index (`files.txt`: a `version <hash>` line,
 //! then each file's path). Android hands assets out only as streams it cannot list, so on the
 //! first start of each build the phone copies them out under its data directory, by that version,

@@ -10,13 +10,13 @@ description = "Tilo app on a phone: the device daemon in the app's own process, 
 name = "tilo_phone"
 path = "src/lib.rs"
 
-# The tilolang apps the APK carries: `tilo-app build --platform android` compiles each and packs
+# The tilolang apps the APK carries: `tilolang build --platform android` compiles each and packs
 # its bundle into `assets/tilo/apps`.
 [package.metadata.tilo-app]
 tilolang = ["../tl/notes", "../tl/chat"]
 
 [features]
-# A thin build links the toolkit dynamically, so `tilo-app dev` reloads the app in place.
+# A thin build links the toolkit dynamically, so `tilolang dev` reloads the app in place.
 thin = ["dep:runtime-dylib"]
 
 [dependencies]

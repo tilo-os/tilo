@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The whole path of an app developer with GCC, Python 3.11+, rustup and no Tilo:
-# one `cargo install`, then `tilo-app new`, `check` and `package` outside any
+# one `cargo install`, then `tilolang new`, `check` and `package` outside any
 # checkout. Run it where no GUI development package is installed; that is
 # what it proves.
 #
@@ -71,12 +71,12 @@ if git -C "$work" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 echo "none of xkbcommon, wayland-client, fontconfig, x11, gstreamer-1.0"
 
-step "cargo install --locked --git $git_url ${pin[*]} tilo-app-cli"
-cargo install --locked --root "$work/cli" --git "$git_url" "${pin[@]}" tilo-app-cli
+step "cargo install --locked --git $git_url ${pin[*]} tilolang-cli"
+cargo install --locked --root "$work/cli" --git "$git_url" "${pin[@]}" tilolang-cli
 export PATH="$work/cli/bin:$PATH"
 
-step "tilo-app new demo"
-tilo-app new demo --id org.example.demo
+step "tilolang new demo"
+tilolang new demo --id org.example.demo
 cd demo
 # The SDK must be the commit the CLI came from, not whatever main is now.
 if ! grep -E '^ui = .*rev = "[0-9a-f]{40}"' Cargo.toml; then
@@ -88,8 +88,8 @@ fi
 # Fonts are the one runtime need a bare container lacks: `check` must name
 # the package rather than fail inside the text shaper.
 if ! compgen -G "/usr/share/fonts/*" >/dev/null; then
-  step "tilo-app check names the font a bare machine lacks"
-  if tilo-app check >fonts.log 2>&1; then
+  step "tilolang check names the font a bare machine lacks"
+  if tilolang check >fonts.log 2>&1; then
     cat fonts.log >&2
     echo "check passed on a machine with no fonts" >&2
     exit 1
@@ -103,17 +103,17 @@ if ! compgen -G "/usr/share/fonts/*" >/dev/null; then
   dnf -y -q install google-noto-sans-fonts
 fi
 
-step "tilo-app check"
-tilo-app check
+step "tilolang check"
+tilolang check
 
-step "tilo-app package --platform linux"
-tilo-app package --platform linux
+step "tilolang package --platform linux"
+tilolang package --platform linux
 ls -l dist
 
 # The one library an app cannot avoid: a thin Tilo OS package links the
 # toolkit the OS ships, and that links GStreamer. It must say so up front.
-step "tilo-app package names what a thin build needs"
-if tilo-app package --force >thin.log 2>&1; then
+step "tilolang package names what a thin build needs"
+if tilolang package --force >thin.log 2>&1; then
   echo "a thin package built without GStreamer's development files" >&2
   exit 1
 fi

@@ -1,4 +1,4 @@
-//! What `tilo-app surface` and `tilo-app check` read from an app's binary:
+//! What `tilolang surface` and `tilolang check` read from an app's binary:
 //! the resource's public surface, and the controls bound to what it does
 //! not publish.
 

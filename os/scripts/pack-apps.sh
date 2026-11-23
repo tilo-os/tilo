@@ -355,7 +355,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     fi
     # An app declares a model by keeping a guest crate beside it (apps/clocks ->
     # apps/clocks-model-wasm). The module the app-models check built for it ships
-    # at the payload root, where `tilo-app package` stages it and every device
+    # at the payload root, where `tilolang package` stages it and every device
     # holding the workspace's keys reads it. A declared model with no module
     # built fails the pack: the app would install unable to apply its actions.
     if [ -f "$(dirname "$manifest")-model-wasm/Cargo.toml" ]; then

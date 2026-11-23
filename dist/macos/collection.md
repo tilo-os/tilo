@@ -25,7 +25,7 @@ manifest, but SDK capability checks and actual builds can still refuse it.
 
 Use Python 3.11+, macOS with existing Xcode command-line tools (`codesign`, `lipo`,
 `otool`, `hdiutil`), the repository-pinned Rust toolchain/dependencies already
-cached, and an existing `tilo-app` CLI built from this checkout. Nothing installs
+cached, and an existing `tilolang` command built from this checkout. Nothing installs
 tools or dependencies. Builds are offline/locked, one Cargo job, using the existing
 shared `rustc-budget.py` wrapper's default two-slot namespace, with a continuously
 checked 20 GiB disk floor and a 30 minute limit per app. Interrupted builds retain
@@ -38,7 +38,7 @@ that explicit build can be large. Replace the two tool paths with existing tools
 ```sh
 python3 dist/macos/collection.py plan --apps calculator --arch arm64 --mode distribution
 python3 dist/macos/collection.py build --apps calculator --arch arm64 --mode distribution \
-  --tilo-app /path/to/existing/tilo-app --compiler-guard /path/to/existing/rustc-budget.py \
+  --tilolang /path/to/existing/tilolang --compiler-guard /path/to/existing/rustc-budget.py \
   --out target/calculator-distribution
 security find-identity -v -p codesigning
 python3 dist/macos/collection.py sign --apps calculator --arch arm64 --mode distribution \
@@ -53,7 +53,7 @@ python3 dist/macos/collection.py verify --apps calculator --arch arm64 --mode di
 `target/tilo-app/macos/PACKAGE/NAME.app`, including its adjacent `NAME.entitlements`.
 It validates bundle bytes and manifest identity, but does not establish that an
 imported executable was compiled from the current commit. Its receipt says
-`existing SDK outputs`. Ordinary `build` delegates to `tilo-app build --target
+`existing SDK outputs`. Ordinary `build` delegates to `tilolang build --target
 macos --release`; it does not use the SDK's package command, which can trigger
 notarization from environment variables. Compilation requires committed app/build
 inputs. The SDK owns plist generation, manifest resources, icons and capability

@@ -9,10 +9,10 @@ only sets up and tears down what is around it:
 
   start APP   a headless Tilo session as the only display (nothing appears on
               your desktop), a private home and runtime profile, and
-              `tilo-app dev APP`, which rebuilds and restarts the app on every
+              `tilolang dev APP`, which rebuilds and restarts the app on every
               source change. The runtime daemon owns the profile, so an MCP
               connection survives each restart. `--release` builds the app
-              optimised (`tilo-app dev --release`), for work the debug build
+              optimised (`tilolang dev --release`), for work the debug build
               is too slow to judge; `--profile NAME` picks any Cargo profile.
   mcp APP     the MCP endpoint for that session on stdio: what an agent
               (`.cursor/mcp.json`, Claude Code, a model harness) runs.
@@ -26,7 +26,7 @@ only sets up and tears down what is around it:
   stop APP    stop the session and remove its runtime directory.
 
 The app opens in the workspace the session publishes in
-$XDG_RUNTIME_DIR/tilo-session/workspace-id, which is the one `tilo-app dev`
+$XDG_RUNTIME_DIR/tilo-session/workspace-id, which is the one `tilolang dev`
 joins; the session mints a throwaway identity first, as a development login
 does, so the shell has that workspace at all.
 
@@ -59,7 +59,7 @@ TARGET = REPO / "target"
 SESSION = TARGET / "debug" / "tilo-session"
 CONTROL = TARGET / "debug" / "tilo-control"
 RUNTIME_HOST = TARGET / "debug" / "tilo-runtime"
-TILO_APP = TARGET / "debug" / "tilo-app"
+TILOLANG = TARGET / "debug" / "tilolang"
 
 
 def runtime_root() -> pathlib.Path:
@@ -156,11 +156,11 @@ def start(args) -> int:
     session = Session(app_name(args.app))
     if session.alive(session.load().get("session")):
         sys.exit(f"FAIL: a {session.name} session is already running; stop it first")
-    for binary in (SESSION, CONTROL, RUNTIME_HOST, TILO_APP):
+    for binary in (SESSION, CONTROL, RUNTIME_HOST, TILOLANG):
         if not binary.exists():
             sys.exit(
                 f"FAIL: {binary} is missing; build it with\n"
-                "  cargo build -p tilo-session --bin tilo-session -p tilo-control -p tilo-app-cli -p tilo-runtime"
+                "  cargo build -p tilo-session --bin tilo-session -p tilo-control -p tilolang-cli -p tilo-runtime"
             )
     prepare(session)
     env = session.env()
@@ -199,7 +199,7 @@ def start(args) -> int:
     display_file = session.run / "tilo-session" / "wayland-display"
     wait_for(display_file, session_process, args.timeout, "the session")
     env["WAYLAND_DISPLAY"] = display_file.read_text().strip()
-    # The shell's workspace in front is up with it, and `tilo-app dev` reads it
+    # The shell's workspace in front is up with it, and `tilolang dev` reads it
     # for the app it starts.
     wait_for(display_file.with_name("workspace-id"), session_process, args.timeout, "the session")
     # The app sees the desktop a Tilo login gives its apps, so it leaves
@@ -207,7 +207,7 @@ def start(args) -> int:
     # than drawing a standalone window's bar. The session is not told: a
     # login's session exports itself to the user manager.
     env["XDG_CURRENT_DESKTOP"] = "tilo:GNOME"
-    dev_command = [str(TILO_APP), "dev", str(app_dir), "--app-only"]
+    dev_command = [str(TILOLANG), "dev", str(app_dir), "--app-only"]
     if args.release:
         dev_command.append("--release")
     elif args.profile:
@@ -609,7 +609,7 @@ def main() -> int:
     build.add_argument(
         "--release",
         action="store_true",
-        help="build the app optimised (tilo-app dev --release: the thin-app profile)",
+        help="build the app optimised (tilolang dev --release: the thin-app profile)",
     )
     build.add_argument("--profile", metavar="NAME", help="build the app in this Cargo profile [default: dev]")
     begin.set_defaults(run=start)

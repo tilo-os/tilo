@@ -1,4 +1,4 @@
-//! The font catalog on Android. `tilo-app build --platform android` packs the catalog into the APK's
+//! The font catalog on Android. `tilolang build --platform android` packs the catalog into the APK's
 //! `assets/tilo/fonts`.
 
 use std::path::{Path, PathBuf};

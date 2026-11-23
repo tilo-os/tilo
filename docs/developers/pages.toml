@@ -28,56 +28,56 @@ slug = ""
 source = "docs/app-development.md"
 section = "Start"
 nav = "Build an app"
-description = "Install the tilo-app command, create an app from a template or example, model it as resources and actions, test it, run it on every platform and publish it."
+description = "Install the tilolang command, create an app from a template or example, model it as resources and actions, test it, run it on every platform and publish it."
 
 [[page]]
 slug = "task-start"
 source = "docs/developers/tasks/start.md"
 section = "Quick tasks"
 nav = "Start and reload"
-description = "The offline tilo-app guide start workflow."
+description = "The offline tilolang guide start workflow."
 
 [[page]]
 slug = "task-actions"
 source = "docs/developers/tasks/actions.md"
 section = "Quick tasks"
 nav = "Add a capability"
-description = "The offline tilo-app guide actions workflow."
+description = "The offline tilolang guide actions workflow."
 
 [[page]]
 slug = "task-collaborate"
 source = "docs/developers/tasks/collaborate.md"
 section = "Quick tasks"
 nav = "Collaboration and undo"
-description = "The offline tilo-app guide collaborate workflow: shared state, per-author undo, history and the device transport boundary."
+description = "The offline tilolang guide collaborate workflow: shared state, per-author undo, history and the device transport boundary."
 
 [[page]]
 slug = "task-permissions"
 source = "docs/developers/tasks/permissions.md"
 section = "Quick tasks"
 nav = "Permissions and roles"
-description = "The offline tilo-app guide permissions workflow: live access, action requirements, revocation and agents as ordinary members."
+description = "The offline tilolang guide permissions workflow: live access, action requirements, revocation and agents as ordinary members."
 
 [[page]]
 slug = "task-network"
 source = "docs/developers/tasks/network.md"
 section = "Quick tasks"
 nav = "Fetch data"
-description = "The offline tilo-app guide network workflow: portable HTTP, declared capabilities, network hints and resource effects."
+description = "The offline tilolang guide network workflow: portable HTTP, declared capabilities, network hints and resource effects."
 
 [[page]]
 slug = "task-verify"
 source = "docs/developers/tasks/verify.md"
 section = "Quick tasks"
 nav = "Verify an app"
-description = "The offline tilo-app guide verify workflow."
+description = "The offline tilolang guide verify workflow."
 
 [[page]]
 slug = "task-publish"
 source = "docs/developers/tasks/publish.md"
 section = "Quick tasks"
 nav = "Submit a release"
-description = "The offline tilo-app guide publish workflow."
+description = "The offline tilolang guide publish workflow."
 
 [[page]]
 slug = "interface-guidelines"

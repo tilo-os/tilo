@@ -456,7 +456,7 @@ fn clipboard_target(target: Target) -> ClipboardTarget {
 
 /// The service's answer where no Tilo session serves the clipboard: an app's copies and pastes
 /// over the operating system's own clipboard, served by the process that started the app (the
-/// launcher, or `tilo-app run`). An app still talks only to [`Connected`] either way.
+/// launcher, or `tilolang run`). An app still talks only to [`Connected`] either way.
 pub struct BackendSide {
     backend: Arc<dyn ClipboardBackend>,
 }

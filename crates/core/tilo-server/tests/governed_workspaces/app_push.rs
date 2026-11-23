@@ -2,7 +2,7 @@
 //! (`workspace/apps#install` in its action API) names it, every member is
 //! to use it, and a change made with another version waits until its author
 //! has. A developer pushes a version and a bot's program through that API
-//! (`tilo-app push`, proved in `workspace_actions/api_apps.rs`); here the
+//! (`tilolang push`, proved in `workspace_actions/api_apps.rs`); here the
 //! workspace's server is asked directly and every member follows.
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};

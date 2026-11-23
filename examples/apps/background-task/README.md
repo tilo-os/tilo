@@ -21,14 +21,14 @@ and on the page's executor on the web, so the example runs everywhere.
 Start your own app from it:
 
 ```bash
-tilo-app new my-app --from-example background-task
+tilolang new my-app --from-example background-task
 ```
 
 Run and verify it in the Tilo checkout:
 
 ```bash
-tilo-app run examples/apps/background-task
-tilo-app check examples/apps/background-task
+tilolang run examples/apps/background-task
+tilolang check examples/apps/background-task
 ```
 
-`tilo-app examples` lists every example.
+`tilolang examples` lists every example.

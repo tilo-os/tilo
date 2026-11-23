@@ -9,7 +9,7 @@
 //! ```
 //!
 //! [`Capability::availability`] answers, per [`Target`], whether a host can
-//! provide one. `tilo-app build` refuses a `required` capability its target
+//! provide one. `tilolang build` refuses a `required` capability its target
 //! cannot provide ([`check`]), macOS packaging derives entitlements and
 //! usage strings from the list, and the docs are generated from the same
 //! rows. Where a platform crate implements a capability, its row is that

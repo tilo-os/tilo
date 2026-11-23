@@ -924,9 +924,13 @@ measures it in, read as one with `Duration(n)`.
 
 ## Commands
 
-`tilolang` is the language's one tool (`crates/lang/tilolang-cli`,
+`tilolang` is the one command for building Tilo apps (`crates/lang/tilolang-cli`,
 `cargo run -p tilolang-cli --`): it runs the compiler's own commands (`check`, `fmt`, `ids`, from
-`crates/lang/tilolang/src/cli.rs`) and builds, runs and develops packages as Tilo apps.
+`crates/lang/tilolang/src/cli.rs`) and builds, runs and develops packages as Tilo apps. The same
+command builds apps written in Rust (`new`, `test`, `shot`, `package --target ...`, from
+`crates/lang/tilo-app-builder`): `build`, `package`, `run`, `dev` and `check` take a package when
+the directory they are given holds `.tl` files, and a Rust app otherwise. `tilolang --help` lists
+every command.
 
 ```
 tilolang check [dir] [--json] [--watch] [--write-ids] [--path DIR]...

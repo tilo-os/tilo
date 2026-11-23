@@ -107,7 +107,7 @@ class StageTests(unittest.TestCase):
             guard, cli = work / 'rustc-budget.py', work / 'tilo-app'
             guard.touch()
             cli.touch()
-            args = SimpleNamespace(compiler_guard=guard, tilo_app=cli, arch=platform.machine())
+            args = SimpleNamespace(compiler_guard=guard, tilolang=cli, arch=platform.machine())
             inherited = {'CARGO_PROFILE_RELEASE_STRIP': 'symbols',
                          'CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP': 'debuginfo'}
             with patch.dict('os.environ', inherited, clear=True), patch('collection_stages.shutil.which', return_value='/tools/cargo'):

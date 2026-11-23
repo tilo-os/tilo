@@ -1025,7 +1025,7 @@ through `tilo_actions::remote::ActionProvider` (`crates/core/actions`
 30 types implement it: the session, the workspace service, the agent
 session's `WorkspaceActions`, `SessionActions`, the standalone runtime,
 settings panes. The static schema is `surface.toml` (77 files), written from
-code by `tilo-app surface`. Devices carry calls to each other over
+code by `tilolang surface`. Devices carry calls to each other over
 `tilo-actions/1`.
 
 The entry points on top of it:

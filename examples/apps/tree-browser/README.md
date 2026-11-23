@@ -16,14 +16,14 @@ Read:
 Start your own app from it:
 
 ```bash
-tilo-app new my-app --from-example tree-browser
+tilolang new my-app --from-example tree-browser
 ```
 
 Run and verify it in the Tilo checkout:
 
 ```bash
-tilo-app run examples/apps/tree-browser
-tilo-app check examples/apps/tree-browser
+tilolang run examples/apps/tree-browser
+tilolang check examples/apps/tree-browser
 ```
 
-`tilo-app examples` lists every example.
+`tilolang examples` lists every example.

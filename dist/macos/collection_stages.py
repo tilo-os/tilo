@@ -51,8 +51,8 @@ def build_environment(args, work):
         raise ValueError('unset CARGO_TARGET_DIR/CARGO_BUILD_TARGET; the SDK uses this worktree and host architecture')
     if args.arch != platform.machine():
         raise ValueError('SDK build supports host architecture only; use --reuse-bundles for independently assembled universal bundles')
-    if not args.tilo_app or not args.tilo_app.is_file():
-        raise ValueError('--tilo-app must name an existing SDK CLI; this script never installs a toolchain')
+    if not args.tilolang or not args.tilolang.is_file():
+        raise ValueError('--tilolang must name an existing tilolang command; this script never installs a toolchain')
     cargo = shutil.which('cargo')
     if not cargo:
         raise ValueError('cargo is not available')
@@ -94,7 +94,7 @@ def build(args, plan, work):
     (work / 'entitlements').mkdir()
     for entry in plan['apps']:
         if environment:
-            bounded_build([str(args.tilo_app.resolve()), 'build', str(ROOT / 'apps' / entry['name']),
+            bounded_build([str(args.tilolang.resolve()), 'build', str(ROOT / 'apps' / entry['name']),
                            '--target', 'macos', '--release'], environment)
         source = ROOT / 'target/tilo-app/macos' / entry['package'] / entry['bundle']
         details = inspect_bundle(source, entry, args.arch)

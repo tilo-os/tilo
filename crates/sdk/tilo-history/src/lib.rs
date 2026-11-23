@@ -366,7 +366,7 @@ pub fn message_key(app: &str, what: &Did) -> Option<String> {
 ///
 /// A reader falls back to the framework's sentences for a key its app
 /// catalogue lacks, so a key listed here that the catalogue lacks is a
-/// message the app means to have and does not (`tilo-app check`).
+/// message the app means to have and does not (`tilolang check`).
 pub fn message_keys(app: &str, what: &Did) -> Vec<String> {
     let single = |did: &Did| message_key(app, did).into_iter().collect::<Vec<_>>();
     match what {

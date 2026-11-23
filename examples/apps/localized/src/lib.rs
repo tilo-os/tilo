@@ -12,7 +12,7 @@
 //! is followed with `cx.value` and only the `Text` showing it is rebuilt,
 //! with the new argument, when the count changes.
 //!
-//! `tilo-app add locale de-DE` added the German catalog and registered it in
+//! `tilolang add locale de-DE` added the German catalog and registered it in
 //! `src/locales.rs`. The system picks the catalog matching the user's
 //! language and falls back to en-US, message by message.
 

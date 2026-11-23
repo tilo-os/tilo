@@ -42,7 +42,7 @@
 //! tilo_model_guest::model!("scratchpad", scratchpad_model::Note);
 //! ```
 //!
-//! Built alone (`tilo-app model`, an app outside this repository), that is a
+//! Built alone (`tilolang model`, an app outside this repository), that is a
 //! whole module exporting [`EXPORT`]. The repository builds every app's guest
 //! into one module instead (crates/sdk/tilo-models-wasm, with
 //! `--cfg tilo_model_split`), where each entry is `tilo_model_apply_<app>`

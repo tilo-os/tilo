@@ -102,7 +102,7 @@ relies on:
 
 - the package is `tilo-<name>-engine`, its library `tilo_<name>_engine`; every
   dependency sits behind a `thin` feature, so builds other than the thin one
-  (workspace checks and tests, `tilo-app dev`) see an empty library;
+  (workspace checks and tests, `tilolang dev`) see an empty library;
 - a `[[bin]] tilo-<name>-engine-check` with `required-features = ["thin"]`:
   `os/scripts/build-thin-apps.sh` builds and runs it in every runtime build,
   whichever apps are selected, and writes the libraries it built, and the
@@ -124,7 +124,7 @@ relies on:
   Typst Editor, Music, Canvas, Tube, Mail, Settings, Calendar, Clocks,
   Contacts, Messages, PDF Viewer, Files, Print Centre, Imager, Browser, Store, Chat and the on-screen keyboard), named in `dist/apps/app-collections.toml`, the
   Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
-  links the engine's crates statically, as `tilo-app dev` does;
+  links the engine's crates statically, as `tilolang dev` does;
 - an engine may carry its app's own library (Settings): the engine then
   depends on the app's package, which cannot depend on the engine in turn, so
   the binary names the library with `#[link]` and calls one unmangled entry
@@ -185,7 +185,7 @@ checked against at compile time (`tilo_highlight::GrammarsEntry`,
 The runtime-side crate names the engine's code only while its `lazy-*`
 feature is off, and each engine's `thin` feature turns it on, so in the
 release graph rustc never puts the engine on the runtime's link line, while
-every other build (`tilo-app dev`, workspace tests, the shell) links it as
+every other build (`tilolang dev`, workspace tests, the shell) links it as
 before. The surface check knows these edges (`LAZY_EDGES`). The engine's
 check binary goes through the toolkit's own path, so a release proves the
 runtime finds and runs it. A library that does not open is logged once:

@@ -256,8 +256,6 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 
-# The format of an app's surface file, which this crate's own is written in (`tilo-app surface`).
-tilo-app-cli = { path = "../../../tools/tilo-app-cli" }
 # The apps the device serves, tested against.
 tilo-workspace-keys = { path = "../workspace-keys", features = ["test-support"] }
 tilo-identity = { path = "../tilo-identity", features = ["test-support"] }

@@ -354,7 +354,7 @@ and a Distribution Exception. The catalog manifest scopes each file
 | Catalog | Scopes | New Computer Modern |
 |---|---|---|
 | Tilo OS image (`/usr/share/fonts/tilo`, `tools/font-catalog.py stage --scope os`) | `product`, `os` | every cut, Regular for titles |
-| SDK standalone catalog next to a third-party app's Windows, macOS, Android or web build (`--scope product`; `tilo-app build` stages it for Android and web) | `product` | the GUST cuts only; Book sets titles too |
+| SDK standalone catalog next to a third-party app's Windows, macOS, Android or web build (`--scope product`; `tilolang build` stages it for Android and web) | `product` | the GUST cuts only; Book sets titles too |
 
 The toolkit sets each run in the largest cut its size calls for that the
 loaded catalog has, so an app needs no code for either catalog: in the

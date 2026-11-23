@@ -46,7 +46,7 @@
 //! import answered by the exports of the modules before it. The runtime is
 //! found by its hash ([`Runtime::find`]); a module whose runtime is not here
 //! is refused, naming the runtime it needs and the ones that are. A module
-//! with no such section (an app built alone, `tilo-app model`) is whole and
+//! with no such section (an app built alone, `tilolang model`) is whole and
 //! is called as it is.
 
 #![deny(rust_2018_idioms)]

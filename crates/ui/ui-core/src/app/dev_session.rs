@@ -1,4 +1,4 @@
-// Session handoff for `tilo-app dev`.
+// Session handoff for `tilolang dev`.
 //
 // A rebuild reloads the windows this process already has. The document, route,
 // and caret are written here so a reload, or a later process if this one has
@@ -88,7 +88,7 @@ pub(crate) fn write_dev_checkpoint(app: &App, dir: &Path) -> bool {
 
 /// Appended to a reloaded library's path for the file that records where that
 /// reload spent its time, written once the new code's first frame is
-/// presented. `tilo-app dev --timings` joins it with the build.
+/// presented. `tilolang dev --timings` joins it with the build.
 #[cfg(feature = "native")]
 const RELOAD_TIMINGS_SUFFIX: &str = ".timings.json";
 

@@ -405,7 +405,7 @@ carries an `ActionKey` (app id, resource kind, public action id), and building
 its arguments is total: a value that does not serialize, or arguments that do
 not match the schema, is an error at the call site, never `null` or an empty
 map. A control bound to an action that the resource does not publish fails the
-`TestApp` and `tilo-app check`, never only a greyed-out button.
+`TestApp` and `tilolang check`, never only a greyed-out button.
 
 An `ActionKey` is also the stored form when a reference is data: a Shortcut
 step, an agent's plan, a palette entry. JSON appears only at the edge (agents,
@@ -595,7 +595,7 @@ snippets-new-snippet = Created { $title }
   name, `$count` for groups, `$actor` and `$for`.
 - Without a message, the framework's own messages render "Changed *Folder* of
   *Deploy script*" from the field's doc comment, never a raw id or path.
-  `tilo-app check` lists missing messages.
+  `tilolang check` lists missing messages.
 
 ### 5.3 One undo
 
@@ -606,13 +606,13 @@ actions that queued an outside consequence undo through their inverse action.
 
 ## 6. Evolution
 
-- **The public surface is committed.** `tilo-app surface` writes the app's
+- **The public surface is committed.** `tilolang surface` writes the app's
   verbs, their parameters, its field schema and its kinds to `surface.toml` in
   the app crate (ids, footprints, paths, layouts and types, one line per
   field; labels and descriptions stay in the code), and marks which of those
   resources are the person's own (`person`), declared with the app
   (`ResourceApp::PERSON_RESOURCES`) rather than with the window showing them;
-  `tilo-app check` and CI fail when code and file disagree. A
+  `tilolang check` and CI fail when code and file disagree. A
   rename is allowed and shows up in review. The packaged surface is also what
   a receiver without the app decides its changes against, the person's
   resources among them.
@@ -623,7 +623,7 @@ actions that queued an outside consequence undo through their inverse action.
   versions, so two devices migrating concurrently produce the same change.
   A resource can retain its current `version` after ending support for older
   documents. Without a `migrate` function, those documents are refused intact.
-  `tilo-app check` fails when the schema in `surface.toml` changed
+  `tilolang check` fails when the schema in `surface.toml` changed
   incompatibly without a version bump.
 - **An unreadable item is quarantined; only an unreadable resource fails.** One
   item of a `Collection` that does not read as its type (a required field
@@ -660,7 +660,7 @@ actions that queued an outside consequence undo through their inverse action.
 - `TestApp` drives the real component runtime: invoke, confirm, undo, roles and
   grants, actors with kinds (`as_agent`, `for_person`), and asserts on
   structured history entries.
-- `tilo-app check` runs the surface, binding, Fluent and lint checks.
+- `tilolang check` runs the surface, binding, Fluent and lint checks.
 
 ## 8. The old APIs are gone
 

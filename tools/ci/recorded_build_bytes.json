@@ -560,7 +560,7 @@
       "libraries": 98977792,
       "tests": 788518328
     },
-    "tilo-app-cli": {
+    "tilo-app-builder": {
       "libraries": 103499282,
       "tests": 370469632
     },

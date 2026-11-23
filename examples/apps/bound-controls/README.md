@@ -19,14 +19,14 @@ Read:
 Start your own app from it:
 
 ```bash
-tilo-app new my-app --from-example bound-controls
+tilolang new my-app --from-example bound-controls
 ```
 
 Run and verify it in the Tilo checkout:
 
 ```bash
-tilo-app run examples/apps/bound-controls
-tilo-app check examples/apps/bound-controls
+tilolang run examples/apps/bound-controls
+tilolang check examples/apps/bound-controls
 ```
 
-`tilo-app examples` lists every example.
+`tilolang examples` lists every example.

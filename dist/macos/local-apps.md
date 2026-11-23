@@ -1,7 +1,7 @@
 # Unsigned private local app assembly
 
 `collection_local_apps.py` combines one previously compiled app with the reviewed
-private runtime payload. It uses the SDK's `tilo-app bundle-macos` command, which
+private runtime payload. It uses the SDK's `tilolang bundle-macos` command, which
 calls the existing macOS assembler without building or signing. The SDK still
 checks the manifest's platform, required capabilities, and undeclared capability
 usage. Its identity, version, icon, usage descriptions, and entitlements remain

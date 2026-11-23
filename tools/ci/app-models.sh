@@ -43,7 +43,7 @@ fi
 # Release-profile overrides a caller exports for its native builds would
 # change the bytes every device applies actions with: the workspace's release
 # profile and what a model module is sized with below say what they are, as
-# `tilo-app model` builds a guest alone (tools/tilo-app-cli/src/model_wasm.rs),
+# `tilolang model` builds a guest alone (crates/lang/tilo-app-builder/src/model_wasm.rs),
 # except that the symbol table stays for wasm-split.
 while IFS= read -r variable; do
   unset "$variable"

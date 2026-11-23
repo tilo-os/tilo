@@ -89,6 +89,38 @@ fn read(path: &Path) -> Result<Vec<u8>, BundleError> {
     })
 }
 
+/// The bundle of each compiled package, in the order given: each carries the packages it uses,
+/// the standard library first and the earlier packages of the build after it.
+#[must_use]
+pub fn of_build(built: &[tilolang::source::BuiltPackage]) -> Vec<Bundle> {
+    built
+        .iter()
+        .enumerate()
+        .map(|(index, package)| {
+            let used = &package.compiled.meta.uses;
+            // The standard library first: every module's code may call into it, and it is compiled
+            // with Tilo rather than with the packages of this build.
+            let imports = std::iter::once(tilolang::stdlib::compiled())
+                .chain(built.iter().take(index).map(|earlier| &earlier.compiled))
+                .filter(|earlier| used.contains(&earlier.meta.app));
+            Bundle::new(&package.compiled, imports)
+        })
+        .collect()
+}
+
+/// The bundles of the package in `dir` and the packages it uses, in compilation order: the last is
+/// `dir`'s own. What a host that carries packages as assets packs, without writing ids locks.
+///
+/// # Errors
+///
+/// A package does not compile (the message lists the errors by file).
+pub fn compiled(dir: &Path, search: &[PathBuf]) -> Result<Vec<Bundle>, String> {
+    let (built, _) =
+        crate::catalogue::compile(dir, search, &mut tilolang::OsEntropy::default())
+            .map_err(|error| error.to_string())?;
+    Ok(of_build(&built))
+}
+
 impl Bundle {
     /// A bundle of a compiled package and the packages it uses, each before those that use it.
     #[must_use]

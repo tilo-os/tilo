@@ -30,7 +30,7 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "ActionAccess::is_empty")]
     pub actions: ActionAccess,
     /// `[resources]` block — the resource kinds this app's records hold,
-    /// written by `tilo-app package` from its `#[resource(kind)]`
+    /// written by `tilolang package` from its `#[resource(kind)]`
     /// declarations. A host creates a missing record for the app only in a
     /// kind listed here; a manifest without the block declares none.
     #[serde(default, skip_serializing_if = "Resources::is_empty")]
@@ -1068,7 +1068,7 @@ impl Resources {
 /// operation = "view"
 /// ```
 ///
-/// `tilo-app surface` writes them from what the app's code publishes on an
+/// `tilolang surface` writes them from what the app's code publishes on an
 /// empty document: the actions people are offered with nothing chosen that
 /// take nothing, or one line of typed text ([`Self::asks`]). The running app
 /// publishes the full typed contract, and that is what admits an invocation.

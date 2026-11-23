@@ -377,16 +377,16 @@ impl Daemon {
             tools.args(app_tool_args()).current_dir(src);
             cargo_env(&mut tools, job.color, sccache);
             as_user(user, &mut tools);
-            step("cargo build (tilo-app)", &mut tools)?;
+            step("cargo build (tilolang)", &mut tools)?;
             create_dir_as(user, &staging)?;
-            let mut package = Command::new(src.join("target/release/tilo-app"));
+            let mut package = Command::new(src.join("target/release/tilolang"));
             package
                 .args(app_package_args(dir, &tapp))
                 .env("TILO_PKG", src.join("target/release/tilo-app-package"))
                 .current_dir(src);
             cargo_env(&mut package, job.color, sccache);
             as_user(user, &mut package);
-            step("tilo-app package", &mut package)
+            step("tilolang package", &mut package)
         });
         let installed = built.and_then(|()| {
             timer.time("install", || {
@@ -543,7 +543,7 @@ pub fn app_tool_args() -> Vec<String> {
         "--locked",
         "--release",
         "-p",
-        "tilo-app-cli",
+        "tilolang-cli",
         "-p",
         "tilo-app-package-cli",
     ]
@@ -551,7 +551,7 @@ pub fn app_tool_args() -> Vec<String> {
     .to_vec()
 }
 
-/// `tilo-app` arguments that package `apps/<dir>` as a self-signed `.tapp`.
+/// `tilolang` arguments that package `apps/<dir>` as a self-signed `.tapp`.
 pub fn app_package_args(dir: &str, out: &Path) -> Vec<String> {
     vec![
         "package".into(),
@@ -725,7 +725,7 @@ mod tests {
         {
             assert_eq!(
                 app_tool_args().join(" "),
-                "build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
+                "build --locked --release -p tilolang-cli -p tilo-app-package-cli"
             );
             assert_eq!(
                 app_package_args("settings", Path::new("/s/settings.tapp")).join(" "),

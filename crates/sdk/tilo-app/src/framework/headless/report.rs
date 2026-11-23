@@ -1,5 +1,5 @@
-//! What an app publishes, as `tilo-app surface` commits it and
-//! `tilo-app check` compares it: the resource's surface, the person's own resources
+//! What an app publishes, as `tilolang surface` commits it and
+//! `tilolang check` compares it: the resource's surface, the person's own resources
 //! and those the views open beside it, the controls its view binds, and the
 //! ids of its effects and named views.
 
@@ -20,8 +20,8 @@ use super::{
 /// which holds every one it is asked for.
 const OPENS_WITHIN: ui_core::time::Duration = ui_core::time::Duration::from_secs(15);
 
-/// What `A` publishes and how its view binds to it, as `tilo-app surface`
-/// commits it and `tilo-app check` compares it: the resource's
+/// What `A` publishes and how its view binds to it, as `tilolang surface`
+/// commits it and `tilolang check` compares it: the resource's
 /// [`Surface`](tilo_resource::Surface), those of the person's own resources it
 /// declares ([`ResourceApp::PERSON_RESOURCES`]) and those of the resources its
 /// views open beside its own (the parts of its chains, the settings
