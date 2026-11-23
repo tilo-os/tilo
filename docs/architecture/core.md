@@ -992,9 +992,13 @@ everything else is visibly optional:
 - `crates/sdk/`: the app SDK over the core and the UI library, for tilolang
   and Rust.
 - `crates/lang/`: tilolang's compiler, runtime and process.
+- `crates/services/`: device services that run on any device, headless
+  ones included: speaker groups, nearby send, casting, clipboard and
+  notification sync. Each is a provider that the daemon binary mounts. The
+  core library never links them.
 - `crates/desktop/`: the compositor, a session that is a client of the
-  daemon, the portal and the desktop's system services. The shell is a
-  tilolang app.
+  daemon, the portal, and what needs a seat (capture, encoding, input,
+  playout, drawing). The shell is a tilolang app.
 - `crates/os/`, `crates/vm/`, `crates/compat/`, `crates/integrations/`:
   product subsystems (install and boot, hardware, VMs and sandboxes, Windows
   programs, messaging bridges, cloud mounts), each optional and none linked
