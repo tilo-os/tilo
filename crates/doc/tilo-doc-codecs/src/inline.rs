@@ -95,16 +95,37 @@ pub fn valid_hyperlink_target(target: &str) -> bool {
     }
 }
 
-/// The target a link mark reads back as: the three characters Markdown cannot carry in a bare
-/// destination, percent-encoded on the way out and taken back here.
+/// The target a link mark reads back as: what Markdown cannot carry in a destination,
+/// percent-encoded on the way out and taken back here.
 fn decode_target(target: &str) -> String {
     target
         .replace("%20", " ")
         .replace("%28", "(")
         .replace("%29", ")")
+        .replace("%0A", "\n")
 }
 
+/// A link's destination as written. A target given in angle brackets (`<Notes/Task 1.md>`) keeps
+/// them, and inside them its spaces and parentheses stand as they are, as Markdown reads them,
+/// so the path a person or agent reads in the file is the path; only what brackets cannot hold
+/// is escaped. A bare target percent-encodes what would end it.
 fn encode_into(out: &mut String, target: &str) {
+    if let Some(inner) = target
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+    {
+        out.push('<');
+        for c in inner.chars() {
+            match c {
+                '<' => out.push_str("\\<"),
+                '>' => out.push_str("\\>"),
+                '\n' => out.push_str("%0A"),
+                _ => out.push(c),
+            }
+        }
+        out.push('>');
+        return;
+    }
     for c in target.chars() {
         match c {
             ' ' => out.push_str("%20"),
@@ -481,6 +502,31 @@ mod tests {
         assert_eq!(back, spans);
     }
 
+    fn a_bracketed_path_is_written_as_it_reads_and_read_back() {
+        let spans = vec![mark(
+            4,
+            12,
+            "link",
+            MarkValue::Str("<Under/Task (1) a<b>.md>".into()),
+        )];
+        let written = render("see the task", &spans, Style::BLOCK);
+        assert_eq!(
+            written, "see [the task](<Under/Task (1) a\\<b\\>.md>)",
+            "{written}"
+        );
+        let (text, back) = parse(&written, &|_| true);
+        assert_eq!(text, "see the task");
+        assert_eq!(
+            back,
+            vec![mark(
+                4,
+                12,
+                "link",
+                MarkValue::Str("Under/Task (1) a<b>.md".into())
+            )]
+        );
+    }
+
     fn text_that_would_read_as_syntax_is_escaped() {
         let spans = Vec::new();
         let text = "snake_case and 2*3 and [a] and a\\b";
@@ -505,11 +551,15 @@ mod tests {
 
     #[test]
     fn inline_markdown_reads_and_writes_the_same_text_and_marks() {
-        let cases: [(&str, fn()); 4] = [
+        let cases: [(&str, fn()); 5] = [
             ("everything is read back", everything_is_read_back),
             (
                 "what is read writes back as the same text and marks",
                 what_is_read_writes_back_as_the_same_text_and_marks,
+            ),
+            (
+                "a bracketed path is written as it reads and read back",
+                a_bracketed_path_is_written_as_it_reads_and_read_back,
             ),
             (
                 "text that would read as syntax is escaped",
