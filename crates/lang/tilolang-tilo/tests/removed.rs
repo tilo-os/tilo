@@ -76,6 +76,7 @@ fn window(
             store: workspace.store(),
             root: RootView::default(),
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+            link_home: None,
         },
         Rc::new(Apps(packages.to_vec())),
         Rc::new(tilolang_tilo::names::Installed),
