@@ -7,10 +7,11 @@
 //! not be the workspace's mailbox; mail the mailbox takes in is a change of its records, which a
 //! trigger on that change waits on instead.
 //!
-//! A firing names the message, never carries it: it holds the message's envelope, which its
-//! trigger's filter compares, and the message itself as what the run is made from (`$from`, its
-//! app, kind and resource). The host runs each step made from it only for a caller who may read
-//! it, so the words stay in the account and are read from there by whoever may.
+//! A firing holds what the arrival log keeps of the message, its envelope and the start of its
+//! words, which its trigger's filter compares and its run is told as data; nothing more of it is
+//! copied anywhere. It names the message itself as what the run is made from (`$from`, its app,
+//! kind and resource): the host runs each step made from it only for a caller who may read it,
+//! and the whole message is read from the account by whoever may.
 //!
 //! What each trigger read up to is kept in the workspace ([`super::keep_progress`]): a restart
 //! fires nothing twice, and what arrived while nothing looked fires once. The arrival log is read
@@ -46,16 +47,14 @@ fn waits_on_mail(trigger: &TriggerSpec) -> bool {
     matches!(trigger, TriggerSpec::SourceChanged { kind, .. } if kind == source_change::PERSON_MAIL)
 }
 
-/// The arrival as what a trigger on mail compares and a firing holds: its envelope, without the
-/// start of its words, which stay in the account.
+/// The arrival as what a trigger on mail compares and a firing holds: what the arrival log keeps
+/// of the message.
 fn found(arrival: &person_accounts::MailArrival) -> Found {
-    let mut facts = arrival.facts();
-    facts.remove("excerpt");
     Found {
         key: arrival.id.clone(),
         at: arrival.account.clone(),
         at_ms: arrival.at_ms,
-        facts,
+        facts: arrival.facts(),
     }
 }
 

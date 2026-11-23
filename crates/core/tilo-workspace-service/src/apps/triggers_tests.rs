@@ -2797,8 +2797,8 @@ async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
 }
 
 /// Mail arriving in the saver's own account fires their shortcut once for each message. The
-/// firing names the message as what its run is made from and carries its envelope, never its
-/// words. Mail arriving in another account the workspace keeps, which the trigger is not kept to,
+/// firing names the message as what its run is made from, and carries what the arrival log keeps
+/// of it. Mail arriving in another account the workspace keeps, which the trigger is not kept to,
 /// fires nothing, and a runner that starts over carries on from what the workspace kept.
 #[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2876,10 +2876,9 @@ async fn mail_in_the_savers_own_account_fires_once_and_names_the_message() {
         json!({"ref": "ada@example.test:7:4", "ty": "tl.tilo.accounts.Message"}),
         "the run is made from the message in the account"
     );
-    let held = serde_json::to_string(&events[0]).unwrap();
-    assert!(
-        !held.contains("Friday at one?"),
-        "the words stay in the account: {held}"
+    assert_eq!(
+        events[0]["facts"]["excerpt"], "Friday at one?",
+        "the run is told the start of the words as data"
     );
 
     // A runner that starts over carries on from what the workspace kept: what it fired is not
@@ -2897,5 +2896,100 @@ async fn mail_in_the_savers_own_account_fires_once_and_names_the_message() {
     let events = fired_events(&started);
     assert_eq!(events.len(), 2, "{events:?}");
     assert_eq!(events[1]["item"], "ada@example.test:7:5");
+    host.shutdown().await;
+}
+
+/// Her own account stays the source of an event on her mail: the program waits on
+/// `tilo.accounts.mail` and on no change of the workspace's mailbox, so a message the workspace
+/// mailbox takes in starts nothing of hers, while one that arrives in her own account starts it
+/// once with what arrived.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mail_in_her_own_account_starts_her_event_and_the_workspace_mailbox_is_no_source() {
+    use crate::agents::events::{Definition, Kept, Note, event_shortcut};
+    use crate::workspaces::mail_testing::{Watched, keep, told};
+    use tilo_automation::TriggerSpec;
+    use tilo_mail_session::InboxSeen;
+
+    /// Her own account.
+    const WORK: &str = "ada@example.test";
+    const BO: &str = "bo@example.test";
+    /// The line an event that waits on her mail opens with.
+    const ON_MAIL: &str = "when something new is in \"tilo.accounts.mail\"";
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Mail").await.unwrap().workspace;
+    let person = hex::encode(cert.user_public_key);
+
+    // The program she set up waits on her own mail, and on no change of the workspace's mail
+    // record: the mailbox a member's window fills is not her account's server.
+    let kept = Kept {
+        definition: Definition {
+            id: "0d4c1f6e-4e32-4f1e-9a5b-2b7c3d8e9f01".to_owned(),
+            name: "Mail".to_owned(),
+            when: ON_MAIL.to_owned(),
+            only_if: None,
+            every: None,
+            instruction: "Say who wrote and what they want.".to_owned(),
+            told_as: None,
+            set_up_at_ms: 1,
+            looks: false,
+        }
+        .checked()
+        .expect("an event on her mail"),
+        note: Note::default(),
+        person: person.clone(),
+        assistant: "assistant".to_owned(),
+        by: tilo_actions::MemberId::person(person.as_str()),
+    };
+    let program = event_shortcut(&kept).expect("an event on her mail");
+    assert!(
+        program.triggers.iter().any(|trigger| matches!(
+            trigger,
+            TriggerSpec::SourceChanged { kind, .. }
+                if kind == tilo_automation::source_change::PERSON_MAIL
+        )),
+        "her own mail is the source: {:?}",
+        program.triggers
+    );
+    assert!(
+        !program.triggers.iter().any(|trigger| matches!(
+            trigger,
+            TriggerSpec::ResourceChanged { kind, .. }
+                if kind == crate::agents::triggered::MAIL_MESSAGE
+        )),
+        "a message in the workspace mailbox is no mail in her account: {:?}",
+        program.triggers
+    );
+
+    // What arrives in her own account starts it once, with what arrived as data.
+    let servers = Arc::new(Watched::default());
+    workspaces.carry_mail_through(servers.clone());
+    keep(workspaces, &workspace, WORK, "adas-password").await;
+    keeps_an_assistant(workspaces, &workspace, &cert).await;
+    save_signed(workspaces, &workspace, program, (&key, &cert)).await;
+    let clock = Pinned::at(SOURCE_START);
+    let started = Arc::new(Started::default());
+    let mut runner = source_runner(workspaces, &started, false).await;
+    pass_at_ms(&clock, &mut runner, SOURCE_START).await;
+    workspaces.mail_watches_settled().await;
+    let seen = |uid| InboxSeen {
+        uid_validity: 7,
+        uid,
+    };
+    servers.heard(WORK).arrived(Vec::new(), seen(3));
+    servers
+        .heard(WORK)
+        .arrived(vec![told(4, BO, "Own account", "For her alone.")], seen(4));
+    pass_at_ms(&clock, &mut runner, SOURCE_START + 1_000).await;
+    // What her assistant is handed is the instruction with what happened, the firing's event,
+    // as data.
+    let taken = fired_events(&started);
+    assert_eq!(taken.len(), 1, "{taken:?}");
+    let handed = serde_json::to_string(&taken[0]).unwrap();
+    assert!(handed.contains("For her alone."), "{handed}");
     host.shutdown().await;
 }
