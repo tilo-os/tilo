@@ -505,8 +505,16 @@ and screen share only, never documents, and stays as it is.
   `tree_sync` only. Bytes go through one content store, moved by
   `RouteContent`, with keys from `workspace-keys`. Presentations (FUSE,
   native, mirror) are views of that one tree.
-- **Settings are resources.** A person's settings are records of their
-  workspace, and a device's settings are records of that device.
+- **Settings are resources.** A person's settings (appearance,
+  accessibility, shortcuts, language) are records of their own workspace,
+  so they follow the person to every device, a shared one included. A
+  device's settings (displays, power, hardware, network) are records at
+  `devices/<id>/settings/<section>` in its owner's own workspace, read and
+  changed by others through ordinary grants. Each section is one resource
+  with a typed action per key (`settings/appearance#set_theme`), so a grant
+  can name one setting and search finds each field at its own address; an
+  app's preferences are one resource per app. There is no generic
+  `set(key, value)`.
 
 ### What goes
 
