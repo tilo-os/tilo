@@ -434,7 +434,6 @@ members = [
     "crates/platform/tilo-system-info",
     "crates/platform/tilo-render-protocol",
     "crates/platform/tilo-app-window",
-    "crates/platform/tilo-written-view",
     "crates/platform/tilo-view",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",

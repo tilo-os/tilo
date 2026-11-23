@@ -23582,21 +23582,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-written-view"
-version = "0.1.0"
-dependencies = [
- "app-fleet",
- "serde_json",
- "tilo-actions",
- "tilo-app",
- "tilo-app-window",
- "tilo-render-protocol",
- "tilolang-tilo",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-x11-transfer"
 version = "0.1.0"
 dependencies = [
@@ -29377,7 +29362,6 @@ dependencies = [
  "tilo-workspace-join",
  "tilo-workspace-keys",
  "tilo-workspace-service",
- "tilo-written-view",
  "tilo-x11-transfer",
  "tilo-zone-globe",
  "tilolang",
