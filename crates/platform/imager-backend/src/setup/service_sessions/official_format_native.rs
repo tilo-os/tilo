@@ -337,12 +337,12 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_ownership() {
     assert_eq!(store.all().unwrap().len(), 2);
     let credential_store = account_credentials::CredentialStore::for_root(Some(target.clone()));
     for selected in &declaration.sessions {
+        let account = store
+            .get(&selected.id)
+            .unwrap()
+            .expect("the imported selected session's account");
         let session = credential_store
-            .service_session(
-                &accounts::AccountId::from(selected.id.clone()),
-                identity,
-                &binding,
-            )
+            .service_session(&account, identity, &binding)
             .expect("actual readonly selected-session ownership refused");
         assert_material(&session, selected.service);
     }

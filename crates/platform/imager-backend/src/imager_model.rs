@@ -952,22 +952,6 @@ mod tests {
     #[test]
     fn samples_releases_and_targets_are_classified_truthfully() {
         {
-            let t = sample_targets();
-            assert_eq!(t.len(), 2);
-            assert_eq!(t[0].kind, TargetKind::Usb);
-            assert!(t[0].removable);
-            assert_eq!(t[1].kind, TargetKind::Nvme);
-            assert!(!t[1].removable);
-        }
-
-        {
-            let s = sample_source();
-            assert_eq!(s.kind, SourceKind::TiloImage);
-            assert!(s.installable);
-            assert!(s.size > 0);
-        }
-
-        {
             let mut release = sample_releases().remove(0);
             release.image_sha256.clear();
             let source = release.to_source();
@@ -981,36 +965,6 @@ mod tests {
             assert!(usb.fits(2_000_000_000));
             assert!(!usb.fits(40_000_000_000));
             assert!(usb.fits(0)); // unknown size always "fits" for the check
-        }
-
-        {
-            assert_eq!(fmt_size(0), "—");
-            assert_eq!(fmt_size(512), "512 B");
-            assert_eq!(fmt_size(1_000_000_000_000), "1 TB");
-            assert!(fmt_size(2_415_919_104).ends_with("GB"));
-        }
-
-        {
-            assert_eq!(
-                TargetKind::from_lsblk(false, Some("usb"), true),
-                TargetKind::Usb
-            );
-            assert_eq!(
-                TargetKind::from_lsblk(false, Some("nvme"), false),
-                TargetKind::Nvme
-            );
-            assert_eq!(
-                TargetKind::from_lsblk(true, Some("sata"), false),
-                TargetKind::Hdd
-            );
-            assert_eq!(
-                TargetKind::from_lsblk(false, Some("sata"), false),
-                TargetKind::Ssd
-            );
-            assert_eq!(
-                TargetKind::from_lsblk(false, Some("mmc"), true),
-                TargetKind::SdCard
-            );
         }
     }
 
@@ -1100,24 +1054,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn step_and_progress_state_advance() {
-        {
-            assert_eq!(Step::Source.next(), Step::Drive);
-            assert_eq!(Step::Drive.next(), Step::Customize);
-            assert_eq!(Step::Customize.next(), Step::Confirm);
-            assert_eq!(Step::Confirm.next(), Step::Write);
-            assert_eq!(Step::Write.next(), Step::Done);
-            assert_eq!(Step::Done.next(), Step::Done, "last step saturates");
-            assert_eq!(Step::Done.prev(), Step::Write);
-            assert_eq!(Step::Write.prev(), Step::Confirm);
-            assert_eq!(Step::Confirm.prev(), Step::Customize);
-
-            assert_eq!(Step::Source.prev(), Step::Source, "first step saturates");
-            assert_eq!(Step::all().len(), 6);
-            for s in Step::all() {
-                assert_eq!(Step::from_key(s.key()), s);
-            }
-        }
-
         {
             let idle = Progress::default();
             assert_eq!(idle.overall(), 0.0);

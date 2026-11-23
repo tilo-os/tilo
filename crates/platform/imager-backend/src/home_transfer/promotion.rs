@@ -245,24 +245,6 @@ fn roots(
     Ok((quarantine, home, journal))
 }
 impl PromotionReview {
-    #[cfg(feature = "test-support")]
-    pub fn move_one_without_checkpoint_for_test(&self, relative: &Path) -> Result<(), String> {
-        let (q, h, j) = roots(&self.quarantine, &self.home, &self.journal)
-            .map_err(|error| error.to_string())?;
-        let name = self.journal.file_name().ok_or("Missing adoption journal")?;
-        let _log = Log::create(&j, name, self.plan.clone()).map_err(|error| error.to_string())?;
-        for entry in self.plan.entries.iter() {
-            let entry = entry.map_err(|error| error.to_string())?;
-            if matches!(entry.kind, Kind::Move)
-                && decoded(&entry.path).map_err(|error| error.to_string())? == relative
-            {
-                return process(&entry, &q, &h, false, &AtomicBool::new(false))
-                    .map_err(|error| error.to_string());
-            }
-        }
-        Err("Fixture requires an actual reviewed Move entry".into())
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn move_one_for_test(&self, relative: &Path) -> Result<(), String> {
         let (q, h, j) = roots(&self.quarantine, &self.home, &self.journal)
