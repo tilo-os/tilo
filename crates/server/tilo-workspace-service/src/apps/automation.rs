@@ -1242,21 +1242,24 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         TriggerSpec::AppEvent { kind, .. } if kind.trim().is_empty() => {
             Err("an app-event trigger names the event the application declares".into())
         }
-        TriggerSpec::Connector { .. } => Err(
-            "connector triggers run only bots, on the workspace's host; a Shortcut cannot watch one"
-                .into(),
-        ),
+        TriggerSpec::Connector { app_id, .. } if app_id.trim().is_empty() => {
+            Err("a connector trigger names the app whose connector reports the event".into())
+        }
+        TriggerSpec::Connector { source, .. } if source.trim().is_empty() => {
+            Err("a connector trigger names the source the event comes from".into())
+        }
         TriggerSpec::AppOpened { .. }
         | TriggerSpec::WorkspaceJoined { .. }
         | TriggerSpec::FileChanged { .. }
         | TriggerSpec::FocusMode { .. }
         | TriggerSpec::ResourceChanged { .. }
         | TriggerSpec::IncomingMessage { .. }
-        | TriggerSpec::AppEvent { .. } => Ok(()),
+        | TriggerSpec::AppEvent { .. }
+        | TriggerSpec::Connector { .. } => Ok(()),
         other => Err(format!(
             "`{}` triggers cannot be saved yet; keyboard, schedule, app-opened, \
              workspace-joined, file-changed, focus-mode, record-changed, \
-             incoming-message and app-event triggers can",
+             incoming-message, app-event and connector triggers can",
             other.kind()
         )),
     }
@@ -1586,7 +1589,7 @@ mod tests {
             );
         }
 
-        phase a_persons_shortcut_may_watch_records_and_messages_but_not_connectors;
+        phase a_persons_shortcut_may_watch_records_messages_and_connectors;
         {
             use tilo_automation::ActorFilter;
             assert!(
@@ -1615,13 +1618,32 @@ mod tests {
                 .unwrap_err()
                 .contains("names the record kind")
             );
-            let refused = validate_trigger(&TriggerSpec::Connector {
-                app_id: "so.tilo.discord".into(),
-                source: "message-created".into(),
-                filter: serde_json::Map::new(),
-            })
-            .unwrap_err();
-            assert!(refused.contains("only bots"), "{refused}");
+            assert!(
+                validate_trigger(&TriggerSpec::Connector {
+                    app_id: "so.tilo.discord".into(),
+                    source: "message-created".into(),
+                    filter: serde_json::Map::new(),
+                })
+                .is_ok()
+            );
+            assert!(
+                validate_trigger(&TriggerSpec::Connector {
+                    app_id: " ".into(),
+                    source: "message-created".into(),
+                    filter: serde_json::Map::new(),
+                })
+                .unwrap_err()
+                .contains("names the app")
+            );
+            assert!(
+                validate_trigger(&TriggerSpec::Connector {
+                    app_id: "so.tilo.discord".into(),
+                    source: " ".into(),
+                    filter: serde_json::Map::new(),
+                })
+                .unwrap_err()
+                .contains("names the source")
+            );
         }
     }
 }

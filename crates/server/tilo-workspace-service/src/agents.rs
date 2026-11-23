@@ -74,6 +74,7 @@ use turn_provider::TurnProvider;
 
 pub mod agent_keys;
 pub mod assistant;
+pub mod connectors;
 pub mod events;
 pub mod initiative;
 pub mod kept;

@@ -2,9 +2,9 @@
 //! what inputs, under which invocation id, in which order.
 //!
 //! Pure over what it is shown. The shell feeds it a person's record
-//! changes; a workspace's host feeds it record changes and connector events
-//! for bots. Both get the same answers, so a person's Shortcut and a bot
-//! fire on the same change in the same way.
+//! changes and the events its device's connectors report; a workspace's host
+//! feeds it record changes. Both get the same answers, so a person's
+//! Shortcut and a program fire on the same change in the same way.
 //!
 //! The rules: no program fires on its own
 //! change; a chain of invocations stops past [`MAX_CHAIN_DEPTH`]; an invocation's id is

@@ -241,6 +241,148 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
     host.shutdown().await;
 }
 
+/// A shortcut whose trigger is an event the Discord connector reports in one channel.
+fn on_connector_event() -> Shortcut {
+    serde_json::from_value(json!({
+        "id": "answer",
+        "name": "Answer",
+        "steps": [],
+        "inputs": [{
+            "name": "event",
+            "ty": "object",
+            "required": true,
+            "description": "What the connector reported",
+        }],
+        "triggers": [{
+            "trigger": "connector",
+            "app_id": "so.tilo.discord",
+            "source": "message-created",
+            "filter": {"channel": "42"},
+        }],
+    }))
+    .unwrap()
+}
+
+/// What a test's connector says it reported, as the runner reads it.
+#[derive(Default)]
+struct Reports(Mutex<std::collections::BTreeMap<String, Vec<ReportedEvent>>>);
+
+impl Reports {
+    fn report(&self, app: &str, event: ReportedEvent) {
+        self.0
+            .lock()
+            .unwrap()
+            .entry(app.to_owned())
+            .or_default()
+            .push(event);
+    }
+}
+
+impl ConnectorEvents for Reports {
+    fn since(&self, app: &str, cursor: u64) -> Vec<ReportedEvent> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(app)
+            .map(|events| {
+                events
+                    .iter()
+                    .filter(|event| event.seq > cursor)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// A connector's event fires the shortcut watching its app, source and fields, on the device
+/// whose connector reported it, and only once: an event of another source or holding another
+/// value in a filtered field fires nothing, and looking again at the same log fires no second run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connector_event_fires_the_shortcut_watching_it_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Discord").await.unwrap().workspace;
+    save_signed(workspaces, &workspace, on_connector_event(), (&key, &cert)).await;
+
+    let reports = Arc::new(Reports::default());
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    )
+    .watching_connectors(Arc::clone(&reports) as Arc<dyn ConnectorEvents>);
+    runner.arm().await;
+
+    reports.report(
+        "so.tilo.discord",
+        ReportedEvent {
+            seq: 1,
+            source: "message-created".into(),
+            id: "1188".into(),
+            at_ms: 5,
+            payload: json!({"channel": "42", "content": "yo"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        },
+    );
+    runner.pass(Vec::new()).await;
+    runner.pass(Vec::new()).await;
+    let firings = started.0.lock().unwrap().clone();
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    assert_eq!(firings[0].shortcut, "answer");
+    assert_eq!(firings[0].inputs["event"]["payload"]["content"], "yo");
+
+    reports.report(
+        "so.tilo.discord",
+        ReportedEvent {
+            seq: 2,
+            source: "message-edited".into(),
+            id: "1189".into(),
+            at_ms: 6,
+            payload: json!({"channel": "42", "content": "edited"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        },
+    );
+    reports.report(
+        "so.tilo.discord",
+        ReportedEvent {
+            seq: 3,
+            source: "message-created".into(),
+            id: "1190".into(),
+            at_ms: 7,
+            payload: json!({"channel": "7", "content": "elsewhere"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        },
+    );
+    reports.report(
+        "so.tilo.other",
+        ReportedEvent {
+            seq: 1,
+            source: "message-created".into(),
+            id: "1".into(),
+            at_ms: 8,
+            payload: json!({"channel": "42"}).as_object().unwrap().clone(),
+        },
+    );
+    runner.pass(Vec::new()).await;
+    runner.pass(Vec::new()).await;
+    assert_eq!(
+        started.0.lock().unwrap().len(),
+        1,
+        "a source, a channel or an app the trigger does not name fires nothing"
+    );
+    host.shutdown().await;
+}
+
 /// Only the shortcuts the device's own person saved arm here: one another person's device saved
 /// in the same workspace fires nothing on this device.
 #[test]

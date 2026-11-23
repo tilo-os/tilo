@@ -458,12 +458,12 @@ tilo_test_env::scenario! {
                 .firings
                 .is_empty()
         );
-        // A person's Shortcut never fires on a connector event.
-        assert!(
-            dispatch(&as_shortcut(&shortcut), Event::Connector(&event))
-                .firings
-                .is_empty()
-        );
+        // A person's Shortcut fires on it too, on the device whose connector
+        // reported it, and records no chain: only a bot run's change does.
+        let personal = dispatch(&as_shortcut(&shortcut), Event::Connector(&event));
+        assert_eq!(personal.firings.len(), 1);
+        assert_eq!(personal.firings[0].event, "so.tilo.discord/message-created/1188");
+        assert_eq!(personal.firings[0].cause, None);
     }
 
     phase an_app_declaring_an_event_fires_the_trigger_watching_its_kind;

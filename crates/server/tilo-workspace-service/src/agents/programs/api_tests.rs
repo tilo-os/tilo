@@ -204,6 +204,49 @@ fn block<T>(pending: Pending<T>) -> T {
 }
 
 #[test]
+fn a_runs_send_goes_out_through_the_connectors_worker() {
+    struct Recording(Arc<Mutex<Vec<Value>>>);
+
+    impl Performer for Recording {
+        fn perform(&self, queued: Value) -> Result<Value, PerformError> {
+            self.0.lock().unwrap().push(queued);
+            Ok(json!({"result": "sent", "message_id": "d1"}))
+        }
+    }
+
+    let fake = FakeMember::default();
+    let outbox = fake.outbox.clone();
+    let performed = Arc::new(Mutex::new(Vec::new()));
+    let connectors = crate::agents::connectors::Connectors::new().running(
+        "so.tilo.discord",
+        Arc::new(Recording(Arc::clone(&performed))),
+    );
+    let api = ProgramApi::new(
+        Arc::new(Mutex::new(fake)),
+        "b1".into(),
+        "ada".into(),
+        connectors.outboxes(),
+    );
+    let receipt = block(api.invoke(&bot(), send())).unwrap();
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("{receipt:?}")
+    };
+    assert_eq!(output.value.unwrap()["message_id"], "d1");
+    let performed = performed.lock().unwrap();
+    assert_eq!(
+        performed.len(),
+        1,
+        "the send reached the connector's worker"
+    );
+    assert_eq!(performed[0]["op"]["send"]["text"], "hi");
+    assert_eq!(
+        outbox.lock().unwrap()[0].settled,
+        Some(json!({"state": "done", "result": {"result": "sent", "message_id": "d1"}})),
+        "and what the worker answered settled the run's entry"
+    );
+}
+
+#[test]
 fn a_caller_that_is_not_this_bot_is_refused() {
     let api = api(FakeMember::default(), vec![]);
     let person = Caller::local_person("ada").in_workspace(WORKSPACE);
