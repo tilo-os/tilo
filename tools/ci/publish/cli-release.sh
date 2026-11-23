@@ -4,7 +4,9 @@
 # `tilo-runtime` beside it (this computer's one daemon, which `tilo login` and `tilo mcp` start
 # from beside `tilo`) and, for Linux, `tilolang-process` (`tilo mcp` starts a task's tilolang
 # programs in it and looks for it beside itself; on a Mac no task program starts, and that
-# archive holds no task program), the SHA-256 of each in SHA256SUMS, and SHA256SUMS.sig, a DER ECDSA P-256
+# archive holds no task program), beside it tilolang-<os>-<arch>.tar.gz holding the `tilolang`
+# command (the installer dist/install/tilolang.sh, served at https://tilolang.dev/install,
+# installs it from the same releases), the SHA-256 of each in SHA256SUMS, and SHA256SUMS.sig, a DER ECDSA P-256
 # signature of SHA256SUMS by the release key (keys/cosign.pub, AWS KMS
 # alias/tilo-release-signing). It is published with the release tags (vX.Y.Z) that release the
 # server and the OS, so a command talks to the server of its own release; `latest` follows the
@@ -18,13 +20,17 @@
 #                                      <arch>.tar.gz; holds no credentials. Built for a tag, the
 #                                      program says that release as `tilo --version`.
 #                                      `tilo-runtime` is built with it and packed beside it, and
-#                                      for Linux `tilolang-process` too, each as static as it is
+#                                      for Linux `tilolang-process` too, each as static as it is;
+#                                      `tilolang` is built in the same build and packed as
+#                                      OUT/tilolang-<os>-<arch>.tar.gz
 #   cli-release.sh pack PROGRAM ARCHIVE [TASK-PROGRAM]
 #                                      PROGRAM packed as the archive ARCHIVE, as build packs it,
 #                                      with the `tilo-runtime` beside PROGRAM, and TASK-PROGRAM
 #                                      beside it as `tilolang-process`
+#   cli-release.sh pack-tilolang PROGRAM ARCHIVE
+#                                      PROGRAM packed as the archive ARCHIVE, as `tilolang`
 #   cli-release.sh sums OUT DIR...     the archives of each DIR together in OUT, with SHA256SUMS;
-#                                      both Linux archives are required
+#                                      every Linux archive of both commands is required
 #   cli-release.sh sign DIR            DIR/SHA256SUMS signed with the release key in KMS into
 #                                      DIR/SHA256SUMS.sig, checked the way the installer checks
 #                                      it; with TILO_SIGN_TLOG=1 also entered in the public
@@ -47,10 +53,16 @@
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
-usage='usage: cli-release.sh build TARGET OUT | pack PROGRAM ARCHIVE [TASK-PROGRAM] | sums OUT DIR... | sign DIR | publish DIR | rehearse DIR'
+usage='usage: cli-release.sh build TARGET OUT | pack PROGRAM ARCHIVE [TASK-PROGRAM] | pack-tilolang PROGRAM ARCHIVE | sums OUT DIR... | sign DIR | publish DIR | rehearse DIR'
 package=https://code.tilo.so/api/packages/tilo/generic/tilo-cli
-linux_archives=(tilo-linux-x86_64.tar.gz tilo-linux-aarch64.tar.gz)
-all_archives=("${linux_archives[@]}" tilo-macos-aarch64.tar.gz tilo-macos-x86_64.tar.gz)
+# Each release carries both commands, `tilo` and `tilolang`, under one SHA256SUMS.
+commands=(tilo tilolang)
+linux_archives=() all_archives=()
+for each in "${commands[@]}"; do
+  linux_archives+=("$each-linux-x86_64.tar.gz" "$each-linux-aarch64.tar.gz")
+  all_archives+=("$each-linux-x86_64.tar.gz" "$each-linux-aarch64.tar.gz"
+    "$each-macos-aarch64.tar.gz" "$each-macos-x86_64.tar.gz")
+done
 
 # The version this run releases: the release tag's name, vX.Y.Z or vX.Y.Z-<pre-release>.
 version() {
@@ -66,18 +78,14 @@ version() {
 # A final version (no pre-release part) as three numbers, for `sort -V`; nothing for any other.
 final() { if [[ $1 =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then printf '%s' "${BASH_REMATCH[1]}"; fi; }
 
-# Pack the program $1 as the archive $2, with the daemon beside $1, and the task program $3,
-# where one is given: the members `tilo`, `tilo-runtime` and `tilolang-process`, each mode
-# 0755, owned by root and dated the epoch, gzip without a name or time, so the same programs
-# always pack to the same bytes.
-pack() {
-  local runtime
-  runtime=$(dirname -- "$1")/tilo-runtime
-  [[ -f $runtime ]] || die "no $runtime beside $1: the daemon tilo starts is packed with it"
-  python3 -I - "$1" "$2" "$runtime" ${3:+"$3"} <<'PY'
+# Pack the archive $1 with the members NAME PATH that follow it, each mode 0755, owned by root
+# and dated the epoch, gzip without a name or time, so the same programs always pack to the same
+# bytes.
+pack_archive() {
+  python3 -I - "$@" <<'PY'
 import gzip, io, sys, tarfile
-archive = sys.argv[2]
-members = [("tilo", sys.argv[1]), ("tilo-runtime", sys.argv[3])] + [("tilolang-process", path) for path in sys.argv[4:5]]
+archive = sys.argv[1]
+members = list(zip(sys.argv[2::2], sys.argv[3::2]))
 raw = io.BytesIO()
 with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
     for name, path in members:
@@ -90,6 +98,20 @@ with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
 with open(archive, "wb") as out, gzip.GzipFile(filename="", mode="wb", fileobj=out, mtime=0, compresslevel=9) as gz:
     gz.write(raw.getvalue())
 PY
+}
+
+# Pack the program $1 as the archive $2, with the daemon beside $1, and the task program $3,
+# where one is given: the members `tilo`, `tilo-runtime` and `tilolang-process`.
+pack() {
+  local runtime
+  runtime=$(dirname -- "$1")/tilo-runtime
+  [[ -f $runtime ]] || die "no $runtime beside $1: the daemon tilo starts is packed with it"
+  pack_archive "$2" tilo "$1" tilo-runtime "$runtime" ${3:+tilolang-process "$3"}
+}
+
+# Pack the tilolang command $1 as the archive $2: its one member `tilolang`.
+pack_tilolang() {
+  pack_archive "$2" tilolang "$1"
 }
 
 # The otool that reads a Mach-O here: a Mac's own, or llvm's on the Linux node that builds one.
@@ -221,17 +243,22 @@ cmd_build() {
   # resolution. On a Mac no task program starts, and none is built.
   # `tilo login` and `tilo mcp` start this computer's one daemon, tilo-runtime, from beside
   # `tilo`: every archive carries it.
-  local packages=(-p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime) task_program='' built
+  # The tilolang command is built in the same build and released beside tilo, under the same
+  # sums and signature.
+  local packages=(-p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime -p tilolang-cli --bin tilolang)
+  local task_program='' built tilolang
   if [[ $os == linux ]]; then packages+=(-p tilolang-process --bin tilolang-process); fi
   RUSTFLAGS=$flags CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_INCREMENTAL=0 \
     cargo build --locked --release --target "$target" "${packages[@]}"
   local program=${CARGO_TARGET_DIR:-$repo_root/target}/$target/release/tilo
   [[ -f $program ]] || die "the build left no $program"
+  tilolang=${program%/tilo}/tilolang
+  [[ -f $tilolang ]] || die "the build left no $tilolang"
   if [[ $os == linux ]]; then
     task_program=${program%/tilo}/tilolang-process
     [[ -f $task_program ]] || die "the build left no $task_program"
     # Static: no program interpreter, no shared library, so each runs on any Linux distribution.
-    for built in "$program" "${program%/tilo}/tilo-runtime" "$task_program"; do
+    for built in "$program" "${program%/tilo}/tilo-runtime" "$task_program" "$tilolang"; do
       if LC_ALL=C readelf -lW "$built" | grep -q 'Requesting program interpreter'; then
         die "$built names a program interpreter: it is not statically linked"
       fi
@@ -249,27 +276,33 @@ cmd_build() {
           || die "$program --version does not name the release $TILO_CLI_VERSION it was built for"
       fi
       task_program_starts "$task_program"
+      "$tilolang" --help >/dev/null || die "$tilolang --help failed"
     elif command -v "qemu-$arch-static" >/dev/null; then
       "qemu-$arch-static" "$program" --help >/dev/null \
         || die "$program --help failed under qemu-$arch-static"
       task_program_starts "qemu-$arch-static" "$task_program"
+      "qemu-$arch-static" "$tilolang" --help >/dev/null \
+        || die "$tilolang --help failed under qemu-$arch-static"
     fi
   else
     # A Mac's program does not run on a node of this fleet: what is checked of it is the file it
     # is. A Mac checks it by running it too, when the program is the architecture the Mac is.
     verify_macho "$program" "$arch"
     verify_macho "${program%/tilo}/tilo-runtime" "$arch"
+    verify_macho "$tilolang" "$arch"
     if [[ $(uname -s) == Darwin && $arch == $(uname -m) ]]; then
       "$program" --help >/dev/null || die "$program --help failed"
+      "$tilolang" --help >/dev/null || die "$tilolang --help failed"
     fi
   fi
   rm -rf "$out"
   mkdir -p "$out"
   pack "$program" "$out/tilo-$os-$arch.tar.gz" ${task_program:+"$task_program"}
+  pack_tilolang "$tilolang" "$out/tilolang-$os-$arch.tar.gz"
   if command -v sha256sum >/dev/null; then
-    (cd "$out" && sha256sum "tilo-$os-$arch.tar.gz")
+    (cd "$out" && sha256sum "tilo-$os-$arch.tar.gz" "tilolang-$os-$arch.tar.gz")
   else
-    (cd "$out" && shasum -a 256 "tilo-$os-$arch.tar.gz")
+    (cd "$out" && shasum -a 256 "tilo-$os-$arch.tar.gz" "tilolang-$os-$arch.tar.gz")
   fi
 }
 
@@ -287,9 +320,9 @@ cmd_sums() {
     done
   done
   for name in "${linux_archives[@]}"; do
-    [[ -f $out/$name ]] || die "no $name among $*: a release carries both Linux archives"
+    [[ -f $out/$name ]] || die "no $name among $*: a release carries every Linux archive of both commands"
   done
-  (cd "$out" && LC_ALL=C sha256sum tilo-*.tar.gz | LC_ALL=C sort -k2 > SHA256SUMS)
+  (cd "$out" && LC_ALL=C sha256sum -- *.tar.gz | LC_ALL=C sort -k2 > SHA256SUMS)
   cat "$out/SHA256SUMS"
 }
 
@@ -333,7 +366,7 @@ cmd_sign() {
   base64 -d < "$signature" > "$dir/SHA256SUMS.sig"
   installer_verifies "$dir" "$public_key" \
     || die "the signature of SHA256SUMS does not verify against $public_key as the installer checks it"
-  printf 'signed SHA256SUMS of tilo %s\n' "$(version)"
+  printf 'signed SHA256SUMS of tilo and tilolang %s\n' "$(version)"
 }
 
 # Upload the files of DIR named by the remaining arguments to the package version URL $1.
@@ -369,7 +402,7 @@ cmd_publish() {
       mkdir -p "$root/$name"
       for f in "${files[@]}"; do cp "$dir/$f" "$root/$name/"; done
     done
-    printf 'published tilo %s into %s\n' "$v" "$root"
+    printf 'published tilo and tilolang %s into %s\n' "$v" "$root"
     return
   fi
   [[ $(channel) == release ]] || die "only releases are published; this run is for $T_REF"
@@ -399,11 +432,13 @@ cmd_publish() {
 
 # The files a site serves: the installer at / (what `curl -fsSL https://tilo.sh | sh` gets) and at
 # /install.sh, beside the release ROOT already holds at /releases/<version>/ and
-# /releases/latest/, as the web entry's Caddyfile maps them onto the package registry.
+# /releases/latest/, as the web entry's Caddyfile maps them onto the package registry; and
+# tilolang's installer at /tilolang.sh, which tilolang.dev serves at /install.
 site_root() {
   local root=$1
   cp "$repo_root/dist/install/tilo.sh" "$root/index.html"
   cp "$repo_root/dist/install/tilo.sh" "$root/install.sh"
+  cp "$repo_root/dist/install/tilolang.sh" "$root/tilolang.sh"
 }
 
 # Serve ROOT with CERT and KEY as the site's at https://127.0.0.1:$port, the port the kernel picks:
@@ -441,10 +476,11 @@ site_port() {
 # Install the release the site at $1 serves, as a person does: the installer is what `curl` gets
 # from that site's root, piped into `sh`, and everything it runs with is the environment `$2`
 # gives. The site's certificate is trusted through CURL_CA_BUNDLE, which the installer's own
-# `curl` reads; $3 picks a release other than latest.
+# `curl` reads; $3 picks a release other than latest, and $6 the installer's path on the site
+# (tilo's at / by default).
 install_from_site() {
-  local site=$1 path=$2 ref=$3 home=$4 dir=$5
-  curl -fsSL --cacert "$dir/site.pem" "$site/" \
+  local site=$1 path=$2 ref=$3 home=$4 dir=$5 installer=${6:-}
+  curl -fsSL --cacert "$dir/site.pem" "$site/$installer" \
     | env -i PATH="$path" HOME="$home" CURL_CA_BUNDLE="$dir/site.pem" \
         TILO_RELEASES="$site/releases" TILO_VERSION="$ref" TILO_RELEASE_KEY="$dir/dry-run.pub" sh
 }
@@ -506,6 +542,15 @@ cmd_rehearse() {
     cmp --silent "$home/.local/bin/tilo-runtime" \
       <(tar -xzOf "$site/releases/$ref/tilo-linux-$machine.tar.gz" tilo-runtime) \
       || die "the installer did not install tilo-linux-$machine.tar.gz's daemon beside tilo"
+    # tilolang's installer, from the same release.
+    rm -rf "$home"
+    mkdir -p "$home"
+    install_from_site "$url" /usr/bin:/bin "$ref" "$home" "$dir" tilolang.sh \
+      || die "tilolang's installer refused the rehearsed release at $ref"
+    cmp --silent "$home/.local/bin/tilolang" \
+      <(tar -xzOf "$site/releases/$ref/tilolang-linux-$machine.tar.gz" tilolang) \
+      || die "tilolang's installer installed something other than tilolang-linux-$machine.tar.gz's program"
+    HOME=$home "$home/.local/bin/tilolang" --help >/dev/null || die "the installed tilolang does not run"
   done
   # Stock systems (Fedora) come without openssl, so the installer must install there too, on the
   # archive's sum against SHA256SUMS alone: only what the installer itself runs is on PATH.
@@ -541,12 +586,13 @@ cmd_rehearse() {
   fi
   [[ ! -e $home/.local/bin/tilo && ! -e $home/.local/bin/tilolang-process ]] \
     || die 'the installer wrote a program it refused'
-  echo "the installer installs the rehearsed release $(version) from the rehearsal's own site, with and without openssl, and refuses a release its sums or the release key do not match"
+  echo "the installers install the rehearsed release $(version) of tilo and tilolang from the rehearsal's own site, tilo's with and without openssl, and refuse a release its sums or the release key do not match"
 }
 
 case ${1:-} in
   build) shift; cmd_build "$@" ;;
   pack) shift; pack "${1:?$usage}" "${2:?$usage}" ${3:+"$3"} ;;
+  pack-tilolang) shift; pack_tilolang "${1:?$usage}" "${2:?$usage}" ;;
   sums) shift; cmd_sums "$@" ;;
   sign) shift; cmd_sign "$@" ;;
   publish) shift; cmd_publish "$@" ;;

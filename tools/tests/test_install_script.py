@@ -1,4 +1,5 @@
-"""The installer people run with `curl -fsSL https://tilo.sh | sh` (`dist/install/tilo.sh`).
+"""The installers people run with `curl -fsSL https://tilo.sh | sh` (`dist/install/tilo.sh`) and
+`curl -fsSL https://tilolang.dev/install | sh` (`dist/install/tilolang.sh`, written from it).
 
 It is run by whatever `sh` a computer has. On macOS that is bash 3.2, which in a UTF-8 locale
 takes the first byte of a character outside ASCII that follows a bare variable name as part of
@@ -18,19 +19,26 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "dist/install/tilo.sh"
+SCRIPTS = (SCRIPT, ROOT / "dist/install/tilolang.sh")
 
 
 class InstallScript(unittest.TestCase):
     def test_no_bare_variable_stands_before_a_character_outside_ascii(self) -> None:
         found = [
-            (number, line.decode("utf-8", "replace").strip())
-            for number, line in enumerate(SCRIPT.read_bytes().splitlines(), 1)
+            (script.name, number, line.decode("utf-8", "replace").strip())
+            for script in SCRIPTS
+            for number, line in enumerate(script.read_bytes().splitlines(), 1)
             if re.search(rb"\$[A-Za-z_][A-Za-z0-9_]*[\x80-\xff]", line)
         ]
         self.assertEqual(found, [], "write ${name} where a character outside ASCII follows the name")
 
     def test_an_install_that_did_not_finish_never_ends_as_a_success(self) -> None:
-        text = SCRIPT.read_text(encoding="utf-8")
+        for script in SCRIPTS:
+            with self.subTest(script=script.name):
+                self.an_install_that_did_not_finish_never_ends_as_a_success(script)
+
+    def an_install_that_did_not_finish_never_ends_as_a_success(self, script: Path) -> None:
+        text = script.read_text(encoding="utf-8")
         exit_traps = [line for line in text.splitlines() if re.search(r"^\s*trap '.*' EXIT\s*$", line)]
         self.assertEqual(len(exit_traps), 1, exit_traps)
         trap = exit_traps[0]

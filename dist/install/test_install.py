@@ -2,6 +2,9 @@
 it installs a release only when the archive matches its SHA256SUMS and, where
 openssl exists, the SHA256SUMS carries a signature by the release key; it needs
 no root and trusts the key Tilo's releases are signed with (keys/cosign.pub).
+The `tilolang` install script (dist/install/tilolang.sh, served as
+https://tilolang.dev/install) is the same script with its own values, written
+by dist/install/installers.py; it installs `tilolang` from the same releases.
 
 Each case runs the real script under `sh` against a release on disk
 (`file://`), signed with a throwaway P-256 key given as a mirror's key.
@@ -19,16 +22,17 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "dist/install/tilo.sh"
+TILOLANG_SCRIPT = REPO / "dist/install/tilolang.sh"
 
 
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, **kwargs)
 
 
-def machine():
+def machine(command="tilo"):
     system = {"Linux": "linux", "Darwin": "macos"}[os.uname().sysname]
     arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}[os.uname().machine]
-    return f"tilo-{system}-{arch}.tar.gz"
+    return f"{command}-{system}-{arch}.tar.gz"
 
 
 @unittest.skipUnless(shutil.which("openssl"), "the install script verifies with openssl, which this image lacks")
@@ -291,9 +295,17 @@ class Release(unittest.TestCase):
             for system in ("linux-x86_64", "linux-aarch64", "macos-aarch64", "macos-x86_64"):
                 beside = [task_program] if system.startswith("linux") else []
                 run("bash", self.RELEASE, "pack", program, builds / f"tilo-{system}.tar.gz", *beside, env={**os.environ, "TMPDIR": scratch})
+            # Every release carries the tilolang command beside tilo, in an archive of its own.
+            tilolang = root / "tilolang"
+            tilolang.write_bytes(b"#!/bin/sh\necho released tilolang\n")
+            tilolang.chmod(0o755)
+            for system in ("linux-x86_64", "linux-aarch64", "macos-aarch64", "macos-x86_64"):
+                run("bash", self.RELEASE, "pack-tilolang", tilolang, builds / f"tilolang-{system}.tar.gz", env={**os.environ, "TMPDIR": scratch})
             for system, members in (("linux-x86_64", ["tilo", "tilo-runtime", "tilolang-process"]), ("macos-aarch64", ["tilo", "tilo-runtime"])):
                 with tarfile.open(builds / f"tilo-{system}.tar.gz") as packed:
                     self.assertEqual(packed.getnames(), members)
+            with tarfile.open(builds / "tilolang-linux-x86_64.tar.gz") as packed:
+                self.assertEqual(packed.getnames(), ["tilolang"])
             release = root / "releases/v1.2.3"
             run("bash", self.RELEASE, "sums", release, builds, env={**os.environ, "TMPDIR": scratch})
             again = root / "again"
@@ -325,8 +337,23 @@ class Release(unittest.TestCase):
                 self.assertEqual(subprocess.check_output([beside]), b"released task program\n")
             else:
                 self.assertFalse(beside.exists(), "a Mac's archive holds no task program")
+            # tilolang's installer, from the same release under the same sums and signature.
+            done = subprocess.run(
+                ["sh", TILOLANG_SCRIPT],
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": os.environ["PATH"],
+                    "HOME": str(home),
+                    "TILO_RELEASES": f"file://{root / 'releases'}",
+                    "TILO_VERSION": "v1.2.3",
+                    "TILO_RELEASE_KEY": str(pub),
+                },
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(run(home / ".local/bin/tilolang").stdout, b"released tilolang\n")
             names = sorted(line.split()[1] for line in (release / "SHA256SUMS").read_text().splitlines())
-            self.assertEqual(names, sorted(f"tilo-{s}.tar.gz" for s in ("linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64")))
+            self.assertEqual(names, sorted(f"{c}-{s}.tar.gz" for c in ("tilo", "tilolang") for s in ("linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64")))
 
     def test_a_release_without_both_linux_archives_is_refused(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -339,13 +366,110 @@ class Release(unittest.TestCase):
             self.assertNotEqual(done.returncode, 0)
             self.assertIn("tilo-linux-aarch64.tar.gz", done.stderr)
 
+    def test_a_release_without_tilolang_is_refused(self):
+        # Both commands come from every release: one whose tilolang build is missing never
+        # reaches SHA256SUMS.
+        with tempfile.TemporaryDirectory() as scratch:
+            root = pathlib.Path(scratch)
+            program = root / "tilo"
+            program.write_bytes(b"x")
+            (root / "tilo-runtime").write_bytes(b"x")
+            for system in ("linux-x86_64", "linux-aarch64"):
+                run("bash", self.RELEASE, "pack", program, root / f"tilo-{system}.tar.gz", env={**os.environ, "TMPDIR": scratch})
+            done = subprocess.run(["bash", self.RELEASE, "sums", root / "out", root], capture_output=True, text=True, env={**os.environ, "TMPDIR": scratch})
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("tilolang-linux-x86_64.tar.gz", done.stderr)
+
+
+@unittest.skipUnless(shutil.which("openssl"), "the install script verifies with openssl, which this image lacks")
+class TilolangInstall(unittest.TestCase):
+    """dist/install/tilolang.sh: tilo.sh's checks, installing `tilolang` from its own archive."""
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        root = pathlib.Path(self.scratch.name)
+        self.key = root / "release.key"
+        self.pub = root / "release.pub"
+        run("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", self.key)
+        run("openssl", "ec", "-in", self.key, "-pubout", "-out", self.pub)
+        self.release = root / "releases/latest"
+        self.release.mkdir(parents=True)
+        self.home = root / "home"
+        self.home.mkdir()
+        self.archive = self.release / machine("tilolang")
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode="w:gz") as tar:
+            program = b'#!/bin/sh\necho "tilolang $*"\n'
+            info = tarfile.TarInfo("tilolang")
+            info.size, info.mode = len(program), 0o755
+            tar.addfile(info, io.BytesIO(program))
+        self.archive.write_bytes(data.getvalue())
+        # The release's sums name tilo's archive too: the one release carries both commands.
+        digest = hashlib.sha256(data.getvalue()).hexdigest()
+        (self.release / "SHA256SUMS").write_text(f"{'0' * 64}  {machine()}\n{digest}  {self.archive.name}\n")
+        run("openssl", "dgst", "-sha256", "-sign", self.key, "-out", self.release / "SHA256SUMS.sig", self.release / "SHA256SUMS")
+
+    def tearDown(self):
+        self.scratch.cleanup()
+
+    def install(self, *args, **env):
+        return subprocess.run(
+            ["sh", "-s", *args],
+            input=TILOLANG_SCRIPT.read_text(),
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": os.environ["PATH"],
+                "HOME": str(self.home),
+                "TILO_RELEASES": f"file://{self.release.parent}",
+                "TILO_RELEASE_KEY": str(self.pub),
+                **env,
+            },
+        )
+
+    @property
+    def installed(self):
+        return self.home / ".local/bin/tilolang"
+
+    def test_a_signed_release_installs_tilolang_alone(self):
+        done = self.install()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(run(self.installed, "check", ".").stdout, b"tilolang check .\n")
+        self.assertEqual(sorted(p.name for p in self.installed.parent.iterdir()), ["tilolang"], "no leftovers")
+        self.assertIn("Getting tilolang (latest)", done.stderr)
+        self.assertIn(f"{self.installed} check DIR", done.stderr, "says what comes next, by the full path")
+
+    def test_arguments_run_the_installed_command(self):
+        done = self.install("check", "app")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, "tilolang check app\n")
+
+    def test_an_archive_that_does_not_match_the_signed_sums_installs_nothing(self):
+        self.archive.write_bytes(self.archive.read_bytes() + b"\0")
+        done = self.install()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("does not match the release's SHA256SUMS", done.stderr)
+        self.assertFalse(self.installed.exists())
+
+    def test_without_a_mirror_key_only_tilos_release_key_is_trusted(self):
+        done = self.install(TILO_RELEASE_KEY="")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("does not verify", done.stderr)
+        self.assertFalse(self.installed.exists())
+
 
 class Trust(unittest.TestCase):
     def test_the_script_trusts_the_key_releases_are_signed_with(self):
-        script = SCRIPT.read_text()
         key = (REPO / "keys/cosign.pub").read_text().strip()
-        self.assertIn(key, script, "keys/cosign.pub changed: the install script must trust the same key")
-        self.assertTrue(script.rstrip().endswith('main "$@"'), "a download cut short runs nothing")
+        for path in (SCRIPT, TILOLANG_SCRIPT):
+            script = path.read_text()
+            self.assertIn(key, script, f"keys/cosign.pub changed: {path.name} must trust the same key")
+            self.assertTrue(script.rstrip().endswith('main "$@"'), "a download cut short runs nothing")
+
+    def test_tilolang_installer_is_tilo_installer_with_its_own_values(self):
+        done = subprocess.run(["python3", "-I", REPO / "dist/install/installers.py", "--check"],
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
 
 
 if __name__ == "__main__":

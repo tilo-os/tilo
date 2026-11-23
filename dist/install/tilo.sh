@@ -26,15 +26,30 @@
 #
 # The whole script is one function called on its last line, so a download
 # cut short runs nothing.
+#
+# dist/install/tilolang.sh, which installs the `tilolang` command from the
+# same releases, is this script with its own words above and its own values
+# between the two `# installs:` lines below: dist/install/installers.py
+# writes it.
 set -eu
 
 main() {
+  # installs: what this script installs, and what it says once it has.
+  program=tilo
+  title=Tilo
+  # Packed beside the program in a release, where it looks for them: the
+  # program `tilo mcp` starts an agent's task programs in (Linux only), and
+  # the daemon `tilo login` and `tilo mcp` start. A release from before one
+  # was packed holds none of it, and the program is then installed alone.
+  beside_programs='tilolang-process tilo-runtime'
+  say_next() { say "Next: $1 login CODE, with CODE from Tilo (choose \"Set up with your agent\")."; }
+  # installs: end
   releases=${TILO_RELEASES:-https://tilo.sh/releases}
   version=${TILO_VERSION:-latest}
   dir=${TILO_INSTALL_DIR:-${HOME:?HOME is not set}/.local/bin}
 
   say() { printf '%s\n' "$*" >&2; }
-  fail() { say "tilo: $*"; exit 1; }
+  fail() { say "$program: $*"; exit 1; }
   need() { command -v "$1" >/dev/null 2>&1 || fail "this install needs $1, which this computer doesn't have"; }
   need uname
   need tar
@@ -69,14 +84,14 @@ main() {
   case $(uname -s) in
     Linux) os=linux ;;
     Darwin) os=macos ;;
-    *) fail "Tilo's command runs on Linux and macOS; this is $(uname -s)" ;;
+    *) fail "$title runs on Linux and macOS; this is $(uname -s)" ;;
   esac
   case $(uname -m) in
     x86_64 | amd64) arch=x86_64 ;;
     aarch64 | arm64) arch=aarch64 ;;
-    *) fail "Tilo's command runs on x86_64 and arm64; this is $(uname -m)" ;;
+    *) fail "$title runs on x86_64 and arm64; this is $(uname -m)" ;;
   esac
-  archive=tilo-$os-$arch.tar.gz
+  archive=$program-$os-$arch.tar.gz
 
   work=$(mktemp -d 2>/dev/null || mktemp -d -t tilo)
   # An install that stops early must not end as a success. macOS's sh (bash 3.2) ends a script
@@ -101,7 +116,7 @@ KEY
   base=$releases/$version
   # ${arch}, in braces: in a UTF-8 locale macOS's sh takes the first byte of the character
   # after a bare name as part of the name, and stops on a variable that is not set.
-  say "Getting Tilo ($version) for $os ${arch}…"
+  say "Getting $title ($version) for $os ${arch}…"
   fetch "$base/SHA256SUMS" "$work/SHA256SUMS" || fail "could not get $base/SHA256SUMS"
   if command -v openssl >/dev/null 2>&1; then
     fetch "$base/SHA256SUMS.sig" "$work/SHA256SUMS.sig" || fail "could not get the release's signature"
@@ -114,49 +129,40 @@ KEY
   [ "$(digest "$work/$archive")" = "$expected" ] || fail "$archive does not match the release's SHA256SUMS; nothing was installed"
 
   mkdir "$work/unpacked"
-  tar -xzf "$work/$archive" -C "$work/unpacked" tilo || fail "$archive holds no tilo"
-  [ -f "$work/unpacked/tilo" ] && [ ! -L "$work/unpacked/tilo" ] || fail "$archive holds no plain tilo"
-  # A Linux release also holds tilolang-process, which tilo looks for beside itself to start
-  # an agent's task programs in. A Mac's archive holds none (no task program starts there), and
-  # neither does a release from before it was packed: then tilo is installed alone.
+  tar -xzf "$work/$archive" -C "$work/unpacked" "$program" || fail "$archive holds no $program"
+  [ -f "$work/unpacked/$program" ] && [ ! -L "$work/unpacked/$program" ] || fail "$archive holds no plain $program"
   beside=
-  tar -xzf "$work/$archive" -C "$work/unpacked" tilolang-process 2>/dev/null || :
-  if [ -e "$work/unpacked/tilolang-process" ] || [ -L "$work/unpacked/tilolang-process" ]; then
-    [ -f "$work/unpacked/tilolang-process" ] && [ ! -L "$work/unpacked/tilolang-process" ] \
-      || fail "$archive holds no plain tilolang-process"
-    beside=tilolang-process
-  fi
-  # The daemon `tilo login` and `tilo mcp` start (tilo-runtime), beside tilo, where they look
-  # for it. A release from before it was packed holds none.
-  tar -xzf "$work/$archive" -C "$work/unpacked" tilo-runtime 2>/dev/null || :
-  if [ -e "$work/unpacked/tilo-runtime" ] || [ -L "$work/unpacked/tilo-runtime" ]; then
-    [ -f "$work/unpacked/tilo-runtime" ] && [ ! -L "$work/unpacked/tilo-runtime" ] \
-      || fail "$archive holds no plain tilo-runtime"
-    beside="$beside tilo-runtime"
-  fi
+  for name in $beside_programs; do
+    tar -xzf "$work/$archive" -C "$work/unpacked" "$name" 2>/dev/null || :
+    if [ -e "$work/unpacked/$name" ] || [ -L "$work/unpacked/$name" ]; then
+      [ -f "$work/unpacked/$name" ] && [ ! -L "$work/unpacked/$name" ] \
+        || fail "$archive holds no plain $name"
+      beside="$beside $name"
+    fi
+  done
   mkdir -p "$dir"
-  # Each replaced in one rename, so a tilo running now keeps working; the program beside it
-  # first, so a new tilo never starts an old one.
-  for name in $beside tilo; do
+  # Each replaced in one rename, so a program running now keeps working; the programs beside it
+  # first, so a new one never starts an old one.
+  for name in $beside "$program"; do
     cp "$work/unpacked/$name" "$dir/.$name.new"
     chmod 0755 "$dir/.$name.new"
     mv -f "$dir/.$name.new" "$dir/$name"
   done
 
-  say "Installed tilo to $dir/tilo."
+  say "Installed $program to $dir/$program."
   case ":${PATH:-}:" in
-    *":$dir:"*) tilo=tilo ;;
-    *) tilo=$dir/tilo; say "That folder isn't on your PATH yet, so this uses the full path." ;;
+    *":$dir:"*) run=$program ;;
+    *) run=$dir/$program; say "That folder isn't on your PATH yet, so this uses the full path." ;;
   esac
   if [ "$#" -eq 0 ]; then
-    say "Next: $tilo login CODE, with CODE from Tilo (choose \"Set up with your agent\")."
+    say_next "$run"
     finished=1
     return
   fi
   rm -rf "$work"
   trap - EXIT INT TERM
   # Its input is the rest of this script's pipe, not the person's.
-  "$dir/tilo" "$@" </dev/null
+  "$dir/$program" "$@" </dev/null
 }
 
 main "$@"
