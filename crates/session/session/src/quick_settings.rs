@@ -621,8 +621,7 @@ pub(crate) struct QuickSettingsService {
     shown: std::cell::RefCell<settings_store::hardware::QuickSettingsConfig>,
     /// Whether the settings document was read at all, and the version that was read: one that did
     /// not move is not read again.
-    seen: bool,
-    stamp: Option<settings_store::SettingsStamp>,
+    settings: settings_store::SettingsFollower,
 }
 
 impl QuickSettingsService {
@@ -636,12 +635,9 @@ impl QuickSettingsService {
     /// Read the person's controls, and say the resource changed when they are not what was
     /// published.
     fn follow(&mut self) -> bool {
-        let stamp = settings_store::stamp();
-        if !settings_store::document_changed(self.seen, self.stamp, stamp) {
+        if !self.settings.changed(settings_store::stamp()) {
             return false;
         }
-        self.seen = true;
-        self.stamp = stamp;
         let config = settings_store::hardware::QuickSettingsConfig::load().normalised();
         let changed = *self.shown.borrow() != config;
         *self.shown.borrow_mut() = config;
@@ -672,7 +668,7 @@ impl QuickSettingsService {
             ))
         })?;
         *self.shown.borrow_mut() = config;
-        self.stamp = settings_store::stamp();
+        self.settings.changed(settings_store::stamp());
         Ok(true)
     }
 }

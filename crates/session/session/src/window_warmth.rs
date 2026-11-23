@@ -40,19 +40,23 @@ pub(crate) struct Windows {
     /// from it.
     document: Map<String, Value>,
     /// What version of the settings `document` is, so it is read again only when it changed.
-    stamp: Option<settings_store::SettingsStamp>,
+    settings: settings_store::SettingsFollower,
 }
 
 impl Windows {
     /// The windows of a shell wearing `theme` , with `person` sitting at this machine.
     pub(crate) fn new(theme: Theme, person: &str) -> Self {
+        // Record the stamp before reading the document so a write that lands in between moves the
+        // stamp ahead of what was recorded and is read on the next pass rather than missed.
+        let mut settings = settings_store::SettingsFollower::default();
+        settings.changed(settings_store::stamp());
         let document = settings_store::load();
         let your_colour = PresenceHue::worn_in(&Value::Object(document.clone()), person);
         Self {
             warmth: WindowWarmth::new(your_colour),
             theme: theme.with_your_colour(your_colour),
             document,
-            stamp: settings_store::stamp(),
+            settings,
         }
     }
 
@@ -66,13 +70,9 @@ impl Windows {
     /// chosen in Settings), for everything the session draws to wear. Nothing reads the document on
     /// a pass where it did not change.
     pub(crate) fn follow_settings(&mut self, person: &str) -> Option<Theme> {
-        // The document was read when the shell started (`new`), so only a stamp that moved since
-        // says it changed.
-        let stamp = settings_store::stamp();
-        if !settings_store::document_changed(true, self.stamp, stamp) {
+        if !self.settings.changed(settings_store::stamp()) {
             return None;
         }
-        self.stamp = stamp;
         self.document = settings_store::load();
         let your_colour = PresenceHue::worn_in(&Value::Object(self.document.clone()), person);
         self.warmth.set_your_colour(your_colour);
@@ -313,6 +313,94 @@ mod tests {
             writes(999),
             Some(Some(false)),
             "a connection that named no window falls back to the first workspace holding the app"
+        );
+    }
+
+    /// A settings write that lands between `Windows::new` taking its stamp and loading the
+    /// document leaves the stamp ahead of what was recorded, so the next `follow_settings` pass
+    /// reads the update instead of missing it.
+    #[test]
+    fn a_change_during_construction_is_followed_on_the_next_pass() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct RacingSource {
+            inner: settings_store::HostDocument,
+            race: AtomicBool,
+        }
+
+        impl settings_store::SettingsSource for RacingSource {
+            fn load(&self) -> Map<String, Value> {
+                let document = self.inner.load();
+                if self.race.swap(false, Ordering::AcqRel) {
+                    let dark = serde_json::json!({"mode": "dark"})
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default();
+                    self.inner.update_section("appearance", dark).unwrap();
+                }
+                document
+            }
+
+            fn update_section(
+                &self,
+                name: &str,
+                values: Map<String, Value>,
+            ) -> std::io::Result<()> {
+                self.inner.update_section(name, values)
+            }
+
+            fn revision(&self) -> u64 {
+                self.inner.revision()
+            }
+
+            fn changes(&self) -> &settings_store::ChangeSignal {
+                self.inner.changes()
+            }
+        }
+
+        let initial = serde_json::json!({"appearance": {"mode": "light"}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let source: Arc<dyn settings_store::SettingsSource> = Arc::new(RacingSource {
+            inner: settings_store::HostDocument::new(initial, |_| Ok(())),
+            race: AtomicBool::new(true),
+        });
+        let _scope = settings_store::scoped_source(Some(source));
+
+        let mut windows = Windows::new(Theme::light(), PERSON);
+        assert_eq!(
+            windows.document["appearance"]["mode"],
+            serde_json::json!("light")
+        );
+        assert!(
+            windows.follow_settings(PERSON).is_some(),
+            "the write that landed during construction is read on the next pass"
+        );
+        assert_eq!(
+            windows.document["appearance"]["mode"],
+            serde_json::json!("dark")
+        );
+        assert!(
+            windows.follow_settings(PERSON).is_none(),
+            "once caught up, an unchanged stamp reads nothing again"
+        );
+    }
+
+    /// With no settings store (`stamp()` is `None`), `Windows::new` loads once and
+    /// `follow_settings` skips later passes.
+    #[test]
+    fn without_a_settings_store_windows_follow_skips_reload() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", "").remove("XDG_DATA_HOME");
+        let _scope = settings_store::scoped_source(None);
+        assert_eq!(settings_store::stamp(), None);
+
+        let mut windows = Windows::new(Theme::light(), PERSON);
+        assert!(
+            windows.follow_settings(PERSON).is_none(),
+            "a follow pass with still no stamp does not reload"
         );
     }
 }
