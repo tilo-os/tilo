@@ -632,6 +632,15 @@ and screen share only, never documents, and stays as it is.
   dispatched calls, the answer is the view's HTML, and the visitor's writes
   are the app's actions under their own identity. There is no page replica
   and no per-person check beside the dispatch.
+- **One way to read a record**: the record API (`ResourceRead`, with
+  follow). Every program reads and keeps current a record this way: an app,
+  the shell, the session, a system program (calling as the device, under
+  ordinary grants) and, before anyone signs in, the device reading the
+  workspace founded on it. A record's address names its workspace. Writes are
+  the record's typed actions on the one dispatch. A program that needs more
+  extends this API; it gets no call of its own. The session's own engine
+  (`EngineRecords`, `settings_sync`) goes, and settings are records read and
+  written like any other.
 - **Files are resources.** The tree syncs as ordinary records through
   `tree_sync` only. Bytes go through one content store, moved by
   `RouteContent`, with keys from `workspace-keys`. A person sees it as one
