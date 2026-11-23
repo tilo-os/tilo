@@ -3088,8 +3088,15 @@ impl ResourceStore {
             } else {
                 from.ty.clone()
             };
+            // A resource no package here declares (an event, another app's record) is named by
+            // the kind its reference carries, so what was made from it still reads so.
+            let kind = tilo_failure::ignored!(
+                "a type no package here loads is a kind of its own",
+                self.kind_of_type(&ty)
+            )
+            .unwrap_or(ty);
             Some(tilo_resource_store::Origin {
-                kind: self.kind_of_type(&ty).ok()?,
+                kind,
                 id: id_of(from),
             })
         });
@@ -3153,7 +3160,9 @@ impl ResourceStore {
                 .unwrap_or_else(|| name.to_owned())
         };
         let from = stamp.from.as_ref().and_then(|from| {
-            let ty = self.entry_of_kind(&from.kind)?.id;
+            let ty = self
+                .entry_of_kind(&from.kind)
+                .map_or_else(|| from.kind.clone(), |entry| entry.id);
             ResourceRef::parse_id(&from.id, ty)
         });
         let left = held
