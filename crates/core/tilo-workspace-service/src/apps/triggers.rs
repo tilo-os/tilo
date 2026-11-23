@@ -50,9 +50,6 @@ use folders::{FolderChange, FolderWatch};
 /// firing waiting for its turn and a folder's settled file are seen within it.
 const TICK: Duration = Duration::from_secs(1);
 
-/// How often the shortcuts are armed again although no workspace's governance said it changed.
-const REARM: Duration = Duration::from_secs(30);
-
 /// How long a firing's claim goes between renewals while its run goes or waits to go again.
 const RENEW: Duration = Duration::from_secs(20);
 
@@ -622,33 +619,47 @@ impl Runner {
 
     /// Run until the workspaces' service stops.
     pub async fn run(mut self) {
+        use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+
         let mut writes = self.workspaces.document_writes();
         let mut governance = self.workspaces.governance_changes();
-        let mut armed_at = None::<std::time::Instant>;
+        // Armed at the start, and again whenever a workspace's own document changed: a shortcut
+        // is saved there, so it is armed by following its save, not on a clock.
+        let mut changed = true;
         let mut written = Vec::new();
         loop {
-            let now = tilo_clock::now();
-            if armed_at.is_none_or(|at| now.saturating_duration_since(at) >= REARM) {
+            // What was written is taken first and the workspaces' changes second. A save is told
+            // before anything written after it, so a shortcut saved before a write taken here is
+            // armed before that write is read: a message written right after its shortcut is
+            // answered.
+            loop {
+                match writes.try_recv() {
+                    Ok(write) => written.push(write),
+                    Err(TryRecvError::Lagged(_)) => {}
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Closed) => return,
+                }
+            }
+            loop {
+                match governance.try_recv() {
+                    Ok(_) | Err(TryRecvError::Lagged(_)) => changed = true,
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Closed) => return,
+                }
+            }
+            if std::mem::take(&mut changed) {
                 self.arm().await;
-                armed_at = Some(now);
             }
             self.pass(std::mem::take(&mut written)).await;
             tokio::select! {
                 write = writes.recv() => match write {
-                    Ok(write) => {
-                        written.push(write);
-                        while let Ok(more) = writes.try_recv() {
-                            written.push(more);
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    Ok(write) => written.push(write),
+                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return,
                 },
-                changed = governance.recv() => match changed {
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        armed_at = None;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                moved = governance.recv() => match moved {
+                    Ok(_) | Err(RecvError::Lagged(_)) => changed = true,
+                    Err(RecvError::Closed) => return,
                 },
                 () = tokio::time::sleep(TICK) => {}
             }
@@ -677,7 +688,10 @@ impl Runner {
             hosts,
             tilo_clock::unix_now_ns(),
         );
-        let now_s = tilo_clock::unix_now_i64();
+        // A record's first look reports the changes made from when its workspace started being
+        // watched. A change's time is a whole second, and what was written right after the save
+        // that armed it may carry the second before this one.
+        let now_s = tilo_clock::unix_now_i64().saturating_sub(1);
         let watched: BTreeSet<String> = self
             .armed
             .iter()

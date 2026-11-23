@@ -272,6 +272,95 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
     host.shutdown().await;
 }
 
+/// A shortcut is armed by following its save: a record written right after the shortcut is saved
+/// fires it, while the runner runs as a device runs it, with no wait for a clock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
+    use tilo_resource_store::wire::Command;
+    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
+    let (key, cert) = governor();
+    let host = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = host.workspaces();
+    workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: "so.tilo.tasks".into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+
+    // The runner runs before the shortcut exists, with nothing to arm.
+    let started = Arc::new(Started::default());
+    let running = tokio::spawn(
+        Runner::new(
+            workspaces.clone(),
+            Arc::clone(&started) as Arc<dyn StartRun>,
+            Order::WORKSPACE,
+        )
+        .run(),
+    );
+    tokio::task::yield_now().await;
+
+    let begun = std::time::Instant::now();
+    save_signed(workspaces, &workspace, on_issue_change(), (&key, &cert)).await;
+    workspaces
+        .own_resource_command(
+            &workspace,
+            "so.tilo.tasks",
+            Command::Put {
+                kind: "tasks.issue".into(),
+                id: "i-1".into(),
+                resource: Resource {
+                    readers: "*".into(),
+                    parent: None,
+                    order: None,
+                    fields: [("title".to_owned(), Cell::One(Value::Text("First".into())))].into(),
+                },
+                stamp: Stamp {
+                    verb: "add".into(),
+                    invoker: Stamp::by(&tilo_action_policy::Actor::Member(
+                        tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
+                    )),
+                    invocation: "i-1".into(),
+                    ..Stamp::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    let fired = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !started.0.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+    running.abort();
+    assert!(
+        fired.is_ok(),
+        "the write right after the save fires the shortcut"
+    );
+    let firings = started.0.lock().unwrap().clone();
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    assert_eq!(firings[0].shortcut, "tidy");
+    assert!(
+        begun.elapsed() < Duration::from_secs(1),
+        "armed by its save, not by a clock: {:?}",
+        begun.elapsed()
+    );
+    host.shutdown().await;
+}
+
 /// A shortcut whose trigger is an event the Discord connector reports in one channel.
 fn on_connector_event() -> Shortcut {
     serde_json::from_value(json!({
