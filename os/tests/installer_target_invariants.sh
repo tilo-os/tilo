@@ -662,6 +662,25 @@ else
   bad "a staged plan can install with a person, without one, without enrolling, or with its ticket exposed"
 fi
 
+# A staged server installs with nobody at its screen, so its disk recovery key is
+# shown to nobody: the only copy the person ever gets is the one the machine hands
+# to the vault of their Servers workspace once it joined. So the hand-off names the
+# key file (its path, never its contents), a hand-off that fails stops the install,
+# and the file is shredded only after it.
+plan_block="$(awk '/^if \[ "\$INSTALL_PLAN" -eq 1 \]; then$/ { inside = 1 } inside { print } inside && /^fi$/ { inside = 0 }' "$backend")"
+enrol_line="$(grep -n '^[[:space:]]*enrol_planned_server$' <<<"$plan_block" | head -1 | cut -d: -f1)"
+shred_line="$(grep -n 'shred -u "\$PLAN_RECOVERY_KEY_FILE"' <<<"$plan_block" | head -1 | cut -d: -f1)"
+enrol="$(awk '/^enrol_planned_server\(\) \{/ { inside = 1 } inside { print } inside && /^\}$/ { exit }' "$backend")"
+handoff="$(awk '/server keep-recovery-key/ { inside = 1 } inside { print } inside && /\|\| die/ { exit }' <<<"$enrol")"
+if grep -Fq '"$TILO_BIN" server keep-recovery-key "$PLAN_RECOVERY_KEY_FILE"' <<<"$handoff" \
+   && grep -Fq '|| die' <<<"$handoff" \
+   && ! grep -Eq 'cat[[:space:]]+"?\$PLAN_RECOVERY_KEY_FILE|<[[:space:]]*"?\$PLAN_RECOVERY_KEY_FILE' <<<"$enrol" \
+   && [ -n "$enrol_line" ] && [ -n "$shred_line" ] && [ "$enrol_line" -lt "$shred_line" ]; then
+  ok "a staged server's recovery key is shredded only after the person's vault kept it"
+else
+  bad "a staged server can shred its disk recovery key without the person's vault keeping it"
+fi
+
 # The server destination installs the server image with no login account: the
 # image decides, and neither the credential seed nor the one-boot session
 # handoff can be written for it. First boot refuses a seed on a server image.
