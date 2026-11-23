@@ -1,5 +1,5 @@
-# Unit tests of the Windows imager that cannot pass under Wine, one per line:
-# the test name libtest knows it by, then why. They still run on Windows.
+# Unit tests of the Windows imager and of the daemon's platform layer that cannot pass under Wine,
+# one per line: the test name libtest knows it by, then why. They still run on Windows.
 app::tests::owner_ssh_key_can_be_typed_before_the_complete_key_is_validated	app state publishes only to volumes with local-disk evidence, which Wine's lack
 app::tests::wizard_semantics_labels_live_regions_and_keyboard_order	app state publishes only to volumes with local-disk evidence, which Wine's lack
 app::tests::step_body_and_footer_reflow_without_overlap	app state publishes only to volumes with local-disk evidence, which Wine's lack
@@ -67,3 +67,5 @@ setup::journey::visual_tests::viewport_growth_keeps_logical_type_and_controls_an
 setup::staging::fake::tests::a_named_disk_identity_is_revalidated_and_recorded	its recorded staging needs local-disk evidence Wine lacks
 setup::staging::fake::tests::development_layers_reach_the_staging_root_and_a_resume_finds_them	its recorded staging needs local-disk evidence Wine lacks
 setup::staging::record::tests::btrfs_resize_journal_requires_durable_order_and_preserves_retry_intent	its recorded staging needs local-disk evidence Wine lacks
+windows::tests::a_pipe_grants_this_account_and_system_alone	Wine keeps a pipe's DACL but enforces none of it; a Windows worker reads it back
+windows::tests::a_held_pipe_is_not_joined	Wine ignores FILE_FLAG_FIRST_PIPE_INSTANCE, so a second listener joins; a Windows worker refuses it

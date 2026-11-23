@@ -97,6 +97,7 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     ;;
   runtime)
     sdk="${3:?SDK archive}" out="${4:?output directory}"
+    windows_platform_tests="tilo-socket"
     use_windows_sdk "$arch" "$sdk"
     # The daemon and the tilolang runtime programs of a Tilo desktop: cross-built
     # so that a platform arm which stops compiling is a failed check, and so the
@@ -107,6 +108,21 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     mkdir -p "$out"
     install -m 0644 "${CARGO_TARGET_DIR:-target}/$target/debug/tilo-runtime.exe" "$out/tilo-runtime.exe"
     digest "$out/tilo-runtime.exe"
+    # The unit tests of the platform layer the daemon stands on, for Wine to run:
+    # one executable per crate, named by it.
+    for crate in $windows_platform_tests; do
+      cargo xwin test --locked --no-run -p "$crate" --all-features --lib --target "$target" \
+        --message-format json-render-diagnostics > "${TMPDIR:-/tmp}/$crate-tests.json"
+      executable="$(python3 -I -c '
+import json, sys
+paths = [m["executable"] for m in map(json.loads, open(sys.argv[1]))
+         if m.get("reason") == "compiler-artifact" and m.get("executable") and m["profile"]["test"]]
+if len(paths) != 1:
+    sys.exit(f"expected one test executable, found {paths}")
+print(paths[0])' "${TMPDIR:-/tmp}/$crate-tests.json")"
+      mkdir -p "$out/platform-tests"
+      install -m 0644 "$executable" "$out/platform-tests/$crate.exe"
+    done
     ;;
   *) printf 'unknown mode: %s\n' "$mode" >&2; exit 2 ;;
 esac

@@ -4334,7 +4334,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/windows/build.sh runtime {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/runtime"
 needs = ["build/windows-sdk-{arch}"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
-outputs = ["/target/windows/{arch}/runtime/tilo-runtime.exe", "/target/windows/{arch}/runtime/tilo-runtime.exe.sha256"]
+outputs = ["/target/windows/{arch}/runtime/tilo-runtime.exe", "/target/windows/{arch}/runtime/tilo-runtime.exe.sha256", "/target/windows/{arch}/runtime/platform-tests/*.exe"]
 # The device daemon and both tilolang runtime programs cross-built for a
 # platform no other check builds them for: too slow for every head, but the
 # only thing that keeps the Windows port compiling, so main's newest head
