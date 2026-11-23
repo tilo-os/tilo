@@ -142,7 +142,12 @@ fn a_find_answers_while_the_loop_keeps_running() {
     // does. The answer is read after the source has ended, so what is measured is the passes the
     // loop ran while the find was in flight.
     let asked = Instant::now();
-    let find = api.send(&format!("search?q={NEEDLE}"), None);
+    // The search a caller asks is the action its resource publishes, which replaced the route
+    // the session answered before: a request to the route is no search, and no source is asked.
+    let find = api.send(
+        "resources/search/actions/find",
+        Some(serde_json::json!({ "query": NEEDLE })),
+    );
     let mut passes = 0_usize;
     let mut longest = Duration::ZERO;
     let deadline = Instant::now()

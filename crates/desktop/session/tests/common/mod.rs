@@ -1164,7 +1164,8 @@ impl Api {
         }
     }
 
-    /// Ask the workspace's `route` (`resources?path=…`, `search?q=…`), posting `body` when there
+    /// Ask the workspace's `route` (`resources?path=…`,
+    /// `resources/search/actions/find`), posting `body` when there
     /// is one, and answer nothing here: [`Asked::answer`] waits for it.
     pub fn send(&self, route: &str, body: Option<Value>) -> Asked {
         let socket = self.socket.clone();
