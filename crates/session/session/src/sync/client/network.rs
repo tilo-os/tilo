@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use tilo_lock::MutexRecover as _;
+
 use iroh::{EndpointAddr, EndpointId};
 use tilo_endpoint_reachability::Reachability;
 use tilo_network_actor::own_service::OwnService;
@@ -207,7 +209,85 @@ pub(crate) struct Bound {
     pub(crate) relays: tilo_endpoint_reachability::EndpointRelays,
     /// What it hears on the local network.
     pub(crate) lan: tilo_endpoint_reachability::Nearby,
+    /// The devices the workspaces it is in admit, whom that discovery answers too.
+    pub(crate) rosters: LanRosters,
     pub(crate) reached: Reached,
+}
+
+/// The devices each workspace this device is in admitted, as the session last handed the peer
+/// network their rosters: beside the person's own devices, the ones this device's local discovery
+/// answers ([`LanFleet`]).
+#[derive(Clone, Default)]
+pub(crate) struct LanRosters(
+    Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<WorkspaceId, Vec<tilo_network_actor::RosterDevice>>,
+        >,
+    >,
+);
+
+impl LanRosters {
+    /// Take what `command` says of a workspace's roster: the devices it admits now, or none once
+    /// this device left it.
+    fn note(&self, command: &Cmd) {
+        match command {
+            Cmd::Roster { ws, devices } => {
+                self.0.lock_recover().insert(*ws, devices.clone());
+            }
+            Cmd::Leave(ws) => {
+                self.0.lock_recover().remove(ws);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a workspace this device is in admits `device` at `now_ns`.
+    fn admit(&self, device: &[u8; 32], now_ns: u64) -> bool {
+        self.0
+            .lock_recover()
+            .values()
+            .flatten()
+            .any(|(id, expires)| {
+                id.as_bytes() == device && expires.is_none_or(|expires| expires > now_ns)
+            })
+    }
+}
+
+/// The devices this device's local discovery answers ([`tilo_endpoint_reachability::lan`]): the
+/// person's own, current and unrevoked, as the sibling session admits them, and the devices a
+/// workspace this device is in admitted. Its probes present the person's certificate.
+pub(crate) struct LanFleet {
+    pub(crate) identity: DeviceIdentity,
+    pub(crate) rosters: LanRosters,
+}
+
+impl tilo_endpoint_reachability::Fleet for LanFleet {
+    fn certificate(&self) -> Option<tilo_user_identity::DeviceCert> {
+        Some(
+            self.identity
+                .material_for(tilo_network_actor::DEFAULT_WS_TOPIC)
+                .0,
+        )
+    }
+
+    fn admits(&self, cert: &tilo_user_identity::DeviceCert) -> bool {
+        let now = tilo_clock::unix_now_ns();
+        let (own, revocations) = self
+            .identity
+            .material_for(tilo_network_actor::DEFAULT_WS_TOPIC);
+        if cert.device_public_key == own.device_public_key
+            || tilo_user_identity::verify_device_cert_at(cert, now).is_err()
+        {
+            return false;
+        }
+        let persons = cert.user_public_key == own.user_public_key
+            && !revocations.iter().any(|entry| {
+                (entry.user_public_key, entry.revoked_device_public_key)
+                    == (cert.user_public_key, cert.device_public_key)
+                    && entry.revoked_at_ns <= now
+            });
+        persons || self.rosters.admit(&cert.device_public_key, now)
+    }
 }
 
 impl Bound {
@@ -222,6 +302,7 @@ impl Bound {
             endpoint,
             relays,
             lan,
+            rosters: LanRosters::default(),
             reached: Reached::default(),
         }
     }
@@ -351,6 +432,9 @@ pub(super) fn run(
             own_service,
         };
         while let Some(command) = commands.recv().await {
+            if let HostCmd::Network(command) = &command {
+                bound.rosters.note(command);
+            }
             let Some(taken) = carry_host(&actor, &events, &asking, command).await else {
                 break;
             };
@@ -604,13 +688,14 @@ async fn listening(
     bound: &Bound,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
-    let (builder, deferred_relays) = match endpoint_for(identity, &bound.relays, &bound.lan) {
-        Ok(building) => building,
-        Err(error) => {
-            let _ = ready.send(Err(error));
-            return None;
-        }
-    };
+    let (builder, deferred_relays) =
+        match endpoint_for(identity, &bound.relays, &bound.lan, &bound.rosters) {
+            Ok(building) => building,
+            Err(error) => {
+                let _ = ready.send(Err(error));
+                return None;
+            }
+        };
     let endpoint = match bound
         .reached
         .resolving(builder, &lookup)

@@ -874,11 +874,11 @@ tilo_test_env::scenario! {
             &settings_store::relay::Relays::Own("https://relay.example.com.".into()),
         );
         let lan = tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {}));
-        let held = endpoint_for(Some(&identity), &own, &lan)
+        let held = endpoint_for(Some(&identity), &own, &lan, &super::network::LanRosters::default())
             .expect("an endpoint to bind")
             .1;
         assert_eq!(held.urls::<Vec<_>>(), own.relays.urls::<Vec<_>>());
-        let nobody = endpoint_for(None, &own, &lan)
+        let nobody = endpoint_for(None, &own, &lan, &super::network::LanRosters::default())
             .expect("a loopback endpoint to bind")
             .1;
         assert!(
@@ -1438,7 +1438,13 @@ async fn session_endpoint(
         &settings_store::relay::Relays::None,
     );
     let lan = tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {}));
-    let (builder, _) = endpoint_for(Some(&identity), &relays, &lan).expect("an endpoint to bind");
+    let (builder, _) = endpoint_for(
+        Some(&identity),
+        &relays,
+        &lan,
+        &super::network::LanRosters::default(),
+    )
+    .expect("an endpoint to bind");
     reached
         .resolving(builder, heard)
         .bind()

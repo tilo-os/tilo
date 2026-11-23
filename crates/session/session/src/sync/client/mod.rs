@@ -2324,6 +2324,7 @@ fn endpoint_for(
     identity: Option<&DeviceIdentity>,
     relays: &tilo_endpoint_reachability::EndpointRelays,
     lan: &tilo_endpoint_reachability::Nearby,
+    rosters: &network::LanRosters,
 ) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {
     let Some(identity) = identity else {
         return Ok((loopback_endpoint()?, iroh::RelayMap::empty()));
@@ -2337,13 +2338,18 @@ fn endpoint_for(
     // The relays are held back ([`tilo_endpoint_reachability`]): binding with an empty relay map
     // keeps net report, address discovery and port mapping off the network until a workspace this
     // session shows has someone else in it. A peer's key also resolves on the local network
-    // ([`tilo_endpoint_reachability::Nearby`]), so two of the person's devices that share one find
-    // each other while their relays rest, and with their own relay (or none) that is what finds
-    // them. The lookup only answers for a key this device already dials: hearing an endpoint there
-    // dials nobody.
+    // ([`tilo_endpoint_reachability::Nearby`]), so two of the workspace's devices that share one
+    // find each other while their relays rest, and with their own relay (or none) that is what
+    // finds them. The lookup asks only for a key this device dials, in a probe only that device
+    // opens, and answers only the devices [`network::LanFleet`] admits: someone else on the
+    // network learns no key and no address.
+    let fleet = network::LanFleet {
+        identity: identity.clone(),
+        rosters: rosters.clone(),
+    };
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)
-        .address_lookup(lan.lookup())
+        .address_lookup(lan.lookup(Arc::new(fleet)))
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()));
     if relays.n0_dns {
         builder = builder

@@ -359,7 +359,15 @@ fn collaborating(
             hosts: sync::configured_hosts(),
             continuity,
             wake: options.wake.handle(),
-            lan: tilo_endpoint_reachability::Nearby::from_env(options.wake.handle()),
+            // A probe recorded before a restart is not answered after it: the newest epoch each
+            // device asked at is kept with the session's state.
+            lan: Some(
+                tilo_endpoint_reachability::Nearby::from_env(options.wake.handle())
+                    .unwrap_or_else(|| {
+                        tilo_endpoint_reachability::Nearby::new(options.wake.handle())
+                    })
+                    .remembering_in(options.state.as_deref()),
+            ),
             relays: options
                 .relays
                 .clone()
