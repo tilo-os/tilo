@@ -32,7 +32,9 @@ __all__ = [
     "DraftShortcutArgs",
     "OpenShortcutArgs",
     "DuplicateShortcutArgs",
-    "SetScheduleArgs",
+    "AddTriggerArgs",
+    "ReplaceTriggerArgs",
+    "RemoveTriggerArgs",
     "DiscardArgs",
     "AddStepArgs",
     "ReplaceStepArgs",
@@ -107,13 +109,24 @@ DuplicateShortcutArgs = TypedDict("DuplicateShortcutArgs", {
 })
 """The arguments of `duplicate-shortcut`."""
 
-SetScheduleArgs = TypedDict("SetScheduleArgs", {
+AddTriggerArgs = TypedDict("AddTriggerArgs", {
     "draft": "str",
-    "enabled": "bool",
-    "hour": "int",
-    "minute": "int",
+    "trigger": "Any",
 })
-"""The arguments of `set-schedule`."""
+"""The arguments of `add-trigger`."""
+
+ReplaceTriggerArgs = TypedDict("ReplaceTriggerArgs", {
+    "draft": "str",
+    "index": "int",
+    "trigger": "Any",
+})
+"""The arguments of `replace-trigger`."""
+
+RemoveTriggerArgs = TypedDict("RemoveTriggerArgs", {
+    "draft": "str",
+    "index": "int",
+})
+"""The arguments of `remove-trigger`."""
 
 DiscardArgs = TypedDict("DiscardArgs", {
     "draft": "str",
@@ -191,7 +204,7 @@ RemoveInputArgs = TypedDict("RemoveInputArgs", {
 
 class Workbench(Resource):
     """Shortcuts — `shortcuts.workbench`."""
-    __surface__ = "so.tilo.shortcuts@07f5724db001dde6"
+    __surface__ = "so.tilo.shortcuts@e0152581ca03b6ec"
     drafts: list[Entry[Draft]]
     ignored: list[str]
 
@@ -259,19 +272,42 @@ class Workbench(Resource):
         """Runs `duplicate-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("duplicate-shortcut", items)
 
-    def set_schedule(self,
+    def add_trigger(self,
         *,
         draft: str,
-        enabled: bool,
-        hour: int,
-        minute: int,
+        trigger: Any,
     ) -> None:
         """Runs the app's action."""
-        return self.action("set-schedule", draft=draft, enabled=enabled, hour=hour, minute=minute)
+        return self.action("add-trigger", draft=draft, trigger=trigger)
 
-    def set_schedule_many(self, items: list[SetScheduleArgs]) -> list[dict[str, Any]]:
-        """Runs `set-schedule` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-schedule", items)
+    def add_trigger_many(self, items: list[AddTriggerArgs]) -> list[dict[str, Any]]:
+        """Runs `add-trigger` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("add-trigger", items)
+
+    def replace_trigger(self,
+        *,
+        draft: str,
+        index: int,
+        trigger: Any,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("replace-trigger", draft=draft, index=index, trigger=trigger)
+
+    def replace_trigger_many(self, items: list[ReplaceTriggerArgs]) -> list[dict[str, Any]]:
+        """Runs `replace-trigger` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("replace-trigger", items)
+
+    def remove_trigger(self,
+        *,
+        draft: str,
+        index: int,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("remove-trigger", draft=draft, index=index)
+
+    def remove_trigger_many(self, items: list[RemoveTriggerArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-trigger` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove-trigger", items)
 
     def discard(self, *, draft: str) -> None:
         """Runs the app's action."""
@@ -412,6 +448,6 @@ class Workbench(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"draft_proposal", "draft_proposal_many", "ignore_proposal", "ignore_proposal_many", "allow_proposal", "allow_proposal_many", "new_draft", "new_draft_many", "duplicate_draft", "duplicate_draft_many", "draft_shortcut", "draft_shortcut_many", "open_shortcut", "open_shortcut_many", "duplicate_shortcut", "duplicate_shortcut_many", "set_schedule", "set_schedule_many", "discard", "discard_many", "add_step", "add_step_many", "replace_step", "replace_step_many", "bind_argument", "bind_argument_many", "remove_step", "remove_step_many", "move_step", "move_step_many", "set_step_policy", "set_step_policy_many", "set_nested", "set_nested_many", "set_output", "set_output_many", "add_input", "add_input_many", "remove_input", "remove_input_many"})
+    __actions__ = frozenset({"draft_proposal", "draft_proposal_many", "ignore_proposal", "ignore_proposal_many", "allow_proposal", "allow_proposal_many", "new_draft", "new_draft_many", "duplicate_draft", "duplicate_draft_many", "draft_shortcut", "draft_shortcut_many", "open_shortcut", "open_shortcut_many", "duplicate_shortcut", "duplicate_shortcut_many", "add_trigger", "add_trigger_many", "replace_trigger", "replace_trigger_many", "remove_trigger", "remove_trigger_many", "discard", "discard_many", "add_step", "add_step_many", "replace_step", "replace_step_many", "bind_argument", "bind_argument_many", "remove_step", "remove_step_many", "move_step", "move_step_many", "set_step_policy", "set_step_policy_many", "set_nested", "set_nested_many", "set_output", "set_output_many", "add_input", "add_input_many", "remove_input", "remove_input_many"})
 
 

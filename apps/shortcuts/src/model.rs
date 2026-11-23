@@ -25,8 +25,9 @@ pub struct Program {
     pub steps: Vec<Step>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Binding>,
-    /// Carried unchanged from the saved shortcut, so editing its steps
-    /// keeps when it runs on its own and what it may do then.
+    /// What starts it on its own once saved: every kind of
+    /// [`tilo_automation::TriggerSpec`], each set, changed and removed
+    /// through the draft's own actions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerSpec>,
     /// How long each step of a run may take before it is given up on
@@ -61,11 +62,11 @@ pub struct Draft {
     pub steps: Collection<StepNode>,
     /// What a finished run reports back.
     pub output: Option<Binding>,
-    /// Carried unchanged from the saved shortcut, so editing its steps
-    /// keeps when it runs on its own and what it may do then.
+    /// What starts it on its own once saved, kept as the automation value the
+    /// session arms; the editor writes each whole.
     pub triggers: Vec<TriggerSpec>,
-    /// Carried unchanged like the triggers: how long each step of a run may
-    /// take, or `None` for the engine's own patience.
+    /// Carried unchanged from the saved shortcut: how long each step of a run
+    /// may take, or `None` for the engine's own patience.
     pub step_timeout_secs: Option<u64>,
     /// Whether saving replaces a saved shortcut rather than creating one.
     pub replaces_saved: bool,
@@ -511,6 +512,62 @@ fn draft_mut<'a>(workbench: &'a mut Workbench, draft: &Id) -> Result<&'a mut Dra
         .ok_or_else(|| Refusal::from("there is no such draft"))
 }
 
+/// Refuse a trigger that could never arm: blank where it names what it
+/// watches, a time of day or period the clock cannot keep, or a connector
+/// trigger, which only an app's robot may carry.
+fn check_trigger(trigger: &TriggerSpec) -> Result<(), Refusal> {
+    let refused = |why: &str| Err(Refusal::new(why));
+    match trigger {
+        TriggerSpec::Keyboard { chord } if chord.trim().is_empty() => {
+            refused("A keyboard trigger needs a key chord")
+        }
+        TriggerSpec::Schedule {
+            schedule: tilo_automation::Schedule::Calendar { at, .. },
+            ..
+        } if at.hour > 23 || at.minute > 59 => refused("The time of day must be a real one"),
+        TriggerSpec::Schedule {
+            schedule: tilo_automation::Schedule::Interval { seconds: 0 },
+            ..
+        } => refused("A repeating trigger needs a period"),
+        TriggerSpec::Once { at_ms } if *at_ms <= 0 => {
+            refused("A one-moment trigger needs a date and time")
+        }
+        TriggerSpec::AppOpened { app_id } if app_id.trim().is_empty() => {
+            refused("An app-opened trigger needs an app")
+        }
+        TriggerSpec::FileChanged { capability } if capability.trim().is_empty() => {
+            refused("A file-changed trigger needs a folder")
+        }
+        TriggerSpec::ResourceChanged { kind, .. } if kind.trim().is_empty() => {
+            refused("A record-changed trigger needs what sort of record")
+        }
+        TriggerSpec::ResourceTime { kind, .. } | TriggerSpec::SourceChanged { kind, .. }
+            if kind.trim().is_empty() =>
+        {
+            refused("A trigger on a source needs what sort of source")
+        }
+        TriggerSpec::ResourceTime { field, .. } if field.trim().is_empty() => {
+            refused("A trigger on a time needs the field holding it")
+        }
+        TriggerSpec::AppEvent { app_id, .. } if app_id.trim().is_empty() => {
+            refused("An app-event trigger needs an app")
+        }
+        TriggerSpec::AppEvent { kind, .. } if kind.trim().is_empty() => {
+            refused("An app-event trigger needs what sort of event")
+        }
+        TriggerSpec::DeviceConnected { device_class } if device_class.trim().is_empty() => {
+            refused("A device trigger needs a kind of device")
+        }
+        TriggerSpec::Connector { .. } => refused("Only an app's robot carries a connector trigger"),
+        _ => Ok(()),
+    }
+}
+
+/// The index a trigger action names, from 0.
+fn trigger_index(index: i64) -> Result<usize, Refusal> {
+    usize::try_from(index).map_err(|_| Refusal::new("The trigger's place must be 0 or more"))
+}
+
 /// Apply `edit` to the program of `draft` and store what changed.
 fn edit_program(
     workbench: &mut Workbench,
@@ -770,37 +827,62 @@ impl Workbench {
         Ok(())
     }
 
-    /// Choose or disable a local morning refresh schedule in this unsaved draft.
+    /// Add a trigger to this unsaved draft: what starts it on its own once it
+    /// is saved. The trigger is the automation value the session arms, one of
+    /// every kind [`TriggerSpec`] holds.
     #[action]
-    pub fn set_schedule(
+    pub fn add_trigger(
         &mut self,
         cx: &mut ActionCx,
-        draft: Id,
-        #[param("Enable the daily local-time schedule")] enabled: bool,
-        #[param("Local hour, 0 to 23")] hour: i64,
-        #[param("Local minute, 0 to 59")] minute: i64,
+        draft: &Id,
+        #[param("The trigger, as JSON with a `trigger` kind")] trigger: serde_json::Value,
     ) -> Result<(), Refusal> {
-        let hour = u8::try_from(hour)
-            .ok()
-            .filter(|hour| *hour < 24)
-            .ok_or_else(|| Refusal::new("Hour must be 0 to 23"))?;
-        let minute = u8::try_from(minute)
-            .ok()
-            .filter(|minute| *minute < 60)
-            .ok_or_else(|| Refusal::new("Minute must be 0 to 59"))?;
-        edit_program(self, cx, &draft, |program| {
-            program.triggers.retain(|trigger| !matches!(trigger,
-                TriggerSpec::Schedule { schedule: tilo_automation::Schedule::Calendar { weekdays, .. }, .. } if weekdays.is_empty()
-            ));
-            if enabled {
-                program.triggers.push(TriggerSpec::Schedule {
-                    schedule: tilo_automation::Schedule::Calendar {
-                        at: tilo_automation::TimeOfDay { hour, minute },
-                        weekdays: Vec::new(),
-                    },
-                    catch_up: tilo_automation::CatchUp::RunOnce,
-                });
+        let trigger: TriggerSpec = serde_json::from_value(trigger)
+            .map_err(|error| Refusal::new(format!("not a trigger: {error}")))?;
+        check_trigger(&trigger)?;
+        edit_program(self, cx, draft, |program| {
+            program.triggers.push(trigger);
+            Ok(())
+        })
+    }
+
+    /// Replace the trigger at `index`, keeping its place in the draft.
+    #[action]
+    pub fn replace_trigger(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("The trigger's place in the draft, from 0")] index: i64,
+        #[param("The trigger, as JSON with a `trigger` kind")] trigger: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        let trigger: TriggerSpec = serde_json::from_value(trigger)
+            .map_err(|error| Refusal::new(format!("not a trigger: {error}")))?;
+        check_trigger(&trigger)?;
+        let index = trigger_index(index)?;
+        edit_program(self, cx, draft, |program| {
+            let slot = program
+                .triggers
+                .get_mut(index)
+                .ok_or_else(|| format!("there is no trigger {index}"))?;
+            *slot = trigger;
+            Ok(())
+        })
+    }
+
+    /// Remove the trigger at `index`.
+    #[action]
+    pub fn remove_trigger(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("The trigger's place in the draft, from 0")] index: i64,
+    ) -> Result<(), Refusal> {
+        let index = trigger_index(index)?;
+        edit_program(self, cx, draft, |program| {
+            if index >= program.triggers.len() {
+                return Err(format!("there is no trigger {index}"));
             }
+            program.triggers.remove(index);
             Ok(())
         })
     }

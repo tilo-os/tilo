@@ -20728,27 +20728,51 @@
         ],
         "description": ""
       },
-      "shortcuts.workbench.set-schedule.Arguments": {
+      "shortcuts.workbench.add-trigger.Arguments": {
         "type": "object",
         "properties": {
           "draft": {
             "type": "string"
           },
-          "enabled": {
-            "type": "boolean"
+          "trigger": {}
+        },
+        "required": [
+          "draft",
+          "trigger"
+        ],
+        "description": ""
+      },
+      "shortcuts.workbench.replace-trigger.Arguments": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
           },
-          "hour": {
+          "index": {
             "type": "integer"
           },
-          "minute": {
+          "trigger": {}
+        },
+        "required": [
+          "draft",
+          "index",
+          "trigger"
+        ],
+        "description": ""
+      },
+      "shortcuts.workbench.remove-trigger.Arguments": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "index": {
             "type": "integer"
           }
         },
         "required": [
           "draft",
-          "enabled",
-          "hour",
-          "minute"
+          "index"
         ],
         "description": ""
       },
@@ -38816,8 +38840,20 @@
     {
       "app": "so.tilo.shortcuts",
       "resource": "shortcuts.workbench",
-      "action": "set-schedule",
-      "arguments": "#/components/schemas/shortcuts.workbench.set-schedule.Arguments"
+      "action": "add-trigger",
+      "arguments": "#/components/schemas/shortcuts.workbench.add-trigger.Arguments"
+    },
+    {
+      "app": "so.tilo.shortcuts",
+      "resource": "shortcuts.workbench",
+      "action": "replace-trigger",
+      "arguments": "#/components/schemas/shortcuts.workbench.replace-trigger.Arguments"
+    },
+    {
+      "app": "so.tilo.shortcuts",
+      "resource": "shortcuts.workbench",
+      "action": "remove-trigger",
+      "arguments": "#/components/schemas/shortcuts.workbench.remove-trigger.Arguments"
     },
     {
       "app": "so.tilo.shortcuts",

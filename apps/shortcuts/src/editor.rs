@@ -767,6 +767,12 @@ mod tests;
 #[must_use]
 pub fn program_text(program: &crate::model::Program, catalog: &ActionCatalog) -> String {
     let mut out = String::new();
+    for trigger in &program.triggers {
+        let _ = writeln!(out, "{}", tilo_automation::text::trigger_line(trigger));
+    }
+    if !program.triggers.is_empty() {
+        out.push('\n');
+    }
     for input in &program.inputs {
         let _ = writeln!(out, "input {} {}", input.name, param_type_name(input.ty));
     }
