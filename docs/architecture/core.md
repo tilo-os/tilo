@@ -704,7 +704,7 @@ The copies:
 
 | Concept | Copies |
 |---|---|
-| Action registries and dispatchers | `tilo_actions::ActionRegistry` (`actions` 47,473); `tilo-app` `Dispatcher<R>`; ui-core `bound_dispatch` and `LocalDispatch`; ui-core `headless::RootDispatch`; `tilolang_runtime::registry::Registry`; `tilolang-tilo` `DynAction` republishing into the first; `os-actions` `Dispatcher` (17,561); `session-actions` (3,651) with the hand-written `apps/tl/session/surface.toml`; `ush-shell` `commands::Dispatch` |
+| Action registries and dispatchers | `tilo_actions::ActionRegistry` (`actions` 47,473); `tilo-app` `Dispatcher<R>`; ui-core `bound_dispatch` and `LocalDispatch`; ui-core `headless::RootDispatch`; `tilolang_runtime::registry::Registry`; `tilolang-tilo` `DynAction` republishing into the first; Settings calling `os-actions` directly (about 33 files) beside the connectivity service's actions, which become the only caller (the `os-actions` `Dispatcher` went in 3864b5fd04d); `session-actions`' own way of carrying a call to another device, which moves onto `tilo-actions/1` (it is already a registry provider, and its `surface.toml` is generated) |
 | Rust view models | `ViewCx` views; `tilo-view` `#[view]` with `view-macros` (1,682, used only by Chat) |
 | Widget output | ui-core paints to a canvas, and 162 widget files also write HTML (`composition.rs` `HtmlCx`) |
 | tilolang hosts | `apps/tilolang` (21,346, one process per installed app, toolkit linked in); `tilolang-process` (14,358, one process per workspace and author) |
