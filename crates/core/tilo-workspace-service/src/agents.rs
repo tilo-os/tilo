@@ -86,6 +86,10 @@ mod going;
 mod instructions;
 mod learned;
 mod mail;
+#[cfg(feature = "agents")]
+mod moderation_history;
+#[cfg(test)]
+mod moderation_history_tests;
 #[cfg(test)]
 mod moderation_turn_tests;
 mod shares;
@@ -1444,6 +1448,15 @@ impl ServerAgents {
         )
         .await;
         scope.provider = scope.provider.answering(pages);
+        // A moderation turn's read of a person's recorded changes, and its undo of them.
+        scope.provider =
+            scope
+                .provider
+                .answering(Arc::new(moderation_history::TurnHistory::for_turn(
+                    self.workspaces.clone(),
+                    workspace,
+                    turn,
+                )));
         Ok(scope)
     }
 
