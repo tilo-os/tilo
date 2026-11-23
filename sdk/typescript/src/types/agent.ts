@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.agent@2098097e16618ed1";
+export const SURFACE = "so.tilo.agent@77c9c58421aeb9b1";
 
 /** Where an ask stands. The workspace's agent engine moves it on, except that its asker withdraws it and a person stops a turn that is working. One of "waiting", "working", "done", "failed", "stopped", "withdrawn", "cannot_read". */
 export type AskState = "waiting" | "working" | "done" | "failed" | "stopped" | "withdrawn" | "cannot_read";
@@ -33,6 +33,10 @@ export interface WithdrawArgs {
 
 /** The arguments of `reopen`. */
 export interface ReopenArgs {
+}
+
+/** The arguments of `retry`. */
+export interface RetryArgs {
 }
 
 /** The arguments of `stop`. */
@@ -90,17 +94,21 @@ export interface Ask extends tilo.Resource {
   reopen(): Promise<void>;
   /** Runs `reopen` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reopenMany(items: ReopenArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks again for an answer that failed: the same ask, its next attempt, so the reply written now stands beside the one that failed. Only its asker may. */
+  retry(): Promise<void>;
+  /** Runs `retry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  retryMany(items: RetryArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Stops a turn that is working; what the agent did until then stays. */
   stop(): Promise<void>;
   /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** The agent starts its reply to `a`, the ask's next attempt. */
+  /** The agent starts its reply to `a`, the ask's next attempt: the one after its newest reply, so a reply that failed and was asked again stands beside it. */
   answer(): Promise<Reply>;
 }
 
 /** The actions `Ask` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ASK_ACTIONS = ["withdraw", "withdrawMany", "reopen", "reopenMany", "stop", "stopMany", "answer"] as const;
+export const ASK_ACTIONS = ["withdraw", "withdrawMany", "reopen", "reopenMany", "retry", "retryMany", "stop", "stopMany", "answer"] as const;
 
 /** The `tl.so.tilo.agent.Ask` kind at `path`. */
 export function ask(ws: tilo.Workspace, path: string): Ask {
@@ -217,10 +225,28 @@ export function reply(ws: tilo.Workspace, path: string): Reply {
   return resourceProxy(ws, path, SURFACE, REPLY_ACTIONS) as unknown as Reply;
 }
 
+/** Summary — `tl.so.tilo.agent.Summary`. */
+export interface Summary extends tilo.Resource {
+  fbk2rxka: string;  // agent
+  wl4g23ke: string;  // text
+  hefqltbc: string;  // through
+  cs27n4h5: string;  // through_at
+}
+
+/** The actions `Summary` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SUMMARY_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.agent.Summary` kind at `path`. */
+export function summary(ws: tilo.Workspace, path: string): Summary {
+  return resourceProxy(ws, path, SURFACE, SUMMARY_ACTIONS) as unknown as Summary;
+}
+
 /** Agents — `tl.so.tilo.agent.Agents`. */
 export interface Agents extends tilo.Resource {
   mzzoxssv: Array<tilo.Entry<Ask>>;  // asks
   "353i7jsi": Array<tilo.Entry<Reply>>;  // replies
+  srbtof5j: Array<tilo.Entry<Summary>>;  // summaries
   /** Asks `agent` about the resource the ask is made from (`.made_from(r)`). Whoever makes it decides first whether the agent may read that resource, and asks with nothing said when it may not: the ask then says so, and holds nothing of the resource. An ask made from a resource is named by it and the mention: every device that asks it so makes the same ask, and asking again is that ask. */
   ask(args: {
     agent: string;
@@ -240,11 +266,18 @@ export function agents(ws: tilo.Workspace, path: string): Agents {
 
 /** Agents — `tl.so.tilo.agent`. */
 export interface Agent extends tilo.Resource {
+  /** The agent keeps what the conversation this is made from said before the part its turn was shown: `text` says it in the agent's words, reaching `through`, the item it last took in. One per conversation and agent: what it kept before is what it says now. */
+  keep_summary(args: {
+    agent: string;
+    text: string;
+    through: string;
+    through_at?: string;
+  }): Promise<Summary>;
 }
 
 /** The actions `Agent` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const AGENT_ACTIONS = [] as const;
+export const AGENT_ACTIONS = ["keep_summary"] as const;
 
 /** The `tl.so.tilo.agent` kind at `path`. */
 export function agent(ws: tilo.Workspace, path: string): Agent {

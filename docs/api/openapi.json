@@ -23027,6 +23027,12 @@
         "required": [],
         "description": "Asks again what was withdrawn: the mention that made it is back, as redo puts it back. Only\nits asker may."
       },
+      "tl.so.tilo.agent.Ask.retry.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks again for an answer that failed: the same ask, its next attempt, so the reply written\nnow stands beside the one that failed. Only its asker may."
+      },
       "tl.so.tilo.agent.Ask.stop.Arguments": {
         "type": "object",
         "properties": {},
@@ -23037,7 +23043,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "The agent starts its reply to `a`, the ask's next attempt."
+        "description": "The agent starts its reply to `a`, the ask's next attempt: the one after its newest reply,\nso a reply that failed and was asked again stands beside it."
       },
       "tl.so.tilo.agent.Step.$create.Arguments": {
         "type": "object",
@@ -23355,6 +23361,51 @@
         "required": [],
         "description": "Another device's answer to the same ask stands instead of `r`."
       },
+      "tl.so.tilo.agent.Summary.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.agent.Summary.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "text",
+              "through",
+              "through_at"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.agent.Summary.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
       "tl.so.tilo.agent.Agents.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -23453,6 +23504,58 @@
           "said"
         ],
         "description": "Asks `agent` about the resource the ask is made from (`.made_from(r)`). Whoever makes it\ndecides first whether the agent may read that resource, and asks with nothing said when it\nmay not: the ask then says so, and holds nothing of the resource.\n\nAn ask made from a resource is named by it and the mention: every device that asks it so\nmakes the same ask, and asking again is that ask."
+      },
+      "tl.so.tilo.agent.keep_summary.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "text": {
+            "type": "string"
+          },
+          "through": {
+            "type": "string"
+          },
+          "through_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "text",
+          "through"
+        ],
+        "description": "The agent keeps what the conversation this is made from said before the part its turn was\nshown: `text` says it in the agent's words, reaching `through`, the item it last took in. One\nper conversation and agent: what it kept before is what it says now."
       },
       "tl.so.tilo.lang.board.Card.$create.Arguments": {
         "type": "object",
@@ -36909,6 +37012,12 @@
     {
       "app": "so.tilo.agent",
       "resource": "tl.so.tilo.agent.Ask",
+      "action": "retry",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.retry.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "stop",
       "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.stop.Arguments"
     },
@@ -37034,6 +37143,24 @@
     },
     {
       "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Summary",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Summary.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Summary",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Summary.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Summary",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Summary.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
       "resource": "tl.so.tilo.agent.Agents",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.$create.Arguments"
@@ -37055,6 +37182,12 @@
       "resource": "tl.so.tilo.agent.Agents",
       "action": "ask",
       "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.ask.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent",
+      "action": "keep_summary",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.keep_summary.Arguments"
     },
     {
       "app": "so.tilo.lang.board",

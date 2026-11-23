@@ -26,10 +26,12 @@ __all__ = [
     "SentView",
     "Shown",
     "Reply",
+    "Summary",
     "Agents",
     "Agent",
     "WithdrawArgs",
     "ReopenArgs",
+    "RetryArgs",
     "StopArgs",
     "SayArgs",
     "ThinkArgs",
@@ -50,6 +52,10 @@ WithdrawArgs = TypedDict("WithdrawArgs", {
 ReopenArgs = TypedDict("ReopenArgs", {
 })
 """The arguments of `reopen`."""
+
+RetryArgs = TypedDict("RetryArgs", {
+})
+"""The arguments of `retry`."""
 
 StopArgs = TypedDict("StopArgs", {
 })
@@ -94,7 +100,7 @@ SupersedeArgs = TypedDict("SupersedeArgs", {
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.agent.Ask`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@77c9c58421aeb9b1"
     mcsi6vp5: str  # agent
     @property
     def _7j5pok54(self) -> str | None:
@@ -123,6 +129,14 @@ class Ask(Resource):
         """Runs `reopen` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reopen", items)
 
+    def retry(self) -> None:
+        """Asks again for an answer that failed: the same ask, its next attempt, so the reply written now stands beside the one that failed. Only its asker may."""
+        return self.action("retry")
+
+    def retry_many(self, items: list[RetryArgs]) -> list[dict[str, Any]]:
+        """Runs `retry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("retry", items)
+
     def stop(self) -> None:
         """Stops a turn that is working; what the agent did until then stays."""
         return self.action("stop")
@@ -132,17 +146,17 @@ class Ask(Resource):
         return self.many("stop", items)
 
     def answer(self) -> Reply:
-        """The agent starts its reply to `a`, the ask's next attempt."""
+        """The agent starts its reply to `a`, the ask's next attempt: the one after its newest reply, so a reply that failed and was asked again stands beside it."""
         return self.action("answer")
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"withdraw", "withdraw_many", "reopen", "reopen_many", "stop", "stop_many", "answer"})
+    __actions__ = frozenset({"withdraw", "withdraw_many", "reopen", "reopen_many", "retry", "retry_many", "stop", "stop_many", "answer"})
 
 
 class Step(Resource):
     """Step — `tl.so.tilo.agent.Step`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@77c9c58421aeb9b1"
     ippal7k2: str  # called
     cyu3le2j: str  # answered
     cma7vgpx: bool  # failed
@@ -150,20 +164,20 @@ class Step(Resource):
 
 class SentView(Resource):
     """SentView — `tl.so.tilo.agent.SentView`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@77c9c58421aeb9b1"
     gdhl4pzx: str  # title
     ytw765gn: str  # definition
 
 
 class Shown(Resource):
     """Shown — `tl.so.tilo.agent.Shown`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@77c9c58421aeb9b1"
     mx5wcfl2: str  # card
 
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.agent.Reply`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@77c9c58421aeb9b1"
     gjd462ep: Ask  # ask
     oka345cb: str  # body
     czzg7mhh: str  # thinking
@@ -249,9 +263,18 @@ class Reply(Resource):
     __actions__ = frozenset({"say", "say_many", "think", "think_many", "step", "step_many", "show_view", "show_view_many", "show", "show_many", "finish", "finish_many", "supersede", "supersede_many"})
 
 
+class Summary(Resource):
+    """Summary — `tl.so.tilo.agent.Summary`."""
+    __surface__ = "so.tilo.agent@77c9c58421aeb9b1"
+    fbk2rxka: str  # agent
+    wl4g23ke: str  # text
+    hefqltbc: str  # through
+    cs27n4h5: str  # through_at
+
+
 class Agents(Resource):
     """Agents — `tl.so.tilo.agent.Agents`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@77c9c58421aeb9b1"
     mzzoxssv: list[Entry[Ask]]  # asks
     @property
     def _353i7jsi(self) -> list[Entry[Reply]]:
@@ -261,6 +284,7 @@ class Agents(Resource):
     @_353i7jsi.setter
     def _353i7jsi(self, value: list[Entry[Reply]]) -> None:
         self.edit("353i7jsi", value=value)
+    srbtof5j: list[Entry[Summary]]  # summaries
 
     def ask(self,
         *,
@@ -283,5 +307,25 @@ class Agents(Resource):
 
 class Agent(Resource):
     """Agents — `tl.so.tilo.agent`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@77c9c58421aeb9b1"
+    def keep_summary(self,
+        *,
+        agent: str,
+        text: str,
+        through: str,
+        through_at: str | None = None,
+    ) -> Summary:
+        """The agent keeps what the conversation this is made from said before the part its turn was shown: `text` says it in the agent's words, reaching `through`, the item it last took in. One per conversation and agent: what it kept before is what it says now."""
+        args: dict[str, Any] = {}
+        args["agent"] = agent
+        args["text"] = text
+        args["through"] = through
+        if through_at is not None:
+            args["through_at"] = through_at
+        return self.action("keep_summary", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"keep_summary"})
+
 

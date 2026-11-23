@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@7db9c54554ab72ff";
+export const SURFACE = "so.tilo.chat@b91eb01292edf00c";
 
 /** The arguments of `delete_channel`. */
 export interface DeleteChannelArgs {
