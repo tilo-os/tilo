@@ -4,7 +4,7 @@
 //!
 //! `fake-power --bus unix:path=…` answers, on that bus, the interfaces
 //! Settings reads: power-profiles-daemon's `net.hadess.PowerProfiles` (an
-//! active profile and the profiles it offers) and UPower's manager and display
+//! active profile and the profiles it offers) and `UPower`'s manager and display
 //! device (a machine with no battery and no lid). It prints one line once it
 //! owns the names and runs until it is killed.
 //!
@@ -12,6 +12,12 @@
 //! `power-profiles-daemon` reading platform profiles from firmware, and an
 //! `upowerd` whose first call asks polkit. This answers the same interfaces
 //! with what such a machine reports.
+
+#![allow(
+    clippy::unused_self,
+    reason = "the interfaces mirror the power daemons' fixed D-Bus signatures: a property takes \
+              the object and reads nothing of it"
+)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -118,7 +124,7 @@ struct DisplayDevice;
 
 #[zbus::interface(name = "org.freedesktop.UPower.Device")]
 impl DisplayDevice {
-    /// UPower's `Type` for a machine with nothing to draw from.
+    /// `UPower`'s `Type` for a machine with nothing to draw from.
     #[zbus(property, name = "Type")]
     const fn device_type(&self) -> u32 {
         0
