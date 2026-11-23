@@ -404,6 +404,193 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
     server.shutdown().await;
 }
 
+/// A write of issue `id` titled `title` in `app`'s resource type `kind`, as the verb `verb`, made
+/// by the app outside any invocation: what a view's own press writes.
+fn viewed_put(kind: &str, id: &str, title: &str, verb: &str) -> Command {
+    Command::Put {
+        kind: kind.to_owned(),
+        id: id.to_owned(),
+        resource: Resource {
+            readers: "*".into(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]),
+        },
+        stamp: Stamp {
+            verb: verb.to_owned(),
+            // What the app claims is replaced by who the view was opened for.
+            invoker: "the app's own claim".to_owned(),
+            invocation: uuid::Uuid::new_v4().to_string(),
+            ..Stamp::default()
+        },
+    }
+}
+
+/// Who made each version of `id` of `kind` in `app`, oldest first, as the device reads them.
+async fn made_by(
+    workspaces: &Workspaces,
+    device: &ResourceRequestContext,
+    (app, kind, id): (&str, &str, &str),
+) -> Vec<Option<tilo_actions::Actor>> {
+    let device =
+        ResourceRequestContext::authenticated(app, device.workspace_id(), device.caller().clone());
+    let Reply::Versions(versions) = workspaces
+        .resource_command(
+            &device,
+            Command::Versions {
+                kind: kind.into(),
+                id: id.into(),
+            },
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("a resource's versions");
+    };
+    versions
+        .iter()
+        .map(|version| version.stamp.as_ref().and_then(Stamp::invoked_by))
+        .collect()
+}
+
+/// A view the device opened for a caller of its dispatch writes as that caller and reads as
+/// them, whatever the app claims and although the connection is the device's own: an editor's
+/// write is the editor's, a visitor's is the visitor's where the workspace's entry opens that verb
+/// to any key, and a write the caller may not make (a viewer's, a visitor's other verb) is
+/// refused before the store keeps anything of it. A visitor reads none of the members'
+/// resources through the view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flow through an editor, a viewer and a visitor at the same view, which is what it proves"
+)]
+async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
+    use tilo_actions::remote::Caller;
+    use tilo_server_protocol::workspaces::Role;
+    const ENTRY: &str = tilo_action_policy::VISITOR_ENTRY_APP;
+    const REQUEST: &str = "entry.request";
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    for app in [APP, ENTRY] {
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: app.into(),
+            cluster_id: workspace.clone(),
+            document: String::new(),
+        };
+        let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    }
+    let (editor_key, editor) = super::super::tests::guest_device();
+    let (viewer_key, viewer) = super::super::tests::guest_device();
+    for (seed, (device_key, device), role) in [
+        (61, (&editor_key, &editor), Role::Editor),
+        (62, (&viewer_key, &viewer), Role::Viewer),
+    ] {
+        super::super::fixtures::entry_join_as(
+            &workspaces,
+            &cert,
+            &workspace,
+            (device_key, device),
+            seed,
+            role,
+        )
+        .await;
+    }
+    // The entry keeps requests: it opens leaving one to any key.
+    workspaces
+        .list_invitation_only(&workspace, &cert, true)
+        .await
+        .unwrap();
+    workspaces
+        .list_wait_list_max(&workspace, &cert, 8)
+        .await
+        .unwrap();
+    let device = context(&workspace, &cert);
+    let view = |app: &str, caller: Caller| {
+        ResourceRequestContext::authenticated(app, &workspace, device.caller().clone())
+            .opened_for(Some(caller.in_workspace(&workspace)))
+    };
+    let member = |cert: &tilo_user_identity::DeviceCert| {
+        Caller::authenticated(cert.user_public_key, cert.device_public_key)
+    };
+
+    // An editor's press in the view is the editor's.
+    workspaces
+        .resource_command(
+            &view(APP, member(&editor)),
+            viewed_put(KIND, "i-1", "Edited", "add"),
+        )
+        .await
+        .unwrap();
+    let editor_is = tilo_actions::Actor::Member(tilo_actions::MemberId::person(hex::encode(
+        editor.user_public_key,
+    )));
+    assert_eq!(
+        made_by(&workspaces, &device, (APP, KIND, "i-1")).await,
+        vec![Some(editor_is)],
+        "the editor made it, not the device whose connection carried it"
+    );
+
+    // A viewer may change nothing: the write is refused and nothing of it is kept.
+    let refused = workspaces
+        .resource_command(
+            &view(APP, member(&viewer)),
+            viewed_put(KIND, "i-2", "Viewed", "add"),
+        )
+        .await
+        .unwrap_err();
+    assert!(refused.contains("may not add"), "{refused}");
+    assert!(
+        title_through_service(&workspaces, &device, "i-2")
+            .await
+            .is_none()
+    );
+
+    // A visitor leaves a request at the entry: theirs, and only what the entry opens to them.
+    let visitor = [9; 32];
+    workspaces
+        .resource_command(
+            &view(ENTRY, Caller::visitor(visitor)),
+            viewed_put(REQUEST, "r-1", "ada@example.com", "join"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        made_by(&workspaces, &device, (ENTRY, REQUEST, "r-1")).await,
+        vec![Some(tilo_actions::Actor::Visitor(hex::encode(visitor)))],
+        "the visitor left it"
+    );
+    let refused = workspaces
+        .resource_command(
+            &view(ENTRY, Caller::visitor(visitor)),
+            viewed_put(REQUEST, "r-2", "everyone", "remove"),
+        )
+        .await
+        .unwrap_err();
+    assert!(refused.contains("may not remove"), "{refused}");
+    // Nor does a visitor read the members' resources through the view.
+    assert!(
+        title_through_service(&workspaces, &view(APP, Caller::visitor(visitor)), "i-1")
+            .await
+            .is_none(),
+        "a visitor reads no member's issue"
+    );
+    assert_eq!(
+        title_through_service(&workspaces, &view(APP, member(&editor)), "i-1").await,
+        Some(Value::Text("Edited".into())),
+        "the editor reads what every member reads"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_members_resource_writes_are_queryable_on_the_governor_and_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();

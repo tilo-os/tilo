@@ -160,6 +160,7 @@ impl crate::apps::services::LauncherServices for RecordedLaunches {
                 continuation_instance: None,
                 launch_ticket: Some(31),
                 windowless: false,
+                opened_for: None,
             },
         ))
     }

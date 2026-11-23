@@ -227,7 +227,8 @@ impl JoinedChannel {
             route.cluster_id,
             caller,
         )
-        .serving(self.state.delivered_to(self.peer_id));
+        .serving(self.state.delivered_to(self.peer_id))
+        .opened_for(self.opened_for());
         Ok(service.command(&context, command))
     }
 
@@ -261,8 +262,18 @@ impl JoinedChannel {
             route.app_id,
             route.cluster_id,
             caller,
-        );
+        )
+        .opened_for(self.opened_for());
         Ok(service.open(&context, query))
+    }
+
+    /// The caller the host opened this connection's view for, when it opened one for a caller
+    /// of the device's dispatch ([`native_media::LocalAppConnection::opened_for`]).
+    fn opened_for(&self) -> Option<tilo_actions::remote::Caller> {
+        self.lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .and_then(|local| local.opened_for.clone())
     }
 
     /// What this host says of the `actions` the window shows, as the person this channel was

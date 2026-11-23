@@ -30,6 +30,7 @@ mod workspace_document_ownership {
                 continuation_instance: Some(91),
                 launch_ticket: None,
                 windowless: false,
+                opened_for: None,
             },
         )
         .unwrap();

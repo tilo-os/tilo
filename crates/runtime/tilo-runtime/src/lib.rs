@@ -17,6 +17,8 @@ use std::{
 
 #[cfg(unix)]
 mod apps;
+#[cfg(unix)]
+pub use apps::OpenedView;
 pub mod cli;
 #[cfg(unix)]
 mod daemon;

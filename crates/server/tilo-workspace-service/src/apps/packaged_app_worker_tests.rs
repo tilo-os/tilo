@@ -37,6 +37,7 @@ impl crate::apps::services::LauncherServices for LaunchedHere {
                 continuation_instance: None,
                 launch_ticket: None,
                 windowless: false,
+                opened_for: None,
             },
         ))
     }

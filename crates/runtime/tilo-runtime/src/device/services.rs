@@ -262,6 +262,25 @@ impl Daemon {
         self.workspaces.copies().provide(provider, answers);
     }
 
+    /// Open a view of the tilolang app `app` in `workspace` for `caller`, whom this device's
+    /// dispatch admitted, in an instance this daemon starts with no session
+    /// ([`apps::Apps::open_view`]): the descriptors its page window is started with, and the
+    /// device's end of that window's page link.
+    ///
+    /// # Errors
+    /// As [`apps::Apps::open_view`].
+    #[cfg(unix)]
+    pub fn open_view(
+        &self,
+        caller: &Caller,
+        app: &str,
+        workspace: &str,
+        record: Option<String>,
+        reveal: Option<String>,
+    ) -> Result<apps::OpenedView, String> {
+        self.apps.open_view(caller, app, workspace, record, reveal)
+    }
+
     /// The login this daemon serves, when this computer logged in.
     pub(crate) fn login(&self) -> Option<&(SigningKey, Device)> {
         self.login.as_ref()
@@ -421,6 +440,8 @@ impl Daemon {
         // What the person granted apps in a workspace, as the service that holds its governance
         // answers: what every launch here hands the app it starts.
         apps.keep_launch_grants(Arc::clone(&workspaces) as Arc<dyn apps::LaunchGrantsSource>);
+        // The member an app's code that shows nothing runs as, here: the device's own.
+        apps.keep_person(&actor);
         workspaces.follow_admitted_writes(Arc::clone(&brokers), Arc::clone(&fanout));
         // The files of the workspaces whose work this device takes, once the broker that carries
         // their records runs: where a member taking a workspace's work runs it.

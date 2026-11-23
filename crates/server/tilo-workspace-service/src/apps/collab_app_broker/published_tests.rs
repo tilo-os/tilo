@@ -128,6 +128,7 @@ fn app_in(
             continuation_instance: None,
             launch_ticket: None,
             windowless: false,
+            opened_for: None,
         },
     )
     .unwrap();
