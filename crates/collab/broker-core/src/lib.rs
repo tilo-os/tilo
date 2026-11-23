@@ -13,8 +13,6 @@ pub mod actor;
 pub mod collab_core;
 pub mod collab_history;
 pub mod delivery;
-pub mod held;
-pub mod workspace_commits;
 pub mod published;
 pub mod route;
 pub mod services;
