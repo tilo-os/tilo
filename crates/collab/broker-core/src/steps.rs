@@ -28,6 +28,9 @@ pub struct HostStepRequest<'a> {
     /// stamps every call): what a step that changes a record makes is that work's, which History
     /// groups and an undo of it takes back, as an app's action is.
     pub group: Option<&'a tilo_actions::WorkGroup>,
+    /// Set when the caller cancels a step whose contract declares it cancellable
+    /// ([`tilo_actions::ExecutionMode::cancellable`]): the step stops and answers as cancelled.
+    pub stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// How a host step ended.

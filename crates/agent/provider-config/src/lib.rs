@@ -540,6 +540,24 @@ impl ModelDescriptor {
         self.context_window
             .map_or(declared, |context| declared.min(context))
     }
+
+    /// How many characters of conversation this model reads at once, by what its descriptor
+    /// knows of its context, about four characters a token; a model that says nothing reads a
+    /// generous default. A turn keeps its conversation within this bound so that a small local
+    /// window is never overflowed.
+    #[must_use]
+    pub fn context_chars(&self) -> usize {
+        let tokens = self
+            .request_limits
+            .as_ref()
+            .and_then(|limits| limits.runtime_context_tokens)
+            .or(self.context_window)
+            .unwrap_or(128_000);
+        let headroom = tokens.saturating_sub(self.max_output_tokens.unwrap_or(8_192));
+        usize::try_from(headroom)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(3)
+    }
 }
 
 /// A configured model-provider endpoint.

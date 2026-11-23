@@ -368,6 +368,32 @@ impl Workspaces {
         save_provider_config(&root, &config)
     }
 
+    /// Say that `model` of `workspace`'s provider `provider` reads `tokens` of context, as a
+    /// provider's own model list would: what a turn sizes its conversation to.
+    pub fn set_model_context_window(
+        &self,
+        workspace: &str,
+        provider: &str,
+        model: &str,
+        tokens: u32,
+    ) -> Result<(), String> {
+        let root = self.workspace_root(workspace);
+        let mut config = provider_config(&root);
+        let descriptor = config
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == provider)
+            .and_then(|profile| {
+                profile
+                    .models
+                    .iter_mut()
+                    .find(|descriptor| descriptor.id == model)
+            })
+            .ok_or_else(|| "That model is not kept here".to_owned())?;
+        descriptor.context_window = Some(tokens);
+        save_provider_config(&root, &config)
+    }
+
     /// Choose `model` of `workspace`'s provider `provider` for `kind` of
     /// work, as Settings does.
     pub fn choose_model_for(

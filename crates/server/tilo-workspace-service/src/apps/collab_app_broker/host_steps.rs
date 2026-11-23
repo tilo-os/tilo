@@ -224,6 +224,14 @@ impl AppBrokerState {
             }
             _ => None,
         };
+        // A step whose contract declares it cancellable may be asked to stop while it runs: its
+        // caller's cancel sets this flag, and the step stops and answers as cancelled.
+        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if descriptor.contract.execution.cancellable()
+            && let Ok(mut stops) = self.host_step_stops.lock()
+        {
+            stops.insert(id, Arc::clone(&stop_flag));
+        }
         let step = HostStepRequest {
             workspace: workspace_id,
             actor: &policy,
@@ -234,6 +242,7 @@ impl AppBrokerState {
                 .context
                 .as_ref()
                 .and_then(|context| context.group.as_ref()),
+            stop: stop_flag.clone(),
         };
         if descriptor.contract.is_live() {
             let view = match steps.watch(&step) {
@@ -260,7 +269,7 @@ impl AppBrokerState {
         }
         let started = steps.start(&step);
         match started {
-            Ok(started) => self.follow_admitted_host_step(admitted, started),
+            Ok(started) => self.follow_admitted_host_step(admitted, started, stop_flag),
             Err(reason) => {
                 self.complete_host_action(
                     &admitted,
@@ -272,17 +281,44 @@ impl AppBrokerState {
         Ok(self.receipt_for(request.invocation, id))
     }
 
-    /// Follow an already durable admission without replacing its caller or UUID.
+    /// Ask cancellable host step `id` to stop, if it is one: whether it was. The step's caller
+    /// cancelled it, and it answers as cancelled when it stops.
+    pub(super) fn stop_host_step(&self, id: u64) -> bool {
+        let stop = self
+            .host_step_stops
+            .lock()
+            .ok()
+            .and_then(|stops| stops.get(&id).cloned());
+        stop.is_some_and(|stop| {
+            stop.store(true, std::sync::atomic::Ordering::Release);
+            true
+        })
+    }
+
+    /// Follow an already durable admission without replacing its caller or UUID. `stop` is the
+    /// flag its caller's cancel sets, for a cancellable step: a step that stopped answers as
+    /// cancelled whatever its service said.
     pub(super) fn follow_admitted_host_step(
         self: &Arc<Self>,
         admitted: super::host_action_admission::AdmittedHostAction,
         started: Pending<HostStepOutcome>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
     ) {
         let state = Arc::clone(self);
         started.then(move |outcome| {
             let invocation = admitted.invocation;
             let uncertain = outcome.is_none();
+            let stopped = stop.load(std::sync::atomic::Ordering::Acquire);
+            // What a stopped step said of why, where it said anything.
+            let said = outcome
+                .as_ref()
+                .and_then(|ended| ended.as_ref().err())
+                .map(|error| error.message.clone());
             let update = match outcome {
+                _ if stopped => tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: said,
+                },
                 Some(Ok(output)) => {
                     tilo_actions::InvocationUpdate::Succeeded { invocation, output }
                 }
@@ -296,7 +332,7 @@ impl AppBrokerState {
                     "the host step stopped without an answer",
                 ),
             };
-            let completed = if uncertain {
+            let completed = if uncertain && !stopped {
                 state.complete_uncertain_host_action(&admitted, update)
             } else {
                 state.complete_host_action(&admitted, update)

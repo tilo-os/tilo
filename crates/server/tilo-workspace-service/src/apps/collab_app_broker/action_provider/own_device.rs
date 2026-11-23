@@ -7,6 +7,7 @@
 //! application observes it like any of its own invocations.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeRequest, Reservation, own_device,
@@ -106,7 +107,9 @@ impl AppBrokerState {
             )
         })?;
         match service.invoke(caller, &checked, request) {
-            Ok(started) => self.follow_admitted_host_step(admitted, started),
+            Ok(started) => {
+                self.follow_admitted_host_step(admitted, started, Arc::new(AtomicBool::new(false)));
+            }
             Err(error) => {
                 self.complete_host_action(
                     &admitted,

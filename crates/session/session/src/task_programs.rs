@@ -196,6 +196,7 @@ mod tests {
             argument: Some(argument),
             provider: None,
             group: None,
+            stop: std::sync::Arc::default(),
         }
     }
 

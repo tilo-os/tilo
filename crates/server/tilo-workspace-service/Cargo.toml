@@ -30,6 +30,8 @@ files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:byt
 # A session client's pages, read through the document core over the replica its engine admits
 # into: what a session's tests read their workspace through.
 session-pages = ["device-keys", "dep:tilo-session-client"]
+# The web tools' tests ask a server on this machine instead of the public engines and pages.
+fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
 apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
@@ -212,6 +214,8 @@ tasks-model = { path = "../../../apps/tasks-model" }
 # A direct link a test makes a reader fall behind, with the frames it hears
 # bounded by the test rather than by what a live link holds.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
+# The engines and pages the web tools' tests read, served from this machine.
+tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
 # The store's continuity tests count each thread's heap.
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tokio = { workspace = true, features = ["test-util"] }

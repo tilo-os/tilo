@@ -64,4 +64,12 @@ pub trait PlanTurns: Send {
     fn sees(&self) -> bool {
         false
     }
+
+    /// The most characters of conversation the model reads at once, by what
+    /// its descriptor knows of its context: a turn sizes what it keeps to it
+    /// rather than to a bound one model's window may not hold. `None` for a
+    /// model that says nothing of its window, which then reads the default.
+    fn context_chars(&self) -> Option<usize> {
+        None
+    }
 }

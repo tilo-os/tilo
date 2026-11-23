@@ -250,6 +250,8 @@ mod agent_connection;
 mod agent_tests;
 mod app_consent;
 mod app_open_api;
+#[cfg(test)]
+mod cancel_tests;
 mod foreign_ask;
 mod host_action_admission;
 mod host_steps;
@@ -259,6 +261,8 @@ mod live_views;
 mod local_action_provider;
 mod remaining_workspace_actions;
 mod turns;
+#[cfg(all(test, feature = "agents"))]
+mod web_search_tests;
 pub use agent_connection::AgentConnection;
 mod approval;
 mod person_answer;
@@ -460,6 +464,9 @@ pub struct AppBrokerState {
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     /// Host steps whose result stays current, while they are open.
     live_views: live_views::LiveViews,
+    /// The host steps that declared themselves cancellable and have not ended, by job: the flag
+    /// that stops one when its caller cancels it.
+    host_step_stops: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     /// Jobs whose action's contract declares untrusted content, so every
     /// observation of them says so. They share the completed invocation
     /// cache's bounded lifetime.

@@ -1491,6 +1491,11 @@ fn broker_services(
                             tilo_rt::app().handle().clone(),
                         ),
                     ),
+                    // The public web a shortcut's step and an app read: the same search and
+                    // page read the workspace's agents look things up with.
+                    std::sync::Arc::new(tilo_workspace_service::agents::WebSearch::new(
+                        tilo_rt::app().handle().clone(),
+                    )),
                 ],
                 // An agent's task writes its programs; this session's links runs them as the
                 // steps of the run the task is in. An agent whose turn is worked in its own
@@ -2378,10 +2383,10 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            7,
+            8,
             "the steps this session serves are the workspace's activity, a ticket for a new \
              computer, identity administration, the person's hosting account, the machines they \
-             planned, its own actions and its agents' transforms"
+             planned, its own actions, its agents' transforms and the web its shortcuts reach"
         );
         let providers: Vec<&str> = services
             .host_steps
@@ -2412,6 +2417,10 @@ mod tests {
             (
                 tilo_workspace_service::agents::assistant::transforms::PROVIDER,
                 "a shortcut's AI step and an app's ask are transformed by this device's agents",
+            ),
+            (
+                tilo_workspace_service::agents::WEB_SEARCH_PROVIDER,
+                "a shortcut's step and an app search and read the web",
             ),
         ] {
             assert!(

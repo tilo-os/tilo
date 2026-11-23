@@ -3026,6 +3026,11 @@ impl AppBrokerState {
                 cancelled.map_err(|reason| ActionCallError::NotCancellable { reason }),
             );
         }
+        // A host step that declared itself cancellable stops on its own flag, and answers as
+        // cancelled when it does.
+        if self.stop_host_step(job) {
+            return Pending::ready(Ok(()));
+        }
         answered_when_durable(
             self.request_cancellation(job, BrokerActor::for_caller(caller).member())
                 .map_err(|reason| ActionCallError::NotCancellable { reason }),

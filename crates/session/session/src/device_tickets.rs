@@ -390,6 +390,7 @@ mod tests {
             argument: None,
             provider: None,
             group: None,
+            stop: std::sync::Arc::default(),
         };
         assert_eq!(
             tickets.descriptors()[0].address,
