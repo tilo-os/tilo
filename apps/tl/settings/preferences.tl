@@ -69,26 +69,53 @@ view default_apps_pane() {
     }
 }
 
-/// This device's clock: whether its zone follows the network, and the formats dates and times
-/// are shown in.
+/// This device's clock: its zone, whether the zone follows the device and the network's time,
+/// and the formats dates and times are shown in.
 view date_time_pane() {
+    state zone: Text = ""
     let clock = settings.clock
+    let system = device.time_zone
+    let network_time = if let on = system.network_time { on } else { false }
     let r = settings.locale
     let now = device.time
     ui.Section("Now") {
         ui.ListRow(now.clock, secondary: "This device's clock", icon: .clock)
+        if let named = system.zone {
+            ui.ListRow(named, secondary: "The zone it shows", icon: .globe)
+        }
     }
     ui.Section("Time zone") {
         setting(
-            "Follow the network",
-            "Take the time zone from the network and the clock from its servers",
-            ui.Toggle(bind: clock.automatic_zone),
+            "Follow where the device is",
+            "Take the zone from the device's location as it moves",
+            ui.Button(if system.automatic { "On" } else { "Off" }, toggled: system.automatic) {
+                on press: device.set_automatic_zone(
+                    device.time_zone,
+                    on: not system.automatic,
+                )
+            },
         )
-        ui.Text(
-            "The zone itself is chosen by the system's time service; a device on the network keeps it in step.",
-            role: .caption,
-            secondary: true,
+        ui.TextInput(bind: zone, placeholder: "A zone, such as Europe/Amsterdam")
+        ui.Button("Use this zone", size: .small) {
+            on press: device.set_zone(device.time_zone, zone: zone)
+        }
+        setting(
+            "Keep the clock right from the network",
+            "Take the time from the network's time servers",
+            ui.Button(
+                if network_time { "On" } else { "Off" },
+                toggled: network_time,
+                enabled: system.network_time != .none,
+            ) {
+                on press: device.set_network_time(device.time_zone, on: not network_time)
+            },
         )
+        if let problem = system.problem {
+            ui.StatusLine(problem, status: .error)
+        }
+        if not system.synchronized {
+            ui.Text("The clock is not in step with the network yet.", role: .caption, secondary: true)
+        }
     }
     ui.Section("Formats") {
         setting(
@@ -100,6 +127,11 @@ view date_time_pane() {
             "Times",
             "A twenty-four hour clock, or one with morning and evening",
             ui.EnumField(bind: r.time_format, label: "Time format"),
+        )
+        setting(
+            "The clock in the bar",
+            "Hour and minute: the device's own zone, and what it follows",
+            ui.Toggle(bind: clock.automatic_zone),
         )
     }
 }
