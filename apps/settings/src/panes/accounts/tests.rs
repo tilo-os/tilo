@@ -88,7 +88,7 @@ fn a_drive_connected_elsewhere_shows_with_its_sign_in_and_remove_actions() {
     let mut store = accounts::person::AccountList::default();
     store.keep(&account).unwrap();
     root.save_store(&store).unwrap();
-    let pane = AccountsPane::in_root(root.clone());
+    let pane = AccountsPane::in_root(root);
     let mut app = window_showing(pane);
     let published: Vec<(String, Vec<String>, String)> = app
         .with_widget::<crate::window::Inspected, _>(|settings| {
@@ -853,8 +853,7 @@ fn an_interrupted_mode_change_offers_its_recovery_on_the_row() {
     root.sync_reporter(account.id.clone())
         .failed()
         .expect("the interrupted change is recorded");
-    let pane =
-        AccountsPane::in_root(root.clone()).with_cloud_mounts(CloudMounts::known(Vec::new()));
+    let pane = AccountsPane::in_root(root).with_cloud_mounts(CloudMounts::known(Vec::new()));
     let mut app = window_showing(pane);
     let published = app
         .with_widget::<crate::window::Inspected, _>(|settings| {

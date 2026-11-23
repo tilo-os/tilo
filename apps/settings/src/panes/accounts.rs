@@ -1385,7 +1385,7 @@ impl AccountsPane {
                 if let Some(flow) = self.sign_in.as_mut()
                     && current
                 {
-                    flow.finish_async(account.id.clone());
+                    flow.finish_async(account.id);
                     if let Some(id) = flow.take_saved() {
                         self.publish_signed_in_id(id);
                     }
@@ -2176,7 +2176,7 @@ impl AccountsPane {
             ));
             entries.extend(Self::account_maintenance_entries(view));
         }
-        let label = self.account_row_label(view, &mut details);
+        let label = view.label.clone();
         let menu = (!entries.is_empty()).then(|| {
             entries.into_iter().fold(
                 RowMenu::new(
@@ -2241,11 +2241,6 @@ impl AccountsPane {
             ));
         }
         entries
-    }
-
-    fn account_row_label(&self, view: &AccountView, _details: &mut Vec<String>) -> String {
-        // The account's own name; its section already names the kind.
-        view.label.clone()
     }
 
     /// What the account's menu offers to keep it working: edit it, sign in
@@ -3143,9 +3138,10 @@ impl AccountsPane {
             if let Some(config) = account.config.as_object_mut() {
                 config.remove(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY);
             }
-            updated_store
-                .keep(&account)
-                .expect("an account from the record keeps its id and type");
+            if let Err(error) = updated_store.keep(&account) {
+                let failed = format!("could not keep a linked account: {error}");
+                return self.roll_back_removal(removal, failed, Ok(()), settle);
+            }
         }
         if let Err(error) = root.save_store(&updated_store) {
             let failed = format!("could not remove account metadata: {error}");

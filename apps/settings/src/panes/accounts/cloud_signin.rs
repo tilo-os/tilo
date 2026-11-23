@@ -20,6 +20,16 @@ use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::{t, t_args};
 use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
+/// Set a connection setting of a config that is, or becomes, a JSON object.
+fn set(config: &mut serde_json::Value, key: &str, value: serde_json::Value) {
+    if !config.is_object() {
+        *config = serde_json::json!({});
+    }
+    if let Some(map) = config.as_object_mut() {
+        map.insert(key.to_owned(), value);
+    }
+}
+
 /// How long between polls of a sign-in the person approves in the browser.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
 /// How long a sign-in may take before it is given up.
@@ -327,10 +337,10 @@ impl SignInFlow {
                         .get(&accounts::AccountId::from(id.as_str()))
                         .ok_or(CredentialError::NeedsAuthentication)?;
                     let mut config = existing;
-                    if config.get("provider").is_none() {
-                        if let Some(cloud) = cloud {
-                            config["provider"] = cloud.type_id().into();
-                        }
+                    if config.get("provider").is_none()
+                        && let Some(cloud) = cloud
+                    {
+                        set(&mut config, "provider", cloud.type_id().into());
                     }
                     accounts::cloud_types::set_files_mode(&mut config, mode);
                     Ok(Outcome::Completed(Box::new(Completed {
@@ -427,10 +437,10 @@ impl SignInFlow {
     }
 
     fn start_oauth(&mut self) {
-        let cloud = self
-            .kind
-            .oauth_cloud()
-            .expect("a cloud kind names its provider");
+        let Some(cloud) = self.kind.oauth_cloud() else {
+            self.message = Some("this account type does not sign in on its provider's page".into());
+            return;
+        };
         if let Some(session) = crate::account_probe::session() {
             self.start_oauth_through(session);
             return;
@@ -481,9 +491,10 @@ impl SignInFlow {
                             existing_config,
                         )
                     })
-                    .map(Box::new)
-                    .map(Outcome::Completed)
-                    .unwrap_or_else(|error| Outcome::Failed(error.to_string()));
+                    .map_or_else(
+                        |error| Outcome::Failed(error.to_string()),
+                        |completed| Outcome::Completed(Box::new(completed)),
+                    );
                 let _ = sender.send(outcome);
             }),
         );
@@ -525,12 +536,12 @@ impl SignInFlow {
                     Ok(CloudProgress::SignedIn(signed_in)) => Outcome::Completed(Box::new(
                         cloud_completed(signed_in, kind, existing_id, label, mode, existing_config),
                     )),
-                    Ok(CloudProgress::Code { message }) => {
-                        Outcome::NeedsCode(Box::new(CodeStage::Session {
-                            session: session.expect("a code comes from the session's sign-in"),
-                            message,
-                        }))
-                    }
+                    Ok(CloudProgress::Code { message }) => match session {
+                        Some(session) => {
+                            Outcome::NeedsCode(Box::new(CodeStage::Session { session, message }))
+                        }
+                        None => Outcome::Failed("the session did not keep the sign-in".into()),
+                    },
                     Ok(CloudProgress::Page { .. } | CloudProgress::Waiting) => {
                         Outcome::Failed("the session did not finish the sign-in".into())
                     }
@@ -643,6 +654,10 @@ impl SignInFlow {
         };
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match over the stages a code answers, each a few lines"
+    )]
     fn submit_code(&mut self, stage: CodeStage) {
         let code: String = self.code.with(|code| code.trim().to_string());
         if code.is_empty() {
@@ -673,7 +688,7 @@ impl SignInFlow {
                             Ok(session) => {
                                 let mut config = icloud_config(auth.as_ref(), &apple_id, mode);
                                 if config.get("identity").is_none() {
-                                    config["identity"] = apple_id.clone().into();
+                                    set(&mut config, "identity", apple_id.clone().into());
                                 }
                                 Outcome::Completed(Box::new(Completed {
                                     kind,
@@ -718,9 +733,10 @@ impl SignInFlow {
                                         existing_config,
                                     )
                                 })
-                                .map(Box::new)
-                                .map(Outcome::Completed)
-                                .unwrap_or_else(|error| Outcome::Failed(error.to_string()));
+                                .map_or_else(
+                                    |error| Outcome::Failed(error.to_string()),
+                                    |completed| Outcome::Completed(Box::new(completed)),
+                                );
                         let _ = sender.send(outcome);
                     }),
                 );
@@ -747,12 +763,15 @@ impl SignInFlow {
                                     existing_config,
                                 )))
                             }
-                            Ok(CloudProgress::Code { message }) => {
-                                Outcome::NeedsCode(Box::new(CodeStage::Session {
-                                    session: session.expect("a code comes from the sign-in"),
+                            Ok(CloudProgress::Code { message }) => match session {
+                                Some(session) => Outcome::NeedsCode(Box::new(CodeStage::Session {
+                                    session,
                                     message,
-                                }))
-                            }
+                                })),
+                                None => {
+                                    Outcome::Failed("the session did not keep the sign-in".into())
+                                }
+                            },
                             Ok(CloudProgress::Page { .. } | CloudProgress::Waiting) => {
                                 Outcome::Failed("the session did not finish the sign-in".into())
                             }
@@ -1234,8 +1253,8 @@ fn oauth_completed(
     if !config.is_object() {
         config = serde_json::json!({});
     }
-    config["provider"] = cloud.type_id().into();
-    config[accounts::cloud_types::MOUNT_CONFIG_KEY] = mount;
+    set(&mut config, "provider", cloud.type_id().into());
+    set(&mut config, accounts::cloud_types::MOUNT_CONFIG_KEY, mount);
     accounts::cloud_types::set_files_mode(&mut config, mode);
     Ok(Completed {
         kind,
@@ -1259,10 +1278,16 @@ fn cloud_completed(
     if !config.is_object() {
         config = signed_in.account.config.clone();
     }
-    config[accounts::cloud_types::MOUNT_CONFIG_KEY] =
-        signed_in.account.config[accounts::cloud_types::MOUNT_CONFIG_KEY].clone();
+    let mount = signed_in
+        .account
+        .config
+        .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    set(&mut config, accounts::cloud_types::MOUNT_CONFIG_KEY, mount);
     if let Some(provider) = signed_in.account.config.get("provider") {
-        config["provider"] = provider.clone();
+        let provider = provider.clone();
+        set(&mut config, "provider", provider);
     }
     accounts::cloud_types::set_files_mode(&mut config, mode);
     Completed {
