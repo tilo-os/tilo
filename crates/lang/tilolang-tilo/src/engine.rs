@@ -11,10 +11,8 @@
 //! asks about by the id it was given ([`Provider::status`]) and can stop ([`Provider::cancel`]).
 //! Answers are JSON; the app reads them into its own records.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 /// One app's engine, as the crate that owns it answers the session's asks.
 pub trait Provider {
@@ -64,26 +62,35 @@ impl Provider for Unregistered {
     }
 }
 
-/// The engines registered so far, by the app that owns each.
-fn engines() -> &'static RefCell<BTreeMap<String, Rc<dyn Provider>>> {
-    static ENGINES: OnceLock<RefCell<BTreeMap<String, Rc<dyn Provider>>>> = OnceLock::new();
-    ENGINES.get_or_init(|| RefCell::new(BTreeMap::new()))
+/// The engines registered so far, by the app that owns each: one registry for the device,
+/// which the session's app host and the crates that register engines both reach.
+fn engines() -> &'static Mutex<BTreeMap<String, Arc<dyn Provider + Send + Sync>>> {
+    static ENGINES: OnceLock<Mutex<BTreeMap<String, Arc<dyn Provider + Send + Sync>>>> =
+        OnceLock::new();
+    ENGINES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// The registry, held: a lock poisoned by a panic in one engine still registers and answers
+/// the rest, since what it guards is a map of providers and no half-written value.
+fn held() -> MutexGuard<'static, BTreeMap<String, Arc<dyn Provider + Send + Sync>>> {
+    engines()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Register `provider` as the engine of `app`: the ops the app names are answered by it from
 /// then on. A crate calls this once, at its start, for the app whose engine it owns.
-pub fn register(app: &str, provider: Rc<dyn Provider>) {
-    engines().borrow_mut().insert(app.to_owned(), provider);
+pub fn register(app: &str, provider: Arc<dyn Provider + Send + Sync>) {
+    held().insert(app.to_owned(), provider);
 }
 
 /// The engine of `app`, or one that refuses every ask: an app whose engine has not been
 /// registered yet is refused, never answered by another app's.
-fn engine_of(app: &str) -> Rc<dyn Provider> {
-    engines()
-        .borrow()
+fn engine_of(app: &str) -> Arc<dyn Provider + Send + Sync> {
+    held()
         .get(app)
         .cloned()
-        .unwrap_or_else(|| Rc::new(Unregistered))
+        .unwrap_or_else(|| Arc::new(Unregistered))
 }
 
 /// One request answered now for `app`.
@@ -112,7 +119,8 @@ pub fn begin(app: &str, op: &str, input: &str) -> Result<String, String> {
 pub fn progress(job: &str) -> Result<String, String> {
     // A job belongs to whichever engine started it; each is asked in turn, and the first that
     // knows it answers. Engines refuse a job that is not theirs.
-    for provider in engines().borrow().values() {
+    let providers: Vec<Arc<dyn Provider + Send + Sync>> = held().values().cloned().collect();
+    for provider in providers {
         if let Ok(answer) = provider.status(job) {
             return Ok(answer);
         }
@@ -122,10 +130,8 @@ pub fn progress(job: &str) -> Result<String, String> {
 
 /// Stop the job `job`: false when no engine runs it or it had finished.
 pub fn stop(job: &str) -> bool {
-    engines()
-        .borrow()
-        .values()
-        .any(|provider| provider.cancel(job))
+    let providers: Vec<Arc<dyn Provider + Send + Sync>> = held().values().cloned().collect();
+    providers.iter().any(|provider| provider.cancel(job))
 }
 
 #[cfg(test)]
@@ -163,7 +169,7 @@ mod tests {
 
     #[test]
     fn an_app_s_ops_reach_its_own_engine() {
-        register("so.tilo.cut", Rc::new(Cut));
+        register("so.tilo.cut", Arc::new(Cut));
         assert_eq!(answer("so.tilo.cut", "cut.probe", "x"), Ok(r#"{"input":"x"}"#.to_owned()));
         assert_eq!(begin("so.tilo.cut", "cut.render", "{}"), Ok("render-1".to_owned()));
         assert_eq!(progress("render-1"), Ok(r#"{"state":"done"}"#.to_owned()));
@@ -172,7 +178,7 @@ mod tests {
 
     #[test]
     fn an_app_never_borrows_another_s_engine() {
-        register("so.tilo.cut", Rc::new(Cut));
+        register("so.tilo.cut", Arc::new(Cut));
         assert_eq!(
             answer("so.tilo.other", "cut.probe", "x"),
             Err("`cut.probe` is no op this device runs".to_owned())
@@ -191,7 +197,7 @@ mod tests {
 
     #[test]
     fn an_op_the_engine_does_not_know_is_refused_in_its_words() {
-        register("so.tilo.cut", Rc::new(Cut));
+        register("so.tilo.cut", Arc::new(Cut));
         assert_eq!(
             answer("so.tilo.cut", "cut.paint", ""),
             Err("`cut.paint` is not a cut op".to_owned())
