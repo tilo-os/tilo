@@ -751,6 +751,49 @@ impl Resolver<'_> {
         }
     }
 
+    /// A record a field holds (a field of a record type with no default, which starts as a
+    /// record of its own) lives in its holder's document and is read by whoever reads the holder,
+    /// so its type names no readers of its own. A collection's items are placed by their own
+    /// rule, so a type kept in a collection may name its readers.
+    fn check_held_readers(&mut self, decls: &[&ast::TypeDecl]) {
+        let mut refused = Vec::new();
+        for t in decls {
+            let Some(info) = self
+                .env
+                .types
+                .iter()
+                .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+            else {
+                continue;
+            };
+            for f in t.fields.iter().filter(|f| f.default.is_none()) {
+                let Some(Ty::Record(key)) = info.field(&f.name.name).map(|field| &field.ty) else {
+                    continue;
+                };
+                if crate::host::is_value(key) || *key == crate::resource_key() {
+                    continue;
+                }
+                let reads = self
+                    .env
+                    .types
+                    .iter()
+                    .any(|held| held.key == *key && held.readers.is_some());
+                if reads {
+                    refused.push((
+                        f.span,
+                        format!(
+                            "`{}.{}` holds a `{}` of its own, which is read by whoever reads its `{}`; a held record names no readers, so drop `readers:` from `{}` or keep it in a collection",
+                            t.name.name, f.name.name, key.name, t.name.name, key.name
+                        ),
+                    ));
+                }
+            }
+        }
+        for (span, message) in refused {
+            self.err("E145", span, message);
+        }
+    }
+
     /// Each type with an origin names a kind the platform has, and declares the kind's fields with
     /// the kind's types (`crate::origin`).
     fn check_origins(&mut self, decls: &[&ast::TypeDecl]) {

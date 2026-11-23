@@ -919,3 +919,27 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+tilo_test_env::scenario! {
+    /// E145: a record a field holds is read by whoever reads its holder, so its type names no
+    /// readers of its own; kept in a collection, the same type may.
+    fn held_readers_e145;
+
+    phase a_held_record_names_no_readers_of_its_own;
+    {
+        let held = |draft: &str, field: &str| {
+            format!("type Draft{draft} {{\n    sent: Bool\n}}\n\ntype Desk {{\n    {field}\n}}\n")
+        };
+        expect("E145", &held(" (readers: author)", "draft: Draft"));
+        expect("E145", &held(" (readers: author until sent)", "draft: Draft"));
+        for (draft, field) in [
+            (" (readers: author)", "drafts: List<Draft>"),
+            ("", "draft: Draft"),
+        ] {
+            assert!(
+                !codes(&held(draft, field)).contains(&"E145".to_owned()),
+                "{draft} {field} is read as its holder is"
+            );
+        }
+    }
+}

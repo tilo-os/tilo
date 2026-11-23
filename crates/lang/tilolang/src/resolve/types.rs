@@ -154,6 +154,7 @@ impl Resolver<'_> {
         self.check_title(&decls);
         self.check_untitled(&decls);
         self.check_readers(&decls);
+        self.check_held_readers(&decls);
         self.check_origins(&decls);
         // Every type's fields are known: each one's search reads its own, and the enums.
         for t in decls {
