@@ -1,6 +1,7 @@
 {
   "app": "app-restart",
   "said": "Calendar",
+  "family": "settings",
   "live": "rust",
   "apps": "file-explorer",
   "rust": {

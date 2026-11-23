@@ -1,6 +1,7 @@
 {
   "app": "chat",
   "said": "Chat",
+  "family": "apps",
   "live": "rust",
   "rust": {
     "id": "so.tilo.chat",

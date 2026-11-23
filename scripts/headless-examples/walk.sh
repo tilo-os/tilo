@@ -23,6 +23,9 @@ fi
 walk=$1
 shift
 [[ -f $walks/$walk.json ]] || { echo "no walk named $walk (scripts/headless-examples/walk.sh --list)" >&2; exit 2; }
+# A walk of a family runs in the family's check, on the session its walks share.
+check=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("family") or sys.argv[2])' \
+    "$walks/$walk.json" "$walk")
 
 inputs=()
 write_baseline=0
@@ -40,7 +43,7 @@ rm -rf -- "$out/now"
 mkdir -p -- "$out"
 
 status=0
-t test -C "$repo_root" "app-walk/$walk" ${inputs[@]+"${inputs[@]}"} --json > "$out/run.json" || status=$?
+t test -C "$repo_root" "app-walk/$check" ${inputs[@]+"${inputs[@]}"} --json > "$out/run.json" || status=$?
 run=$(python3 -c 'import json,sys
 for line in open(sys.argv[1]):
     line = line.strip()
@@ -50,8 +53,9 @@ for line in open(sys.argv[1]):
     run = doc.get("run") or doc.get("run_id") or (doc.get("result") or {}).get("run")
     if run: print(run); break' "$out/run.json")
 [[ -n $run ]] || { echo "t named no run (see $out/run.json)" >&2; exit 1; }
-t outputs -C "$repo_root" "app-walk/$walk" --run "$run" --to "$out/now" > /dev/null
-now=$(find "$out/now" -name walk.json -printf '%h\n' | head -1)
+t outputs -C "$repo_root" "app-walk/$check" --run "$run" --to "$out/now" > /dev/null
+now=$(find "$out/now" -path "*/$walk/walk.json" -printf '%h\n' | head -1)
+[[ -n $now ]] || now=$(find "$out/now" -name walk.json -printf '%h\n' | head -1)
 
 if ((write_baseline)); then
     # The baseline is what main walked, with the run that keeps its shots.
@@ -71,10 +75,11 @@ base_run=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("
     "$walks/baseline/$walk.json" 2>/dev/null || true)
 if [[ -n $base_run ]]; then
     if [[ ! -d $out/baseline-$base_run ]]; then
-        t outputs -C "$repo_root" "app-walk/$walk" --run "$base_run" --to "$out/baseline-$base_run" \
+        t outputs -C "$repo_root" "app-walk/$check" --run "$base_run" --to "$out/baseline-$base_run" \
             > /dev/null || echo "the baseline run $base_run kept no outputs" >&2
     fi
-    baseline=$(find "$out/baseline-$base_run" -name walk.json -printf '%h\n' 2>/dev/null | head -1)
+    baseline=$(find "$out/baseline-$base_run" -path "*/$walk/walk.json" -printf '%h\n' 2>/dev/null | head -1)
+    [[ -n $baseline ]] || baseline=$(find "$out/baseline-$base_run" -name walk.json -printf '%h\n' 2>/dev/null | head -1)
 fi
 python3 "$repo_root/scripts/headless-examples/app-walk.py" --side-by-side "$now" \
     ${baseline:+--baseline-dir "$baseline"} --out "$out"

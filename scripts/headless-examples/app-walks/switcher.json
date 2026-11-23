@@ -1,6 +1,7 @@
 {
   "app": "switcher",
   "said": "Switch between windows",
+  "family": "shell",
   "live": "rust",
   "apps": "file-explorer chat settings terminal",
   "rust": {},

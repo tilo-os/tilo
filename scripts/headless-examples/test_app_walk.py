@@ -64,17 +64,27 @@ class TheStepFiles(unittest.TestCase):
                         self.assertLessEqual(set(v), {"source", "session_args"})
 
     def test_every_walk_is_a_check_t_runs(self):
-        """A walk t does not run guards nothing: each file is in the `app-walk/{app}`
-        matrix, and each baseline belongs to a walk."""
+        """A walk t does not run guards nothing: each family, and each walk in
+        no family, is in the `app-walk/{app}` matrix; each baseline belongs to a
+        walk; and the walks of one family start their sessions the same way, so
+        one session per version can walk them all."""
         import re
         toml = (HERE.parents[1] / "t.toml").read_text()
         block = toml[toml.index('name = "app-walk/{app}"'):]
         listed = set(re.findall(r'"([a-z0-9-]+)"',
                                 re.search(r"^app = \[(.*?)\]", block, re.M).group(1)))
+        self.assertEqual(listed, set(walk.checks()))
         files = {path.stem for path, _spec in steps()}
-        self.assertEqual(listed, files)
+        self.assertFalse(listed & files - set(walk.checks()))
         for baseline in (HERE / "app-walks" / "baseline").glob("*.json"):
             self.assertIn(baseline.stem, files)
+        for family in walk.checks():
+            members = walk.family_of(family)
+            for variant in walk.VARIANTS:
+                starts = {json.dumps(spec[variant].get("session_args")) for _p, spec in members
+                          if variant in spec}
+                with self.subTest(family=family, variant=variant):
+                    self.assertLessEqual(len(starts), 1)
 
     def test_every_op_is_one_the_driver_has(self):
         driver = [name[len("op_"):] for name in dir(walk.Walk) if name.startswith("op_")]

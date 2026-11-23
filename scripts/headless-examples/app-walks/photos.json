@@ -1,6 +1,7 @@
 {
   "app": "photos",
   "said": "Photos",
+  "family": "apps",
   "live": "rust",
   "rust": {
     "id": "so.tilo.photos",

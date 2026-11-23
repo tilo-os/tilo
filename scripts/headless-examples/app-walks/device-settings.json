@@ -1,6 +1,7 @@
 {
   "app": "device-settings",
   "said": "Settings",
+  "family": "settings",
   "live": "rust",
   "rust": {
     "id": "so.tilo.settings",

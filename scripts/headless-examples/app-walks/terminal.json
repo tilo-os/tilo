@@ -1,6 +1,7 @@
 {
   "app": "terminal",
   "said": "Terminal",
+  "family": "apps",
   "live": "rust",
   "rust": {
     "id": "so.tilo.terminal",

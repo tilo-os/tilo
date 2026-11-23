@@ -295,7 +295,7 @@ class Walk:
     """One version's walk: its session, its steps and what each one found."""
 
     def __init__(self, spec: dict, variant: str, out: Path, state: Path,
-                 discover: bool = False):
+                 discover: bool = False, session: Session | None = None):
         self.spec = spec
         self.variant = variant
         self.v = spec[variant]
@@ -305,7 +305,10 @@ class Walk:
         # so the step file can name the one that is really there.
         self.discover = discover
         self.shots = out / "shots" / variant
-        self.session = Session(state)
+        # A family's walks share one session per version: it is started once, and
+        # each walk starts where the reset after the one before left the desktop.
+        self.shared = session is not None
+        self.session = session or Session(state)
         self.steps: list[dict] = []
         self.window: dict | None = None
         self.appearance: dict | None = None
@@ -1163,19 +1166,24 @@ class Walk:
     def walk(self) -> dict:
         spec = self.spec
         self.shots.mkdir(parents=True, exist_ok=True)
-        tapps = self.tapps()
         began = time.monotonic()
-        self.session.start(apps=apps_of(spec, self.variant),
-                           fresh=True, out=self.out / "logs", tag=self.variant,
-                           tapps=tapps, session_args=self.v.get("session_args"))
-        started = round((time.monotonic() - began) * 1000)
-        print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
+        started = 0
+        if not self.shared:
+            tapps = self.tapps()
+            began = time.monotonic()
+            self.session.start(apps=apps_of(spec, self.variant),
+                               fresh=True, out=self.out / "logs", tag=self.variant,
+                               tapps=tapps, session_args=self.v.get("session_args"))
+            started = round((time.monotonic() - began) * 1000)
+            print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
+        began = time.monotonic()
         try:
             for index, step in enumerate(spec["steps"], start=1):
                 self.step(index, step)
         finally:
             found = {"variant": self.variant, "app": self.v.get("id") or self.variant,
                      "session_start_ms": started,
+                     "walk_ms": round((time.monotonic() - began) * 1000),
                      "steps": self.steps}
             try:
                 if self.discover:
@@ -1185,8 +1193,30 @@ class Walk:
                     found["windows"] = self.session.windows()
             except Failed:
                 pass
-            self.session.stop()
+            if not self.shared:
+                self.session.stop()
         return found
+
+    def reset(self) -> None:
+        """Leave the desktop as a fresh sign-in shows it, for the family's next
+        walk: every window closed, nothing over the desktop, no notification
+        held, the light theme."""
+        for _ in range(2):
+            try:
+                self.session.key("Escape")
+            except Failed:
+                pass
+        for window in self.session.windows():
+            try:
+                self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab", {"tab": str(window["tab"])})
+            except Failed:
+                pass
+        try:
+            self.session.invoke(SHELL, "session:notifications", "clear")
+        except Failed:
+            pass
+        self.set_dark(False)
+        until_value("every window to close", lambda: not self.session.windows(), 20)
 
     def tapps(self) -> list[Path]:
         """The tilolang app's signed package, built against this state's runtime."""
@@ -1332,6 +1362,7 @@ def summary(report: dict) -> dict:
         "versions": {
             variant: {
                 "session_start_ms": found.get("session_start_ms"),
+                "walk_ms": found.get("walk_ms"),
                 "steps": {
                     step["id"]: {
                         "walked": "failed" not in step,
@@ -1479,6 +1510,27 @@ def commit_of_tree() -> str | None:
         return None
 
 
+def family_of(name: str) -> list[tuple[Path, dict]]:
+    """The walks of the family `name`, in the order they run: the files whose
+    `family` names it, by their `order` (a walk that locks the screen runs last)
+    and then by name. Empty when no walk names that family."""
+    found = []
+    for path in sorted(WALKS.glob("*.json")):
+        spec = json.loads(path.read_text())
+        if spec.get("family") == name:
+            found.append((spec.get("order", 50), path.stem, path, spec))
+    return [(path, spec) for _order, _name, path, spec in sorted(found, key=lambda f: f[:2])]
+
+
+def checks() -> list[str]:
+    """What t runs, one check each: every family, and every walk in none."""
+    names = set()
+    for path in WALKS.glob("*.json"):
+        spec = json.loads(path.read_text())
+        names.add(spec.get("family") or path.stem)
+    return sorted(names)
+
+
 def walks() -> list[str]:
     return sorted(path.stem for path in WALKS.glob("*.json"))
 
@@ -1521,57 +1573,111 @@ def main() -> int:
         parser.error("name a walk (--list shows them)")
 
     try:
-        path, spec = load_walk(options.app, options.file)
-        app = options.app or path.stem
-        out = (options.out or HERE.parents[1] / "target" / "app-walk" / app).resolve()
+        name = options.app
+        family = [] if options.file else family_of(name)
+        if family:
+            walked = family
+        else:
+            path, spec = load_walk(options.app, options.file)
+            name = name or path.stem
+            walked = [(path, spec)]
+        out = (options.out or HERE.parents[1] / "target" / "app-walk" / name).resolve()
         out.mkdir(parents=True, exist_ok=True)
         if options.build:
-            real_apps.build(apps=" ".join(sorted({a for v in VARIANTS if v in spec
-                                                  for a in apps_of(spec, v).split()})))
-        # The versions this walk's step file names: a native app that was deleted in the change
+            real_apps.build(apps=" ".join(sorted({a for _p, spec in walked for v in VARIANTS
+                                                  if v in spec for a in apps_of(spec, v).split()})))
+        # Each walk's versions still in the tree: a native app that was deleted in the change
         # its tilolang version took over leaves only its `tl` entry, and is walked alone.
-        named = [variant for variant in VARIANTS if variant in spec and present(spec, variant)]
-        if not named:
-            raise Failed(f"the walk names no version still in the tree: {path}")
-        if options.only is not None and options.only not in named:
-            raise Failed(f"the walk names no {options.only} version: {path}")
-        variants = [options.only] if options.only else named
-        report = {"walk": app, "file": str(path), "variants": {},
-                  "live": live_of(spec, named), "commit": commit_of_tree(),
-                  "steps": [{"id": s["id"], "said": s["said"]} for s in spec["steps"]]}
-        for variant in variants:
-            print(f"==> {app}: walking the {variant} version", file=sys.stderr)
-            # Each version walks on a session of its own: one desktop's notes are
-            # its own, and the two versions must not meet in a search or a window.
+        named = {path.stem: [v for v in VARIANTS if v in spec and present(spec, v)
+                             and options.only in (None, v)]
+                 for path, spec in walked}
+        for path, spec in walked:
+            if not [v for v in VARIANTS if v in spec and present(spec, v)]:
+                raise Failed(f"the walk names no version still in the tree: {path}")
+        reports = {path.stem: {
+            "walk": path.stem, "file": str(path), "variants": {},
+            "live": live_of(spec, [v for v in VARIANTS if v in spec and present(spec, v)]),
+            "commit": commit_of_tree(),
+            "steps": [{"id": st["id"], "said": st["said"]} for st in spec["steps"]]}
+            for path, spec in walked}
+        out_of = {path.stem: (out / path.stem if family else out) for path, _spec in walked}
+        for variant in VARIANTS:
+            mine = [(path, spec) for path, spec in walked if variant in named[path.stem]]
+            if not mine:
+                continue
+            # Each version walks on a session of its own: one desktop's notes are its own,
+            # and the two versions must not meet in a search or a window. A family's walks
+            # share that session: it starts once, and each walk begins where a reset left it.
             state = ((options.state or out) / f"state-{variant}").resolve()
-            # The session's apps, and the runtime a tilolang package is built against.
-            prepare_state(state, apps_of(spec, variant), build=False)
-            walk = Walk(spec, variant, out, state, discover=options.discover)
-            report["variants"][variant] = walk.walk()
-        (out / "walk.json").write_text(json.dumps(report, indent=1))
-        found = summary(report)
-        (out / "summary.json").write_text(json.dumps(found, indent=1) + "\n")
-        report_path = write_report(report, out)
-        if options.write_baseline:
-            BASELINES.mkdir(exist_ok=True)
-            (BASELINES / f"{app}.json").write_text(json.dumps(found, indent=1) + "\n")
+            apps = " ".join(sorted({a for _p, spec in mine for a in apps_of(spec, variant).split()}))
+            prepare_state(state, apps, build=False)
+            first = mine[0][1]
+            session = None
+            started = 0
+            if family:
+                packages = []
+                for _p, spec in mine:
+                    v = spec[variant]
+                    for package in (v.get("packages") or ([v["package"]] if v.get("package") else [])) \
+                            + list(spec.get("packages") or []):
+                        if package not in packages:
+                            packages.append(package)
+                tapps = [build_tapp(package, out / "build" / variant, state) for package in packages]
+                session = Session(state)
+                began = time.monotonic()
+                session.start(apps=apps, fresh=True, out=out / "logs", tag=variant, tapps=tapps,
+                              session_args=first[variant].get("session_args"))
+                started = round((time.monotonic() - began) * 1000)
+                print(f"==> {name}: the {variant} session up in {started} ms", file=sys.stderr)
+            try:
+                for index, (path, spec) in enumerate(mine):
+                    print(f"==> {path.stem}: walking the {variant} version", file=sys.stderr)
+                    walk = Walk(spec, variant, out_of[path.stem], state,
+                                discover=options.discover, session=session)
+                    found = walk.walk()
+                    if family:
+                        found["session_start_ms"] = started
+                    reports[path.stem]["variants"][variant] = found
+                    print(f"==> {path.stem} ({variant}): {found['walk_ms']} ms", file=sys.stderr)
+                    if session is not None and index + 1 < len(mine):
+                        try:
+                            walk.reset()
+                        except Failed as error:
+                            print(f"  reset after {path.stem} fell short: {error}", file=sys.stderr)
+            finally:
+                if session is not None:
+                    session.stop()
         verdict = 0
-        comparison_path = None
-        if options.compare is not None:
-            at = Path(options.compare) if options.compare else BASELINES / f"{app}.json"
-            if not at.is_file():
-                raise Failed(f"no baseline at {at}: a walk's first run on main writes it "
-                             "(--write-baseline)")
-            comparison = compare(found, json.loads(at.read_text()))
-            (out / "compare.json").write_text(json.dumps(comparison, indent=1) + "\n")
-            comparison_path = write_comparison(comparison, out)
-            for regression in comparison["regressions"]:
-                print(f"REGRESSION {regression['version']} {regression['step']}: "
-                      f"{regression['why']}", file=sys.stderr)
-            verdict = 1 if comparison["regressions"] else 0
-        print(json.dumps({"walk": str(out / "walk.json"), "report": str(report_path),
-                          "compare": str(comparison_path) if comparison_path else None,
-                          "shots": str(out / "shots")}))
+        printed = []
+        for walk_name, report in reports.items():
+            where = out_of[walk_name]
+            where.mkdir(parents=True, exist_ok=True)
+            (where / "walk.json").write_text(json.dumps(report, indent=1))
+            found = summary(report)
+            (where / "summary.json").write_text(json.dumps(found, indent=1) + "\n")
+            report_path = write_report(report, where)
+            if options.write_baseline:
+                BASELINES.mkdir(exist_ok=True)
+                (BASELINES / f"{walk_name}.json").write_text(json.dumps(found, indent=1) + "\n")
+            comparison_path = None
+            if options.compare is not None:
+                at = Path(options.compare) if options.compare else BASELINES / f"{walk_name}.json"
+                if options.compare and not at.is_file():
+                    raise Failed(f"no baseline at {at}")
+                if at.is_file():
+                    comparison = compare(found, json.loads(at.read_text()))
+                    (where / "compare.json").write_text(json.dumps(comparison, indent=1) + "\n")
+                    comparison_path = write_comparison(comparison, where)
+                    for regression in comparison["regressions"]:
+                        print(f"REGRESSION {walk_name} {regression['version']} {regression['step']}: "
+                              f"{regression['why']}", file=sys.stderr)
+                    verdict = verdict or (1 if comparison["regressions"] else 0)
+            times = {v: f.get("walk_ms") for v, f in report["variants"].items()}
+            print(f"==> {walk_name}: walked in {times} ms", file=sys.stderr)
+            printed.append({"walk": str(where / "walk.json"), "report": str(report_path),
+                            "compare": str(comparison_path) if comparison_path else None,
+                            "walk_ms": times})
+        print(json.dumps(printed if family else printed[0]))
         return verdict
     except Failed as error:
         print(f"FAIL: {error}", file=sys.stderr)

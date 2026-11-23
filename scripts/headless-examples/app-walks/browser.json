@@ -1,6 +1,7 @@
 {
   "app": "browser",
   "said": "Browser",
+  "family": "apps",
   "live": "rust",
   "rust": {
     "id": "so.tilo.browser",

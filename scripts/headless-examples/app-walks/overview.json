@@ -1,6 +1,7 @@
 {
   "app": "overview",
   "said": "See every window at once",
+  "family": "shell",
   "live": "rust",
   "apps": "file-explorer chat settings terminal",
   "rust": {},

@@ -1,6 +1,7 @@
 {
   "app": "docs",
   "said": "Docs",
+  "family": "apps",
   "live": "rust",
   "rust": {
     "id": "so.tilo.word-processor",

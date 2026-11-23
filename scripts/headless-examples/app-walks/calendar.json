@@ -1,6 +1,7 @@
 {
   "app": "calendar",
   "said": "Calendar",
+  "family": "apps",
   "live": "rust",
   "rust": {
     "id": "so.tilo.calendar",

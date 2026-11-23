@@ -1,6 +1,7 @@
 {
   "app": "settings",
   "said": "Settings",
+  "family": "settings",
   "live": "rust",
   "apps": "file-explorer",
   "rust": {

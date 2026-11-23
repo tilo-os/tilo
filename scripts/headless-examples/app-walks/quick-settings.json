@@ -1,6 +1,7 @@
 {
   "app": "quick-settings",
   "said": "Quick settings",
+  "family": "shell",
   "live": "rust",
   "apps": "file-explorer chat settings terminal",
   "rust": {},

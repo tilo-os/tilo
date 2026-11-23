@@ -80,6 +80,13 @@ file's `live`). So the lane that deletes `apps/tasks` runs `scripts/headless-exa
 before and after unchanged: after, only the tilolang Tasks is walked, and it is
 held to the Rust one's baseline.
 
+**Families share a session.** Walks that name the same `family` (`shell`, `apps`,
+`settings`) run in one session per version, one after another, with a reset between
+them (windows closed, nothing over the desktop, notifications cleared, the light
+theme); `order` puts a walk that locks the screen last. t runs one check per family
+and one per walk in none, and each walk reports how long it took (`walk_ms`) beside
+the session's start (`session_start_ms`).
+
 **Writing a walk.** One file per walk under `app-walks/`, named in t.toml's
 `app-walk/{app}` matrix (a test holds the two together). A step is
 `{"id", "said", "ops", "dark"?, "budget_ms"?}`; ops are the methods `op_*` of

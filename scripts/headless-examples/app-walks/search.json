@@ -1,6 +1,7 @@
 {
   "app": "search",
   "said": "Search the desktop",
+  "family": "shell",
   "live": "rust",
   "apps": "file-explorer chat settings terminal",
   "rust": {},

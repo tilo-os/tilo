@@ -1,6 +1,7 @@
 {
   "app": "accounts",
   "said": "Settings",
+  "family": "settings",
   "live": "rust",
   "apps": "calendar",
   "rust": {

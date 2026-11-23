@@ -1,6 +1,8 @@
 {
   "app": "sign-in",
   "said": "Sign in, lock the screen",
+  "family": "shell",
+  "order": 99,
   "live": "rust",
   "apps": "file-explorer chat settings terminal",
   "rust": {},

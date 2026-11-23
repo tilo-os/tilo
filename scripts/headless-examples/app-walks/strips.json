@@ -1,6 +1,7 @@
 {
   "app": "strips",
   "said": "Strips: more room for more work",
+  "family": "shell",
   "live": "rust",
   "apps": "file-explorer chat settings terminal",
   "rust": {},

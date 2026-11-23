@@ -6417,7 +6417,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["accounts", "app-restart", "browser", "calendar", "capabilities", "chat", "desktop", "device-settings", "docs", "launcher", "mail", "notes", "notifications", "overview", "people", "photos", "quick-settings", "search", "settings", "sheets", "sign-in", "strips", "switcher", "tasks", "terminal", "tube", "workspace-settings"]
+app = ["apps", "capabilities", "notes", "settings", "shell", "tube"]
 
 # `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks

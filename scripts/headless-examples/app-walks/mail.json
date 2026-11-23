@@ -1,6 +1,7 @@
 {
   "app": "mail",
   "said": "Mail",
+  "family": "apps",
   "live": "tl",
   "tl": {
     "id": "so.tilo.mail",

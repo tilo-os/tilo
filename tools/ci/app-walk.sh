@@ -6,7 +6,7 @@
 # scripts/headless-examples/app-walk.py. Where the walk has a baseline from main
 # (app-walks/baseline/WALK.json), what it found is held to it, and a regression fails.
 #
-#   tools/ci/app-walk.sh OUT WALK [app-walk.py args...]
+#   tools/ci/app-walk.sh OUT WALK|FAMILY [app-walk.py args...]
 #
 # T_INPUT_ONLY (rust|tl) walks one version, T_INPUT_DISCOVER=1 keeps every step's controls.
 #
@@ -58,6 +58,7 @@ trap keep EXIT
 args=()
 [[ -n ${T_INPUT_ONLY:-} ]] && args+=(--only "$T_INPUT_ONLY")
 [[ -n ${T_INPUT_DISCOVER:-} ]] && args+=(--discover)
-[[ -f scripts/headless-examples/app-walks/baseline/$app.json ]] && args+=(--compare)
+# Each walk is held to its baseline from main where it has one.
+args+=(--compare)
 python3 scripts/headless-examples/app-walk.py "$app" --out "$run/walk" --state "$run/states" \
     ${args[@]+"${args[@]}"} "$@"

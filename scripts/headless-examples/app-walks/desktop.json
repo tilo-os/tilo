@@ -1,6 +1,7 @@
 {
   "app": "desktop",
   "said": "The desktop a person signs in to",
+  "family": "shell",
   "live": "rust",
   "apps": "file-explorer chat settings terminal",
   "rust": {},

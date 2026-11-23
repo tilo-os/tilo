@@ -1,6 +1,7 @@
 {
   "app": "sheets",
   "said": "Sheets",
+  "family": "apps",
   "live": "rust",
   "rust": {
     "id": "so.tilo.sheets",
