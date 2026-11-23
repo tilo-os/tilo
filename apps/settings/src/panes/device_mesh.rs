@@ -196,7 +196,7 @@ impl MeshFollow {
             );
             let wake = ui::WakeHandle::new();
             Box::new(move || {
-                follow_server(&state_root, &latest, &stop, poke, &events, &wake, &*now)
+                follow_server(&state_root, &latest, &stop, poke, &events, &wake, &*now);
             })
         };
         crate::device_read::thread("settings-server-status", follow).ok()?;
