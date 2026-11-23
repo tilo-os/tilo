@@ -1,30 +1,39 @@
-//! What a workspace's server does for an issue that is worked on over many agent sessions.
+//! What a workspace's server does for a task that is worked on over many agent sessions.
 //!
-//! An issue given to an agent may take hours or weeks: sessions with waits between them, on a
-//! server that restarts. Everything a later session needs is kept with the issue
-//! ([`tasks_model::Work`]) and in the workspace's own Notes and Files, never beside them, so this
-//! module keeps nothing: it reads the issue, and writes to it through Tasks' own verbs as the
-//! agent whose session it is, for the person the agent works for.
+//! A task given to an agent may take hours or weeks: sessions with waits between them, on a
+//! server that restarts. Everything a later session needs is kept with the task (Tasks' `Work`)
+//! and in the workspace's own Notes and Files, never beside them, so this module keeps nothing:
+//! it reads the task through the store's typed reads as the turn's agent for the person it acts
+//! for, and writes to it through Tasks' own actions under the agent's own key.
 //!
-//! - Before a session it makes the issue's place when it has none (a note in Notes, linked from
-//!   the issue, and a folder named for the issue), says the session began, and tells it what the
-//!   note reads now. The folder is made in the workspace's files by Files' own `new-folder`, as
-//!   the agent on its turn: an agent whose rules refuse it Files has none, and its session is
-//!   told so.
+//! - Before a session it says the session began. Tasks decides whether one may (its budget in
+//!   money and in time, sessions lost too often in a row) and refuses in the words its person
+//!   reads: the turn then ends with those words, said on the task, and the task's work is
+//!   written as stopped. Otherwise it makes the task's place when it has none (a note in Notes
+//!   made from the task, and a folder named for it) and tells the session what it needs: what
+//!   made the task go on, what earlier sessions left, and what is left of its budget. The folder
+//!   is made in the workspace's files by Files' own `new-folder`, as the agent on its turn: an
+//!   agent whose rules refuse it Files has none, and its session is told so.
 //! - After a session it counts what the session cost and how long it worked.
-//! - A session that could not finish (the issue's budget, the day's limit, a failure) is written
-//!   on the issue as stopped, with its plain line. Nothing here writes `done`.
+//! - A session that could not finish (the task's budget, the day's limit, a failure) is written
+//!   on the task as stopped, with its plain line. Nothing here writes `done`.
+//!
+//! The same is done for an issue of the tracker's own documents ([`IssueWork`]), which only an
+//! issue's own turn reaches.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tasks_model::{Asked, Issue, IssueAsk, MOST_LOST_SESSIONS, StoppedWhy, Work};
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{
-    APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, RemoteActionTarget, workspace_provider,
+    APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, RemoteActionTarget, ResourceReads,
+    workspace_provider,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 
+use super::tl_tasks::{self, Reader};
 use super::{Outcome, TASKS, invoke_named, money};
 use crate::workspaces::Workspaces;
 
@@ -39,22 +48,267 @@ const MOST_FOLDER_TITLE_CHARS: usize = 80;
 const NOTE_STARTS: &str =
     "## Plan\n\n## Found so far\n\nEach finding with where it comes from.\n\n## Still open\n";
 
-/// How a session on an issue works and ends, as every one is told.
-const HOW_TO_WORK: &str = "\n\nDo the work through the workspace's apps. Move the issue to In \
-    progress when you start. Before you end, write what a later session needs into the note. \
-    If you have to wait (for a reply, a time, a resource to change, a person), call Tasks' `wait` \
-    on this issue with what you wait for and the latest moment the wait ends, say in one line \
-    what you wait for, and end: you are started again when it comes or at that moment. Where \
-    one of your person's automations can see what you wait for (a time, a resource of the \
-    workspace changing), set it up first and name its id in the wait as `event`: when it comes, \
-    the task goes on with what the automation says and nothing else is asked. Remove an \
-    automation you set up only for a wait once the wait is over. Where the work falls into \
-    pieces that can be done apart, make each an issue under this one and give it to yourself, \
-    say with `set-pieces-at-once` how many are in work at once, give each a budget, and `wait` \
-    on this issue with a wait of the kind `pieces`: you are started again when they are \
-    through. When the \
-    work is finished, move the issue to In review, never to Done: that is its person's to say. \
-    If you cannot finish, say plainly why.";
+/// How a session on a task works and ends, as every one is told, by the names Tasks gives its
+/// actions.
+const HOW_TO_WORK: &str = "\n\nDo the work through the workspace's apps. Before you end, write \
+    what a later session needs into the note. If you have to wait (for a reply, a time, a \
+    resource to change, a person), call Tasks' `wait` on this task with what you wait for, the \
+    latest moment the wait ends and its kind, say in one line what you wait for, and end: you \
+    are started again when it comes or at that moment. Where one of your person's automations \
+    can see what you wait for (a time, a resource of the workspace changing), set it up first \
+    and name its id in the wait as `on`: when it comes, the task goes on with what the \
+    automation says and nothing else is asked. Remove an automation you set up only for a wait \
+    once the wait is over. Where the work falls into pieces that can be done apart, make each a \
+    subtask of this one with `add_subtask` and give it to yourself with `assign`, say with \
+    `set_pieces_at_once` how many are in work at once, give each a budget with `set_budget`, \
+    and `wait` on this task with a wait of the kind `pieces`: you are started again when they \
+    are through. When the work is finished, move the task to In review with `set_status`, never \
+    to Done: that is its person's to say. If you cannot finish, say plainly why.";
+
+/// What a session is told of a task's work as it stood before the session began.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Before {
+    /// How many sessions worked it before.
+    pub sessions: i64,
+    /// Whether the session before this one began and never ended.
+    pub interrupted: bool,
+    /// Its budget in money, in millionths; none for no limit.
+    pub budget_micros: Option<u64>,
+    /// What is left of that budget.
+    pub money_left: Option<u64>,
+    /// What made it go on after its latest wait, when something did.
+    pub resumed: Option<String>,
+}
+
+impl Before {
+    fn of_work(work: &tl_tasks::Work) -> Self {
+        Self {
+            sessions: work.sessions,
+            interrupted: work.interrupted,
+            budget_micros: work
+                .budget_micros
+                .map(|budget| u64::try_from(budget).unwrap_or_default()),
+            money_left: work.money_left(),
+            resumed: work.resumed.clone(),
+        }
+    }
+
+    fn of_issue(work: &Work) -> Self {
+        Self {
+            sessions: i64::try_from(work.sessions).unwrap_or(i64::MAX),
+            interrupted: work.session_since_ms.is_some(),
+            budget_micros: work.budget_micros,
+            money_left: work.money_left(),
+            resumed: None,
+        }
+    }
+}
+
+/// One task's work, as a turn its agent was triggered to take on it reaches it.
+pub(super) struct TaskWork {
+    pub(super) service: super::WorkspaceActionProvider,
+    /// The agent the turn is of, acting for the person it answers.
+    pub(super) caller: Caller,
+    /// The store's reads, decided for that agent and person.
+    pub(super) reads: Arc<dyn ResourceReads>,
+    pub(super) workspace: String,
+    /// The task, by its id in Tasks.
+    pub(super) task: String,
+}
+
+impl TaskWork {
+    fn reader(&self) -> Reader<'_> {
+        Reader::Turn {
+            reads: Arc::clone(&self.reads),
+            caller: &self.caller,
+        }
+    }
+
+    /// Invoke Tasks' action `action` on the task, as the agent.
+    async fn verb(&self, action: &str, arguments: Map<String, Value>) -> Result<Value, String> {
+        tl_tasks::invoke(
+            &self.service,
+            &self.caller,
+            &self.workspace,
+            &tl_tasks::resource(&self.task),
+            action,
+            arguments,
+        )
+        .await
+    }
+
+    /// Begin a session on the task: Tasks is told it began, its place is made when it has none,
+    /// and `request` is told what the session needs. What its work kept before the session;
+    /// none for a task this turn cannot read.
+    ///
+    /// # Errors
+    /// Tasks refused the session: its plain line, which the task's work is stopped with.
+    pub(super) async fn begin(&self, request: &mut String) -> Result<Option<Before>, String> {
+        let reader = self.reader();
+        let Some(task) = reader.task(&self.workspace, &self.task).await? else {
+            return Ok(None);
+        };
+        let work = reader.work(&self.workspace, &task).await?;
+        if let Err(words) = self.verb("session_began", Map::new()).await {
+            self.stopped("failed", &words).await;
+            return Err(words);
+        }
+        let place = self.place(&task, &work).await;
+        let before = Before::of_work(&work);
+        *request = told(request, &before, &place);
+        Ok(Some(before))
+    }
+
+    /// The task's place, made when it has none: its folder's path and its note, kept on the
+    /// task through Tasks' `set_place`. A note that cannot be made leaves the place with its
+    /// folder alone, and the turn is told so; a folder that cannot be made keeps its name, and
+    /// the turn is told it is not there.
+    async fn place(&self, task: &tl_tasks::Task, work: &tl_tasks::Work) -> Place {
+        let folder = if work.folder.is_empty() {
+            folder_of(task.number, &task.title)
+        } else {
+            work.folder.clone()
+        };
+        let mut note = work.note.clone();
+        let mut no_note = None;
+        if note.is_empty() {
+            // Tasks writes the note from the task, so it reads under it.
+            match self.verb("write_note", Map::new()).await.and_then(|made| {
+                made.pointer("/resources/0")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("Tasks made no note: {made}"))
+            }) {
+                Ok(made) => note = made,
+                Err(error) => {
+                    tracing::warn!(workspace = %self.workspace, task = %self.task, %error, "a task's note is not made");
+                    no_note = Some(error);
+                }
+            }
+        }
+        if work.folder != folder || work.note != note {
+            let mut arguments = Map::new();
+            arguments.insert("folder".into(), json!(folder));
+            arguments.insert("note".into(), json!(note));
+            if let Err(error) = self.verb("set_place", arguments).await {
+                tracing::warn!(workspace = %self.workspace, task = %self.task, %error, "a task's place is not kept");
+            }
+        }
+        let no_folder = make_folder(&self.service, &self.caller, &self.workspace, &folder)
+            .await
+            .err();
+        if let Some(error) = &no_folder {
+            tracing::warn!(workspace = %self.workspace, task = %self.task, %error, "a task's folder is not made");
+        }
+        Place {
+            folder,
+            no_folder,
+            note,
+            no_note,
+            text: None,
+        }
+    }
+
+    /// Count the session that ended as `outcome`: what it cost and how long it worked. One that
+    /// could not finish is written on the task as stopped, and one that ran out of the task's
+    /// own money says that rather than the day's limit: the outcome its turn ends with.
+    pub(super) async fn ended_as(
+        &self,
+        outcome: Outcome,
+        cost_micros: u64,
+        worked: Duration,
+        before: &Before,
+    ) -> Outcome {
+        let mut counted = Map::new();
+        counted.insert(
+            "spent_micros".into(),
+            json!(i64::try_from(cost_micros).unwrap_or(i64::MAX)),
+        );
+        counted.insert(
+            "worked_ms".into(),
+            json!(i64::try_from(worked.as_millis()).unwrap_or(i64::MAX)),
+        );
+        if let Err(error) = self.verb("session_ended", counted).await {
+            tracing::warn!(workspace = %self.workspace, task = %self.task, %error, "a session on a task is not counted");
+        }
+        let (why, outcome) = ended(outcome, cost_micros, before);
+        if let Some((why, words)) = why {
+            self.stopped(why, &words).await;
+        }
+        outcome
+    }
+
+    /// Write on the task that its work stopped, and why.
+    async fn stopped(&self, why: &str, words: &str) {
+        let mut arguments = Map::new();
+        arguments.insert("why".into(), json!(why));
+        arguments.insert("words".into(), json!(words));
+        if let Err(error) = self.verb("stop", arguments).await {
+            tracing::warn!(workspace = %self.workspace, task = %self.task, %error, "a task's stop is not written");
+        }
+    }
+}
+
+/// How a session that ended as `outcome` stops its task's work (why, by the case Tasks names,
+/// and the plain line), and the outcome its turn ends with: one that ran out of the task's own
+/// money says that rather than the day's limit.
+fn ended(
+    outcome: Outcome,
+    cost_micros: u64,
+    before: &Before,
+) -> (Option<(&'static str, String)>, Outcome) {
+    match outcome {
+        Outcome::Answered(words) => (None, Outcome::Answered(words)),
+        Outcome::Stopped(_) if before.money_left.is_some_and(|left| cost_micros >= left) => {
+            let words = spent(before.budget_micros.unwrap_or_default());
+            (Some(("budget", words.clone())), Outcome::Stopped(words))
+        }
+        Outcome::Stopped(words) => (Some(("failed", words.clone())), Outcome::Stopped(words)),
+        Outcome::Failed(words) => (Some(("failed", words.clone())), Outcome::Failed(words)),
+        Outcome::Cancelled => (
+            Some(("person", "Its person stopped the work.".to_owned())),
+            Outcome::Cancelled,
+        ),
+    }
+}
+
+/// The line of a task whose budget of `budget_micros` is spent.
+fn spent(budget_micros: u64) -> String {
+    format!(
+        "I stopped: this task's budget of {} is spent. Raise it to let me go on.",
+        money(budget_micros)
+    )
+}
+
+/// Make the folder `folder` in the workspace's files, with the folders on the way to it:
+/// Files' own `new-folder` by a path in the workspace, asked as `caller`, so with what its
+/// rules allow it of Files. A folder that is there is left as it is: every session asks, none
+/// makes a second one, and one its person took away is there again.
+///
+/// # Errors
+/// The agent's rules refuse it Files, the path is none of the workspace, or the workspace did
+/// not take the change: why the folder is not there, in words the turn is told.
+async fn make_folder(
+    service: &super::WorkspaceActionProvider,
+    caller: &Caller,
+    workspace: &str,
+    folder: &str,
+) -> Result<(), String> {
+    let (parent, name) = folder.rsplit_once('/').unwrap_or(("", folder));
+    let mut arguments = Map::new();
+    arguments.insert("parent".into(), json!(parent));
+    arguments.insert("name".into(), json!(name));
+    let target = RemoteActionTarget {
+        provider: workspace_provider(workspace),
+        address: ActionAddress {
+            resource: format!("{APPLICATION_RESOURCE_PREFIX}{FILES}"),
+            action: "new-folder".to_owned(),
+        },
+    };
+    super::invoke_at(service, caller, target, InvokeArgument::Json(arguments))
+        .await
+        .map(drop)
+}
 
 /// One issue's work, as a session of its agent reaches it.
 pub(super) struct IssueWork {
@@ -114,7 +368,7 @@ pub(super) fn refused(work: Option<&Work>) -> Option<(StoppedWhy, String)> {
                     .to_owned(),
             ));
         }
-        Some(why) => return Some((why, spent_line(work))),
+        Some(why) => return Some((why, spent(work.budget_micros.unwrap_or_default()))),
         None => {}
     }
     (work.session_since_ms.is_some() && work.lost >= MOST_LOST_SESSIONS).then(|| {
@@ -129,19 +383,10 @@ pub(super) fn refused(work: Option<&Work>) -> Option<(StoppedWhy, String)> {
     })
 }
 
-/// The line of an issue whose budget in money is spent.
-fn spent_line(work: &Work) -> String {
-    format!(
-        "I stopped: this task's budget of {} is spent. Raise it to let me go on.",
-        money(work.budget_micros.unwrap_or_default())
-    )
-}
-
-/// The folder an issue's material is kept in when nobody named one: `Tasks/<number> <title>`,
+/// The folder a task's material is kept in when nobody named one: `Tasks/<number> <title>`,
 /// the title without what a folder may not be called.
-fn folder_of(issue: &Kept) -> String {
-    let title: String = issue
-        .title
+fn folder_of(number: i64, title: &str) -> String {
+    let title: String = title
         .chars()
         .map(|c| {
             if c == '/' || c == '\\' || c.is_control() {
@@ -155,9 +400,9 @@ fn folder_of(issue: &Kept) -> String {
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
     let title = title.trim_matches('.');
     if title.is_empty() {
-        format!("Tasks/{}", issue.number)
+        format!("Tasks/{number}")
     } else {
-        format!("Tasks/{} {title}", issue.number)
+        format!("Tasks/{number} {title}")
     }
 }
 
@@ -208,33 +453,22 @@ impl IssueWork {
         if let Err(error) = self.verb("session-ended", counted).await {
             tracing::warn!(workspace = %self.workspace, issue = %self.issue, %error, "a session on an issue is not counted");
         }
-        match outcome {
-            Outcome::Answered(words) => Outcome::Answered(words),
-            Outcome::Stopped(_) if before.money_left().is_some_and(|left| cost_micros >= left) => {
-                let words = spent_line(before);
-                self.stopped(StoppedWhy::Budget, &words).await;
-                Outcome::Stopped(words)
-            }
-            Outcome::Stopped(words) => {
-                self.stopped(StoppedWhy::Failed, &words).await;
-                Outcome::Stopped(words)
-            }
-            Outcome::Failed(words) => {
-                self.stopped(StoppedWhy::Failed, &words).await;
-                Outcome::Failed(words)
-            }
-            Outcome::Cancelled => {
-                self.stopped(StoppedWhy::Person, "Its person stopped the work.")
-                    .await;
-                Outcome::Cancelled
-            }
+        let (why, outcome) = ended(outcome, cost_micros, &Before::of_issue(before));
+        if let Some((why, words)) = why {
+            self.stop(json!(why), &words).await;
         }
+        outcome
     }
 
     /// Write on the issue that its work stopped, and why.
     pub(super) async fn stopped(&self, why: StoppedWhy, words: &str) {
+        self.stop(json!(why), words).await;
+    }
+
+    /// Write on the issue that its work stopped as `why`, by the case Tasks names.
+    async fn stop(&self, why: Value, words: &str) {
         let mut arguments = Map::new();
-        arguments.insert("why".into(), json!(why));
+        arguments.insert("why".into(), why);
         arguments.insert("words".into(), json!(words));
         if let Err(error) = self.verb("stop", arguments).await {
             tracing::warn!(workspace = %self.workspace, issue = %self.issue, %error, "an issue's stop is not written");
@@ -249,7 +483,10 @@ impl IssueWork {
     pub(super) async fn place(&self, workspaces: &Workspaces, issue: &Kept) -> Place {
         let kept = issue.work.clone().unwrap_or_default();
         let folder = if kept.folder.is_empty() {
-            folder_of(issue)
+            folder_of(
+                i64::try_from(issue.number).unwrap_or(i64::MAX),
+                &issue.title,
+            )
         } else {
             kept.folder.clone()
         };
@@ -274,7 +511,9 @@ impl IssueWork {
                 tracing::warn!(workspace = %self.workspace, issue = %self.issue, %error, "an issue's place is not kept");
             }
         }
-        let no_folder = self.make_folder(&folder).await.err();
+        let no_folder = make_folder(&self.service, &self.caller, &self.workspace, &folder)
+            .await
+            .err();
         if let Some(error) = &no_folder {
             tracing::warn!(workspace = %self.workspace, issue = %self.issue, %error, "an issue's folder is not made");
         }
@@ -290,32 +529,6 @@ impl IssueWork {
             no_note,
             text,
         }
-    }
-
-    /// Make the folder `folder` in the workspace's files, with the folders on the way to it:
-    /// Files' own `new-folder` by a path in the workspace, asked as the agent on this turn, so
-    /// with what its rules allow it of Files. A folder that is there is left as it is: every
-    /// session asks, none makes a second one, and one its person took away is there again.
-    ///
-    /// # Errors
-    /// The agent's rules refuse it Files, the path is none of the workspace, or the workspace
-    /// did not take the change: why the folder is not there, in words the turn is told.
-    async fn make_folder(&self, folder: &str) -> Result<(), String> {
-        let (parent, name) = folder.rsplit_once('/').unwrap_or(("", folder));
-        let mut arguments = Map::new();
-        arguments.insert("parent".into(), json!(parent));
-        arguments.insert("name".into(), json!(name));
-        let target = RemoteActionTarget {
-            provider: workspace_provider(&self.workspace),
-            address: ActionAddress {
-                resource: format!("{APPLICATION_RESOURCE_PREFIX}{FILES}"),
-                action: "new-folder".to_owned(),
-            },
-        };
-        let asked = InvokeArgument::Json(arguments);
-        super::invoke_at(&self.service, &self.caller, target, asked)
-            .await
-            .map(drop)
     }
 
     /// Make the issue's note in Notes, titled after it, and link it from the issue: the note's
@@ -420,18 +633,33 @@ pub(super) fn asked(issue: &Issue, ask: &IssueAsk) -> String {
     request
 }
 
-/// `request` with what a session needs beside the ask: that earlier ones happened (`work` is what
-/// the issue kept before this one), where its working material is and what its note reads now,
-/// what is left of its budget, and how to wait and how to end.
+/// `request` with what a session on an issue needs beside the ask ([`told`]), `work` what the
+/// issue kept before this session.
 pub(super) fn with_place(request: &str, work: &Work, place: &Place) -> String {
+    told(request, &Before::of_issue(work), place)
+}
+
+/// `request` with what a session needs beside the ask: what made the task go on, that earlier
+/// sessions happened, where its working material is and what its note reads now, what is left
+/// of its budget, and how to wait and how to end.
+fn told(request: &str, work: &Before, place: &Place) -> String {
     let mut request = request.to_owned();
+    if let Some(cause) = work
+        .resumed
+        .as_deref()
+        .filter(|cause| !cause.trim().is_empty())
+    {
+        request.push_str("\n\nIt waited, and goes on now: ");
+        request.push_str(cause.trim());
+        request.push('.');
+    }
     if work.sessions > 0 {
         request.push_str(
             "\n\nThis is not your first session on it, and you remember nothing of the earlier \
              ones: everything you know of them is in its note, its folder and its thread.",
         );
     }
-    if work.session_since_ms.is_some() {
+    if work.interrupted {
         request.push_str(
             " The session before this one was interrupted before it ended: look at what it \
              already did before you do anything a second time.",
@@ -472,7 +700,7 @@ pub(super) fn with_place(request: &str, work: &Work, place: &Place) -> String {
         request.push_str("\n\nThe note as it reads now:\n");
         request.push_str(text);
     }
-    if let Some(left) = work.money_left() {
+    if let Some(left) = work.money_left {
         let budget = format!(
             "\n\nIts budget: {} of {} is left for all the work on it.",
             money(left),

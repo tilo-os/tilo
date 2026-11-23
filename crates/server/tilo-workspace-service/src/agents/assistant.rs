@@ -161,6 +161,7 @@ impl Steps for Hosted {
         // An automation a task waits for tells that task to go on: nothing else is started.
         if super::task_waits::told(
             &self.workspaces,
+            self.turns.as_ref().map(|(actions, _)| actions),
             &instruction.workspace,
             &instruction.person,
             &instruction.cause.installation,

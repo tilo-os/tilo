@@ -827,7 +827,7 @@ impl Initiative {
                     // What a member did with a proposed task counts before
                     // the assistant is told what they made of each kind of
                     // work.
-                    self.reconcile(workspace).await;
+                    self.reconcile(workspace, &instruction.person).await;
                     Ok(gathered)
                 })
                 .map_err(StepError::Unavailable)
@@ -930,25 +930,31 @@ impl Initiative {
             }
             _ => return Err(ActionCallError::UnknownAction),
         }
-        said(&self.listed(&asked.workspace).await)
+        said(
+            &self
+                .listed(&asked.workspace, &hex::encode(asked.person))
+                .await,
+        )
     }
 
     /// What was proposed, as a member reads it now: what they did with a
     /// proposed task in the tracker counted first.
-    async fn listed(&self, workspace: &str) -> Proposals {
-        self.reconcile(workspace).await;
+    async fn listed(&self, workspace: &str, person: &str) -> Proposals {
+        self.reconcile(workspace, person).await;
         self.kept(workspace).book.listed()
     }
 
-    /// Hold what waits against the workspace's tracker
-    /// ([`proposals::Book::reconcile`]). A tracker that cannot be read says
-    /// nothing: what waits goes on waiting.
-    async fn reconcile(&self, workspace: &str) {
+    /// Hold what waits against the workspace's Tasks, as `person` (their
+    /// root, in hex) reads them ([`proposals::Book::reconcile`]). Tasks that
+    /// cannot be read say nothing: what waits goes on waiting.
+    async fn reconcile(&self, workspace: &str, person: &str) {
         let mut book = self.kept(workspace).book;
-        if !book.waits_in_tracker() {
+        let waiting = book.waiting_tasks();
+        if waiting.is_empty() {
             return;
         }
-        let Ok(issues) = tracker::issues(&self.inner.workspaces, workspace).await else {
+        let Ok(issues) = tracker::issues(&self.inner.workspaces, workspace, person, &waiting).await
+        else {
             return;
         };
         let now_ms = tilo_clock::unix_now_ms_i64();
@@ -969,7 +975,6 @@ impl Initiative {
     fn tracker(&self, asked: &Asked<'_>) -> Option<tracker::Tracker> {
         let actions = self.inner.actions.clone()?;
         Some(tracker::Tracker {
-            workspaces: self.inner.workspaces.clone(),
             actions,
             workspace_id: asked.workspace_id,
             workspace: asked.workspace.clone(),
@@ -986,7 +991,8 @@ impl Initiative {
         wanted: Propose,
     ) -> Result<Proposal, ActionCallError> {
         let wanted = proposals::checked(wanted).map_err(ActionCallError::refused)?;
-        self.reconcile(&asked.workspace).await;
+        self.reconcile(&asked.workspace, &hex::encode(asked.person))
+            .await;
         let id = uuid::Uuid::new_v4().to_string();
         let now_ms = tilo_clock::unix_now_ms_i64();
         let proposal = self
@@ -1032,7 +1038,8 @@ impl Initiative {
     /// out, so one given twice, or on two devices at once, starts nothing
     /// twice; where it could not be carried out, the proposal waits again.
     async fn accept(&self, asked: &Asked<'_>, nod: &Accept) -> Result<Proposal, ActionCallError> {
-        self.reconcile(&asked.workspace).await;
+        self.reconcile(&asked.workspace, &hex::encode(asked.person))
+            .await;
         let now_ms = tilo_clock::unix_now_ms_i64();
         let (accepted, first) = self
             .change(&asked.workspace, |kept| {
@@ -1095,7 +1102,8 @@ impl Initiative {
     /// A proposal turned down: its kind counts one more, and its task is
     /// cancelled. Turned down again, or by two at once, it counts once.
     async fn decline(&self, asked: &Asked<'_>, no: &Decline) -> Result<Proposal, ActionCallError> {
-        self.reconcile(&asked.workspace).await;
+        self.reconcile(&asked.workspace, &hex::encode(asked.person))
+            .await;
         let now_ms = tilo_clock::unix_now_ms_i64();
         let (declined, first) = self
             .change(&asked.workspace, |kept| {

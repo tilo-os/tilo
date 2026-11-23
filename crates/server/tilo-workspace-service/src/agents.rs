@@ -107,6 +107,7 @@ mod sub_agents;
 mod summary;
 mod task_waits;
 mod team;
+mod tl_tasks;
 mod turn_provider;
 mod vault_uses;
 pub mod web_search;
@@ -2101,6 +2102,15 @@ impl ServerAgents {
                 return (turn.ask, ended, None);
             }
         };
+        // A task of Tasks is worked the same way: Tasks says whether its session may begin, and
+        // one it refuses ends here with Tasks' words, said on the task.
+        let tl_task = match task_session(&mut turn, &reply).await {
+            Ok(task) => task,
+            Err(words) => {
+                let ended = reply.finished(&Outcome::Stopped(words)).await;
+                return (turn.ask, ended, None);
+            }
+        };
         let clock = tilo_clock::now();
         reply.taken().await;
         self.sub_began(&scope, &turn).await;
@@ -2131,7 +2141,11 @@ impl ServerAgents {
             (Ok(model), _) => {
                 // The day's limit and the issue's own budget both bound the turn: the smaller.
                 let day_left = limit.map(|limit| limit.saturating_sub(spent_before));
-                let task_left = task.as_ref().and_then(|(_, before)| before.money_left());
+                let task_left = match (&task, &tl_task) {
+                    (Some((_, before)), _) => before.money_left(),
+                    (None, Some((_, before))) => before.money_left,
+                    (None, None) => None,
+                };
                 let budget = match (day_left, task_left) {
                     (Some(day), Some(task)) => Some(day.min(task)),
                     (day, task) => day.or(task),
@@ -2144,9 +2158,14 @@ impl ServerAgents {
                 .await
             }
         };
-        let outcome = match &task {
-            Some((task, before)) => task.ended_as(outcome, cost, clock.elapsed(), before).await,
-            None => outcome,
+        let outcome = match (&task, &tl_task) {
+            (Some((task, before)), _) => {
+                task.ended_as(outcome, cost, clock.elapsed(), before).await
+            }
+            (None, Some((task, before))) => {
+                task.ended_as(outcome, cost, clock.elapsed(), before).await
+            }
+            (None, None) => outcome,
         };
         // An answer is logged where the model gives it; a turn that ends any other way says
         // so here, or the log reads as if it were still going.
@@ -3417,6 +3436,39 @@ pub fn workspace_resource(catalogue: &tilo_agent_session::AppCatalogue, app: &st
 /// Today, `YYYY-MM-DD`, as an agent's keeper counts the days its spending is charged to.
 pub fn today() -> String {
     tilo_clock::local::today().to_string()
+}
+
+/// Begin an agent session on the task of Tasks `turn` was triggered on: Tasks is told it began,
+/// its place is made, and `turn` is told what the session needs. The task's work as it stood
+/// before; none for a turn that is no task's, or whose task this turn cannot read.
+///
+/// # Errors
+/// Tasks refused the session (its budget is spent, or its sessions were lost too often): its
+/// plain line, which the task's work is stopped with.
+async fn task_session(
+    turn: &mut Turn,
+    reply: &Reply,
+) -> Result<Option<(issue_work::TaskWork, issue_work::Before)>, String> {
+    let Ask::Triggered(place) = &turn.ask else {
+        return Ok(None);
+    };
+    if place.app != tl_tasks::APP {
+        return Ok(None);
+    }
+    let Some(reads) = reply.provider.resource_reads() else {
+        return Err("this device reads no task for an agent".to_owned());
+    };
+    let task = issue_work::TaskWork {
+        service: reply.provider.clone(),
+        caller: reply.caller.clone(),
+        reads,
+        workspace: reply.workspace.clone(),
+        task: place.item.clone(),
+    };
+    Ok(task
+        .begin(&mut turn.request)
+        .await?
+        .map(|before| (task, before)))
 }
 
 /// `micros` millionths of the currency, as a person reads an amount.

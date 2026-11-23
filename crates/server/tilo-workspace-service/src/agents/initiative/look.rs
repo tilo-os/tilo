@@ -19,10 +19,9 @@ use serde_json::{Value, json};
 use tilo_actions::remote::workspace_initiative::Found;
 use tilo_automation::dispatch::DocumentEvent;
 
+use crate::agents::tl_tasks::{self, Reader, Task};
 use crate::workspaces::Workspaces;
 
-/// The app that keeps the workspace's tasks.
-const TASKS: &str = "so.tilo.tasks";
 /// How far ahead a task counts as due: a day.
 const DUE_WITHIN_MS: i64 = 24 * 60 * 60 * 1000;
 /// The most documents and the most tasks a look names; the rest it counts.
@@ -50,7 +49,7 @@ pub(super) struct Seen {
 /// What is the assistant's own in a workspace, which a look leaves out.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Own {
-    /// The person the look is for, as a task's assignee names them.
+    /// The person the look is for, by their root in hex.
     pub person: String,
     /// The assistant's id among the workspace's agents, where the person
     /// keeps one.
@@ -143,11 +142,8 @@ pub(super) async fn gather(
     let mut found = Found::default();
     let (mut changed, mut due) = (Vec::new(), Vec::new());
     let against = Against {
-        own,
-        assistant: own
-            .assistant
-            .as_deref()
-            .map(|agent| tasks_model::agent_assignee(agent).0),
+        person: tl_tasks::person(&own.person),
+        assistant: own.assistant.as_deref().map(tl_tasks::agent),
         seen,
         now_ms,
     };
@@ -186,22 +182,16 @@ pub(super) async fn gather(
             }
         }
         next.documents.insert(key, heads);
-        let tasks_part = app == TASKS
-            && collab_types::document::DocumentId::parse(&document)
-                .and_then(|id| id.chain_part())
-                .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
-        if tasks_part
-            && let Ok(part) = crate::agents::opened::<tasks::issue_list::IssueList>(&mut doc)
-        {
-            tasks_in(
-                part.issues.iter(),
-                &against,
-                &mut found,
-                &mut due,
-                &mut next,
-            );
-        }
     }
+    // The tasks are read as the person may read them: what is open, and what became due.
+    let open = Reader::Person(workspaces, &own.person)
+        .open_tasks(workspace)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::debug!(%workspace, %error, "a look reads no tasks");
+            Vec::new()
+        });
+    tasks_in(&open, &against, &mut found, &mut due, &mut next);
     // The first look starts at the newest arrival: mail from before it is
     // where the inbox stands.
     let arrivals = match collab_types::WorkspaceId::parse(workspace) {
@@ -269,48 +259,45 @@ fn changes_in(
 
 /// What a look holds a tracker's tasks against.
 struct Against<'a> {
-    own: &'a Own,
+    /// The person, as a task's assignee names them.
+    person: String,
     /// The assistant, as a task's assignee names it.
     assistant: Option<String>,
     seen: &'a Seen,
     now_ms: i64,
 }
 
-/// The open tasks among `issues`: those that are the person's or their
+/// The open tasks among `tasks`: those that are the person's or their
 /// assistant's counted, and each that became due said once, and again when
 /// its date moves.
-fn tasks_in<'a>(
-    issues: impl IntoIterator<Item = (&'a tilo_resource::Id, &'a tasks_model::Issue)>,
+fn tasks_in(
+    tasks: &[Task],
     against: &Against<'_>,
     found: &mut Found,
     due: &mut Vec<Value>,
     next: &mut Seen,
 ) {
-    for (id, issue) in issues {
-        if issue.status.closed() {
-            continue;
-        }
-        let theirs = issue.assignee.as_ref().is_some_and(|assignee| {
-            assignee.0 == against.own.person
-                || against.assistant.as_deref() == Some(assignee.0.as_str())
+    for task in tasks.iter().filter(|task| !task.closed()) {
+        let theirs = task.assignee.as_deref().is_some_and(|assignee| {
+            assignee == against.person || against.assistant.as_deref() == Some(assignee)
         });
         if theirs {
             found.open = found.open.saturating_add(1);
         }
-        let Some(due_ms) = issue
-            .due_ms
+        let Some(due_ms) = task
+            .due_ms()
             .filter(|due_ms| *due_ms <= against.now_ms.saturating_add(DUE_WITHIN_MS))
         else {
             continue;
         };
-        let said = format!("{id}@{due_ms}");
+        let said = format!("{}@{due_ms}", task.id);
         if against.seen.looked && !against.seen.due.contains(&said) {
             found.due = found.due.saturating_add(1);
             if due.len() < MAX_NAMED {
                 due.push(json!({
-                    "issue": tasks_model::issue_resource(id),
-                    "number": issue.number,
-                    "title": issue.title,
+                    "task": task.resource(),
+                    "number": task.number,
+                    "title": task.title,
                     "dueMs": due_ms,
                     "overdue": due_ms < against.now_ms,
                 }));

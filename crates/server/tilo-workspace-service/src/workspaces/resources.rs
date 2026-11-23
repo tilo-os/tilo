@@ -1231,6 +1231,35 @@ impl Workspaces {
 }
 
 impl Workspaces {
+    /// Answer the read `command` from the store of `workspace`, with only what `person` (their
+    /// root, in hex) may read: what a step the server takes for one person reads.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or `command` writes.
+    #[cfg(feature = "agents")]
+    pub(crate) async fn read_store_as(
+        &self,
+        workspace: &str,
+        person: &str,
+        command: &tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        if command.writes() {
+            return Err("a read of the store writes nothing".to_owned());
+        }
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
+        let answer = tilo_resource_store::wire::read(store, command, &may_read(person.to_owned()))
+            .unwrap_or(tilo_resource_store::wire::Reply::Written);
+        drop(governed);
+        Ok(answer)
+    }
+}
+
+impl Workspaces {
     /// Holds `query` open for the app `context` names, in its workspace: its first page, then
     /// each page a write here or a member's change makes different, as this device's person
     /// may read it.
@@ -1293,7 +1322,7 @@ fn stamp_resource_invoker(
 }
 
 /// Whether the reader set `readers` names `reader`: `*` names everyone.
-#[cfg(feature = "apps")]
+#[cfg(any(feature = "apps", feature = "agents"))]
 fn may_read(reader: String) -> impl Fn(&str) -> bool {
     move |readers| readers == "*" || readers.split(',').any(|person| person == reader)
 }

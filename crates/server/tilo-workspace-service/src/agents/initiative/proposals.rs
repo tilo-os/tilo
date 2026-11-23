@@ -242,11 +242,13 @@ impl Book {
         self.proposals.retain(|proposal| proposal.id != id);
     }
 
-    /// Whether anything that waits stands as a task in the tracker.
-    pub(super) fn waits_in_tracker(&self) -> bool {
+    /// The tasks that what waits stands as, by their addresses.
+    pub(super) fn waiting_tasks(&self) -> Vec<String> {
         self.proposals
             .iter()
-            .any(|proposal| proposal.state.waits() && proposal.task.is_some())
+            .filter(|proposal| proposal.state.waits())
+            .filter_map(|proposal| Some(proposal.task.as_ref()?.issue.clone()))
+            .collect()
     }
 
     /// Hold every proposal that waits against what its task says in the
