@@ -240,11 +240,6 @@ impl Hosted {
         self.agents = self.server.approving(&self.workspace, &[SCOUT]).await;
     }
 
-    /// The person's conversation with their assistant.
-    fn conversation(&self) -> Id {
-        chat::Chat::direct_id([MemberId::person(self.person()), MemberId::agent(SCOUT)])
-    }
-
     /// The person writes `words` to their assistant, and the server answers the one turn that
     /// makes with the model's next `steps`: each tool call, then its closing words.
     pub(super) async fn turn(&self, words: &str, steps: Vec<Reply>) {
@@ -268,66 +263,6 @@ impl Hosted {
         .await
         .expect("the turn ends")
         .unwrap();
-    }
-
-    /// The questions of `kind` the conversation holds, oldest first.
-    pub(super) async fn questions(&self, kind: &str) -> Vec<(Id, chat::chat::Message)> {
-        let part = conversation_part(&self.workspaces, &self.workspace).await;
-        let mut asked: Vec<_> = part
-            .messages
-            .iter()
-            .filter(|(_, held)| {
-                held.question
-                    .as_ref()
-                    .is_some_and(|question| question.kind.0 == kind)
-            })
-            .map(|(id, held)| (id.clone(), held.clone()))
-            .collect();
-        asked.sort_by_key(|(_, held)| held.ts);
-        asked
-    }
-
-    /// The person answers the question `message` asks with `answer`: written into the
-    /// conversation's document as the person themselves at a device of theirs, the way their Chat
-    /// window writes it. Nothing an agent may call answers a question, so this is no action of
-    /// the server's service.
-    pub(super) async fn answers(&self, message: &Id, answer: &str) {
-        let saved = self
-            .workspaces
-            .resource_document(&self.workspace, CHAT, "")
-            .await
-            .unwrap()
-            .expect("the workspace's chat");
-        let held = chat::chat::Chat::read(&automerge::AutoCommit::load(&saved).unwrap()).unwrap();
-        let person = self.person();
-        let answering = chat::messages::chat_messages::AnswerQuestion {
-            message: message.clone(),
-            answer: answer.to_owned(),
-            device: Some("browser".to_owned()),
-        };
-        let catalogue = crate::common::catalogue();
-        let governor = self.workspaces.governor().clone();
-        let part = chat::parts::part(0);
-        self.workspaces
-            .author_application(
-                &self.workspace,
-                &governor,
-                &catalogue,
-                CHAT,
-                part.as_str(),
-                |doc| {
-                    chat::demo::apply_part_doc_as(
-                        doc,
-                        &held,
-                        |replica| replica.as_invoker(&person),
-                        None,
-                        chat::parts::ChatMessages::ANSWER_QUESTION.with(answering),
-                    )
-                    .map_err(|error| format!("{error:?}"))
-                },
-            )
-            .await
-            .expect("the person answers their question");
     }
 
     /// One action of the person's own on the server, asked from their device over its link.

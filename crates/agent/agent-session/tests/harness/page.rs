@@ -596,7 +596,7 @@ impl Page {
     /// The asked record about `invocation`, once it waits for the person: what a page reading the
     /// asking view shows.
     pub async fn asked_about(&mut self, invocation: InvocationId) -> asked::Asked {
-        let wanted = invocation.0.to_string();
+        let wanted = format!("invocations/{}", invocation.0);
         let deadline = Instant::now()
             .checked_add(tilo_test_env::hang_bound())
             .expect("the bound fits in an Instant");
@@ -633,7 +633,7 @@ impl Page {
         }
         self.invoke_on(
             tilo_actions::remote::workspace_invocations::PROVIDER,
-            ActionAddress::new(asked.record.record.clone(), "resolve"),
+            ActionAddress::new(asked.record.record.clone(), asked::RESOLVE),
             InvokeArgument::Json(arguments),
         )
         .await
