@@ -5,7 +5,6 @@
 //! reachable, and the absence of a capability is enforced by the absence of the mount.
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// The devices a plan names, as the launchers on every platform read them.
@@ -677,16 +676,11 @@ pub fn write_capability_file(
         )
     })?;
     let path = directory.join(format!("launch-{app}.json"));
-    // Created at 0600 rather than written and chmod-ed after: the window
-    // between the two is exactly when another process could open it. Not
-    // synced: the launcher reads it through the page cache, and this runs on
-    // the session's loop, where a sync under I/O pressure freezes the desktop.
-    let mut file = std::fs::File::create(&path).and_then(|file| {
-        use std::os::unix::fs::PermissionsExt as _;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        Ok(file)
-    })?;
-    file.write_all(&json)?;
+    // Created at 0600 in a unique temporary sibling and renamed into place:
+    // the file is never visible with a wider mode or half-written. Not synced:
+    // the launcher reads it through the page cache, and this runs on the
+    // session's loop, where a sync under I/O pressure freezes the desktop.
+    tilo_files::native::atomic::write_regenerable_with_mode(&path, &json, 0o600)?;
     Ok(Some(path))
 }
 
@@ -1016,5 +1010,145 @@ mod tests {
             assert_eq!(viewer.sandbox.len(), 1);
             assert!(grants.for_app("so.tilo.editor").sandbox.is_empty());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn with_zero_fsize_limit<T>(body: impl FnOnce() -> T) -> T {
+        struct Restore {
+            limit: libc::rlimit,
+            sigxfsz: libc::sighandler_t,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: restores RLIMIT_FSIZE and SIGXFSZ before the child records its proof.
+                unsafe {
+                    libc::setrlimit(libc::RLIMIT_FSIZE, &raw const self.limit);
+                    libc::signal(libc::SIGXFSZ, self.sigxfsz);
+                }
+            }
+        }
+        let mut saved = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `saved` is a valid out pointer for `getrlimit`.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &raw mut saved) },
+            0
+        );
+        // SAFETY: ignoring SIGXFSZ turns writes past RLIMIT_FSIZE into EFBIG errors.
+        let sigxfsz = unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
+        let blocked = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: saved.rlim_max,
+        };
+        let _restore = Restore {
+            limit: saved,
+            sigxfsz,
+        };
+        // SAFETY: lowers soft RLIMIT_FSIZE to 0 so writing fails before rename.
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &raw const blocked) },
+            0
+        );
+        body()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capability_file_is_private_under_zero_umask_and_preserves_old_grants_on_failed_replace() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "capability_file_is_private_under_zero_umask_and_preserves_old_grants_on_failed_replace",
+            || {
+                use std::io::Read as _;
+                use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+                use tilo_test_env::file_mode::{on_a_thread_without_chmod, with_zero_umask};
+
+                with_zero_umask(|| {
+                    let root = tempfile::tempdir().unwrap();
+                    let dir = root.path().join("caps");
+                    let first = LaunchGrants {
+                        author: true,
+                        sandbox: vec![fs_grant(
+                            "so.tilo.books",
+                            "/var/workspace/first",
+                            Access::Read,
+                        )],
+                    };
+                    let second = LaunchGrants {
+                        author: false,
+                        sandbox: vec![fs_grant(
+                            "so.tilo.books",
+                            "/var/workspace/second",
+                            Access::Write,
+                        )],
+                    };
+
+                    // With umask 0 and chmod neutralized, the file can only reach 0600 if
+                    // open/openat created it with 0600 before any chmod could run.
+                    let path = on_a_thread_without_chmod(|| {
+                        write_capability_file(&dir, "so.tilo.books", &first)
+                            .unwrap()
+                            .expect("a grant writes a file")
+                    });
+                    assert_eq!(
+                        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                        0o700
+                    );
+                    assert_eq!(
+                        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                    assert_eq!(load_capability_file(&path), first);
+
+                    // Replacing a wider-mode file must publish a new 0600 inode rather than
+                    // truncating and chmod-ing the existing file in place.
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+                        .unwrap();
+                    let mut held_old = std::fs::File::open(&path).unwrap();
+                    let old_ino = held_old.metadata().unwrap().ino();
+                    on_a_thread_without_chmod(|| {
+                        write_capability_file(&dir, "so.tilo.books", &second)
+                            .unwrap()
+                            .expect("replacement writes a file")
+                    });
+                    assert_eq!(
+                        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                    assert_ne!(
+                        std::fs::metadata(&path).unwrap().ino(),
+                        old_ino,
+                        "replacement must publish a new inode instead of mutating the existing file in place"
+                    );
+                    let mut old_bytes = Vec::new();
+                    held_old.read_to_end(&mut old_bytes).unwrap();
+                    assert_eq!(
+                        serde_json::from_slice::<LaunchGrants>(&old_bytes).unwrap(),
+                        first,
+                        "the old inode must remain untouched while the replacement is written"
+                    );
+                    assert_eq!(load_capability_file(&path), second);
+
+                    // A replace that fails while writing (before rename) must leave the old grants
+                    // intact and remove its temporary file.
+                    let failed = with_zero_fsize_limit(|| {
+                        write_capability_file(&dir, "so.tilo.books", &first)
+                    });
+                    assert!(failed.is_err(), "write past RLIMIT_FSIZE must fail");
+                    assert_eq!(
+                        load_capability_file(&path),
+                        second,
+                        "failed replace must leave previous grants intact"
+                    );
+                    assert_eq!(
+                        std::fs::read_dir(&dir).unwrap().count(),
+                        1,
+                        "failed replace must leave no temporary files behind"
+                    );
+                });
+            },
+        );
     }
 }
