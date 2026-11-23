@@ -78,3 +78,30 @@ pub fn target(action: &str) -> super::RemoteActionTarget {
         address: super::ActionAddress::new(INVITE_RESOURCE, action),
     }
 }
+
+/// The resource the session publishes the agents it runs on: what works here, and this
+/// computer's grant for the person's agents from their other devices.
+pub const AGENTS_RESOURCE: &str = "session:agents";
+
+/// The action reading whether this computer accepts the person's agents from their other
+/// devices, and whether their steps go unasked here: `{"accept": bool, "unasked": bool}`.
+pub const OTHER_DEVICE_AGENTS: &str = "other-device-agents";
+
+/// The action accepting the person's agents from their other devices on this computer, or
+/// stopping, as the grant the workspaces keep for it says.
+pub const SET_ACCEPT_OTHER_DEVICE_AGENTS: &str = "set-accept-other-device-agents";
+
+/// The action letting the steps of the person's agents from their other devices go unasked on
+/// this computer, or putting them to the person again.
+pub const SET_OTHER_DEVICE_AGENTS_UNASKED: &str = "set-other-device-agents-unasked";
+
+/// The target the agents' action `action` is invoked at: the session's own provider, on
+/// [`AGENTS_RESOURCE`]. An app invokes one of these as the person using it, through the action
+/// API.
+#[must_use]
+pub fn agents_target(action: &str) -> super::RemoteActionTarget {
+    super::RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: super::ActionAddress::new(AGENTS_RESOURCE, action),
+    }
+}

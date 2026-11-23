@@ -50,6 +50,10 @@ pub struct BrokerActor {
     /// to reach: what goes further asks first
     /// ([`tilo_action_policy::Reach`]).
     pub ceiling: Option<tilo_action_policy::Reach>,
+    /// The computer that admitted this agent from another of its person's devices answers the
+    /// steps its grants ask first itself: the grant kept there says the person let them go
+    /// ([`Caller::lets_steps_go_unasked`]).
+    steps_unasked: bool,
 }
 
 impl BrokerActor {
@@ -76,6 +80,7 @@ impl BrokerActor {
             app_kinds: None,
             session: None,
             ceiling: None,
+            steps_unasked: false,
         }
     }
 
@@ -94,6 +99,7 @@ impl BrokerActor {
             .on_turn(caller.turn().cloned())
             .within(caller.ceiling());
         actor.bound = caller.granted(&[]);
+        actor.steps_unasked = caller.lets_steps_go_unasked();
         actor
     }
 
@@ -466,7 +472,9 @@ impl BrokerActor {
             &tilo_desktop_model::context_at(now),
         )
         .map_err(|_| refused())?;
-        let asks = admission == tilo_action_policy::Admission::AsksFirst;
+        // The grant kept on the computer that admitted this agent from another of its person's
+        // devices answers the steps the person would be asked about there.
+        let asks = admission == tilo_action_policy::Admission::AsksFirst && !self.steps_unasked;
         Ok((asks, spent))
     }
 

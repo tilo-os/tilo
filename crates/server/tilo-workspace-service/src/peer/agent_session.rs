@@ -33,7 +33,7 @@ pub(super) fn handle_agent_session(
             admin.note_agent(&peer.cert, label, stop);
         }
         if let (Some(server), Some(&workspace_id)) = (session.app_serving, subscribed.last())
-            && let Ok(caller) = super::actions::session_caller(peer, session)
+            && let Ok(caller) = super::actions::session_caller(peer, session, false)
         {
             server.session_arrived(workspace_id, &caller);
         }
