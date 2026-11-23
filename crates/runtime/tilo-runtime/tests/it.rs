@@ -16,6 +16,8 @@
 // entry every module's tests start.
 tilo_automerge_isolate::test_worker!();
 
+#[path = "app_views.rs"]
+mod app_views;
 #[path = "daemon_flows.rs"]
 mod daemon_flows;
 #[path = "device_actions.rs"]

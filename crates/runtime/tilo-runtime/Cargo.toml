@@ -202,6 +202,9 @@ tempfile.workspace = true
 # The secret store a desktop kept its key groups' master key in, kept in memory by a test.
 tilo-secrets.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
+# Builds the tilolang apps a test's device has installed, and the runtime bundles they run on.
+tilolang-cli = { path = "../../lang/tilolang-cli" }
+runtime-bundle = { path = "../../packaging/runtime-bundle" }
 # A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../../tools/test-server" }
 # Paused time drives the watch lease's expiry.

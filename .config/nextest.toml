@@ -258,6 +258,24 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(app_open_budget::)"
 setup = "app-open-siblings"
 
+# A device's views of its installed tilolang apps start the app's window as the device does:
+# `tilo-launcher tilolang-process`, on a runtime bundle the test bakes with the tilolang host in it.
+[scripts.setup.view-siblings]
+command = [
+    "bash", "tools/build-sibling-binaries.sh",
+    "tilolang-process:tilolang-process", "launcher:tilo-launcher",
+]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-runtime) and binary(it) and test(app_views::)"
+setup = "view-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-runtime) and binary(it) and test(app_views::)"
+setup = "view-siblings"
+
 # The native NTFS images the helper's integration tests read are generated once
 # and handed to the tests as TILO_NTFS_FIXTURES; Cargo builds none, and a test
 # that starts without them fails saying so. Its library's tests read none: a run

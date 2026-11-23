@@ -51,6 +51,8 @@
 //!   [`call`].
 //! - The test is a plain `#[test]`: the body is async, and runs on a runtime [`run`] makes.
 
+pub mod apps;
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -86,12 +88,26 @@ where
     F: FnOnce(Arc<Host>) -> Fut,
     Fut: Future<Output = ()>,
 {
+    run_with(&[], body);
+}
+
+/// [`run`], on a device that has the tilolang apps `apps` (directories under `apps/tl`)
+/// installed, with the runtimes they run on ([`apps::install`]).
+///
+/// # Panics
+///
+/// As [`run`], and when an app does not build or install.
+pub fn run_with<F, Fut>(apps: &[&str], body: F)
+where
+    F: FnOnce(Arc<Host>) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let test = std::thread::current()
         .name()
         .expect("libtest names a test's thread after the test")
         .to_owned();
     if std::env::var(OWN).ok().as_deref() != Some(test.as_str()) {
-        own_process(&test);
+        own_process(&test, apps);
         return;
     }
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
@@ -110,7 +126,7 @@ where
 
 /// Run `test` again, alone, in a process whose home, identity and profile are a new
 /// directory's: what [`run`] does everywhere but in that process.
-fn own_process(test: &str) {
+fn own_process(test: &str, apps: &[&str]) {
     use std::os::unix::fs::PermissionsExt as _;
     // A short path: the daemon's sockets are named below it.
     let root = tempfile::Builder::new()
@@ -127,8 +143,14 @@ fn own_process(test: &str) {
     // The device relays through this machine's loopback relay: nothing reaches a relay or a
     // directory out on the internet.
     test_server::relay_through_loopback_in(&config, &data);
+    let installed = if apps.is_empty() {
+        Vec::new()
+    } else {
+        apps::install(&place("a"), &data, apps)
+    };
     let log = root.path().join("out");
     let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .envs(installed)
         .args(["--exact", test, "--nocapture", "--test-threads", "1"])
         .env(OWN, test)
         .env(PROFILE, place("p"))
@@ -139,6 +161,7 @@ fn own_process(test: &str) {
         .env("XDG_STATE_HOME", place("s"))
         .env("TILO_IDENTITY_ROOT", place("i"))
         .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .env_remove(runtime_bundle::RUNTIME_DIR_ENV)
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         // A daemon here is a person's computer, not a machine configured as a server.
