@@ -297,7 +297,10 @@ in its journal meanwhile, holding no connection or thread. A call that needs a
 person's yes is pending the same way: its invocation stays open in its record
 until the person answers, and the answer resumes the run with the result, or
 with a refusal on no, checked against the grants as they stand then. There is
-no second way of asking. It streams its progress and output
+no second way of asking. The person answers every question in one asking view the
+shell draws beside what asked: a press's call, an agent's question and a
+device's confirmation alike, in the desktop and on the web. No window draws
+its own. It streams its progress and output
 back to the caller as it goes, and ends in a result or a legible error the
 caller sees, and the caller can cancel it. What it writes goes into resources,
 so every view shows it, and work that outlives its device is carried on by
