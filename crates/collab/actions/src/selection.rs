@@ -71,6 +71,14 @@ pub struct SelectionPlace {
     pub end: Option<usize>,
 }
 
+/// The validated position inside a [`SelectionPlace`]'s item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionSpan {
+    Item,
+    Caret(usize),
+    Range { start: usize, end: usize },
+}
+
 impl SelectionPlace {
     /// The whole of `item`.
     #[must_use]
@@ -101,9 +109,14 @@ impl SelectionPlace {
         }
     }
 
-    /// Whether this is a well-formed place, the shape an action's place
-    /// parameter accepts.
-    pub fn validate(&self) -> Result<(), String> {
+    /// Validate this place and return its position inside [`Self::item`]:
+    /// a whole item, a caret `at`, or an ordered range `start..end`.
+    ///
+    /// # Errors
+    /// Returns a reason when `item` is empty, oversized, or holds control
+    /// characters, or when `at`, `start`, and `end` do not name one item,
+    /// caret, or ordered range.
+    pub fn validated_span(&self) -> Result<SelectionSpan, String> {
         if self.item.is_empty() || self.item.len() > MAX_PLACE_ITEM_BYTES {
             return Err("a selection place names one item of bounded length".into());
         }
@@ -111,10 +124,22 @@ impl SelectionPlace {
             return Err("a selection place item contains control characters".into());
         }
         match (self.at, self.start, self.end) {
-            (None | Some(_), None, None) => Ok(()),
-            (None, Some(start), Some(end)) if start <= end => Ok(()),
-            _ => Err("a selection place is an item, a caret or an ordered range".into()),
+            (None, None, None) => Ok(SelectionSpan::Item),
+            (Some(at), None, None) => Ok(SelectionSpan::Caret(at)),
+            (None, Some(start), Some(end)) if start <= end => {
+                Ok(SelectionSpan::Range { start, end })
+            }
+            _ => Err(
+                "a place is an item, a caret `at` in it, or an ordered range `start..end` of it"
+                    .into(),
+            ),
         }
+    }
+
+    /// Whether this is a well-formed place, the shape an action's place
+    /// parameter accepts.
+    pub fn validate(&self) -> Result<(), String> {
+        self.validated_span().map(|_| ())
     }
 }
 
