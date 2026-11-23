@@ -450,6 +450,7 @@ pub struct FrameHarness {
     layout_maps: crate::retained_widgets::Adopted,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
+    settings: Option<crate::storage::SettingsDocument>,
     root_node: NodeId,
     /// A frame was laid out: what arrives after it moves in (`motion::window_has_shown`).
     shown_a_frame: bool,
@@ -864,6 +865,7 @@ impl FrameHarness {
         decorate: impl FnOnce(Box<dyn Widget>) -> Box<dyn Widget>,
     ) -> Result<Self, crate::launch::LaunchError> {
         let owner_queue = crate::owner_wake::OwnerWakeQueue::default();
+        let settings = component.settings_document();
         let (root, wake, history) =
             Self::mount_component(component, std::sync::Arc::new(notify), &owner_queue)?;
         let root = decorate(root);
@@ -878,6 +880,7 @@ impl FrameHarness {
             Some(wake),
         );
         harness.owner_wake_queue = Some(owner_queue);
+        harness.settings = Some(settings);
         if let Some(registration) = history
             && let Err(error) = harness.install_history(registration)
         {
@@ -1452,6 +1455,7 @@ impl FrameHarness {
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
             history_inputs: std::cell::Cell::new(None),
             component_close_reports: vec![],
+            settings: None,
             root_node: NodeId::from(0usize),
             shown_a_frame: false,
             drawn_permissions: crate::permissions::shared_revision(),
@@ -2500,6 +2504,31 @@ impl FrameHarness {
         self.invalidate_local();
         self.pump_component_wakes();
         *self.theme = theme;
+        // A capture stores the theme it draws in, so its controls show what is on screen; never the person's own.
+        if let Some(settings @ crate::storage::SettingsDocument::Profile(_)) =
+            self.settings.as_ref()
+        {
+            let preset = crate::theme::Preset::find(&self.theme.document.id)
+                .unwrap_or(crate::theme::Preset::Dark);
+            let dark = preset.document().is_dark();
+            let mut section = serde_json::Map::new();
+            section.insert(
+                crate::theme_layers::MODE_KEY.into(),
+                serde_json::Value::from(if dark { "dark" } else { "light" }),
+            );
+            section.insert(
+                (if dark {
+                    crate::theme_layers::DARK_THEME_KEY
+                } else {
+                    crate::theme_layers::LIGHT_THEME_KEY
+                })
+                .into(),
+                serde_json::Value::from(preset.id()),
+            );
+            settings
+                .update_section(crate::theme::APPEARANCE_SECTION, section)
+                .expect("a capture stores the theme it draws in");
+        }
         self.text.set_text_scale(self.theme.text_scale);
         self.text.apply_typography(&self.theme.tokens.typography);
         self.invalidate_layout_tree();

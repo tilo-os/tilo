@@ -1250,6 +1250,11 @@ pub struct AppComponent {
 }
 
 impl AppComponent {
+    /// The settings document the app was given; a capture stores the look it draws in there.
+    pub fn settings_document(&self) -> crate::storage::SettingsDocument {
+        self.context.settings.clone()
+    }
+
     /// The component the app built to show another record in this one's place, once: the host closes
     /// this component and mounts that one.
     pub fn take_replacement(&mut self) -> Option<ComponentReplacement> {
