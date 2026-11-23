@@ -11,8 +11,8 @@
 //! for to the app's first presented frame, read from the kernel's scheduler statistics for each of
 //! their threads. A test job shares its node, so the wall clock of an open mostly measures how long
 //! its threads waited for a core; the time they waited, and the wall time, are reported beside the
-//! work for whoever reads a failure. The apps and the launcher are optimised builds, as they are on
-//! a person's machine (t.toml's `starts`); the session is the tests' own build of it.
+//! work for whoever reads a failure. The session, the apps and the launcher are optimised builds, as
+//! they are on a person's machine (t.toml's `starts`).
 //!
 //! Each app opens twice: once on an idle machine and once while one busy thread per core
 //! saturates the job, so an app whose open does more work under contention (a spin, a retry, a
@@ -511,11 +511,14 @@ fn descends(pid: u32, session: u32, under: &mut HashMap<u32, bool>) -> bool {
     answer
 }
 
-/// The session the run built, in a directory with the launcher it starts apps through beside it,
-/// where an installed session finds its launcher. The directory is made beside that build, so the programs are linked into it rather
-/// than copied where the file system allows.
+/// The session in a directory with the launcher it starts apps through beside it, where an
+/// installed session finds its launcher. The session is the optimised build the run made for this
+/// test (`t.toml` `starts`), whose passes are what the budget counts; a run that made none, as a
+/// plain `cargo test` does not, opens with the tests' own build. The directory is made beside that
+/// build, so the programs are linked into it rather than copied where the file system allows.
 fn session_beside_launcher() -> (tempfile::TempDir, PathBuf) {
-    let session = tilo_test_env::sibling_binary("tilo-session", "tilo-session");
+    let session = tilo_test_env::started_variant("tilo-session", "fast", "dev-overrides")
+        .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session"));
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     let directory = session
         .parent()
