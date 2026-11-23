@@ -84,16 +84,16 @@ over_each_carrier!(
 
 /// Ada's host, running its own packet relay, with her laptop (a root holder)
 /// enrolled.
-struct Ada {
-    root: SigningKey,
-    host_device: Device,
-    laptop: Device,
-    host: TestHost,
+pub(crate) struct Ada {
+    pub(crate) root: SigningKey,
+    pub(crate) host_device: Device,
+    pub(crate) laptop: Device,
+    pub(crate) host: TestHost,
     state: tempfile::TempDir,
 }
 
 impl Ada {
-    async fn start() -> Self {
+    pub(crate) async fn start() -> Self {
         let (root, _) = UserIdentity::generate("Ada", 1);
         let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
         let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -152,7 +152,7 @@ impl Ada {
     }
 
     /// Ada's laptop, in the workspace over a direct session.
-    async fn laptop_peer(&self, server_cert: &DeviceCert) -> Link {
+    pub(crate) async fn laptop_peer(&self, server_cert: &DeviceCert) -> Link {
         place(&self.host.server, &self.laptop.cert).await;
         let peer = start_peer(
             self.host.over(Carrier::Direct),
@@ -392,7 +392,7 @@ async fn a_removed_device_is_told_that_it_was_removed(carrier: Carrier) {
 }
 
 /// The workspace scope's record: its channel keys seal the live session's tracks.
-fn live_session_route() -> DocumentRoute {
+pub(crate) fn live_session_route() -> DocumentRoute {
     DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: WORKSPACE.to_owned(),
@@ -401,7 +401,7 @@ fn live_session_route() -> DocumentRoute {
 }
 
 /// The scope's keys, as the workspace's members derive them.
-fn live_session_keys() -> ContentKeys {
+pub(crate) fn live_session_keys() -> ContentKeys {
     KeyGroup::create(
         collab_types::WorkspaceId::new(),
         MemberKey::generate("ada").unwrap(),
@@ -466,17 +466,17 @@ async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier
 
 /// One of Ada's devices in the workspace's calls: its session, and the presence board it keeps of
 /// what everyone else says, as a desktop's or a page's client keeps it.
-struct Caller {
-    link: Link,
+pub(crate) struct Caller {
+    pub(crate) link: Link,
     events: Events,
-    device: [u8; 32],
+    pub(crate) device: [u8; 32],
     board: tilo_live::presence::Board,
-    own: tilo_live::presence::Own,
-    heard: Vec<Event>,
+    pub(crate) own: tilo_live::presence::Own,
+    pub(crate) heard: Vec<Event>,
 }
 
 impl Caller {
-    fn new(link: Link, device: [u8; 32], person: &[u8; 32]) -> Self {
+    pub(crate) fn new(link: Link, device: [u8; 32], person: &[u8; 32]) -> Self {
         Self {
             events: link.events(),
             link,
@@ -492,7 +492,7 @@ impl Caller {
     }
 
     /// Say this device is in `call` (or in none) on the workspace's presence.
-    fn say(&mut self, call: Option<InCall>) {
+    pub(crate) fn say(&mut self, call: Option<InCall>) {
         self.own.call = call;
         self.board.say(&self.own);
         let frames = self.board.flush(now_ms());
@@ -502,7 +502,7 @@ impl Caller {
     /// Say what this device's presence owes now, as a desktop's or a page's client does on its
     /// clock: what changed, and all of it again every few seconds, since a frame said before the
     /// other devices were on the live session reached nobody.
-    fn restate(&mut self) {
+    pub(crate) fn restate(&mut self) {
         let frames = self.board.due(now_ms()).unwrap_or_default();
         self.send(frames);
     }
@@ -520,7 +520,7 @@ impl Caller {
     }
 
     /// Take what arrived: presence onto the board, the rest kept to look at.
-    fn listen(&mut self) {
+    pub(crate) fn listen(&mut self) {
         for event in self.events.drain() {
             match event {
                 Event::LiveSession {
@@ -537,7 +537,7 @@ impl Caller {
     }
 
     /// The workspace's voice channels as this device lists them.
-    fn channels(&self) -> Vec<tilo_live::calls::Channel> {
+    pub(crate) fn channels(&self) -> Vec<tilo_live::calls::Channel> {
         tilo_live::calls::channels(
             &self.board.calls(),
             self.own.call.as_ref().map(|call| tilo_live::calls::Own {
@@ -576,7 +576,7 @@ fn now_ms() -> f64 {
 }
 
 /// A call in `channel`, as a device says it is in it.
-fn in_call(channel: &str, camera: bool, muted: bool) -> InCall {
+pub(crate) fn in_call(channel: &str, camera: bool, muted: bool) -> InCall {
     InCall {
         call: collab_types::presence::CallPresence {
             channel: channel.into(),
@@ -858,7 +858,7 @@ async fn a_page_in_a_session_asks_its_server_over_the_one_link_it_keeps() {
 
 /// Ask Ada's host, over `link`, to moderate the call in `channel` as `arguments` say (`operation`
 /// and its own arguments), and answer what the call allows then.
-fn moderate(
+pub(crate) fn moderate(
     link: &Link,
     host: [u8; 32],
     channel: &str,
@@ -1106,8 +1106,9 @@ async fn the_workspace_moderates_its_calls() {
 }
 
 /// A device's live session as a client modified to ignore the workspace's call rules holds it: it
-/// joins the host's live origin with the workspace's keys, is told no rule, and so sends and opens
-/// every call's media it can get. Its presence says it is in the standup.
+/// joins the host's live origin with the workspace's keys, is told no rule, holds `keys` as the
+/// standup's keys, and so sends and opens every call's media it can get. Its presence says it is
+/// in the standup.
 async fn ignoring_the_rules(
     ada: &Ada,
     device: &crate::support::Device,
@@ -1147,6 +1148,9 @@ async fn ignoring_the_rules(
     .await
     .unwrap();
     claim(&live_session, 1);
+    // Keys of the call it holds, whatever the call's rule now says: the live origin is what holds
+    // it to the rule.
+    live_session.set_call_keys("standup", 0, keys.clone());
     live_session
 }
 
@@ -1357,4 +1361,163 @@ async fn the_live_origin_holds_a_call_to_its_rule_whatever_a_client_does() {
 
     laptop.close();
     ada.host.server.shutdown().await;
+}
+
+/// Ada and Bo talk in the standup while Ada denies someone else the call: its media keys move on
+/// to the rule's next generation, handed to each of them through the workspace's key groups, and
+/// neither goes without the other's voice for longer than one key exchange takes (the longest a
+/// device waits for a fresh group's genesis, [`tilo_workspace_keys::founding_wait`]).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_calls_keys_move_on_within_one_key_exchange() {
+    let ada = Ada::start().await;
+    let host = ada.host_device.cert.device_public_key;
+    let keys = live_session_keys();
+    let laptop = ada.laptop_peer(&ada.host_device.cert).await;
+    laptop
+        .send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
+        .unwrap();
+    in_workspace(&laptop, crate::support::workspace()).await;
+    let (bo_root, _) = UserIdentity::generate("Bo", 1);
+    let bo_browser = enrol(&bo_root, "browser", DeviceCapabilities::member());
+    let bo = bo_root.verifying_key().to_bytes();
+    crate::support::redeem(
+        &ada.host,
+        crate::support::entry_grant(&ada.host, &ada.root, &ada.host_device, WORKSPACE, bo).await,
+        &bo_browser.cert,
+        &bo_browser.key,
+    )
+    .await;
+    let browser = start_peer(
+        ada.host.iroh(),
+        bo_browser.cert.clone(),
+        ada.host_device.cert.clone(),
+        bo_browser.key.clone(),
+    );
+    browser
+        .send(Cmd::InstallGroupKeys(live_session_route(), keys))
+        .unwrap();
+    browser
+        .send(Cmd::Join(crate::support::workspace()))
+        .unwrap();
+    in_workspace(&browser, crate::support::workspace()).await;
+
+    let mut desk = Caller::new(
+        laptop,
+        ada.laptop.cert.device_public_key,
+        &ada.root.verifying_key().to_bytes(),
+    );
+    let mut page = Caller::new(browser, bo_browser.cert.device_public_key, &bo);
+    desk.say(Some(in_call("standup", false, false)));
+    page.say(Some(in_call("standup", false, false)));
+    let both = [desk.device, page.device];
+    until_listed(
+        "Ada and Bo to meet in the standup",
+        (&mut desk, &mut page),
+        &both,
+        true,
+    )
+    .await;
+
+    // Both keep speaking, a frame every 20 ms, and the rule changes once each hears the other.
+    let deadline = tilo_test_env::hang_deadline();
+    let (ada_device, bo_device) = (desk.device, page.device);
+    let mut last = [None::<std::time::Instant>; 2];
+    while last.iter().any(Option::is_none) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Ada and Bo never heard each other"
+        );
+        for (index, (speaker, other)) in [(&mut desk, bo_device), (&mut page, ada_device)]
+            .into_iter()
+            .enumerate()
+        {
+            if speak_once(speaker, other) {
+                last[index] = Some(std::time::Instant::now());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let mut last = last.map(Option::unwrap);
+    let moderation = tokio::task::spawn_blocking({
+        let link = desk.link.clone();
+        move || {
+            moderate(
+                &link,
+                host,
+                "standup",
+                &json!({"operation": "deny", "person": hex::encode([0xc7; 32])}),
+            )
+        }
+    });
+    let mut longest = [std::time::Duration::ZERO; 2];
+    let mut moved_at: Option<std::time::Instant> = None;
+    let mut heard_since = [false; 2];
+    loop {
+        let now = std::time::Instant::now();
+        assert!(now < deadline, "the call's new keys never arrived");
+        for (index, (speaker, other)) in [(&mut desk, bo_device), (&mut page, ada_device)]
+            .into_iter()
+            .enumerate()
+        {
+            if speak_once(speaker, other) {
+                longest[index] = longest[index].max(now.duration_since(last[index]));
+                last[index] = now;
+                if moved_at.is_some() {
+                    heard_since[index] = true;
+                }
+            }
+        }
+        let moved = [&desk, &page].iter().all(|caller| {
+            caller
+                .link
+                .call_rules(WORKSPACE)
+                .get("standup")
+                .is_some_and(|rule| rule.generation == 1)
+        });
+        if moved && moved_at.is_none() {
+            moved_at = Some(now);
+        }
+        if moved_at.is_some_and(|at| now.duration_since(at) > std::time::Duration::from_secs(1))
+            && heard_since == [true, true]
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    moderation.await.unwrap();
+    let gap = longest[0].max(longest[1]);
+    eprintln!(
+        "the longest either went without the other's voice while the call's keys moved on: {} ms \
+         (Ada {} ms, Bo {} ms)",
+        gap.as_millis(),
+        longest[0].as_millis(),
+        longest[1].as_millis()
+    );
+    assert!(
+        gap < tilo_workspace_keys::founding_wait(),
+        "the call went silent for {gap:?} while its keys moved on"
+    );
+
+    desk.link.close();
+    page.link.close();
+    ada.host.server.shutdown().await;
+}
+
+/// `speaker` says one frame of the call, and whether it heard `other`'s voice since it last
+/// spoke.
+fn speak_once(speaker: &mut Caller, other: [u8; 32]) -> bool {
+    speaker.heard.clear();
+    speaker.listen();
+    speaker.restate();
+    speaker
+        .link
+        .send(Cmd::CallAudio(
+            crate::support::workspace(),
+            vec![CallFrame {
+                timestamp_48k: 960,
+                opus: vec![0xf8, 0xff, 0xfe],
+            }],
+        ))
+        .unwrap();
+    speaker.heard_voice_of(other)
 }

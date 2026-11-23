@@ -367,13 +367,15 @@ fn in_call() -> Vec<u8> {
     .unwrap()
 }
 
-/// Put each of `live_sessions` in [`CALL`] (its presence says so, at `sequence`), and wait until
-/// each is asked for its voice by the others there.
-fn talk(live_sessions: &[&LiveSession], sequence: u32) {
+/// Put each of `live_sessions` in [`CALL`] (its presence says so, at `sequence`) under the call's
+/// `keys`, and wait until each is asked for its voice by the others there.
+fn talk(live_sessions: &[&LiveSession], keys: &ContentKeys, sequence: u32) {
     for live_session in live_sessions {
         live_session
             .publish(Track::Presence, sequence, &in_call())
             .unwrap();
+        assert_eq!(live_session.call_keys_wanted(), Some((CALL.to_owned(), 0)));
+        live_session.set_call_keys(CALL, 0, keys.clone());
     }
     wait_until("each device in the call is asked for its voice", || {
         live_sessions
@@ -444,7 +446,7 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
 
     // Sealed audio in the call both are in: five 20 ms objects, one group
     // each, opened on the far side exactly as they were published.
-    talk(&[&a, &b], 2);
+    talk(&[&a, &b], &keys, 2);
     let bodies: Vec<Vec<u8>> = (0..5_u32)
         .map(|seq| voice(seq, &[u8::try_from(seq).unwrap_or(0); 8][..]))
         .collect();
@@ -1198,11 +1200,13 @@ async fn a_peer_encodes_only_the_camera_layers_someone_shows() {
     let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
-        join(b_key, roster, keys),
+        join(b_key, roster, keys.clone()),
     )
     .await
     .unwrap();
     wait_until("both sessions admitted", || relay.counters().accepted == 2);
+    // Pictures are call media: both are in the call.
+    talk(&[&a, &b], &keys, 1);
     assert!(
         a.wanted_pictures().is_empty(),
         "nobody shows the camera yet: nothing is encoded"
@@ -1297,11 +1301,13 @@ async fn a_shared_screen_is_published_only_at_the_layer_shown() {
     let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
-        join(b_key, roster, keys),
+        join(b_key, roster, keys.clone()),
     )
     .await
     .unwrap();
     wait_until("both sessions admitted", || relay.counters().accepted == 2);
+    // Pictures are call media: both are in the call.
+    talk(&[&a, &b], &keys, 1);
 
     b.show(a_key, &[Track::Screen(Layer::Low)]);
     wait_until("the screen's layer is asked for", || {
@@ -1595,7 +1601,7 @@ async fn a_device_on_its_own_media_keys_publishes_to_the_members_and_opens_nothi
     let confined = LiveSession::join(
         Arc::new(native::Iroh::new(confined_endpoint, addr(&relay_endpoint))),
         &grant_for(&confined_cert),
-        join(confined_key, roster, handed),
+        join(confined_key, roster, handed.clone()),
     )
     .await
     .unwrap();
@@ -1626,6 +1632,7 @@ async fn a_device_on_its_own_media_keys_publishes_to_the_members_and_opens_nothi
     // A stream it was not handed is not one it can seal: its call audio is
     // refused here rather than sealed under another device's key.
     confined.publish(Track::Presence, 2, &in_call()).unwrap();
+    confined.set_call_keys(CALL, 0, handed);
     assert_eq!(
         confined.publish(Track::Audio, 1, &voice(0, b"hello")),
         Err(LiveError::Refused(Refusal::NoKey(channel.epoch())))
@@ -2405,14 +2412,14 @@ async fn a_removed_members_media_stops_end_to_end_and_the_other_session_carries_
     let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
         &grant_for(&b_cert),
-        join(b_key, roster, keys),
+        join(b_key, roster, keys.clone()),
     )
     .await
     .unwrap();
     wait_until("both sessions admitted", || relay.counters().accepted == 2);
 
     // Media flows both ways before the workspace changes.
-    talk(&[&a, &b], 1);
+    talk(&[&a, &b], &keys, 1);
     for sequence in 1..=5_u32 {
         a.publish(Track::Audio, sequence, &voice(sequence, &[1; 8]))
             .unwrap();
@@ -2512,7 +2519,7 @@ async fn a_silent_voice_stream_costs_the_relay_a_fraction_of_a_speaking_one() {
     let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
         &grant_for(&b_cert),
-        join(b_key, roster, keys),
+        join(b_key, roster, keys.clone()),
     )
     .await
     .unwrap();
@@ -2520,7 +2527,7 @@ async fn a_silent_voice_stream_costs_the_relay_a_fraction_of_a_speaking_one() {
 
     // Each object is waited for before the next, so what arrives is exactly what was sent: a burst
     // on a loaded machine cannot hide a drop or pass one off as two.
-    talk(&[&a, &b], 1);
+    talk(&[&a, &b], &keys, 1);
     let mut sequence = 1_u32;
     let mut speaking = Vec::new();
     for _ in 0..SPEECH_OBJECTS {
@@ -2570,4 +2577,107 @@ async fn a_silent_voice_stream_costs_the_relay_a_fraction_of_a_speaking_one() {
         bytes(&silent),
         bytes(&speaking)
     );
+}
+
+/// A call's rule changed to leave one device out: the devices it still admits seal what they say
+/// from then on under the keys of the rule's new generation, which the device left out was never
+/// given. Carried to it all the same (this relay lets every call through) and held to nothing by
+/// its own client, it opens none of it with every key it had, while the others hear each other.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_a_call_left_out_opens_nothing_said_after_with_every_key_it_had() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint, c_endpoint) = (
+        endpoint().await,
+        endpoint().await,
+        endpoint().await,
+        endpoint().await,
+    );
+    let (a_key, b_key, c_key) = (
+        *a_endpoint.id().as_bytes(),
+        *b_endpoint.id().as_bytes(),
+        *c_endpoint.id().as_bytes(),
+    );
+    let (a_cert, b_cert, c_cert) = (
+        authority.admit_device(a_key),
+        authority.admit_device(b_key),
+        authority.admit_device(c_key),
+    );
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let (workspace_keys, call) = (keys(), keys());
+    let mut sessions = Vec::new();
+    for (endpoint, key, cert) in [
+        (a_endpoint, a_key, &a_cert),
+        (b_endpoint, b_key, &b_cert),
+        (c_endpoint, c_key, &c_cert),
+    ] {
+        sessions.push(
+            LiveSession::join(
+                Arc::new(native::Iroh::new(endpoint, addr(&relay_endpoint))),
+                &grant_for(cert),
+                join(key, roster.clone(), workspace_keys.clone()),
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    let [a, b, c] = <[LiveSession; 3]>::try_from(sessions).ok().unwrap();
+    wait_until("the sessions admitted", || relay.counters().accepted == 3);
+    talk(&[&a, &b, &c], &call, 1);
+    // What A says, and the last thing it said before the call moved on: only what it says after
+    // counts as said after.
+    let (sequence, before_the_change) = (std::cell::Cell::new(0_u32), std::cell::Cell::new(0));
+    let speak = |heard_by: &LiveSession| {
+        sequence.set(sequence.get().saturating_add(1));
+        let _ = a.publish(
+            Track::Audio,
+            sequence.get(),
+            &voice(sequence.get(), &[5; 8]),
+        );
+        heard(heard_by, Track::Audio)
+            .into_iter()
+            .filter(|object| object.sender == a_key && object.sequence > before_the_change.get())
+            .count()
+    };
+    wait_until("the device later left out hears the call", || speak(&c) > 0);
+
+    // The call denies C's person: A and B are told, and handed the keys of the rule's next
+    // generation. C keeps the call's keys it had, and the workspace's.
+    let persons: BTreeMap<[u8; 32], String> = [(a_key, "a"), (b_key, "b"), (c_key, "c")]
+        .into_iter()
+        .map(|(device, person)| (device, person.to_owned()))
+        .collect();
+    let rules = BTreeMap::from([(
+        CALL.to_owned(),
+        collab_types::calls::CallRule {
+            denied: BTreeMap::from([("c".to_owned(), collab_types::calls::Directions::BOTH)]),
+            generation: 1,
+            ..collab_types::calls::CallRule::default()
+        },
+    )]);
+    let next = keys();
+    before_the_change.set(sequence.get());
+    for honest in [&a, &b] {
+        honest.set_calls(rules.clone(), persons.clone());
+        assert_eq!(
+            honest.call_keys_wanted(),
+            Some((CALL.to_owned(), 1)),
+            "the change asks for the next generation's keys"
+        );
+        assert_eq!(
+            honest.publish(Track::Audio, 1, &voice(1, &[6; 8])),
+            Err(LiveError::Withheld),
+            "nothing is sealed under the keys the change left behind"
+        );
+        honest.set_call_keys(CALL, 1, next.clone());
+    }
+    wait_until("B hears A under the new keys", || speak(&b) > 0);
+    let before = c.refusals().values().sum::<usize>();
+    let mut opened = 0;
+    wait_until("C is carried what A says and opens none of it", || {
+        opened += speak(&c);
+        c.refusals().values().sum::<usize>() > before.saturating_add(3)
+    });
+    assert_eq!(opened, 0, "C opened what was said after it was left out");
 }

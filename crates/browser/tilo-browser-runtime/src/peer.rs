@@ -2190,7 +2190,7 @@ impl WasmPeer {
                     .map(|value| value.to_string())
                     .unwrap_or_default()),
                 ReceiptStatus::Rejected { error } => Err(js_error(error)),
-                ReceiptStatus::Failed { error } => Err(js_error(&error.message)),
+                ReceiptStatus::Failed { error } => Err(js_error(error.message)),
                 status => Err(js_error(format!("the call was not moderated: {status:?}"))),
             },
             _ => Err(js_error("the host did not answer")),

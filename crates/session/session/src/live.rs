@@ -749,6 +749,7 @@ impl Shared {
             live_session.set_keys(keys);
             live_session.set_roster(roster);
             live_session.set_calls(rules, persons);
+            self.hand_call_keys(workspace, &live_session);
             self.stand(
                 workspace,
                 LiveState::Open {
@@ -797,12 +798,31 @@ impl Shared {
             local = serving == self.device, epoch,
             "the live session opened");
         live_session.set_calls(rules, persons);
+        self.hand_call_keys(workspace, &live_session);
         let open = LiveState::Open {
             relay: relayer(&devices, serving, self.device),
             epoch,
             lent,
         };
         self.keep(workspace, serving, live_session, open);
+    }
+
+    /// Hand `live_session` the keys of the call media it needs now when this device holds them:
+    /// the key group of its call's rule's generation, which only the devices the call admits are
+    /// given. Asking for them takes this device into the group; the keys arriving changes the
+    /// workspace's keys, and the workspace is settled again on it.
+    fn hand_call_keys(&self, workspace: WorkspaceId, live_session: &LiveSession) {
+        let Some((channel, generation)) = live_session.call_keys_wanted() else {
+            return;
+        };
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: collab_types::scope::MEDIA_APP.to_owned(),
+            cluster_id: workspace.to_string(),
+            document: collab_types::calls::media_document(&channel, generation),
+        };
+        if let Ok(crate::engine::SealKeys::Here(keys)) = self.engine.document_seal_keys(&route) {
+            live_session.set_call_keys(&channel, generation, keys);
+        }
     }
 
     /// `workspace` 's keys are not here (`held`), and none were lent: the live session opens when they
@@ -1265,7 +1285,14 @@ impl crate::sync::SayPresence for Say {
             .get(&workspace)
             .map(|joined| Arc::clone(&joined.live_session))
             .ok_or_else(|| "this workspace has no live session".to_owned())?;
-        tilo_live::presence::say(&live_session, frames).map_err(|error| error.to_string())
+        let wanted = live_session.call_keys_wanted();
+        tilo_live::presence::say(&live_session, frames).map_err(|error| error.to_string())?;
+        // A device that joined another call needs that call's keys: the workspace is settled
+        // again, which asks for them.
+        if live_session.call_keys_wanted() != wanted {
+            self.0.nudge(workspace).notify_one();
+        }
+        Ok(())
     }
 }
 

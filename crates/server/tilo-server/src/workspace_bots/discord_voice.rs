@@ -246,6 +246,7 @@ impl VoiceBridge {
         }
         if let Some(taking) = &mut self.taking {
             taking.live.set_calls(rules, persons);
+            hand_call_keys(&self.workspaces, &self.workspace, &taking.live).await;
             if taking.roster != roster {
                 taking.live.set_roster(roster.clone());
                 taking.roster = roster;
@@ -267,6 +268,7 @@ impl VoiceBridge {
         match LiveSession::local(&self.relay, &join) {
             Ok(live) => {
                 live.set_calls(rules, persons);
+                hand_call_keys(&self.workspaces, &self.workspace, &live).await;
                 let mut board = Board::new(self.workspace.clone(), self.host.device_public_key);
                 board.say(&self.own());
                 self.taking = Some(Taking {
@@ -551,5 +553,35 @@ fn status(live: &[LiveCall], channel: &str) -> String {
         "Nobody on Tilo yet".to_owned()
     } else {
         format!("On Tilo: {}", names.join(", "))
+    }
+}
+
+/// Hand `live` the keys of the call media it needs now when this host holds them: the key group
+/// of its call's rule's generation in `workspace`, which only the devices the call admits are
+/// given. Asking for them takes this host into the group; the bridge asks again on its next tick.
+async fn hand_call_keys(workspaces: &Workspaces, workspace: &str, live: &LiveSession) {
+    let Some((channel, generation)) = live.call_keys_wanted() else {
+        return;
+    };
+    let Some(device) = workspaces.device_keys() else {
+        return;
+    };
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: collab_types::scope::MEDIA_APP.to_owned(),
+        cluster_id: workspace.to_owned(),
+        document: collab_types::calls::media_document(&channel, generation),
+    };
+    let Ok(scope) = route.key_scope_for(None) else {
+        return;
+    };
+    match device
+        .group_keys(&scope.to_string(), collab_types::EVERY_MEMBER, true)
+        .await
+    {
+        Some(Ok(keys)) => live.set_call_keys(&channel, generation, keys),
+        Some(Err(error)) => {
+            tracing::debug!(%workspace, %error, "the call's keys are not here yet");
+        }
+        None => {}
     }
 }

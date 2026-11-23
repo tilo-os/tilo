@@ -2607,7 +2607,11 @@ fn a_document_its_workspaces_founder_does_not_read_is_founded_by_a_reader() {
     let (metadata, ciphertext) = first_keys
         .seal_content(artifact, ContentRetention::Delta, b"a login")
         .unwrap();
-    assert!(second_keys.open_content(artifact, &metadata, &ciphertext).is_ok());
+    assert!(
+        second_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_ok()
+    );
 }
 
 /// A device whose own view says it reads a document it does not (its role taken back, and the news
@@ -2636,9 +2640,30 @@ fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
         .unwrap()
         .extend([public(1), public(2), public(3)]);
     let dir = tempfile::tempdir().unwrap();
-    let mut revoked = device(&workspace, workspace_id, 0, 1, &stale, &dir.path().join("revoked"));
-    let mut first = device(&workspace, workspace_id, 1, 2, &current, &dir.path().join("first"));
-    let mut second = device(&workspace, workspace_id, 2, 3, &current, &dir.path().join("second"));
+    let mut revoked = device(
+        &workspace,
+        workspace_id,
+        0,
+        1,
+        &stale,
+        &dir.path().join("revoked"),
+    );
+    let mut first = device(
+        &workspace,
+        workspace_id,
+        1,
+        2,
+        &current,
+        &dir.path().join("first"),
+    );
+    let mut second = device(
+        &workspace,
+        workspace_id,
+        2,
+        3,
+        &current,
+        &dir.path().join("second"),
+    );
     let mut now = Instant::now();
     revoked.service.access(workspace_id, now);
     revoked.service.access_scope(scope.clone(), now);
@@ -2660,9 +2685,15 @@ fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
     let (metadata, ciphertext) = first_keys
         .seal_content(artifact, ContentRetention::Delta, b"a login")
         .unwrap();
-    assert!(second_keys.open_content(artifact, &metadata, &ciphertext).is_ok());
     assert!(
-        revoked_keys.open_content(artifact, &metadata, &ciphertext).is_err(),
+        second_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_ok()
+    );
+    assert!(
+        revoked_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_err(),
         "the refused genesis's key opens nothing the readers seal"
     );
 }
@@ -2716,4 +2747,98 @@ fn a_document_asked_for_before_its_readers_are_known_is_told_when_they_are() {
         matches!(reader.service.access_scope(scope, now), KeyAccess::Ready(_)),
         "asked again, the document's group opens"
     );
+}
+
+/// A call's media keys move on among people's own devices alone: no device of the workspace
+/// holds a role the others lack. The call denies the person whose device founded the workspace,
+/// and whichever of the devices its next generation admits asks first founds that generation's
+/// group, with no wait for anyone else: the other admitted device opens what the founder seals,
+/// and the denied one is never handed its keys, nor opens it with every key it had.
+#[test]
+fn any_device_a_call_admits_founds_its_next_keys_and_the_one_it_denied_opens_nothing() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let generation = |generation: u64| neighbour_wire::KeyScope::Document {
+        workspace: workspace_id,
+        app: collab_types::scope::MEDIA_APP.into(),
+        document: collab_types::calls::media_document("standup", generation),
+        readers: None,
+    };
+    let policy = Policy::readers([1, 2, 3]);
+    policy
+        .document_readers
+        .lock()
+        .unwrap()
+        .extend([public(1), public(2), public(3)]);
+    let dir = tempfile::tempdir().unwrap();
+    let [mut denied, mut first, mut second] =
+        document_key_devices(&workspace, workspace_id, &policy, dir.path());
+    let mut now = Instant::now();
+    for device in [&mut denied, &mut first, &mut second] {
+        device.service.access(workspace_id, now);
+        device.service.access_scope(generation(0), now);
+    }
+    drive(&mut [&mut denied, &mut first, &mut second], &mut now, 8);
+    let KeyAccess::Ready(before) = denied.service.access_scope(generation(0), now) else {
+        panic!("everyone in the call holds its first keys");
+    };
+
+    // Denied: the rule's next generation admits the other two.
+    policy.document_readers.lock().unwrap().remove(&public(1));
+    let started = now;
+    first.service.access_scope(generation(1), now);
+    second.service.access_scope(generation(1), now);
+    denied.service.access_scope(generation(1), now);
+    let mut keys = None;
+    while keys.is_none() {
+        assert!(
+            now.duration_since(started) < Duration::from_secs(8),
+            "no admitted device founded the call's next keys"
+        );
+        drive(&mut [&mut denied, &mut first, &mut second], &mut now, 1);
+        keys = match (
+            first.service.access_scope(generation(1), now),
+            second.service.access_scope(generation(1), now),
+        ) {
+            (KeyAccess::Ready(first), KeyAccess::Ready(second)) => Some((first, second)),
+            _ => None,
+        };
+    }
+    let (sealing, opening) = keys.unwrap();
+    assert!(
+        now.duration_since(started) < founding_wait(),
+        "the next keys took {:?}, longer than one founding wait",
+        now.duration_since(started)
+    );
+    let artifact = collab_types::document_artifact_id(
+        collab_types::scope::MEDIA_APP,
+        &workspace_id.to_string(),
+        &collab_types::calls::media_document("standup", 1),
+    );
+    let (metadata, ciphertext) = sealing
+        .seal_content(artifact, ContentRetention::Delta, b"after the deny")
+        .unwrap();
+    assert_eq!(
+        &*opening
+            .open_content(artifact, &metadata, &ciphertext)
+            .unwrap(),
+        b"after the deny"
+    );
+    drive(&mut [&mut denied, &mut first, &mut second], &mut now, 8);
+    assert!(
+        !matches!(
+            denied.service.access_scope(generation(1), now),
+            KeyAccess::Ready(_)
+        ),
+        "the denied device is handed the next keys"
+    );
+    let KeyAccess::Ready(workspace_keys) = denied.service.access(workspace_id, now) else {
+        panic!("the denied device keeps the workspace's keys");
+    };
+    for held in [&before, &workspace_keys] {
+        assert!(
+            held.open_content(artifact, &metadata, &ciphertext).is_err(),
+            "the denied device opens what was said after"
+        );
+    }
 }

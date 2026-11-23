@@ -5,7 +5,9 @@
 //! workspace document keeps one rule per channel, so every member reads the same rule, and every
 //! receiver weighs each change by its writer's grants, as it weighs every change to who may do
 //! what. No device runs a call: who is in one is what the devices in it say of themselves, and
-//! every member's live session judges their media by the rule.
+//! every member's live session judges their media by the rule. A call's media is sealed under the
+//! key group of its rule's generation, whose keys only the devices of the people the rule admits
+//! are given ([`StatePeer::document_key_holders`]).
 
 use std::collections::BTreeMap;
 
@@ -149,5 +151,77 @@ fn read_rule(doc: &impl ReadDoc, calls: &automerge::ObjId, channel: &str) -> Opt
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use collab_types::calls::{CallChange, Directions, media_document};
+    use collab_types::scope::MEDIA_APP;
+
+    use crate::StatePeer;
+    use crate::workspace_membership::WorkspaceMembershipCommand as Command;
+
+    /// A call's media keys go to the devices of the people its rule admits, in the rule's
+    /// generation and none ahead of it: denied, a person's devices hold none of the next
+    /// generation's keys and leave the earlier one's group; let back, they hold them again; and an
+    /// ended call's keys go to nobody.
+    #[test]
+    fn a_calls_media_keys_go_only_to_the_people_its_rule_admits() {
+        let (mut peer, key, _, device, now) = crate::admission_tests::seeded();
+        let person = device.user_public_key;
+        let holders = |peer: &StatePeer, generation| {
+            peer.document_key_holders(MEDIA_APP, &media_document("standup", generation), now)
+                .unwrap()
+        };
+        let everyone = holders(&peer, 0);
+        assert!(everyone.contains(&device.device_public_key));
+        assert!(
+            peer.requires_document_keys(MEDIA_APP, &media_document("standup", 0), now)
+                .unwrap(),
+            "a call's media seals under keys of its own"
+        );
+        assert!(
+            holders(&peer, 1).is_empty(),
+            "no keys of a generation ahead of the rule"
+        );
+        let change = |peer: &mut StatePeer, change| {
+            let command = Command::Call {
+                channel: "standup".into(),
+                change,
+            };
+            assert_eq!(
+                peer.workspace_mut()
+                    .apply_workspace_membership_command(&device, &command, &key, now),
+                Ok(true)
+            );
+        };
+        change(
+            &mut peer,
+            CallChange::Deny {
+                person,
+                denied: Directions::BOTH,
+            },
+        );
+        assert_eq!(peer.governance().call("standup").generation, 1);
+        assert!(
+            holders(&peer, 1).is_empty(),
+            "the denied person holds none of its keys"
+        );
+        assert!(
+            holders(&peer, 0).is_empty(),
+            "and the earlier group moves on past them"
+        );
+        change(&mut peer, CallChange::Allow { person });
+        assert_eq!(
+            holders(&peer, 2),
+            everyone,
+            "let back, they hold the next keys"
+        );
+        change(&mut peer, CallChange::End);
+        assert!(
+            holders(&peer, 3).is_empty(),
+            "an ended call's keys go to nobody"
+        );
     }
 }

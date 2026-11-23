@@ -516,6 +516,25 @@ pub(crate) fn wake_and_ended(
 }
 
 impl Task {
+    /// Hand `live_session` the keys of the call media it needs now when this page holds them:
+    /// the key group of its call's rule's generation, which only the devices the call admits are
+    /// given. Asking takes this page into the group, and the keys arriving settles the live
+    /// session again.
+    fn hand_call_keys(&mut self, workspace: &str, live_session: &LiveSession) {
+        let Some((channel, generation)) = live_session.call_keys_wanted() else {
+            return;
+        };
+        let route = DocumentRoute {
+            app_id: collab_types::scope::MEDIA_APP.to_owned(),
+            cluster_id: workspace.to_owned(),
+            document: collab_types::calls::media_document(&channel, generation),
+        };
+        self.open_channel(&route);
+        if let Some(keys) = self.keys_of(&route) {
+            live_session.set_call_keys(&channel, generation, keys);
+        }
+    }
+
     /// Join, follow or leave the workspaces' live sessions: each joined
     /// workspace gets one live session of this page's own, in the workspace scope
     /// ([`route`]'s channel keys, the devices its governance admits),
@@ -598,6 +617,8 @@ impl Task {
                         .set_roster(Roster::new(members.iter().copied()));
                     joined.members = members;
                 }
+                let live_session = Arc::clone(&joined.live_session);
+                self.hand_call_keys(&workspace, &live_session);
                 continue;
             }
             if !self.live_sessions.due(workspace_id, now) {

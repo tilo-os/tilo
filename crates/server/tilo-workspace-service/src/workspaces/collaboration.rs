@@ -1481,8 +1481,30 @@ impl Workspaces {
         // The live origin holds every call track to the call's rule: it reads the rule again now.
         if done.is_ok() {
             crate::authority_epoch::bump();
+            self.found_call_keys(workspace, channel);
         }
         done
+    }
+
+    /// Found the key group of the generation `channel`'s call in `workspace` is in now, which
+    /// seals its media from now on: the members it admits are handed its keys at once, rather
+    /// than after the wait a device that cannot found a group gives one that can.
+    fn found_call_keys(&self, workspace: &str, channel: &str) {
+        let workspaces = self.clone();
+        let (workspace, channel) = (workspace.to_owned(), channel.to_owned());
+        tokio::spawn(async move {
+            let Ok(rule) = workspaces.call_rule(&workspace, &channel).await else {
+                return;
+            };
+            let route = tilo_peer_state::document_frame::DocumentRoute {
+                app_id: collab_types::scope::MEDIA_APP.to_owned(),
+                cluster_id: workspace,
+                document: collab_types::calls::media_document(&channel, rule.generation),
+            };
+            if let Some(Err(error)) = workspaces.own_route_keys(&route, true).await {
+                tracing::debug!(%error, channel, "the call's keys could not be founded here");
+            }
+        });
     }
 
     /// What the call in `channel` of `workspace` allows, as the workspace records it now.

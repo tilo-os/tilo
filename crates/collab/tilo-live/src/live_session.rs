@@ -154,7 +154,10 @@ pub enum LiveError {
 struct InCall {
     /// The call's tag, as its tracks name it ([`collab_types::calls::tag`]).
     tag: String,
-    /// The keys its media is sealed and opened under, and their epoch.
+    /// The generation of the call's rule its keys are ([`collab_types::calls::media_document`]).
+    generation: u64,
+    /// The keys its media is sealed and opened under: its generation's, which only the devices
+    /// the call admits are given.
     keys: LiveKeys,
     /// The devices the call lets speak: the only ones whose media is opened.
     roster: Roster,
@@ -162,6 +165,10 @@ struct InCall {
     publish: bool,
     opener: Opener,
 }
+
+/// The keys of one call's media ([`LiveSession::set_call_keys`]): its channel, the generation of
+/// its rule they are, and the keys.
+type CallKeys = (String, u64, LiveKeys);
 
 /// What the workspace's calls allow, and the person each device is ([`LiveSession::set_calls`]).
 type CallRules = (
@@ -343,6 +350,8 @@ pub(crate) struct Shared {
     call_rules: Mutex<CallRules>,
     /// The channel this device's own presence says it is in.
     own_call: Mutex<Option<String>>,
+    /// The keys of the call media this device was handed last.
+    call_keys: Mutex<Option<CallKeys>>,
     /// The call this device is in, held to its rule: what call media it sends and reads.
     call: Mutex<Option<InCall>>,
     /// Advances whenever the call moves: a reader of call media reads again under the call's name.
@@ -422,6 +431,7 @@ impl Shared {
             ended: Mutex::new(false),
             call_rules: Mutex::default(),
             own_call: Mutex::new(None),
+            call_keys: Mutex::new(None),
             call: Mutex::new(None),
             call_revision: AtomicU64::new(0),
             wake: Mutex::new(None),
@@ -657,30 +667,55 @@ impl Shared {
         Ok((sealer, name))
     }
 
-    /// Hold the call this device's presence says to the call's rule, under the keys and roster
-    /// it has now. A call that moved to another channel or other keys is read again under them,
-    /// and what was asked of this device in another call ends.
+    /// The call media keys this device needs now: the channel its presence says it is in, and
+    /// the generation of that call's rule.
+    fn call_keys_wanted(&self) -> Option<(String, u64)> {
+        let channel = self.own_call.lock_recover().clone()?;
+        let generation = self
+            .call_rules
+            .lock_recover()
+            .0
+            .get(&channel)
+            .map_or(0, |rule| rule.generation);
+        Some((channel, generation))
+    }
+
+    /// Hold the call this device's presence says to the call's rule, under the call keys and
+    /// roster it has now: in no call until it holds the keys of the rule's generation, so
+    /// nothing is sealed under the keys of one a change left behind. A call that moved to another
+    /// channel or other keys is read again under them, and what was asked of this device in
+    /// another call ends.
     fn settle_call(&self) {
-        let channel = self.own_call.lock_recover().clone();
-        let next = channel.map(|channel| {
+        let wanted = self.call_keys_wanted();
+        let next = wanted.and_then(|(channel, generation)| {
+            let keys = self
+                .call_keys
+                .lock_recover()
+                .as_ref()
+                .filter(|(held, at, _)| *held == channel && *at == generation)
+                .map(|(_, _, keys)| keys.clone())?;
             let (rules, persons) = &*self.call_rules.lock_recover();
             let devices: Vec<[u8; 32]> = self.roster.lock_recover().devices().collect();
             let roster = crate::calls::speakers(&channel, rules, persons, devices);
-            let keys = self.keys.lock_recover().clone();
-            InCall {
+            Some(InCall {
                 tag: collab_types::calls::tag(&channel),
+                generation,
                 opener: Opener::new(keys.clone(), roster.clone()),
                 keys,
                 roster,
                 publish: crate::calls::may(&channel, rules, persons, self.join.device).publish,
-            }
+            })
         });
         let tag = next.as_ref().map(|call| call.tag.clone());
         let moved = {
             let mut call = self.call.lock_recover();
             let moved = match (&*call, &next) {
                 (Some(held), Some(next)) => {
-                    held.tag != next.tag || held.keys.epoch() != next.keys.epoch()
+                    held.tag != next.tag
+                        || held.generation != next.generation
+                        || held.keys.epoch() != next.keys.epoch()
+                        || held.roster != next.roster
+                        || held.publish != next.publish
                 }
                 (None, None) => false,
                 _ => true,
@@ -972,8 +1007,10 @@ async fn reconnect(
 pub struct LiveSession {
     shared: Arc<Shared>,
     /// This device's recent audio objects, newest last: the redundancy its
-    /// datagrams carry, so one lost packet costs one frame and not two.
-    sent: Mutex<VecDeque<Vec<u8>>>,
+    /// datagrams carry, so one lost packet costs one frame and not two. Kept
+    /// for one move of the call ([`Shared::call_revision`]): what was sealed
+    /// before the call moved is never sent again after it.
+    sent: Mutex<(u64, VecDeque<Vec<u8>>)>,
     /// The peer tracks this live session reads now: exactly what its app
     /// shows ([`Self::show`]), one reader each.
     shown: Mutex<BTreeMap<([u8; 32], Track), Task>>,
@@ -1073,7 +1110,7 @@ impl LiveSession {
         read_roster(&shared, &mut readers);
         Self {
             shared,
-            sent: Mutex::new(VecDeque::new()),
+            sent: Mutex::new((0, VecDeque::new())),
             shown: Mutex::new(BTreeMap::new()),
             readers: Mutex::new(readers),
             _demands: demands,
@@ -1111,6 +1148,7 @@ impl LiveSession {
         if self.shared.ended() {
             return Err(LiveError::Ended);
         }
+        let revision = self.shared.call_revision.load(Ordering::Acquire);
         let (sealer, name) = self.shared.call_sealer(track)?;
         // The call's voice is sent while someone in the call asks for it, and only then.
         let mut producer = self
@@ -1130,7 +1168,11 @@ impl LiveSession {
         // The objects before this one again, as far as one datagram
         // carries them: a subscriber that lost the previous packet plays
         // it from this one.
-        let mut sent = self.sent.lock_recover();
+        let mut held = self.sent.lock_recover();
+        if held.0 != revision {
+            *held = (revision, VecDeque::new());
+        }
+        let sent = &mut held.1;
         let mut bundle = object.clone();
         for earlier in sent.iter().rev() {
             if bundle.len().saturating_add(earlier.len()) > voice::MAX_BUNDLE_BYTES {
@@ -1142,7 +1184,7 @@ impl LiveSession {
         while sent.len() >= voice::MAX_BUNDLE_OBJECTS {
             sent.pop_front();
         }
-        drop(sent);
+        drop(held);
         let timestamp = moq_net::Timestamp::from_scale(at, u64::from(voice::SAMPLE_RATE))
             .unwrap_or(moq_net::Timestamp::ZERO);
         producer
@@ -1612,6 +1654,22 @@ impl LiveSession {
         let roster = self.shared.roster.lock_recover().clone();
         *self.shared.keys.lock_recover() = keys.clone();
         *self.shared.opener.lock_recover() = Opener::new(keys, roster);
+    }
+
+    /// The call media keys this device needs now: the channel its presence says it is in, and
+    /// the generation of that call's rule whose key group seals its media
+    /// ([`collab_types::calls::media_document`]). `None` outside a call. Until those keys are
+    /// handed over ([`Self::set_call_keys`]) this device sends and opens none of the call.
+    #[must_use]
+    pub fn call_keys_wanted(&self) -> Option<(String, u64)> {
+        self.shared.call_keys_wanted()
+    }
+
+    /// Seal and open the media of `channel`'s call under `keys` from now on: the keys of the
+    /// `generation` of its rule, which only the devices the call admits are given. Keys of a call
+    /// or generation this device is not in seal and open nothing.
+    pub fn set_call_keys(&self, channel: &str, generation: u64, keys: impl Into<LiveKeys>) {
+        *self.shared.call_keys.lock_recover() = Some((channel.to_owned(), generation, keys.into()));
         self.shared.settle_call();
     }
 

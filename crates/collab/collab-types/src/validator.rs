@@ -532,8 +532,10 @@ pub fn document_access_target<'a>(app: &str, document: &'a str) -> Option<&'a st
 /// the document. Parts and chunks inherit the requirement of their root.
 #[must_use]
 pub fn requires_independent_document_keys(app: &str, document: &str) -> bool {
-    document_access_target(app, document)
-        .is_some_and(|root| tilo_action_policy::roles::requires_document_keys(app, root))
+    // A call's media keys go only to the people its rule admits ([`crate::calls::media_document`]).
+    (app == crate::scope::MEDIA_APP && crate::calls::parse_media_document(document).is_some())
+        || document_access_target(app, document)
+            .is_some_and(|root| tilo_action_policy::roles::requires_document_keys(app, root))
 }
 
 /// The access editor's route: an empty app selects workspace defaults or the default for the

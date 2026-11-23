@@ -1706,7 +1706,13 @@ impl Task {
                 (joined.presence_seq, frame)
             })
             .collect();
+        let wanted = joined.live_session.call_keys_wanted();
         let _ = tilo_live::presence::say(&joined.live_session, &numbered);
+        // A page that joined another call needs that call's keys: its live session is settled
+        // again, which asks for them.
+        if joined.live_session.call_keys_wanted() != wanted {
+            self.live_sessions_due.insert(workspace_id);
+        }
     }
 
     /// Apply one command while disconnected; what it publishes commits at once.

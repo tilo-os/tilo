@@ -4,6 +4,7 @@
 // stdio.
 //
 // usage: node support/page-driver.mjs node
+//        node support/page-driver.mjs call FIXTURE_URL WHO...
 //
 // `node` creates an identity, prints `{origin, userPublicKey}`, then answers
 // one JSON request per stdin line until stdin closes:
@@ -13,13 +14,27 @@
 //   {"install": {origin, certificate, sessionCertificate?, installToken}}
 //     (certificates canonical, hex)              -> what installNodeCertificate resolves to
 // Any failure is answered as {"error": "...", "code": "..."}.
+//
+// `call` opens one tab per WHO at `FIXTURE_URL/page.html?who=WHO`, in a
+// browser with a synthetic microphone, prints `{ready: [WHO...]}` once every
+// tab says `window.ready`, then answers one JSON request per stdin line until
+// stdin closes:
+//   {"tab": WHO, "run": "<expression>", "gesture": bool}
+//                                                -> {"value": ...}
+//   {"tab": WHO, "waitFor": "<expression>", "timeout": ms}
+//                                                -> {"value": true}
+// A failure is answered as {"error": "...", "log": [what the tab logged]}.
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {launch, serve} from '../../../../../tools/web/chrome.mjs';
 import {pageBundle} from '../../../../../tools/web/page-bundle.mjs';
 
 const mode = process.argv[2];
-if (mode !== 'node') throw new Error('usage: page-driver.mjs node');
+if (mode === 'call') {
+  await callMembers(process.argv[3], process.argv.slice(4));
+  process.exit(process.exitCode ?? 0);
+}
+if (mode !== 'node') throw new Error('usage: page-driver.mjs node | call FIXTURE_URL WHO...');
 const web = fileURLToPath(new URL('../../../../browser/tilo-browser-runtime/web/', import.meta.url));
 const base64 = hex => Buffer.from(hex, 'hex').toString('base64');
 
@@ -77,3 +92,46 @@ try {
   bundle.close();
 }
 process.exit(failed ? 1 : 0);
+
+/** The `call` mode: one tab per call member, each the fixture's page for
+ * `who`, driven over stdio. The browser is closed however the run ends. */
+async function callMembers(base, members) {
+  if (!base || !members.length) throw new Error('usage: page-driver.mjs call FIXTURE_URL WHO...');
+  const browser = await launch({media: true});
+  try {
+    const tabs = new Map();
+    for (const who of members) {
+      const tab = await browser.tab();
+      await tab.navigate(`${base}/page.html?who=${encodeURIComponent(who)}`);
+      await tab.waitFor('window.ready === true', {timeout: 30_000});
+      tabs.set(who, tab);
+    }
+    process.stdout.write(`${JSON.stringify({ready: members})}\n`);
+    for await (const line of createInterface({input: process.stdin})) {
+      const request = JSON.parse(line);
+      const tab = tabs.get(request.tab);
+      let answer;
+      try {
+        if (!tab) throw new Error(`no tab ${request.tab}`);
+        if (request.waitFor !== undefined) {
+          await tab.waitFor(request.waitFor, {timeout: request.timeout ?? 30_000});
+          answer = {value: true};
+        } else {
+          const reply = await tab.send('Runtime.evaluate', {
+            expression: request.run, awaitPromise: true, returnByValue: true, userGesture: request.gesture === true,
+          });
+          if (reply.error || reply.result.exceptionDetails) throw new Error(JSON.stringify(reply.error ?? reply.result.exceptionDetails));
+          answer = {value: reply.result.result.value ?? null};
+        }
+      } catch (error) {
+        answer = {error: String(error?.message ?? error), log: tab?.log.slice(-40) ?? []};
+      }
+      process.stdout.write(`${JSON.stringify(answer)}\n`);
+    }
+  } catch (error) {
+    process.exitCode = 1;
+    console.error(error);
+  } finally {
+    await browser.close();
+  }
+}
