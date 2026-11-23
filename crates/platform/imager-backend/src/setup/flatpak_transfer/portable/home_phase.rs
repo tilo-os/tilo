@@ -11,13 +11,7 @@ use crate::setup::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    ffi::OsStr,
-    io::{self, Read},
-    path::Path,
-    sync::atomic::AtomicBool,
-};
+use std::{collections::BTreeMap, ffi::OsStr, io, path::Path, sync::atomic::AtomicBool};
 use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
 const BASELINE: &str = "home-applications-original.json";
 const OUTPUT: &str = "home-applications-output.json";
@@ -98,27 +92,10 @@ fn configuration(home: &Path) -> io::Result<BTreeMap<(String, String), String>> 
 fn configuration_bytes(home: &Path) -> io::Result<Vec<u8>> {
     let path = home.join(".local/share/flatpak/repo/config");
     match std::fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error),
+        Ok(_) => applications::config_bytes(&path).map_err(io::Error::other),
     }
-    let pin = PinnedDirectory::open_absolute(
-        path.parent()
-            .ok_or_else(|| changed("Repository parent missing"))?,
-    )?;
-    let mut options = cap_primitives::fs::OpenOptions::new();
-    cap_fs_ext::OpenOptionsFollowExt::follow(
-        options.read(true),
-        cap_primitives::fs::FollowSymlinks::No,
-    );
-    let file = cap_primitives::fs::open(&pin.file, Path::new("config"), &options)?;
-    if !file.metadata()?.is_file() || file.metadata()?.len() > 2 * 1024 * 1024 {
-        return Err(changed("Original configuration exceeds bounds"));
-    }
-    let mut bytes = Vec::new();
-    file.take(2 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-    pin.validate()?;
-    Ok(bytes)
 }
 fn validate_baseline(
     baseline: &Baseline,

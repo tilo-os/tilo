@@ -146,6 +146,13 @@ pub(super) fn verify_original_config(request: &TransferRequest) -> Result<(), St
     Ok(())
 }
 pub fn config(path: &Path) -> Result<BTreeMap<(String, String), String>, String> {
+    let bytes = config_bytes(path)?;
+    let text = std::str::from_utf8(&bytes).map_err(|error| error.to_string())?;
+    parse_config(text)
+}
+/// The bounded bytes of a repository `config`, opened no-follow and re-attested
+/// before and after the read.
+pub fn config_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let parent = PinnedDirectory::open_absolute(path.parent().ok_or("Missing repository parent")?)
         .map_err(|error| error.to_string())?;
     let name = path.file_name().ok_or("Missing configuration name")?;
@@ -163,11 +170,11 @@ pub fn config(path: &Path) -> Result<BTreeMap<(String, String), String>, String>
     if !migration::same_snapshot(&expected, &before) {
         return Err("Repository configuration changed while opening".into());
     }
-    let mut text = String::new();
+    let mut bytes = Vec::new();
     file.try_clone()
         .map_err(|error| error.to_string())?
         .take(2 * 1024 * 1024 + 1)
-        .read_to_string(&mut text)
+        .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     if !migration::same_snapshot(
         &before,
@@ -175,11 +182,11 @@ pub fn config(path: &Path) -> Result<BTreeMap<(String, String), String>, String>
     ) {
         return Err("Repository configuration changed while reading".into());
     }
-    if text.len() > 2 * 1024 * 1024 {
+    if bytes.len() > 2 * 1024 * 1024 {
         return Err("Repository configuration exceeds its bound".into());
     }
     parent.validate().map_err(|error| error.to_string())?;
-    parse_config(&text)
+    Ok(bytes)
 }
 pub fn parse_config(text: &str) -> Result<BTreeMap<(String, String), String>, String> {
     let mut section = String::new();
