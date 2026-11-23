@@ -4,9 +4,10 @@
 //! An ask is a resource of the agent package, kept in the record of whichever app it was made
 //! in: a mention in a Chat message makes one in Chat's record, one in a note in Notes'. It is
 //! made from what it is about (`created(a)?.from`), and who asked is who made it
-//! (`created(a)?.who`). The agent engine never reads an app's own fields: what it reads around
-//! an ask is where that resource sits ([`around`]): the collection it is in, each item by its
-//! first text and who wrote it, in order.
+//! (`created(a)?.who`). What it reads around an ask is where that resource sits ([`around`]):
+//! the collection it is in, each item by its first text and who wrote it, in order. Of the
+//! resource itself it reads the files a message sends with it ([`carried_files`]), which a turn
+//! is told and reads like any file of the workspace; nothing else of an app's own fields.
 //!
 //! Everything an agent's turn writes goes through the package's own actions, invoked as the
 //! agent: [`answer`] starts its reply, [`say`] appends to the reply's body, [`step`] records an
@@ -112,10 +113,26 @@ pub struct Asked {
     pub who: Option<Actor>,
     /// What it is about.
     pub from: Option<ResourceRef>,
+    /// The files what it is about carries, as that resource's record sends them with it: the
+    /// files of a Chat message. Empty where the agent may not read what it is about, and for a
+    /// resource that carries none.
+    pub files: Vec<CarriedFile>,
     /// When it was asked, ISO-8601 UTC.
     pub asked_at: String,
     /// Its replies, in the order they were asked.
     pub replies: Vec<Replied>,
+}
+
+/// A file the resource an ask is about carries, as that resource's record keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CarriedFile {
+    /// What it is called, extension included.
+    pub name: String,
+    /// How many bytes it is; 0 where the record names no size.
+    pub size: i64,
+    /// Where its bytes read, as `tilo.content:<hash>`: what Files' `read-text` takes. Empty
+    /// where the record names no address.
+    pub content: String,
 }
 
 impl Asked {
@@ -245,6 +262,30 @@ fn items(opened: &Opened, at: &ResourceRef, field: &str) -> Vec<ResourceRef> {
     }
 }
 
+/// The files `at` carries, each item of its `attachments`: what a Chat message sends with it.
+/// Empty for a resource that keeps no such collection (every app but Chat), and for an item
+/// that names no address, whose bytes nobody can read.
+fn carried_files(opened: &Opened, at: &ResourceRef) -> Vec<CarriedFile> {
+    items(opened, at, "attachments")
+        .iter()
+        .filter_map(|file| {
+            let name = text(read(opened, file, "name"));
+            let blob = text(read(opened, file, "blob"));
+            let hash = blob
+                .strip_prefix(tilolang_tilo::runtime::blob::SCHEME)
+                .filter(|hash| !hash.is_empty())?;
+            if name.trim().is_empty() {
+                return None;
+            }
+            Some(CarriedFile {
+                name,
+                size: int(read(opened, file, "size").as_ref()),
+                content: format!("tilo.content:{hash}"),
+            })
+        })
+        .collect()
+}
+
 fn state_of(meta: &tilolang_tilo::runtime::meta::Meta, value: Option<Value>) -> AskState {
     let Some(Value::Enum(state)) = value else {
         return AskState::Waiting;
@@ -338,6 +379,15 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
             })
             .collect();
         answers.sort_by_key(|reply| reply.attempt);
+        let from = made.as_ref().and_then(|made| made.from.clone());
+        // A file is named only where the words it came with are: an ask the agent may not read
+        // carries neither.
+        let files = if said.is_some() {
+            from.as_ref()
+                .map_or_else(Vec::new, |from| carried_files(opened, from))
+        } else {
+            Vec::new()
+        };
         out.push(Asked {
             agent,
             said,
@@ -345,7 +395,8 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
             mention: text(read(opened, &at, "mention")),
             state: state_of(&meta, read(opened, &at, "state")),
             who: made.as_ref().and_then(|made| made.who.clone()),
-            from: made.as_ref().and_then(|made| made.from.clone()),
+            from,
+            files,
             asked_at: made.map(|made| made.at).unwrap_or_default(),
             replies: answers,
             at,

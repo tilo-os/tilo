@@ -8,8 +8,8 @@
 //! ask's turn.
 //!
 //! What a turn is told of the ask is what sits around what it is about
-//! ([`crate::asks::around`]): the conversation a message is in, read by
-//! structure, never by Chat's own fields.
+//! ([`crate::asks::around`]): the conversation a message is in, read by structure, and the files
+//! the message sends with it, which the turn reads through its tools ([`super::carried`]).
 
 use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
@@ -243,7 +243,12 @@ fn turn_of(
              read it, and nothing else.",
         );
     } else {
-        let carried = asked.refers.iter().filter_map(super::carried::Carried::of);
+        // What the message refers to, and the files it sends with it, said after its words.
+        let carried = asked
+            .refers
+            .iter()
+            .filter_map(super::carried::Carried::of)
+            .chain(asked.files.iter().map(super::carried::Carried::file));
         request.push_str(&super::carried::told(said.clone(), carried));
     }
     let attempt = asked.attempt();
