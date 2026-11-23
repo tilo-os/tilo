@@ -2829,9 +2829,15 @@ fn mail_that_comes_to_an_inbox_the_window_holds_is_announced_once() {
     );
     let account = session.accounts().remove(0);
     let at = tilolang::calendar::instant("2026-11-23T12:00:00Z").expect("a time");
+    // What the window read of the mailbox first is not news: the sync tells nobody.
+    assert!(
+        notices_held(&session).is_empty(),
+        "the first sync of a mailbox is not news"
+    );
 
     // Mail that comes to an inbox the window holds is marked on its conversation with the
-    // moment it came, and the app's announcement runs for it.
+    // moment it came, and the app's announcement runs for it: on a live window the trigger runs
+    // it, so this is the trigger's own work.
     servers.imap.append(
         "INBOX",
         &mail(
@@ -2851,23 +2857,18 @@ fn mail_that_comes_to_an_inbox_the_window_holds_is_announced_once() {
             .find(|t| session.text(t, "subject") == "Lunch on Monday?")
             .cloned()
     });
-    // Mail that comes to an inbox the window holds is marked with the moment it came: what the
-    // announcement runs for.
-    session.wait_for("the arrival to be marked", |session| {
-        matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(Some(_))).then_some(())
-    });
-    // The app's announcement runs for the arrival: what the system's trigger runs. It is run
-    // here as the person at the window runs it, so what it writes is what the trigger writes.
-    session.call("announce", &lunch, &json!({}));
-    // The announcement ran for the arrival and cleared it: it is told of once.
-    session.wait_for("the arrival to be announced", |session| {
-        matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(None)).then_some(())
-    });
-    assert_eq!(session.instance_host().run_triggers(at), 0, "it rings once");
     // The notice is a record of the workspace, addressed to the person: every device of theirs
     // reads it, so the store holds it and it opens the conversation.
-    let notices = notices_held(&session);
-    assert_eq!(notices.len(), 1, "one notice was told: {notices:?}");
+    let notices = session.wait_for("the mail to be announced", |session| {
+        let held = notices_held(session);
+        (held.len() == 1).then_some(held)
+    });
+    // The announcement cleared the moment it came, so it tells of it once.
+    assert!(
+        matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(None)),
+        "the arrival was announced and cleared"
+    );
+    assert_eq!(session.instance_host().run_triggers(at), 0, "it rings once");
     let shown = notices[0].clone();
     let opens = session
         .instance_host()
@@ -2903,28 +2904,23 @@ fn mail_that_comes_to_an_inbox_the_window_holds_is_announced_once() {
             .find(|t| session.text(t, "subject") == "Supper on Saturday?")
             .cloned()
     });
-    session.wait_for("the mail that comes next to be marked", |session| {
-        matches!(session.value_of(&supper, "arrived"), RtValue::Opt(Some(_))).then_some(())
+    session.wait_for("the mail that comes next to be announced", |session| {
+        (notices_held(session).len() == 2).then_some(())
     });
     assert!(
-        session.instance_host().run_triggers(at) >= 1,
-        "the next rings"
-    );
-    session.wait_for("the mail that comes next to be announced", |session| {
-        matches!(session.value_of(&supper, "arrived"), RtValue::Opt(None)).then_some(())
-    });
-    // The system's run of the trigger wrote its notice as the person's own press did.
-    let notices = notices_held(&session);
-    assert_eq!(
-        notices.len(),
-        2,
-        "the trigger's notice is written too: {notices:?}"
+        matches!(session.value_of(&supper, "arrived"), RtValue::Opt(None)),
+        "the next arrival was announced and cleared too"
     );
     // What the window holds is no news again.
     session.call("check_now", &account, &json!({}));
     for _ in 0..10 {
         session.settle();
     }
+    assert_eq!(
+        notices_held(&session).len(),
+        2,
+        "each is told once, and what is held again is no news"
+    );
     assert_eq!(
         session.instance_host().run_triggers(at),
         0,
