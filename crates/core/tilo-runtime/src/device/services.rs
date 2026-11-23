@@ -302,6 +302,14 @@ impl Daemon {
         self.apps.open_view(caller, app, workspace, record, reveal)
     }
 
+    /// What shows this device's workspaces' apps as web pages: what a page's session asks once
+    /// its device proved itself (`/w/<workspace>/<app>`), each app laid out by its own window
+    /// ([`Self::open_view`]). `None` on a device that shows none.
+    #[must_use]
+    pub fn pages(&self) -> Option<&dyn tilo_workspace_service::app_serving::AppPages> {
+        self.workspaces.service().sessions().handler.pages()
+    }
+
     /// The device this computer is as it enters its person's workspaces, once it knows their
     /// server ([`super::home::Home::get`]).
     pub(crate) fn home(&self) -> Option<Device> {
