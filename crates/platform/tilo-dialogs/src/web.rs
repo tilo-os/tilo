@@ -128,6 +128,19 @@ fn contents(value: &JsValue) -> Result<Option<Vec<PickedContents>>, String> {
         .map(|files| (!files.is_empty()).then_some(files))
 }
 
+/// Download `bytes` as `name`: a page saves a file the way the browser does, with no chooser to
+/// wait for. The download starts at the call and the promise only says how it went, so a caller
+/// that cannot wait for one answers at once.
+///
+/// # Errors
+///
+/// Why the browser did not start the download.
+pub fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
+    save_file(name, bytes)
+        .map(|_| ())
+        .map_err(|error| text(&error))
+}
+
 pub(crate) struct PageFiles;
 
 impl crate::FilePicker for PageFiles {

@@ -38,6 +38,8 @@ pub mod confined;
 mod macos;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use web::download;
 #[cfg(windows)]
 mod windows;
 #[cfg(target_os = "linux")]

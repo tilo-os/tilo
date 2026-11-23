@@ -25,6 +25,9 @@ tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protoco
 # The clipboard a page's apps copy to and paste from: the browser's, as the Rust apps of the
 # page use it.
 tilo-clipboard = { path = "../../platform/tilo-clipboard" }
+# The page's own file chooser and download: one path with the Rust apps of the page, so an app
+# written in either language saves the way the browser saves.
+tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The content a page's apps keep and read: a file an action makes of what it holds, in memory,
 # as the browser page holds content while it is open.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }

@@ -183,6 +183,42 @@ impl Platform for Packages {
         ))
     }
 
+    /// `file.save`: the page downloads the bytes under the name the app offers, as the page's
+    /// Rust apps save. A browser grants a page a picker inside the person's click and nowhere
+    /// else, so a save is the browser's download and never a chooser to wait for.
+    ///
+    /// # Errors
+    ///
+    /// Why the browser did not start the download, or that this window saves nothing at all.
+    fn save_file(
+        &self,
+        request: &tilolang_tilo::runtime::blob::SaveRequest,
+        content: &[u8],
+    ) -> Result<(), String> {
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        return tilo_dialogs::download(&request.name, content);
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        {
+            let _ = (request, content);
+            Err("a window laid out with nothing on disk saves no files".to_owned())
+        }
+    }
+
+    /// `file.choose`: a page cannot answer one. The browser's picker answers a promise, and the
+    /// runtime asks for the chosen files before the action that asked can go on: a file reaches
+    /// a page by the person dropping it on the window, or is read from the page's own content.
+    ///
+    /// # Errors
+    ///
+    /// Always, saying what a page offers instead.
+    fn choose_files(
+        &self,
+        request: &tilolang_tilo::runtime::blob::FileRequest,
+    ) -> Result<Vec<FileValue>, String> {
+        let _ = request;
+        Err("a browser page cannot open a file chooser here: drop the file on the window, or open it from the workspace's files".to_owned())
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         Arc::new(|| {})
     }
