@@ -749,7 +749,24 @@ impl Core {
             return trap("expected the arguments of a call as a list");
         };
         let Some(pkg) = self.registry.borrow().fn_package(&id) else {
-            return trap(format!("no app here declares the function `{id}`"));
+            // A package compiled against a library this runtime does not hold calls a function
+            // of it: the id says nothing to the person reading the failure, so name the function
+            // where the compiler here knows it.
+            let known = tilolang::stdlib::meta()
+                .fns
+                .iter()
+                .find(|f| f.id == id)
+                .map(|f| f.name.as_str());
+            return trap(match known {
+                Some(name) => format!(
+                    "`std.{name}` is not in the standard library loaded here: this app was built \
+                     against another version of it"
+                ),
+                None => format!(
+                    "no package loaded here declares the function `{id}`: the app that declares \
+                     it is not loaded"
+                ),
+            });
         };
         if !pkg.code {
             return trap(format!(
@@ -758,7 +775,11 @@ impl Core {
             ));
         }
         let Some(func) = pkg.fn_(&id) else {
-            return trap(format!("no app here declares the function `{id}`"));
+            return trap(format!(
+                "the package {} here declares no function `{id}`, which this app calls: the two \
+                 were built against different versions",
+                pkg.meta.app
+            ));
         };
         if self.frames.borrow().calls() >= MAX_CALL_DEPTH {
             return trap(format!(

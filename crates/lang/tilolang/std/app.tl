@@ -1237,3 +1237,40 @@ template view value_change(before: View, after: View) {
         after
     }
 }
+
+/// The native reactions `keys` kept, each key naming an emoji and then who reacted with it, as
+/// words: each emoji and how many reacted with it, in the order they were first used. Who
+/// reacted is not carried: an app names people as its own members, and the native one kept its
+/// own. An app carrying a native conversation, message or page over says its reactions with
+/// this rather than counting them again.
+fn reactions_said(keys: List<Text>) -> Text {
+    each_said(keys.map(k -> emoji_of(k)), 0, [])
+}
+
+/// [`reactions_said`] of `emoji` from the `at`th, past the emoji already `told`.
+fn each_said(emoji: List<Text>, at: Int, told: List<Text>) -> Text {
+    if let e = emoji.at(at) {
+        if told.contains(e) {
+            each_said(emoji, at + 1, told)
+        } else {
+            let here = "{e} {emoji.count(x -> x == e)}"
+            let rest = each_said(emoji, at + 1, [told, [e]].flat_map(x -> x))
+            if rest == "" { here } else { "{here}  {rest}" }
+        }
+    } else { "" }
+}
+
+/// The emoji a native reaction's key names: what stands before its first separator. The key
+/// ends in who reacted, written in hex, after the last one.
+fn emoji_of(key: Text) -> Text {
+    let unhexed = without_hex(key)
+    let separator = unhexed.slice(unhexed.len() - 1, unhexed.len())
+    key.split(separator).first() ?? key
+}
+
+/// `key` without the hex digits it ends in.
+fn without_hex(key: Text) -> Text {
+    if key.len() > 0 and "0123456789abcdef".contains(key.slice(key.len() - 1, key.len())) {
+        without_hex(key.slice(0, key.len() - 1))
+    } else { key }
+}

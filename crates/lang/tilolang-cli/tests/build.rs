@@ -207,7 +207,8 @@ fn declared_actions(apps: &[package::BuiltApp], today: &Manifest) {
 }
 
 /// Every app compiles with the standard library and carries it: the package its declarations belong
-/// to is loaded wherever its code runs. Its views are the app's, so its module runs no code.
+/// to is loaded wherever its code runs. Its views are the app's, expanded where it calls them, so
+/// what its module carries is their text and its functions' code.
 fn every_payload_carries_the_standard_library(
     apps: &[package::BuiltApp],
     installed: &tilolang_tilo::bundle::Bundle,
@@ -228,15 +229,13 @@ fn every_payload_carries_the_standard_library(
         library.meta.views.is_empty(),
         "the library shows nothing itself"
     );
-    // Its views expand into the app's, so its module runs no code: what travels in it is metadata,
-    // the library's words and the source of its templates. Nothing else stands beside it.
-    let beside = library
-        .wasm
-        .len()
-        .saturating_sub(library.meta.to_json_bytes().len());
-    assert!(
-        beside < 1024,
-        "the library's module carries {beside} bytes beside its metadata"
+    // A view of it expands into the app's, so only its text travels beside the metadata; its
+    // functions are code the app calls, and its module carries that and nothing else.
+    let lines = tilolang::meta::lines_from_wasm(&library.wasm);
+    assert_eq!(
+        lines.len(),
+        library.meta.fns.len(),
+        "the library's module carries its functions and no other code: {lines:?}"
     );
 }
 

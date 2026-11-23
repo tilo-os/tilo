@@ -175,7 +175,7 @@ migration action carry_native_notebook(nb: Notebook) {
         let native = page.rich.get("body") ?? RichText("")
         let markdown = native.markdown
         let body = native.relinked(links: links, sources: picture_sources(markdown, pictures))
-        let reacted = reactions_said(page.lists.get("reactions") ?? [])
+        let reacted = std.reactions_said(page.lists.get("reactions") ?? [])
         let made = if end == "gone" {
             nb.set_aside.insert(Note(title: title, body: body, reacted: reacted), id: page.id)
         } else {
@@ -271,41 +271,6 @@ fn chain_end(parents: Map<Text>, id: Text, left: Int) -> Text {
             "top"
         } else if left <= 0 { "circle" } else { chain_end(parents, parent, left - 1) }
     } else { "gone" }
-}
-
-/// The reactions a native page kept, each key naming an emoji and then who reacted with it, as
-/// words: each emoji and how many reacted with it, in the order they were first used. Who
-/// reacted there is not carried, since this app names people only as its own members.
-fn reactions_said(keys: List<Text>) -> Text {
-    said_from(keys.map(k -> emoji_of(k)), 0, [])
-}
-
-/// [`reactions_said`] of `emoji` from the `at`th, past the emoji already `told`.
-fn said_from(emoji: List<Text>, at: Int, told: List<Text>) -> Text {
-    if let e = emoji.at(at) {
-        if told.contains(e) {
-            said_from(emoji, at + 1, told)
-        } else {
-            let here = "{e} {emoji.count(x -> x == e)}"
-            let rest = said_from(emoji, at + 1, [told, [e]].flat_map(x -> x))
-            if rest == "" { here } else { "{here}  {rest}" }
-        }
-    } else { "" }
-}
-
-/// The emoji a native reaction's key names: what stands before its first separator. The key
-/// ends in who reacted, written in hex, after the last one.
-fn emoji_of(key: Text) -> Text {
-    let unhexed = without_hex(key)
-    let separator = unhexed.slice(unhexed.len() - 1, unhexed.len())
-    key.split(separator).first() ?? key
-}
-
-/// `key` without the hex digits it ends in.
-fn without_hex(key: Text) -> Text {
-    if key.len() > 0 and "0123456789abcdef".contains(key.slice(key.len() - 1, key.len())) {
-        without_hex(key.slice(0, key.len() - 1))
-    } else { key }
 }
 
 /// Pins or unpins a note.

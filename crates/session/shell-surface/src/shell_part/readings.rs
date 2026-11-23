@@ -246,9 +246,10 @@ pub fn with_uses(
 ///   Settings and the session), which the runtime loads for itself as descriptions the session's
 ///   API answers (`ShellPlatform::load`), so a used one stands here already and loading it
 ///   again would redeclare its ids;
-/// * the standard library (`tilo.std`), which every module lists among its uses but which shows
-///   nothing itself: its views are templates the compiler expands into their callers, so no
-///   call runs its code and the runtime holds no package of it and needs none.
+/// * the standard library (`tilo.std`), which every module lists among its uses and which the
+///   runtime loads beside every package it runs: its views are templates the compiler expands
+///   into their callers, and its `fn`s run in its own package, so a place's apps bring it in no
+///   more than they bring the runtime's packages.
 fn held_here(app: &str) -> bool {
     if app == tilolang_tilo::tilolang::stdlib::APP {
         return true;

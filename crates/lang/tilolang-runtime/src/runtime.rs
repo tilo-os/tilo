@@ -133,6 +133,7 @@ impl Runtime {
     /// `Package` for a module that does not link, lacks a declared export, or reuses another
     /// package's declaration ids.
     pub fn load_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
+        self.load_library(&meta.app)?;
         let hash = self.core.engine.compile(wasm)?;
         self.add_catalogues(wasm, crate::words::WordsRole::Window);
         self.check_exports(&hash, &meta)?;
@@ -157,6 +158,7 @@ impl Runtime {
     ///
     /// As [`Runtime::load_package`]; the old version stays loaded when the new one is refused.
     pub fn reload_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
+        self.load_library(&meta.app)?;
         let hash = self.core.engine.compile(wasm)?;
         // The version loaded now brings its own words: a package reloaded after its catalogues
         // were translated reads them, not the ones it was loaded with before. The window's own
@@ -192,6 +194,38 @@ impl Runtime {
     fn publish_types(&self) {
         let types = self.core.registry.borrow().loaded_types();
         self.core.store.borrow_mut().loaded_types(&types);
+    }
+
+    /// The standard library, `tilo.std`, loaded here as the compiler ships it, beside the package
+    /// of `app` that is being loaded. Every package compiles against it: its views travel to each
+    /// as templates it expands where it calls them, and its `fn`s are code a package calls where
+    /// it is (`std.reactions_said(keys)`), which runs only with the library loaded beside it. Its
+    /// words ride along in the window's language, since a window shows some other package's views
+    /// and never the library's own.
+    ///
+    /// # Errors
+    ///
+    /// A message when the library's module does not compile or link here, which is a bug: the
+    /// library ships with the compiler that built this runtime.
+    fn load_library(&self, app: &str) -> Result<(), RuntimeError> {
+        if app == tilolang::stdlib::APP
+            || self.core.registry.borrow().holds_app(tilolang::stdlib::APP)
+        {
+            return Ok(());
+        }
+        let compiled = tilolang::stdlib::compiled();
+        let hash = self.core.engine.compile(&compiled.wasm)?;
+        self.add_catalogues(&compiled.wasm, crate::words::WordsRole::Used);
+        self.check_exports(&hash, &compiled.meta)?;
+        let lines = tilolang::meta::lines_from_wasm(&compiled.wasm);
+        let pkg = crate::registry::Package::with_lines(hash, compiled.meta.clone(), &lines)
+            .map_err(RuntimeError::Package)?;
+        self.core
+            .registry
+            .borrow_mut()
+            .add(pkg)
+            .map_err(RuntimeError::Package)?;
+        Ok(())
     }
 
     fn check_exports(&self, hash: &ModuleHash, meta: &Meta) -> Result<(), RuntimeError> {
@@ -296,6 +330,7 @@ impl Runtime {
     ///
     /// As [`Runtime::load_package`].
     pub fn load_foreign_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
+        self.load_library(&meta.app)?;
         let hash = self.core.engine.compile(wasm)?;
         self.add_catalogues(wasm, crate::words::WordsRole::Used);
         self.check_exports(&hash, &meta)?;

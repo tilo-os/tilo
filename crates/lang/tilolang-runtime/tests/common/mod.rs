@@ -643,6 +643,11 @@ impl App {
         v.unwrap_or_else(|| panic!("no view {name}")).id.clone()
     }
 
+    pub fn fn_(&self, name: &str) -> String {
+        let f = self.meta().fns.iter().find(|f| f.name == name);
+        f.unwrap_or_else(|| panic!("no fn {name}")).id.clone()
+    }
+
     pub fn anchor(&self, view: &str, name: &str) -> String {
         let v = self.meta().views.iter().find(|v| v.name == view).unwrap();
         let a = v.anchors.iter().find(|a| a.name == name);

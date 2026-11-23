@@ -1,10 +1,12 @@
-//! The standard library: the frames every tilolang window gets, written in tilolang over the toolkit's
-//! components (`std/app.tl`).
+//! The standard library: the frames every tilolang window gets and the functions over what an app
+//! carries, written in tilolang over the toolkit's components (`std/app.tl`).
 //!
 //! It is a package like any other, compiled from its source and locked by its `app.ids`; every package
 //! compiles with it. Its views are templates, expanded where a package calls them (`std.list(...)`), so
-//! what they build is the caller's UI, under the caller's authority. A document's map of its own
-//! headings is one of them (`std.headings`), as are the frames a window of a tree or a list gets.
+//! what they build is the caller's UI, under the caller's authority. Its `fn`s are code: a package
+//! calls one where it runs (`std.reactions_said(keys)`), and the runtime loads the library beside
+//! the package that called it. A document's map of its own headings is one of its templates
+//! (`std.headings`), as are the frames a window of a tree or a list gets.
 //!
 //! Like any package, it is read from its source: a tool run in a checkout reads the checkout's
 //! (`load_from` what `in_tree` finds), so an edit of the library takes effect at once. The copy
@@ -170,13 +172,14 @@ mod tests {
     use super::{APP, IDS};
 
     #[test]
-    fn the_library_is_a_package_of_templates() {
+    fn the_library_is_a_package_of_templates_and_functions() {
         let module = &crate::package::parse(super::SOURCE).unwrap();
         assert_eq!(module.app.id, APP);
         for item in &module.items {
             assert!(
-                matches!(item, crate::ast::Item::View(_)),
-                "the library declares the window frames and nothing else: {item:?}"
+                matches!(item, crate::ast::Item::View(_) | crate::ast::Item::Fn(_)),
+                "the library declares the window frames and the functions over them, and nothing \
+                 else: {item:?}"
             );
         }
         assert!(!super::templates().is_empty());
@@ -190,26 +193,30 @@ mod tests {
             IDS,
             "write the ids the library takes back to `std/app.ids`"
         );
-        // Every bundle carries the library's module, and its views expand into their callers, so
-        // what it holds is metadata: its own words and the source of its templates, which a package
-        // that imports it expands them from. No code stands beside it.
-        let wasm = &super::compiled().wasm;
-        assert!(
-            crate::meta::lines_from_wasm(wasm).is_empty(),
-            "the library's module runs no code: {:?}",
-            crate::meta::lines_from_wasm(wasm)
+        // A view of the library expands into its callers, so its text travels in the metadata; a
+        // function of it is code its callers call (`Imp::CallFn`), and its module carries it.
+        let meta = &super::library().compiled.meta;
+        assert_eq!(
+            meta.fns.len(),
+            functions(module).len(),
+            "every function the library declares runs here"
         );
-        let beside = wasm
-            .len()
-            .saturating_sub(super::compiled().meta.to_json_bytes().len());
-        assert!(
-            beside < 1024,
-            "the library's module carries {beside} bytes beside its metadata"
+        let lines = crate::meta::lines_from_wasm(&super::compiled().wasm);
+        for f in &meta.fns {
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.export == format!("n_{}", f.id)),
+                "the library's module carries `{}`: {lines:?}",
+                f.name
+            );
+        }
+        assert_eq!(
+            lines.len(),
+            meta.fns.len(),
+            "the library's module carries its functions and no other code: {lines:?}"
         );
-        assert!(
-            super::library().compiled.meta.app == APP,
-            "the library compiles as its own package"
-        );
+        assert!(meta.app == APP, "the library compiles as its own package");
     }
 
     fn views(module: &crate::ast::Module) -> Vec<&crate::ast::ViewDecl> {
@@ -218,6 +225,17 @@ mod tests {
             .iter()
             .filter_map(|item| match item {
                 crate::ast::Item::View(v) => Some(v),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn functions(module: &crate::ast::Module) -> Vec<&crate::ast::FnDecl> {
+        module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::ast::Item::Fn(f) => Some(f),
                 _ => None,
             })
             .collect()
