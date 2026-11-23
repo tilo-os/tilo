@@ -405,7 +405,6 @@ fn the_backends_helper_commands() {
         assert!(backend.contains(
             "/usr/libexec/tilo-vm-install-proof code-refresh-check /run/tilo-installer/code-refresh"
         ));
-        assert!(backend.contains("if [ \"${#HOSTNAME_VAL}\" -gt 63 ]; then"));
 
         // The offline target, the handoff copy, the owner's SSH key and the install
         // proof are all the compiled helpers, never their retired Python scripts.
@@ -456,6 +455,133 @@ fn the_backends_helper_commands() {
         assert!(backend.contains("systemd-detect-virt --vm --quiet"));
         assert!(backend.contains("printf '%s\\n' \"$proof_line\" > \"$VM_INSTALL_PROOF_PORT\""));
         assert!(!backend.contains("tilo-vm-install-proof.py"));
+    }
+}
+
+fn tilo_install_fixture(dir: &Path) -> (std::path::PathBuf, String) {
+    let bin_dir = dir.join("bin");
+    let gen_dir = dir.join("generation");
+    fs::create_dir(&bin_dir).unwrap();
+    fs::create_dir(&gen_dir).unwrap();
+
+    let write_stub = |path: &Path, body: &str| {
+        fs::write(path, body).unwrap();
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).unwrap();
+    };
+
+    write_stub(&bin_dir.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+    let board_stub = dir.join("tilo-board-successor");
+    write_stub(
+        &board_stub,
+        "#!/bin/sh\nprintf 'ostree-image-signed:docker://ghcr.io/tilo/tilo:latest\\n'\n",
+    );
+    let extract_stub = dir.join("tilo-installer-prepared-setup-extract");
+    write_stub(
+        &extract_stub,
+        &format!(
+            "#!/bin/sh\nif [ \"${{1:-}}\" = selected-generation ]; then printf '%s\\n' '{}'; fi\nexit 0\n",
+            gen_dir.display()
+        ),
+    );
+
+    let raw = source("os/usr/libexec/tilo-install");
+    for expected in [
+        "/usr/libexec/tilo-board-successor",
+        "/usr/libexec/tilo-installer-prepared-setup-extract",
+        "/usr/libexec/tilo-staging-handoff",
+    ] {
+        assert!(raw.contains(expected), "missing {expected} in tilo-install");
+    }
+    let rewritten = raw
+        .replace(
+            "/usr/libexec/tilo-board-successor",
+            board_stub.to_str().unwrap(),
+        )
+        .replace(
+            "/usr/libexec/tilo-installer-prepared-setup-extract",
+            extract_stub.to_str().unwrap(),
+        )
+        .replace(
+            "/usr/libexec/tilo-staging-handoff",
+            tilo_test_env::package_binary!("tilo-staging-handoff")
+                .to_str()
+                .unwrap(),
+        );
+    let script_path = dir.join("tilo-install");
+    write_stub(&script_path, &rewritten);
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    (script_path, path_env)
+}
+
+#[test]
+fn tilo_install_enforces_63_char_hostname_before_disk_checks() {
+    let dir = tempfile::tempdir().unwrap();
+    let (script_path, path_env) = tilo_install_fixture(dir.path());
+    let run_installer = |hostname: &str| -> Output {
+        Command::new("bash")
+            .arg(&script_path)
+            .args([
+                "--disk",
+                "/dev/tilo-test-missing",
+                "--confirm-erase",
+                "/dev/tilo-test-missing",
+                "--expect-disk-size-bytes",
+                "68719476736",
+                "--expect-disk-devnum",
+                "252:0",
+                "--expect-disk-serial",
+                "TESTDISK",
+                "--user",
+                "ada",
+                "--pin",
+                "--yes",
+                "--hostname",
+                hostname,
+                "--locale",
+                "",
+            ])
+            .env("TILO_INSTALL_TRANSIENT", "1")
+            .env("PATH", &path_env)
+            .stdin(Stdio::null())
+            .output_locked()
+            .unwrap()
+    };
+
+    // 64 characters is refused by the hostname length guard before reaching locale or disk checks.
+    let too_long = "h".repeat(64);
+    let refused_long = refused(&run_installer(&too_long));
+    assert!(
+        refused_long.contains("use at most 63 characters"),
+        "{refused_long}"
+    );
+    assert!(!refused_long.contains("missing --locale"), "{refused_long}");
+
+    // 63 characters passes the hostname guard and advances to the immediately following
+    // argument validation (--locale), still without touching /proc/cmdline or any disk.
+    let max_valid = "h".repeat(63);
+    let accepted_max = refused(&run_installer(&max_valid));
+    assert!(
+        accepted_max.contains("missing --locale <locale>"),
+        "{accepted_max}"
+    );
+    assert!(!accepted_max.contains("invalid hostname"), "{accepted_max}");
+
+    // Other invalid hostnames are likewise refused before locale/disk checks.
+    for (bad, expected) in [
+        ("", "missing --hostname <name>"),
+        ("-studio", "invalid hostname"),
+        ("studio-", "invalid hostname"),
+        ("bad host", "letters, digits, hyphens only"),
+    ] {
+        let stderr = refused(&run_installer(bad));
+        assert!(stderr.contains(expected), "{bad:?}: {stderr}");
+        assert!(!stderr.contains("missing --locale"), "{bad:?}: {stderr}");
     }
 }
 
